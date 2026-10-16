@@ -46,7 +46,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     const r = await conn.request((id) => msg.readTexture(id, path))
     if (!r.ok || !r.data || !r.ext) throw new Error(r.error ?? `texture '${path}' not found`)
     return { ext: r.ext, bytes: base64ToBytes(r.data), props: r.props }
-  })
+  }, undefined, (run) => { if (document.visibilityState === 'visible') requestAnimationFrame(run); else setTimeout(run, 0) })  // textures arriving in one frame redraw once
   // texture groups (REQUIREMENTS §20): rule sets stored by Core next to the textures; a change rebuilds every mesh through the texture environment
   groups = new TexGroupCache(async (path) => {
     const r = await conn.request((id) => msg.readTexGroup(id, path))

@@ -4,6 +4,7 @@ import type { Store } from '../state/store'
 import type { TextureCache } from '../state/textures'
 import { showMenu } from './contextMenu'
 import { h } from './dom'
+import { ThumbnailLoader, forgetThumbnails } from './textureThumbs'
 
 const THUMB = 84
 /** A single click applies the texture after this delay unless a second click (double-click = properties) arrives. */
@@ -15,12 +16,11 @@ export class ContentBrowserPanel implements IContentRenderer {
   private all: string[] = []
   private folder = ''
   private query = ''
-  private tiles = new Map<string, HTMLCanvasElement>()
   private unsubs: (() => void)[] = []
   private grid = h('div', { class: 'thumbs' })
   private tree = h('div', { class: 'folders' })
   private count = h('span', { class: 'dim' })
-  private observer: IntersectionObserver | null = null
+  private thumbs: ThumbnailLoader | null = null
   private wasReady = false
   private lastProfile: unknown = null
 
@@ -36,11 +36,8 @@ export class ContentBrowserPanel implements IContentRenderer {
     this.element.append(
       h('div', { class: 'cb-bar' }, search, refresh, this.count),
       h('div', { class: 'cb-body' }, this.tree, this.grid))
-    this.observer = new IntersectionObserver((entries) => {
-      for (const e of entries) if (e.isIntersecting) { this.draw(e.target as HTMLCanvasElement); this.observer!.unobserve(e.target) }
-    }, { root: this.grid, rootMargin: '100px' })
-    this.unsubs.push(this.textures.onChange(() => this.tiles.forEach((c) => c.dataset.drawn !== '1' && this.draw(c))),
-      this.store.subscribe(() => {
+    this.thumbs = new ThumbnailLoader(this.textures, this.grid, THUMB, (c, path, w, hh) => { (c.parentElement as HTMLElement | null)?.setAttribute('title', `${path}\n${w} x ${hh} px`) })
+    this.unsubs.push(this.store.subscribe(() => {
         this.markActive()
         // (re)list whenever Core becomes available -- the panel is created before the connection is up
         const ready = this.store.state.synced
@@ -52,9 +49,10 @@ export class ContentBrowserPanel implements IContentRenderer {
       }))
     if (this.store.state.synced) void this.reload()
   }
-  dispose(): void { this.unsubs.forEach((u) => u()); this.observer?.disconnect() }
+  dispose(): void { this.unsubs.forEach((u) => u()); this.thumbs?.dispose() }
 
   async reload(): Promise<void> {
+    forgetThumbnails(this.textures) // files may have changed on disk
     try { this.all = await this.list() } catch { this.all = []; this.store.setMessage('Could not list textures (is Core connected?)') }
     this.renderFolders(); this.renderGrid()
   }
@@ -71,12 +69,10 @@ export class ContentBrowserPanel implements IContentRenderer {
   private renderGrid(): void {
     const shown = this.all.filter((p) => (this.folder === '' || p.startsWith(this.folder + '/')) && p.toLowerCase().includes(this.query))
     this.count.textContent = `${shown.length} of ${this.all.length}`
-    this.tiles.clear()
-    this.grid.replaceChildren(...shown.map((path) => {
-      const canvas = h('canvas', { width: String(THUMB), height: String(THUMB) })
-      canvas.dataset.path = path
-      this.tiles.set(path, canvas)
-      const tile = h('div', { class: 'tile', title: path }, canvas, h('div', { class: 'tile-name' }, path.split('/').pop() ?? path))
+    this.thumbs?.reset() // tiles of the previous filter that never got their turn are not loaded any more
+    this.grid.replaceChildren()
+    this.grid.append(...shown.map((path) => {
+      const tile = h('div', { class: 'tile', title: path }, this.thumbs!.canvas(path), h('div', { class: 'tile-name' }, path.split('/').pop() ?? path))
       tile.dataset.path = path
       // clicking a texture applies it at once to whatever is selected (brushes, faces, decals); no Apply step
       // a double-click opens the properties window, so the apply waits a moment and is cancelled by the second click
@@ -95,7 +91,6 @@ export class ContentBrowserPanel implements IContentRenderer {
           { label: 'Apply to selection', run: () => applyTexture(this.store, path) },
         ], tile.ownerDocument)
       })
-      this.observer?.observe(canvas)
       return tile
     }))
     this.markActive()
@@ -104,13 +99,5 @@ export class ContentBrowserPanel implements IContentRenderer {
   private markActive(): void {
     const active = this.store.state.activeTexture
     for (const t of this.grid.children) (t as HTMLElement).classList.toggle('sel', (t as HTMLElement).dataset.path === active)
-  }
-
-  private draw(c: HTMLCanvasElement): void {
-    const st = this.textures.get(c.dataset.path!)
-    const g = c.getContext('2d')!
-    g.fillStyle = '#2a2a2a'; g.fillRect(0, 0, THUMB, THUMB)
-    if (st.status === 'ready') { g.drawImage(st.image.source as CanvasImageSource, 0, 0, THUMB, THUMB); c.dataset.drawn = '1' }
-    else if (st.status === 'missing') { g.fillStyle = '#c55'; g.fillText('?', 38, 46); c.dataset.drawn = '1' }
   }
 }

@@ -9,6 +9,7 @@ import { AxisRepeat, DEFAULT_PPM, PPM_MAX, PPM_MIN, TexInfo, TextureProps, Trans
 import type { TextureCache } from '../state/textures'
 import { openDialog } from './dialog'
 import { fmt, h } from './dom'
+import { ThumbnailLoader } from './textureThumbs'
 
 export interface PropsWindowEnv {
   textures: TextureCache
@@ -27,19 +28,17 @@ const PPM_PRESETS = [16, 32, 64, 128, 256]
 export function pickTexture(env: PropsWindowEnv, title: string, exclude?: string): Promise<string | null> {
   return new Promise((resolve) => {
     let chosen: string | null = null
-    const d = openDialog(title, { width: 640, onClose: () => resolve(chosen) })
     const search = h('input', { placeholder: 'Search textures', class: 'search' })
     const grid = h('div', { class: 'thumbs', style: 'max-height:60vh;min-height:240px' })
+    const thumbs = new ThumbnailLoader(env.textures, grid)
+    const d = openDialog(title, { width: 640, onClose: () => { thumbs.dispose(); resolve(chosen) } })
     let all: string[] = []
     const render = () => {
       const q = search.value.toLowerCase()
       const shown = all.filter((p) => p !== exclude && p.toLowerCase().includes(q)).slice(0, 400)
+      thumbs.reset()
       grid.replaceChildren(...shown.map((p) => {
-        const c = h('canvas', { width: '84', height: '84' })
-        const g = c.getContext('2d')
-        const st = env.textures.get(p)
-        if (g) { g.fillStyle = '#2a2a2a'; g.fillRect(0, 0, 84, 84); if (st.status === 'ready') g.drawImage(st.image.source as CanvasImageSource, 0, 0, 84, 84) }
-        const tile = h('div', { class: 'tile', title: p }, c, h('div', { class: 'tile-name' }, p.split('/').pop() ?? p))
+        const tile = h('div', { class: 'tile', title: p }, thumbs.canvas(p), h('div', { class: 'tile-name' }, p.split('/').pop() ?? p))
         tile.addEventListener('click', () => { chosen = p; d.close() })
         return tile
       }))

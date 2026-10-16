@@ -22,7 +22,7 @@ const btn = (t: string) => [...document.querySelectorAll('button')].find((b) => 
 
 describe('texture group editor window', () => {
   it('a new group starts from the facade template, with its slots listed and no problems', async () => {
-    await openTexGroupEditor(env(), null)
+    await openTexGroupEditor(env(), null); await tick() // the slot textures load (a few at a time)
     expect(q<HTMLTextAreaElement>('textarea').value).toContain('"floorHeight"')
     expect(document.querySelectorAll('.gp-slot')).toHaveLength(6)
     expect(document.querySelector('.gp-err')).toBeNull(); expect(q('.gp-problems').textContent).not.toMatch(/unknown/)
@@ -42,7 +42,7 @@ describe('texture group editor window', () => {
   })
 
   it('Save writes the parsed file under a valid name; bad names and broken text are refused', async () => {
-    const e = env(); await openTexGroupEditor(e, null)
+    const e = env(); await openTexGroupEditor(e, null); await tick()
     const name = q<HTMLInputElement>('input.search'), status = () => q('.gp-bar .dim').textContent
     btn('Save').click(); await tick(); expect(e.save).not.toHaveBeenCalled(); expect(status()).toMatch(/Name/)
     name.value = '../evil'; btn('Save').click(); await tick(); expect(e.save).not.toHaveBeenCalled()
@@ -53,11 +53,11 @@ describe('texture group editor window', () => {
   })
 
   it('Apply to selection saves first, then applies and reports the face count; a failed save does not apply', async () => {
-    const e = env(); await openTexGroupEditor(e, null)
+    const e = env(); await openTexGroupEditor(e, null); await tick()
     q<HTMLInputElement>('input.search').value = 'g1'; btn('Apply to selection').click(); await tick()
     expect(e.apply).toHaveBeenCalledWith('g1'); expect(q('.gp-bar .dim').textContent).toMatch(/applied to 3 face/)
     const bad = env({ save: vi.fn(async () => { throw new Error('disk full') }) }); document.body.replaceChildren()
-    await openTexGroupEditor(bad, null); q<HTMLInputElement>('input.search').value = 'g2'; btn('Apply to selection').click(); await tick()
+    await openTexGroupEditor(bad, null); await tick(); q<HTMLInputElement>('input.search').value = 'g2'; btn('Apply to selection').click(); await tick()
     expect(bad.apply).not.toHaveBeenCalled(); expect(q('.gp-bar .dim').textContent).toMatch(/disk full/)
   })
 

@@ -12,6 +12,7 @@ import type { TextureCache } from '../state/textures'
 import { showMenu } from './contextMenu'
 import { openDialog } from './dialog'
 import { fmt, h } from './dom'
+import { ThumbnailLoader } from './textureThumbs'
 import { drawGroupPreview } from './groupPreview'
 import { pickTexture } from './texturePropsWindow'
 
@@ -41,19 +42,18 @@ function pickTextures(env: TileSetEnv, title: string): Promise<string[]> {
   return new Promise((resolve) => {
     const chosen = new Set<string>()
     let done = false
-    const d = openDialog(title, { width: 680, onClose: () => { if (!done) resolve([]) } })
     const search = h('input', { placeholder: 'Search textures', class: 'search' })
     const grid = h('div', { class: 'thumbs', style: 'max-height:56vh;min-height:240px' })
+    const thumbs = new ThumbnailLoader(env.textures, grid)
+    const d = openDialog(title, { width: 680, onClose: () => { thumbs.dispose(); if (!done) resolve([]) } })
     const ok = h('button', { class: 'primary' }, 'Add')
     let all: string[] = []
     const label = () => { ok.textContent = chosen.size ? `Add ${chosen.size}` : 'Add'; ok.toggleAttribute('disabled', chosen.size === 0) }
     const render = () => {
       const q = search.value.toLowerCase()
+      thumbs.reset()
       grid.replaceChildren(...all.filter((p) => p.toLowerCase().includes(q)).slice(0, 400).map((p) => {
-        const c = h('canvas', { width: '84', height: '84' })
-        const g = c.getContext('2d'), st = env.textures.get(p)
-        if (g) { g.fillStyle = '#2a2a2a'; g.fillRect(0, 0, 84, 84); if (st.status === 'ready') g.drawImage(st.image.source as CanvasImageSource, 0, 0, 84, 84) }
-        const tile = h('div', { class: `tile${chosen.has(p) ? ' sel' : ''}`, title: p }, c, h('div', { class: 'tile-name' }, p.split('/').pop() ?? p))
+        const tile = h('div', { class: `tile${chosen.has(p) ? ' sel' : ''}`, title: p }, thumbs.canvas(p), h('div', { class: 'tile-name' }, p.split('/').pop() ?? p))
         tile.addEventListener('click', () => { if (chosen.has(p)) chosen.delete(p); else chosen.add(p); tile.classList.toggle('sel', chosen.has(p)); label() })
         return tile
       }))

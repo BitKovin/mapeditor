@@ -8,6 +8,7 @@ import { parseFaceRepeat } from '../model/texprops'
 import type { Store, TexSteps } from '../state/store'
 import type { TextureCache } from '../state/textures'
 import { fmt, h } from './dom'
+import { drawFitted } from './fitImage'
 import { layoutSection } from './layoutSection'
 import { groupEnv } from '../model/texgroup'
 
@@ -82,7 +83,7 @@ export class TexturePanel implements IContentRenderer {
     const thumb = h('canvas', { width: '48', height: '48', class: 'tex-preview' })
     const tex = this.textures.get(texName)
     const g = thumb.getContext('2d')
-    if (g) { g.fillStyle = '#2a2a2a'; g.fillRect(0, 0, 48, 48); if (tex.status === 'ready') g.drawImage(tex.image.source as CanvasImageSource, 0, 0, 48, 48) }
+    if (g) { if (tex.status === 'ready') drawFitted(g, tex.image.source as CanvasImageSource, tex.image.width, tex.image.height, 48, 48); else { g.fillStyle = '#2a2a2a'; g.fillRect(0, 0, 48, 48) } }
 
     // density readout
     let density = ''
