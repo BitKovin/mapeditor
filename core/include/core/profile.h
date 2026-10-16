@@ -45,5 +45,13 @@ struct GameProfile {
 // Missing file -> defaults. Malformed file -> throws std::runtime_error (a broken profile should be
 // loud, not silently replaced by defaults).
 GameProfile loadProfile(const std::filesystem::path& assetsRoot);
+// The same rules on an already parsed object (throws std::runtime_error with the reason).
+GameProfile profileFromJson(const nlohmann::json& j);
+
+// The file as written (unknown keys included); a missing or broken file gives {}.
+nlohmann::json readProfileFile(const std::filesystem::path& assetsRoot);
+// Merges `changes` into game_profile.json (top-level keys replace, `lighting` merges one level, null removes a key), refuses a result
+// profileFromJson would refuse, and writes atomically. Empty string = done, else the reason.
+std::string writeProfileFile(const std::filesystem::path& assetsRoot, const nlohmann::json& changes);
 
 }  // namespace core

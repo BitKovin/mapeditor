@@ -106,10 +106,11 @@ TEST_CASE("open_document replaces the document for every session and answers the
     f.dir.write("maps/b.map.json", docJson({entityJson("e_b", "worldspawn", {Brush::makeBox("bb", {0, 0, 0}, {2, 2, 2})})}));
 
     RouterOutput out = f.send({{"type", "open_document"}, {"requestId", 7}, {"path", "maps/b.map.json"}});
-    REQUIRE(out.toAll.size() == 2);
+    REQUIRE(out.toAll.size() == 3);
     CHECK(Fixture::parse(out.toAll[0])["type"] == "document_sync");
     CHECK(Fixture::parse(out.toAll[0])["path"] == "maps/b.map.json");
     CHECK(Fixture::parse(out.toAll[1])["type"] == "prefab_library");
+    CHECK(Fixture::parse(out.toAll[2])["type"] == "settings");  // the recent maps changed
     REQUIRE(out.toSender.size() == 1);
     json res = Fixture::parse(out.toSender[0]);
     CHECK(res["type"] == "response");
@@ -118,11 +119,11 @@ TEST_CASE("open_document replaces the document for every session and answers the
 
     // State is delivered before the reply that refers to it.
     auto order = out.inDeliveryOrder();
-    REQUIRE(order.size() == 3);
+    REQUIRE(order.size() == 4);
     CHECK(Fixture::parse(*order[0].text)["type"] == "document_sync");
     CHECK(Fixture::parse(*order[1].text)["type"] == "prefab_library");
-    CHECK(order[2].to == RouterOutput::To::Sender);
-    CHECK(Fixture::parse(*order[2].text)["type"] == "response");
+    CHECK(order[3].to == RouterOutput::To::Sender);
+    CHECK(Fixture::parse(*order[3].text)["type"] == "response");
 
     out = f.send({{"type", "open_document"}, {"requestId", "r2"}, {"path", "maps/none.map.json"}});
     REQUIRE(out.toSender.size() == 1);

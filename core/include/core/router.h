@@ -4,6 +4,7 @@
 #include "core/scene.h"
 #include "core/settings.h"
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,9 @@ struct RouterOutput {
     std::vector<std::string> toSender;  // just the session that sent the message
     std::vector<std::string> toOthers;  // every session except the sender
     std::vector<std::string> toAll;     // every session, sender included
+    // Work that waits for the person (a native file dialog): each job runs on a thread of its own so the server keeps serving;
+    // the text it returns is sent to the sender. Tests simply call them.
+    std::vector<std::function<std::string()>> background;
 
     enum class To { Sender, Others, All };
     struct Outgoing {
@@ -41,6 +45,9 @@ struct RouterOutput {
 //     flight, defeating zero-latency editing;
 //   * everyone else gets the new document;
 //   * a rejected update touches nothing and only the sender hears about it.
+// {map}, {mapname}, {bsp} and {game} in a launch argument / folder (see GameLaunch); `bsp` is relative to `gameRoot`.
+std::string expandLaunchText(const std::string& text, const std::filesystem::path& gameRoot, const std::string& bsp);
+
 class Router {
 public:
     // `settingsFile`: where set_assets_root / open / save persist settings (empty = don't persist).
@@ -57,6 +64,8 @@ public:
     // True while the live lighting has more to refine (the server then ticks again without waiting).
     bool lightingBusy() const { return lighting_.busy(); }
     LightingService& lighting() { return lighting_; }
+    // lighting.json (Settings > Lighting reads and writes it); empty = that page is unavailable.
+    void setLightingFile(std::filesystem::path file) { lightingFile_ = std::move(file); }
     // BSP export in progress (tests wait on it).
     bool exportRunning() const { return export_.running(); }
 
@@ -76,6 +85,11 @@ private:
     void handleBrowseFilesystem(const nlohmann::json& req, RouterOutput& out);
     void handleSetAssetsRoot(const nlohmann::json& req, RouterOutput& out);
     void handleLighting(const nlohmann::json& req, RouterOutput& out);
+    void handleNativeDialog(const nlohmann::json& req, RouterOutput& out);
+    void handleSetSettings(const nlohmann::json& req, RouterOutput& out);
+    void handleGameProfile(const nlohmann::json& req, RouterOutput& out);
+    void handleLightingConfig(const nlohmann::json& req, RouterOutput& out);
+    void handleLaunchGame(const nlohmann::json& req, RouterOutput& out);
     void handleExport(const nlohmann::json& req, RouterOutput& out);
     void pushDerivedAll(RouterOutput& out);  // derived_geometry to everyone, and the lighting notices the document changed
     void pushDerived(std::vector<std::string>& to);  // derived_geometry, only when the document has subtractive brushes
@@ -88,6 +102,7 @@ private:
     std::string lastLibraryFingerprint_;
     std::string lastConfigFingerprint_;
     std::filesystem::path settingsFile_;
+    std::filesystem::path lightingFile_;
     Settings settings_;
     LightingService lighting_;
     LightingService::Options lightingOptions_;  // lighting.json: the export bakes with the same settings as the live view

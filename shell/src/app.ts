@@ -9,7 +9,9 @@ import { PrefabPreviews } from './state/prefabPreview'
 import { PrefabIcons, clearEntityIcons } from './render/icons'
 import { ContentBrowserPanel } from './ui/contentBrowser'
 import { confirmDialog } from './ui/dialog'
-import { chooseFile, parentDir } from './ui/fileDialog'
+import { chooseFile, joinPath, parentDir } from './ui/fileDialog'
+import { BSP_FILTERS, MAP_FILTERS, nativePick } from './ui/nativeDialog'
+import { editorPrefs, viewportDefaults } from './state/editorPrefs'
 import { openSettings } from './ui/settingsDialog'
 import { h } from './ui/dom'
 import { menuBar } from './ui/menuBar'
@@ -118,6 +120,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
         case 'viewport': {
           // the popout button opens a real OS window (positioned popup), which can be dragged to another monitor
           const v = new ViewportPanel(store, textures, () => { const p = dock.getPanel(id); if (p) popOut(p) }, previews)
+          if (store.state.coreSettings) v.applyDefaults(viewportDefaults(editorPrefs(store.state.coreSettings.editor)))  // Settings > Editor
           viewports.add(v); return v
         }
         case 'place': return new PlacePanel(store, targetPoint, listDir, { prefabIcons, previews })
@@ -236,22 +239,47 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
       return true
     } catch (e) { store.setMessage((e as Error).message); return false }
   }
+  /** `p` ending in `ext` (the system's save dialog sees ".map.json" as ".json"). */
+  const withExt = (p: string, ext: string): string => p.toLowerCase().endsWith(ext) ? p : p.replace(/\.(map\.)?json$|\.map$|\.bsp$/i, '') + ext
   async function saveAs(): Promise<boolean> {
-    const p = await chooseFile({ mode: 'save', title: 'Save map as', ext: MAP_EXT, startDir: mapDir(), startName: store.state.path.split('/').pop() ?? '', list: listDir })
-    return p ? save(p) : false
+    const name = store.state.path.split('/').pop() || `untitled${MAP_EXT}`
+    let p = await nativePick(conn, store, { kind: 'save', title: 'Save map as', startDir: mapDir(), fileName: name, filters: MAP_FILTERS, defaultExt: 'map.json', relative: true })
+    if (p === undefined) p = await chooseFile({ mode: 'save', title: 'Save map as', ext: MAP_EXT, startDir: mapDir(), startName: store.state.path.split('/').pop() ?? '', list: listDir })
+    return p ? save(withExt(p, MAP_EXT)) : false
   }
   /** File > Export BSP (REQUIREMENTS §25 E9): the map as it is now -> <name>.bsp + <name>/lm_NNNN.exr, baked in the Core. While it runs the button cancels. */
   async function exportBsp(): Promise<void> {
     if (!store.canEdit) { store.setMessage('Not connected to Core - cannot export'); return }
     if (store.state.exporting) { await conn.request((id) => msg.exportCancel(id)).catch(() => undefined); return }
-    const base = (store.state.path.split('/').pop() ?? '').replace(/\.map\.json$/, '') || 'untitled'
-    const p = await chooseFile({ mode: 'save', title: 'Export BSP', ext: '.bsp', startDir: mapDir(), startName: `${base}.bsp`, list: listDir })
-    if (!p) return
+    let p = await nativePick(conn, store, { kind: 'save', title: 'Export BSP', startDir: mapDir(), fileName: `${mapBase()}.bsp`, filters: BSP_FILTERS, defaultExt: 'bsp', relative: true })
+    if (p === undefined) p = await chooseFile({ mode: 'save', title: 'Export BSP', ext: '.bsp', startDir: mapDir(), startName: `${mapBase()}.bsp`, list: listDir })
+    if (p) await startExport(withExt(p, '.bsp'))
+  }
+  const mapBase = (): string => (store.state.path.split('/').pop() ?? '').replace(/\.map\.json$/, '') || 'untitled'
+  /** Starts the export to `p` (assets relative); false when Core refused it. */
+  async function startExport(p: string): Promise<boolean> {
     try {
       await conn.whenIdle()
       const r = await conn.request((id) => msg.exportBsp(id, p))
-      if (!r.ok) store.setMessage(`BSP export: ${r.error ?? 'refused'}`)
-      else store.onMessage({ type: 'export_progress', stage: 'starting', fraction: 0 })
+      if (!r.ok) { store.setMessage(`BSP export: ${r.error ?? 'refused'}`); return false }
+      store.onMessage({ type: 'export_progress', stage: 'starting', fraction: 0 })
+      return true
+    } catch (e) { store.setMessage((e as Error).message); return false }
+  }
+  /** File > Play map (F5): exports <map>.bsp next to the map file, then starts the game set in Settings > Run game with it. */
+  async function playMap(): Promise<void> {
+    if (!store.canEdit) { store.setMessage('Not connected to Core - cannot play'); return }
+    if (store.state.exporting) { store.setMessage('An export is already running'); return }
+    if (!store.state.coreSettings?.game.exe) { store.setMessage('Play map: choose the game executable first'); openSettings(store, conn, 'game'); return }
+    const bsp = joinPath(mapDir(), `${mapBase()}.bsp`), before = store.state.lastExport
+    if (!(await startExport(bsp))) return
+    const done = await new Promise<NonNullable<typeof before>>((resolve) => {
+      const un = store.subscribe(() => { const r = store.state.lastExport; if (r && r !== before && !store.state.exporting) { un(); resolve(r) } })
+    })
+    if (!done.ok) { if (!done.cancelled) store.setMessage(`Play map: the export failed: ${done.error}`); return }
+    try {
+      const r = await conn.request((id) => msg.launchGame(id, bsp))
+      store.setMessage(r.ok ? `Started the game: ${r.commandLine ?? ''}` : `Play map: ${r.error ?? 'the game did not start'}`)
     } catch (e) { store.setMessage((e as Error).message) }
   }
   /** True when it is fine to throw away the current document (nothing unsaved, or the person said so). */
@@ -259,11 +287,15 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     !store.state.dirty || confirmDialog('Unsaved changes', `${store.state.path || 'The current map'} has unsaved changes. Discard them?`, 'Discard')
   async function open(): Promise<void> {
     if (!(await okToDiscard())) return
-    const p = await chooseFile({ mode: 'open', title: 'Open map', ext: MAP_EXT, startDir: mapDir(), startName: store.state.path.split('/').pop(), list: listDir })
-    if (!p) return
+    let p = await nativePick(conn, store, { kind: 'open', title: 'Open map', startDir: mapDir(), filters: MAP_FILTERS, relative: true })
+    if (p === undefined) p = await chooseFile({ mode: 'open', title: 'Open map', ext: MAP_EXT, startDir: mapDir(), startName: store.state.path.split('/').pop(), list: listDir })
+    if (p) await openPath(p)
+  }
+  async function openPath(p: string): Promise<void> {
     try { await conn.whenIdle(); const r = await conn.request((id) => msg.openDocument(id, p)); if (!r.ok) store.setMessage(r.error ?? 'Open failed') }
     catch (e) { store.setMessage((e as Error).message) }
   }
+  async function openRecent(p: string): Promise<void> { if (p !== store.state.path && await okToDiscard()) await openPath(p) }
 
   // ---- menu bar: every action lives here (with its shortcut); the toolbar below keeps the frequent ones -------------
   const EXPORT_TIP = 'Export the map as rBSP for the engine: bakes the final lighting (Level settings: bake quality), writes <name>.bsp and <name>/lm_*.exr'
@@ -283,13 +315,20 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   }
   bar.append(menuBar([
     { label: 'File', items: () => [
-      { label: 'Open…', shortcut: 'Ctrl+O', title: 'Open a map from the assets folder', action: () => void open() },
+      { label: 'Open…', shortcut: 'Ctrl+O', title: 'Open a map from the game folder', action: () => void open() },
+      { label: 'Open Recent', disabled: !store.state.coreSettings?.recentMaps.length, submenu: () => [
+        ...(store.state.coreSettings?.recentMaps ?? []).map((p, i) => ({ label: `${i + 1}  ${p}`, checked: p === store.state.path, action: () => void openRecent(p) })),
+        '-', { label: 'Clear Recent', action: () => void conn.request((id) => msg.setSettings(id, { clearRecent: true })).catch(() => undefined) },
+      ] },
+      '-',
       { label: 'Save', shortcut: 'Ctrl+S', action: () => void save() },
       { label: 'Save As…', shortcut: 'Ctrl+Shift+S', title: 'Save under a new name', action: () => void saveAs() },
       '-',
       { label: exportLabel(), title: EXPORT_TIP, action: () => void exportBsp() },
+      { label: 'Play Map', shortcut: 'F5', title: 'Export the map as BSP next to the map file and start the game with it (Settings > Run game)', action: () => void playMap() },
       '-',
-      { label: 'Settings…', title: 'Assets folder, game profile', action: () => openSettings(store, conn) },
+      { label: 'Game Folder…', title: 'Choose the game folder (textures, maps, game_profile.json)', action: () => openSettings(store, conn, 'general') },
+      { label: 'Settings…', shortcut: 'Ctrl+,', title: 'Game folder, game profile, running the game, lighting, editor preferences', action: () => openSettings(store, conn) },
     ] },
     { label: 'Edit', items: () => [
       { label: 'Undo', shortcut: 'Ctrl+Z', action: () => store.undo() },
@@ -326,6 +365,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   const modeBtns = { object: btn('Brush', 'Brush mode: NetRadiant-style object editing (Tab toggles Brush / Mesh)', () => store.setEditMode('object'), 'tool'), mesh: btn('Mesh', 'Mesh mode: Blender-style vertex / edge / face editing of the selected brush (Tab)', () => store.setEditMode('mesh'), 'tool') }
   const tools = h('div', { class: 'toolbar' },
     group(btn('Save', 'Save (Ctrl+S)', () => void save()), btn('Undo', 'Undo (Ctrl+Z)', () => store.undo()), btn('Redo', 'Redo (Ctrl+Y)', () => store.redo())),
+    group(btn('▶ Play', 'Play map (F5): export the map as BSP and start the game with it (Settings > Run game)', () => void playMap(), 'tb-play')),
     h('span', { class: 'tb-label' }, 'Tool'), group(toolBtns.select, toolBtns.box, toolBtns.decal),
     h('span', { class: 'tb-label' }, 'Mode'), group(modeBtns.object, modeBtns.mesh),
     group(uvLockBtn), group(btn('Delete', 'Delete selection (Del)', () => deleteSelection(store))),
@@ -365,6 +405,8 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     else if (mod && k === 'y') { e.preventDefault(); store.redo() }
     else if (mod && k === 's') { e.preventDefault(); void (e.shiftKey ? saveAs() : save()) }
     else if (mod && k === 'o') { e.preventDefault(); void open() }
+    else if (mod && k === ',') { e.preventDefault(); openSettings(store, conn) }
+    else if (k === 'f5' && !mod) { e.preventDefault(); void playMap() }
     else if (mod) return
     else if (k === 'delete' || k === 'backspace' || k === 'x') { e.preventDefault(); deleteSelection(store) }
     else if (k === 'tab') { e.preventDefault(); store.setEditMode(store.state.editMode === 'mesh' ? 'object' : 'mesh') }  // Brush mode <-> Mesh mode
@@ -409,6 +451,15 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
 
   // closing the tab with unsaved work asks first (the browser shows its own generic prompt)
   window.addEventListener('beforeunload', (e) => { if (store.state.dirty) e.preventDefault() })
+
+  // Settings > Editor: viewports made before Core sent the preferences take them when they arrive
+  let prefsApplied = false
+  store.subscribe(() => {
+    const c = store.state.coreSettings
+    if (prefsApplied || !c) return
+    prefsApplied = true
+    for (const v of liveViewports()) v.applyDefaults(viewportDefaults(editorPrefs(c.editor)))
+  })
 
   let framed = false
   store.subscribe(() => { if (!framed && store.state.synced) { framed = true; liveViewports()[0]?.frameAll() } })

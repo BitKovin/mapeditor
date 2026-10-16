@@ -24,6 +24,15 @@ inline constexpr const char* kReadPrefab = "read_prefab";          // { requestI
 inline constexpr const char* kListDirectory = "list_directory";    // { requestId, path? }     -> response { path, entries: [{name, dir}] }  (inside the assets root)
 inline constexpr const char* kBrowseFilesystem = "browse_filesystem";  // { requestId, path? } -> response { path, parent, dirs: [name], drives? }  (folders only; to pick the assets root)
 inline constexpr const char* kSetAssetsRoot = "set_assets_root";  // { requestId, path }      -> response, then profile + entity_defs + document_sync + prefab_library + settings to everyone
+inline constexpr const char* kNativeDialog = "native_dialog";  // { requestId, kind: folder|open|save, title?, startDir?, fileName?, filters?: [{name, pattern}], defaultExt?, relative?: bool }
+                                                              //   -> response { cancelled?, path, absolutePath } (relative: start dir and result relative to the assets root, which the result must be inside),
+                                                              //      or { ok: false, unsupported: true } where Core has no native dialogs. Answered when the person closes the dialog.
+inline constexpr const char* kSetSettings = "set_settings";    // { requestId, game?: { exe, args, workingDir } (for the current assets root), editor?: {...} } -> response, then settings to everyone
+inline constexpr const char* kReadGameProfile = "read_game_profile";    // { requestId } -> response { file: game_profile.json as written ({} if none), profile: what is in effect }
+inline constexpr const char* kWriteGameProfile = "write_game_profile";  // { requestId, profile: changes } -> response { profile }; then profile + entity_defs + settings to everyone
+inline constexpr const char* kReadLightingConfig = "read_lighting_config";    // { requestId } -> response { config (every key, in effect), file }
+inline constexpr const char* kWriteLightingConfig = "write_lighting_config";  // { requestId, config: changes } -> response { config, warning? }  (live view: from the next Core start; export: now)
+inline constexpr const char* kLaunchGame = "launch_game";      // { requestId, map: .bsp relative to the assets root } -> response  (starts the game set in settings)
 
 // Core -> Shell
 inline constexpr const char* kDocumentSync = "document_sync";  // { rev, path, doc }  (to everyone EXCEPT an updating sender)
@@ -44,7 +53,8 @@ inline constexpr const char* kLightvol = "lightvol";                // { rev, or
 inline constexpr const char* kEntityLight = "entity_light";          // { rev, entities: [{ i: instance, e: entityId, dir, lights: [{ s: style, ambient, directed }] }] }  linear floats (decoded bytes), one entry per style layer; ONE direction per entity (REQUIREMENTS §27 G4)
 inline constexpr const char* kLightingStatus = "lighting_status";  // { enabled, rev, chunks, stale, minPasses, maxPasses, converged, texels, pages, exposure, styles: [ids], styleWarnings: [text] }
 inline constexpr const char* kDerivedGeometry = "derived_geometry";  // { rev, carved: [...], skipped: [...] }  boolean results (DESIGN §5.6)
-inline constexpr const char* kSettings = "settings";            // { assetsRoot }  (absolute path, persisted in settings.json)
+inline constexpr const char* kSettings = "settings";            // { assetsRoot (absolute), recentMaps: [paths in it], game: { exe, args, workingDir }, editor: {...}, nativeDialogs: bool,
+                                                                //   settingsFile, lightingFile }  (persisted in settings.json)
 inline constexpr const char* kPrefabLibrary = "prefab_library";  // { prefabs: {path: doc|{error}} }
 // BSP export (REQUIREMENTS §25): `export_bsp` { path (assets relative .bsp), bake?: bool (default true), requestId } -> response { ok, error? };
 // then, to every session, export_progress { stage, fraction } about once a second and export_result { ok, cancelled, error, warnings, stats, bsp, lightmaps,

@@ -1,10 +1,14 @@
 #include "core/router.h"
+#include "core/native_dialog.h"
+#include "core/profile.h"
 #include "core/texgroups.h"
 #include "core/protocol.h"
 #include "core/textures.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <fstream>
+#include <optional>
 
 namespace fs = std::filesystem;
 
@@ -27,11 +31,22 @@ std::string failedResponse(const json& req, const std::string& message) {
 Router::Router(Scene& scene, fs::path settingsFile, const LightingService::Options& lightingOptions)
     : scene_(scene), lastLibraryFingerprint_(scene.libraryFingerprint()), lastConfigFingerprint_(scene.configFingerprint()),
       settingsFile_(std::move(settingsFile)), lighting_(scene, lightingOptions), lightingOptions_(lightingOptions) {
+    if (!settingsFile_.empty()) settings_ = loadSettings(settingsFile_);  // keep what this run does not change (recent maps, games, editor)
     settings_.assetsRoot = pathToUtf8(scene.assetsRoot());
     settings_.lastMap = scene.currentPath();
+    settings_.touchRecent(settings_.assetsRoot, settings_.lastMap);  // the map reopened at start-up is the most recent one
 }
 
-json Router::settingsJson() const { return json{{"type", proto::kSettings}, {"assetsRoot", pathToUtf8(scene_.assetsRoot())}}; }
+json Router::settingsJson() const {
+    const std::string root = pathToUtf8(scene_.assetsRoot());
+    json recent = json::array();
+    for (const auto& r : settings_.recentMaps) if (r.assetsRoot == root) recent.push_back(r.path);
+    const auto g = settings_.games.find(root);
+    const GameLaunch game = g != settings_.games.end() ? g->second : GameLaunch{};
+    return json{{"type", proto::kSettings}, {"assetsRoot", root}, {"recentMaps", recent},
+                {"game", json{{"exe", game.exe}, {"args", game.args}, {"workingDir", game.workingDir}}}, {"editor", settings_.editor},
+                {"nativeDialogs", nativeDialogsAvailable()}, {"settingsFile", pathToUtf8(settingsFile_)}, {"lightingFile", pathToUtf8(lightingFile_)}};
+}
 
 bool Router::persistSettings() {
     settings_.assetsRoot = pathToUtf8(scene_.assetsRoot());
@@ -162,6 +177,11 @@ RouterOutput Router::onMessage(const std::string& text) {
         else if (type == proto::kLighting) handleLighting(req, out);
         else if (type == proto::kReliefGeometry) { if (scene_.setReliefGeometry(req)) lighting_.markDirty(); lastRelief_ = req; }
         else if (type == proto::kExportBsp || type == proto::kExportCancel) handleExport(req, out);
+        else if (type == proto::kNativeDialog) handleNativeDialog(req, out);
+        else if (type == proto::kSetSettings) handleSetSettings(req, out);
+        else if (type == proto::kReadGameProfile || type == proto::kWriteGameProfile) handleGameProfile(req, out);
+        else if (type == proto::kReadLightingConfig || type == proto::kWriteLightingConfig) handleLightingConfig(req, out);
+        else if (type == proto::kLaunchGame) handleLaunchGame(req, out);
         else throw std::runtime_error("unknown message type '" + type + "'");
     } catch (const std::exception& e) {
         // Anything that escaped a handler (e.g. a missing field). Discard
@@ -207,11 +227,13 @@ void Router::handleOpen(const json& req, RouterOutput& out) {
         out.toSender.push_back(failedResponse(req, e.what()));
         return;
     }
+    settings_.touchRecent(pathToUtf8(scene_.assetsRoot()), scene_.currentPath());
     persistSettings();  // remember the map for next start-up; failure to write is not worth failing the open
     // Opening replaces the document for every window, sender included.
     out.toAll.push_back(scene_.documentSyncJson().dump());
     pushDerivedAll(out);
     pushLibraryIfChanged(out, true);
+    out.toAll.push_back(settingsJson().dump());  // the recent maps changed
     out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true},
                                 {"path", scene_.currentPath()}, {"rev", scene_.revision()}}
                                .dump());
@@ -229,7 +251,11 @@ void Router::handleSave(const json& req, RouterOutput& out) {
     }
     out.toSender.push_back(
         json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"path", saved}}.dump());
+    const RecentMap first{pathToUtf8(scene_.assetsRoot()), saved};
+    const bool unchanged = !settings_.recentMaps.empty() && settings_.recentMaps.front() == first;
+    settings_.touchRecent(first.assetsRoot, first.path);
     persistSettings();
+    if (!unchanged) out.toAll.push_back(settingsJson().dump());  // the recent maps changed
     // "Save as" changes the current path; other windows should learn about it. (A plain save only
     // clears the dirty flag, which the saving Shell already knows.)
     if (saved != before) out.toOthers.push_back(scene_.documentSyncJson().dump());
@@ -411,6 +437,172 @@ void Router::handleSetAssetsRoot(const json& req, RouterOutput& out) {
     out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true},
                                 {"assetsRoot", pathToUtf8(scene_.assetsRoot())}, {"path", scene_.currentPath()}, {"persisted", persisted}}
                                .dump());
+}
+
+}  // namespace core
+
+// ---- settings window: native dialogs, editor settings, game profile, lighting.json, starting the game ------------------------------------
+namespace core {
+
+namespace {
+// `p` relative to `root` with '/' separators, or nullopt when it is not inside it.
+std::optional<std::string> insideRoot(const fs::path& root, const fs::path& p) {
+    std::error_code ec;
+    const fs::path base = fs::weakly_canonical(root, ec), full = fs::weakly_canonical(p, ec);
+    const fs::path rel = full.lexically_relative(base);
+    if (rel.empty() || rel == "." || *rel.begin() == "..") return std::nullopt;
+    const auto u = rel.generic_u8string();
+    return std::string(u.begin(), u.end());
+}
+
+bool writeJsonFile(const fs::path& file, const json& j) {
+    try {
+        fs::path tmp = file;
+        tmp += ".tmp";
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            if (!out) return false;
+            out << j.dump(2) << "\n";
+            if (!out) return false;
+        }
+        fs::rename(tmp, file);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+json readJsonFile(const fs::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return json::object();
+    try {
+        json j = json::parse(in);
+        return j.is_object() ? j : json::object();
+    } catch (const json::parse_error&) {
+        return json::object();
+    }
+}
+
+void replaceAll(std::string& s, const std::string& what, const std::string& with) {
+    for (size_t at = s.find(what); at != std::string::npos; at = s.find(what, at + with.size())) s.replace(at, what.size(), with);
+}
+}  // namespace
+
+std::string expandLaunchText(const std::string& text, const fs::path& gameRoot, const std::string& bsp) {
+    std::string s = text;
+    const fs::path rel = pathFromUtf8(bsp);
+    std::string name = pathToUtf8(rel.filename());
+    if (name.size() > 4 && name.substr(name.size() - 4) == ".bsp") name.resize(name.size() - 4);
+    replaceAll(s, "{mapname}", name);
+    replaceAll(s, "{map}", bsp);
+    replaceAll(s, "{bsp}", pathToUtf8((gameRoot / rel).make_preferred()));
+    replaceAll(s, "{game}", pathToUtf8(fs::path(gameRoot).make_preferred()));
+    return s;
+}
+
+void Router::handleNativeDialog(const json& req, RouterOutput& out) {
+    const json id = requestId(req);
+    if (!nativeDialogsAvailable()) {
+        out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", id}, {"ok", false}, {"unsupported", true}, {"error", "no native dialogs on this platform"}}.dump());
+        return;
+    }
+    NativeDialogRequest d;
+    const std::string kind = req.value("kind", std::string("open"));
+    d.kind = kind == "folder" ? NativeDialogRequest::Kind::Folder : kind == "save" ? NativeDialogRequest::Kind::Save : NativeDialogRequest::Kind::Open;
+    d.title = req.value("title", std::string());
+    d.fileName = req.value("fileName", std::string());
+    d.defaultExt = req.value("defaultExt", std::string());
+    if (req.contains("filters") && req["filters"].is_array())
+        for (const auto& f : req["filters"])
+            if (f.is_object() && f.value("name", json()).is_string() && f.value("pattern", json()).is_string())
+                d.filters.emplace_back(f["name"].get<std::string>(), f["pattern"].get<std::string>());
+    const bool relative = req.value("relative", false);
+    const fs::path root = scene_.assetsRoot();
+    const std::string start = req.value("startDir", std::string());
+    d.startDir = relative ? pathToUtf8((root / pathFromUtf8(start)).lexically_normal()) : start;
+    out.background.push_back([d, relative, root, id]() -> std::string {
+        const NativeDialogResult r = showNativeDialog(d);
+        json res{{"type", proto::kResponse}, {"requestId", id}, {"ok", r.error.empty()}};
+        if (!r.error.empty()) res["error"] = r.error;
+        if (r.cancelled) res["cancelled"] = true;
+        if (r.error.empty() && !r.cancelled) {
+            res["absolutePath"] = r.path;
+            if (!relative) res["path"] = r.path;
+            else if (auto rel = insideRoot(root, pathFromUtf8(r.path))) res["path"] = *rel;
+            else { res["ok"] = false; res["error"] = "choose a location inside the game folder (" + pathToUtf8(root) + ")"; }
+        }
+        return res.dump();
+    });
+}
+
+void Router::handleSetSettings(const json& req, RouterOutput& out) {
+    const std::string root = pathToUtf8(scene_.assetsRoot());
+    if (req.contains("game") && req["game"].is_object()) {
+        GameLaunch g = settings_.games.count(root) ? settings_.games[root] : GameLaunch{};
+        const json& j = req["game"];
+        if (j.contains("exe") && j["exe"].is_string()) g.exe = j["exe"].get<std::string>();
+        if (j.contains("args") && j["args"].is_string()) g.args = j["args"].get<std::string>();
+        if (j.contains("workingDir") && j["workingDir"].is_string()) g.workingDir = j["workingDir"].get<std::string>();
+        settings_.games[root] = g;
+    }
+    if (req.contains("editor") && req["editor"].is_object()) settings_.editor = req["editor"];
+    if (req.value("clearRecent", false)) std::erase_if(settings_.recentMaps, [&](const RecentMap& r) { return r.assetsRoot == root; });
+    const bool persisted = persistSettings();
+    out.toAll.push_back(settingsJson().dump());
+    out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"persisted", persisted}}.dump());
+}
+
+void Router::handleGameProfile(const json& req, RouterOutput& out) {
+    if (req["type"] == proto::kWriteGameProfile) {
+        if (!req.contains("profile") || !req["profile"].is_object()) { out.toSender.push_back(failedResponse(req, "write_game_profile needs a profile object")); return; }
+        const std::string err = writeProfileFile(scene_.assetsRoot(), req["profile"]);
+        if (!err.empty()) { out.toSender.push_back(failedResponse(req, err)); return; }
+        try {
+            scene_.reloadGameProfile();
+        } catch (const std::exception& e) {
+            out.toSender.push_back(failedResponse(req, e.what()));
+            return;
+        }
+        pushConfig(out);
+    }
+    out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true},
+                                {"file", readProfileFile(scene_.assetsRoot())}, {"profile", scene_.profile().toJson()}}.dump());
+}
+
+void Router::handleLightingConfig(const json& req, RouterOutput& out) {
+    if (lightingFile_.empty()) { out.toSender.push_back(failedResponse(req, "this Core has no lighting settings file")); return; }
+    json warning;
+    if (req["type"] == proto::kWriteLightingConfig) {
+        if (!req.contains("config") || !req["config"].is_object()) { out.toSender.push_back(failedResponse(req, "write_lighting_config needs a config object")); return; }
+        json merged = readJsonFile(lightingFile_);
+        for (const auto& [k, v] : req["config"].items()) merged[k] = v;
+        if (!writeJsonFile(lightingFile_, merged)) { out.toSender.push_back(failedResponse(req, "cannot write " + pathToUtf8(lightingFile_))); return; }
+        std::string w;
+        lightingOptions_ = LightingService::loadOptions(lightingFile_, &w);  // BSP exports use it from now on
+        if (!w.empty()) warning = w;
+    }
+    // what is in effect when the file is read (values clamped, missing keys at their defaults)
+    const json config = LightingService::optionsJson(LightingService::loadOptions(lightingFile_));
+    json res{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"config", config}, {"file", pathToUtf8(lightingFile_)},
+             {"defaults", LightingService::optionsJson(LightingService::Options{})}};
+    if (!warning.is_null()) res["warning"] = warning;
+    out.toSender.push_back(res.dump());
+}
+
+void Router::handleLaunchGame(const json& req, RouterOutput& out) {
+    const std::string root = pathToUtf8(scene_.assetsRoot());
+    const auto g = settings_.games.find(root);
+    if (g == settings_.games.end() || g->second.exe.empty()) { out.toSender.push_back(failedResponse(req, "no game executable is set (Settings > Game)")); return; }
+    const std::string map = req.value("map", std::string());
+    const fs::path rel = pathFromUtf8(map);
+    if (map.empty() || rel.is_absolute() || rel.has_root_name() || rel.lexically_normal().generic_string().rfind("..", 0) == 0) {
+        out.toSender.push_back(failedResponse(req, "launch_game needs a .bsp inside the game folder"));
+        return;
+    }
+    const std::string args = expandLaunchText(g->second.args, scene_.assetsRoot(), map), wd = expandLaunchText(g->second.workingDir, scene_.assetsRoot(), map);
+    const std::string err = launchProcess(g->second.exe, args, wd);
+    if (!err.empty()) { out.toSender.push_back(failedResponse(req, err)); return; }
+    out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"commandLine", g->second.exe + " " + args}}.dump());
 }
 
 }  // namespace core

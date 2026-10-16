@@ -3,7 +3,7 @@ rem ============================================================================
 rem  Starts the Core (backend) and the Shell dev server (frontend), then opens the editor.
 rem  Builds whatever is missing first. Close the two console windows to stop.
 rem  Usage: run.bat [assetsFolder] [initialMap]
-rem  With no arguments the Core uses the assets folder saved from the editor's Settings (the gear button;
+rem  With no arguments the Core uses the assets folder saved from the editor's Settings (File > Settings > General, Game folder;
 rem  stored in settings.json next to mapeditor_core.exe), else core\assets, and reopens the last map.
 rem ============================================================================
 setlocal

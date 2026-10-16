@@ -22,6 +22,15 @@ export interface EntityClassDef {
   description: string; keys: EntityKeyDef[]; flags: EntityFlagDef[]
 }
 export interface DirEntry { name: string; dir: boolean }
+/** How File > Play map starts the game (per game folder; see core/include/core/settings.h GameLaunch). */
+export interface GameLaunch { exe: string; args: string; workingDir: string }
+/** What Core keeps in settings.json for the Shell (the `settings` message). `editor` is the Shell's own preferences (state/editorPrefs.ts). */
+export interface CoreSettings {
+  assetsRoot: string; recentMaps: string[]; game: GameLaunch; editor: Record<string, unknown>
+  /** Core can show the operating system's file dialogs (native_dialog) */
+  nativeDialogs: boolean; settingsFile: string; lightingFile: string
+}
+export interface DialogFilter { name: string; pattern: string }
 export interface FolderEntry { name: string; path: string }
 /** rgba: base64 of little endian float16 x 4 per pixel (linear, as baked; alpha 0 = no value). */
 export interface LightmapTile { page: number; x: number; y: number; w: number; h: number; rgba: string }
@@ -41,7 +50,7 @@ export type Inbound =
   | { type: 'prefab_library'; prefabs: Library }
   | { type: 'profile'; profile: GameProfile }
   | { type: 'entity_defs'; classes: EntityClassDef[]; warnings: string[] }
-  | { type: 'settings'; assetsRoot: string }
+  | ({ type: 'settings' } & CoreSettings)
   | { type: 'lit_mesh'; rev: number; atlas: number; pageCount: number; triangleCount: number; /** the Core mirrors what we hold: only differing tiles follow and the pages stay */ keepPages?: boolean; vertices: string; faces?: LitFace[] }
   | { type: 'light_styles'; patterns: string[]; hz: number }
   | { type: 'lightvol'; rev: number; origin: [number, number, number]; cell: number; dims: [number, number, number]; probes: string; layers?: { s: number; probes: string }[] }
@@ -57,7 +66,13 @@ export type Inbound =
       // read_prefab
       doc?: MapDocument
       // set_assets_root
-      assetsRoot?: string; persisted?: boolean }
+      assetsRoot?: string; persisted?: boolean
+      // native_dialog
+      cancelled?: boolean; absolutePath?: string; unsupported?: boolean
+      // read/write_game_profile (file = as written), read/write_lighting_config
+      file?: unknown; profile?: GameProfile; config?: Record<string, number | boolean>; defaults?: Record<string, number | boolean>; warning?: string
+      // launch_game
+      commandLine?: string }
   | { type: 'error'; message: string }
   /** BSP export (REQUIREMENTS §25): progress about once a second, then the result. */
   | { type: 'export_progress'; stage: string; fraction: number }
@@ -138,7 +153,17 @@ export function parseInbound(text: string): Inbound | null {
       if (typeof m.enabled !== 'boolean' || typeof m.converged !== 'boolean' || !nums.every((k) => Number.isFinite(m[k]))) return null
       return { type: 'lighting_status', enabled: m.enabled, rev: m.rev, chunks: m.chunks, stale: m.stale, minPasses: m.minPasses, maxPasses: m.maxPasses, converged: m.converged, texels: m.texels, pages: m.pages, exposure: Number.isFinite(m.exposure) && m.exposure > 0 ? m.exposure : 1, brightness: Number.isFinite(m.brightness) ? m.brightness : 0, styles: Array.isArray(m.styles) ? m.styles.filter(Number.isInteger) : [0], styleWarnings: Array.isArray(m.styleWarnings) ? m.styleWarnings.filter((w: any) => typeof w === 'string') : [] }
     }
-    case 'settings': return typeof m.assetsRoot === 'string' ? m : null
+    case 'settings': {
+      if (typeof m.assetsRoot !== 'string') return null
+      const str = (v: any) => (typeof v === 'string' ? v : '')
+      const g = m.game && typeof m.game === 'object' ? m.game : {}
+      return {
+        type: 'settings', assetsRoot: m.assetsRoot, recentMaps: Array.isArray(m.recentMaps) ? m.recentMaps.filter((p: any) => typeof p === 'string') : [],
+        game: { exe: str(g.exe), args: typeof g.args === 'string' ? g.args : '+map {mapname}', workingDir: str(g.workingDir) },
+        editor: m.editor && typeof m.editor === 'object' && !Array.isArray(m.editor) ? m.editor : {},
+        nativeDialogs: m.nativeDialogs === true, settingsFile: str(m.settingsFile), lightingFile: str(m.lightingFile),
+      }
+    }
     case 'response': return typeof m.ok === 'boolean' ? m : null
     case 'error': return typeof m.message === 'string' ? m : null
     case 'export_progress': return typeof m.stage === 'string' && Number.isFinite(m.fraction) ? { type: 'export_progress', stage: m.stage, fraction: m.fraction } : null
@@ -174,4 +199,15 @@ export const msg = {
   exportBsp: (requestId: number, path: string, bake = true) => JSON.stringify({ type: 'export_bsp', requestId, path, bake }),
   exportCancel: (requestId: number) => JSON.stringify({ type: 'export_cancel', requestId }),
   saveDocument: (requestId: number, path?: string) => JSON.stringify({ type: 'save_document', requestId, ...(path ? { path } : {}) }),
+  /** The operating system's file / folder dialog, shown by Core; answered when the person closes it. relative: paths inside the assets root. */
+  nativeDialog: (requestId: number, o: { kind: 'folder' | 'open' | 'save'; title?: string; startDir?: string; fileName?: string; filters?: DialogFilter[]; defaultExt?: string; relative?: boolean }) =>
+    JSON.stringify({ type: 'native_dialog', requestId, ...o }),
+  setSettings: (requestId: number, o: { game?: Partial<GameLaunch>; editor?: Record<string, unknown>; clearRecent?: boolean }) => JSON.stringify({ type: 'set_settings', requestId, ...o }),
+  readGameProfile: (requestId: number) => JSON.stringify({ type: 'read_game_profile', requestId }),
+  /** Only the keys to change (null removes one); Core validates, writes game_profile.json and reloads it. */
+  writeGameProfile: (requestId: number, profile: Record<string, unknown>) => JSON.stringify({ type: 'write_game_profile', requestId, profile }),
+  readLightingConfig: (requestId: number) => JSON.stringify({ type: 'read_lighting_config', requestId }),
+  writeLightingConfig: (requestId: number, config: Record<string, number | boolean>) => JSON.stringify({ type: 'write_lighting_config', requestId, config }),
+  /** Starts the game set in Settings > Game with an exported map (assets relative .bsp). */
+  launchGame: (requestId: number, map: string) => JSON.stringify({ type: 'launch_game', requestId, map }),
 }

@@ -249,6 +249,14 @@ export class ViewportPanel implements IContentRenderer {
     return { x: r.left + ((nx + 1) / 2) * r.width, y: r.top + ((1 - ny) / 2) * r.height }
   }
 
+  /** Editor preferences (Settings > Editor) that arrived after this viewport was made replace its starting settings. */
+  applyDefaults(p: Partial<ViewportSettings>): void {
+    Object.assign(this.settings, p)
+    this.cams.fly.speed = this.settings.flySpeed
+    this.element.querySelector(':scope > .vp-header')?.replaceWith(this.buildHeader())
+    this.invalidate()
+  }
+
   frameAll(): void {
     const min: Vec3 = [Infinity, Infinity, Infinity], max: Vec3 = [-Infinity, -Infinity, -Infinity]
     let any = false

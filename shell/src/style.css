@@ -275,3 +275,35 @@ button.primary { background: var(--accent-bg); border-color: var(--accent); colo
 .ts-frame { display: grid; grid-template-columns: repeat(3, 100px); gap: 6px; margin: 8px 0; } .ts-slot { cursor: pointer; text-align: center; border: 1px solid #333; padding: 4px; border-radius: 4px; } .ts-slot:hover { border-color: #0a84e8; }
 .tile.sel { outline: 2px solid #ffd34d; }
 .gl-tabs { display: flex; gap: 4px; padding: 4px 6px 0; } .gl-tabs button.active { background: var(--accent, #0a84e8); color: #fff; }
+
+/* menus: submenus and the Play button */
+.menu-popup.sub { border-radius: var(--radius-lg); }
+.menu-popup .menu-item.sub-open { background: var(--bg3); }
+.menu-popup .menu-item.has-sub .menu-key { font-size: var(--fs); padding-left: 24px; }
+.toolbar .tb-play { color: var(--ok); }
+
+/* Settings: a preferences window (category list | page) with Cancel / Apply / OK */
+.modal.prefs-window { height: min(620px, 88vh); }
+.prefs-window .modal-body { flex: 1; min-height: 0; padding: 0; gap: 0; display: flex; flex-direction: column; }
+.prefs { flex: 1; min-height: 0; display: grid; grid-template-columns: 170px 1fr; }
+.prefs-nav { display: flex; flex-direction: column; gap: 1px; padding: var(--sp-3) 0; background: var(--bg1); border-right: 1px solid var(--line); overflow-y: auto; }
+.prefs-nav-item { transition: none; border: 0; border-radius: 0; background: transparent; text-align: left; padding: 0 var(--sp-5); min-height: 30px; color: var(--text); }
+.prefs-nav-item:hover:not(:disabled) { background: var(--bg3); border-color: transparent; }
+.prefs-nav-item.on, .prefs-nav-item.on:hover:not(:disabled) { background: var(--accent-bg); color: var(--text-strong); }
+.prefs-nav-item.dirty::after { content: ' •'; color: var(--warn); }
+.prefs-page { overflow-y: auto; padding: var(--sp-2) var(--sp-5) var(--sp-5); display: block; }
+.prefs-page > div { display: grid; gap: var(--sp-3); }
+.prefs-page .section { padding: 0; margin: var(--sp-5) 0 var(--sp-1); }
+.prefs-page .field { grid-template-columns: 180px 1fr; }
+.prefs-page .field.prop { grid-template-columns: 200px 1fr 24px; }
+.prefs-page textarea { width: 100%; resize: vertical; font-family: var(--mono); font-size: var(--fs-small); }
+.prefs-note { line-height: 1.45; }
+.prefs-info { display: grid; gap: 2px; padding: var(--sp-1) 0; user-select: text; word-break: break-all; }
+.pathrow { display: flex; gap: var(--sp-2); align-items: center; min-width: 0; } .pathrow input { flex: 1; min-width: 0; }
+.prefs-foot { padding: var(--sp-4) var(--sp-5); border-top: 1px solid var(--line2); background: var(--bg2); align-items: center; }
+.prefs-foot button { min-width: 76px; }
+.prefs-error { margin-right: auto; }
+
+/* while the system's file dialog (shown by Core) is open, the page waits like a window behind its dialog */
+.native-wait { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,.35); display: grid; place-items: center; cursor: wait; }
+.native-wait-box { padding: var(--sp-5) 20px; background: var(--bg2); border: 1px solid var(--line2); border-radius: var(--radius-lg); box-shadow: var(--shadow); display: grid; gap: var(--sp-2); text-align: center; }

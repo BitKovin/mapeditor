@@ -1023,7 +1023,7 @@ Every milestone ends with the full source zip. `NEXT_STEPS.md` says what to do n
 ### M2.6 — done
 - [x] **Camera:** free-fly is the default (RMB look, RMB+W/A/S/D/Q/E fly, Shift = 3x, RMB+wheel = speed, wheel = dolly,
       MMB pan); Orbit stays available per viewport (header dropdown); switching keeps the view
-- [x] **Assets root** is a persisted setting (`settings.json` next to the exe; `set_assets_root`; gear button → folder picker
+- [x] **Assets root** is a persisted setting (`settings.json` next to the exe; `set_assets_root`; File > Settings → the system's folder dialog (Core: native_dialog)
       via `browse_filesystem`, folders only). Reloads profile, entity definitions, prefab cache, re-opens the current map
 - [x] **Game profile** gained `entityDefinitions`, `mapRoot`, `prefabRoot` (all confined to the assets folder)
 - [x] **`.ent` parser** (`core/src/entdef.cpp`, tolerant tag scanner) → `entity_defs` message. Place tab lists the classes

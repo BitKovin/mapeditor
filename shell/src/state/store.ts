@@ -18,12 +18,13 @@ import { ShapeId, ShapeParams, defaultShapeParams } from '../model/shapes'
 import { expandPrefabs, Library, ResolvedEntity } from '../model/expand'
 import { Box, boxFromQuake } from '../model/entityBox'
 import { msg } from '../net/protocol'
-import type { EntityClassDef, GameProfile, Inbound } from '../net/protocol'
+import type { CoreSettings, EntityClassDef, GameProfile, Inbound } from '../net/protocol'
 import { LightmapStore } from '../render/lightmapStore'
 import { LightvolStore } from '../render/lightvolStore'
 import type { Status } from '../net/connection'
 import { texEnv } from '../model/texprops'
 import { progressMessage, resultMessage } from './exportStatus'
+import { editorPrefs } from './editorPrefs'
 
 const DEFAULT_BOX: Box = boxFromQuake(null)
 
@@ -106,6 +107,10 @@ export interface State {
   entityWarnings: string[]
   /** Absolute path of Core's assets folder. */
   assetsRoot: string
+  /** Core's settings.json as far as the Shell uses it (recent maps, game launch, editor preferences, native dialogs); null until Core sent it */
+  coreSettings: CoreSettings | null
+  /** The last BSP export's outcome (File > Play map waits for it) */
+  lastExport: { ok: boolean; cancelled: boolean; bsp: string; error: string } | null
 }
 export interface StoreConnection {
   submitDocument(doc: MapDocument): void
@@ -155,7 +160,7 @@ export class Store {
       problems: [], selection: null, multi: [], history: [{ label: 'Empty', doc }], historyIndex: 0, message: null,
       tool: 'select', editMode: 'object', activeTexture: 'dev/grey',
       uvLock: true, pipette: null, autoDetail: true, proportional: false, propRadius: 1, hidden: [], uvClipboard: null, exporting: null, texSteps: { ...DEFAULT_TEX_STEPS }, shape: 'box', shapeParams: defaultShapeParams(), decalParams: { width: 1, height: 1, depth: 0.5 }, meshMode: 'vertex', meshSel: emptySel(),
-      dirty: false, profile: null, entityDefs: [], entityWarnings: [], assetsRoot: '',
+      dirty: false, profile: null, entityDefs: [], entityWarnings: [], assetsRoot: '', coreSettings: null, lastExport: null,
     }
   }
 
@@ -428,7 +433,7 @@ export class Store {
       case 'lightmap_tiles': if (this.lightmap.applyTiles(m)) this.set({}); return
       case 'lighting_status': this.lightmap.applyStatus(m); if (!m.enabled) this.lightvol.clear(); this.set({}); return
       case 'export_progress': this.set({ exporting: { stage: m.stage, fraction: m.fraction }, message: progressMessage(m) }); return
-      case 'export_result': this.set({ exporting: null, message: resultMessage(m) }); return
+      case 'export_result': this.set({ exporting: null, message: resultMessage(m), lastExport: { ok: m.ok, cancelled: m.cancelled, bsp: m.bsp, error: m.error } }); return
       case 'derived_geometry':
         this.derived = { rev: m.rev, carved: m.carved, skipped: m.skipped, decals: m.decals }
         // it usually arrives just before the ack that carries the same revision; onAck fills the basis in then
@@ -445,9 +450,14 @@ export class Store {
         this.boxes = new Map(m.classes.map((c) => [c.name, boxFromQuake(c.box)] as [string, Box]))
         this.set({ entityDefs: m.classes, entityWarnings: m.warnings })
         return
-      case 'settings':
-        this.set({ assetsRoot: m.assetsRoot })
+      case 'settings': {
+        const { type: _t, ...coreSettings } = m
+        const first = this.state.coreSettings === null
+        const p = editorPrefs(coreSettings.editor)
+        // the editor preferences' defaults apply once, when Core first tells us them (later changes are the person's own toggles)
+        this.set({ assetsRoot: m.assetsRoot, coreSettings, ...(first ? { uvLock: p.uvLock, autoDetail: p.autoDetail } : {}) })
         return
+      }
       case 'error':
         this.set({ message: m.message })
         return

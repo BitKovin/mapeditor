@@ -4,7 +4,8 @@ import { h } from './dom'
 
 export interface Dialog { root: HTMLElement; body: HTMLElement; close(): void }
 
-export function openDialog(title: string, opts: { width?: number; onClose?: () => void; doc?: Document } = {}): Dialog {
+/** `keepOnBackdrop`: a click beside the dialog does not close it (windows with unapplied edits). */
+export function openDialog(title: string, opts: { width?: number; onClose?: () => void; doc?: Document; keepOnBackdrop?: boolean } = {}): Dialog {
   const doc = opts.doc ?? document
   const body = h('div', { class: 'modal-body' })
   const box = h('div', { class: 'modal', role: 'dialog', 'aria-label': title }, h('div', { class: 'modal-title' }, title), body)
@@ -23,7 +24,7 @@ export function openDialog(title: string, opts: { width?: number; onClose?: () =
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close() }
   }
   doc.addEventListener('keydown', onKey, true)
-  backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop) close() })
+  backdrop.addEventListener('mousedown', (e) => { if (e.target === backdrop && !opts.keepOnBackdrop) close() })
   doc.body.append(backdrop)
   return { root: backdrop, body, close }
 }

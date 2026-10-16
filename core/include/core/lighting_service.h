@@ -73,6 +73,8 @@ public:
     static Options loadOptions(const std::filesystem::path& file, std::string* warning = nullptr);
     // Writes the defaults to `file` unless it exists, so there is something to edit. False when it could not be written.
     static bool writeDefaultOptions(const std::filesystem::path& file);
+    // Every key of lighting.json with the values `o` stands for (what loadOptions reads back).
+    static nlohmann::json optionsJson(const Options& o);
     double tickBudgetSeconds() const { return opt_.tickBudgetSeconds; }
     explicit LightingService(Scene& scene, const Options& options = Options());
     ~LightingService();

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <thread>
 
 namespace fs = std::filesystem;
 
@@ -70,6 +71,7 @@ int main(int argc, char** argv) {
     if (!lightingWarning.empty()) std::cerr << lightingWarning << std::endl;
     std::cout << "lighting settings: " << core::pathToUtf8(lightingFile) << std::endl;
     core::Router router(scene, settingsFile, lightingOptions);
+    router.setLightingFile(lightingFile);
     router.lighting().setLog([](const std::string& line) { std::cout << line << std::endl; });
 
     // The server's callbacks need the server itself to send replies, but they
@@ -85,6 +87,12 @@ int main(int argc, char** argv) {
                 case To::All: serverPtr->broadcast(*msg.text); break;
             }
         }
+        // native dialogs wait for the person: off the server thread, the answer is handed back with post()
+        for (const auto& job : out.background)
+            std::thread([job, sessionId, server = serverPtr] {
+                std::string reply = job();
+                server->post([server, sessionId, reply = std::move(reply)] { server->sendTo(sessionId, reply); });
+            }).detach();
     };
 
     core::WsServer server(

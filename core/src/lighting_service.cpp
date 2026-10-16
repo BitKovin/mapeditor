@@ -89,6 +89,8 @@ LightingService::Options LightingService::loadOptions(const std::filesystem::pat
     return o;
 }
 
+json LightingService::optionsJson(const Options& o) { return optionsToJson(o); }
+
 bool LightingService::writeDefaultOptions(const std::filesystem::path& file) {
     std::error_code ec;
     if (std::filesystem::exists(file, ec)) return true;

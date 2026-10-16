@@ -39,16 +39,21 @@ static std::vector<std::string> classList(const json& j, const char* key) {
 }
 
 GameProfile loadProfile(const fs::path& assetsRoot) {
-    GameProfile p;
     std::ifstream in(assetsRoot / "game_profile.json", std::ios::binary);
-    if (!in) return p;
+    if (!in) return GameProfile{};
     json j;
     try {
         j = json::parse(in);
     } catch (const json::parse_error& e) {
         throw std::runtime_error(std::string("game_profile.json is not valid JSON: ") + e.what());
     }
+    return profileFromJson(j);
+}
+
+GameProfile profileFromJson(const json& j) {
+    GameProfile p;
     if (!j.is_object()) throw std::runtime_error("game_profile.json must be an object");
+    if (j.contains("name") && !j["name"].is_string()) throw std::runtime_error("game_profile.json: name must be a string");
     if (j.contains("name")) p.name = j["name"].get<std::string>();
     // Path-valued fields must stay inside the assets folder.
     auto insidePath = [&](const char* key, std::string& target) {
@@ -93,6 +98,48 @@ GameProfile loadProfile(const fs::path& assetsRoot) {
         p.bsp = j["bsp"];
     }
     return p;
+}
+
+json readProfileFile(const fs::path& assetsRoot) {
+    std::ifstream in(assetsRoot / "game_profile.json", std::ios::binary);
+    if (!in) return json::object();
+    try {
+        json j = json::parse(in);
+        return j.is_object() ? j : json::object();
+    } catch (const json::parse_error&) {
+        return json::object();
+    }
+}
+
+std::string writeProfileFile(const fs::path& assetsRoot, const json& changes) {
+    if (!changes.is_object()) return "the profile must be an object";
+    json merged = readProfileFile(assetsRoot);
+    for (const auto& [k, v] : changes.items()) {
+        // "lighting" is merged one level deep, so editing the class lists keeps the light styles written by hand
+        if (k == "lighting" && v.is_object() && merged.contains(k) && merged[k].is_object()) for (const auto& [lk, lv] : v.items()) merged[k][lk] = lv;
+        else if (v.is_null()) merged.erase(k);
+        else merged[k] = v;
+    }
+    try {
+        profileFromJson(merged);  // refuse what loadProfile would refuse: a broken file must never be written
+    } catch (const std::exception& e) {
+        return e.what();
+    }
+    try {
+        const fs::path file = assetsRoot / "game_profile.json";
+        fs::path tmp = file;
+        tmp += ".tmp";
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            if (!out) return "cannot write " + file.string();
+            out << merged.dump(2) << "\n";
+            if (!out) return "cannot write " + file.string();
+        }
+        fs::rename(tmp, file);
+    } catch (const std::exception& e) {
+        return e.what();
+    }
+    return {};
 }
 
 }  // namespace core
