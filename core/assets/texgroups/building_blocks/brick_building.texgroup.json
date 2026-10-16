@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "name": "Brick building",
+  "description": "Brick wall tiles: the ground row has one door and windows between plain brick, the rows above repeat plain brick with windows, and a darker brick row closes the top.",
+  "kit": {
+    "kind": "wall",
+    "bottom": {
+      "pieces": [
+        { "tex": "building_blocks/brick_wall_pt_5_door", "place": "once" },
+        { "tex": "building_blocks/brick_wall_pt_5", "weight": 3 },
+        { "tex": "building_blocks/brick_wall_pt_5_window", "weight": 1 }
+      ]
+    },
+    "middle": {
+      "pieces": [
+        { "tex": "building_blocks/brick_wall_pt_5", "weight": 3 },
+        { "tex": "building_blocks/brick_wall_pt_5_window", "weight": 1 }
+      ]
+    },
+    "top": { "pieces": [{ "tex": "building_blocks/brick_wall_pt_8" }] }
+  }
+}

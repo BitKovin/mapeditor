@@ -1,0 +1,9 @@
+* text=auto
+*.bat text eol=crlf
+*.sh text eol=lf
+*.png binary
+*.tga binary
+*.jpg binary
+*.zip binary
+# vendored third-party code: keep as-is, don't show in diffs/language stats
+core/vendored/** linguist-vendored -diff

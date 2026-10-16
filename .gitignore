@@ -1,0 +1,37 @@
+# ---- build output
+core/build/
+core/build_*/
+core/out/
+shell/dist/
+shell/node_modules/
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.pdb
+*.ilk
+
+# ---- test output
+shell/e2e/out/
+__pycache__/
+*.pyc
+
+# ---- editor / OS
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ---- local files
+*.tmp
+*.log
+.env
+.env.*
+core/assets/maps/smoke_out.map.json
+CMakeUserPresets.json

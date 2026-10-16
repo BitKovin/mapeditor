@@ -1,0 +1,6 @@
+# Shaders built into the Core. One per line:  name | source file | glslang --target-env | preprocessor defines (comma separated)
+# CMake compiles them with glslangValidator on every build when it is found (PATH, %VULKAN_SDK%\Bin, C:\VulkanSDK\*\Bin);
+# otherwise it uses the checked-in SPIR-V in src/prebuilt/core_shaders (regenerate with: python3 tools/compile_shaders.py).
+lightmap_direct|lightmap_direct.comp|vulkan1.1|
+lightmap_direct_rq|lightmap_direct.comp|vulkan1.2|RAY_QUERY
+lightmap_gather|lightmap_gather.comp|vulkan1.2|

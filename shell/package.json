@@ -1,0 +1,25 @@
+{
+  "name": "level-editor-shell",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "jsdom": "^30.1.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0",
+    "vite-plugin-singlefile": "^2.3.3",
+    "vitest": "^5.0.2"
+  },
+  "dependencies": {
+    "dockview-core": "^7.0.4",
+    "gl-matrix": "^3.4.4"
+  }
+}

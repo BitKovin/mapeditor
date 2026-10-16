@@ -1,0 +1,366 @@
+#version 460
+// Direct lighting of lightmap texels, one invocation per texel. MUST stay numerically equivalent to the CPU reference in
+// src/lightbake.cpp (evalLight, visibility, skyVisibility); tests compare them. Units: DESIGN.md §6.5.
+// Two variants are built from this file (shaders/manifest.txt): without defines = no shadows, -DRAY_QUERY = hardware ray
+// traced shadows through VK_KHR_ray_query.
+#ifdef RAY_QUERY
+#extension GL_EXT_ray_query : require
+#endif
+
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Positions { vec4 pos[]; };    // xyz world position
+layout(std430, set = 0, binding = 1) readonly buffer Normals   { vec4 nrm[]; };    // xyz unit normal
+layout(std430, set = 0, binding = 2) readonly buffer Lights    { vec4 lt[]; };     // 6 x vec4 per light, see below
+layout(std430, set = 0, binding = 3) writeonly buffer Result   { vec4 res[]; };    // rgb
+#ifdef RAY_QUERY
+layout(set = 0, binding = 4) uniform accelerationStructureEXT tlas;                // shadow casters, one opaque instance
+layout(std430, set = 0, binding = 5) writeonly buffer BounceResult { vec4 resB[]; };  // direct light weighted by each light's bounce power
+layout(std430, set = 0, binding = 6) readonly buffer TexelIndex { uint texelIndex[]; };  // atlas texel of each sample
+layout(std430, set = 0, binding = 7) writeonly buffer AtlasOut { vec4 atlas0[]; };      // bounce source S0 = Db (rgb) + valid (a), atlas layout
+layout(std430, set = 0, binding = 8) readonly buffer SubInfo { vec4 subd[]; };         // super sampling, 3 x vec4 per sample, see below
+layout(std430, set = 0, binding = 9) readonly buffer TriAlbedo { vec4 albedoMeta[]; };   // per triangle (transparency): (au0 av0 au1 av1) (au2 av2 texture lod) (winding normal)
+layout(std430, set = 0, binding = 10) readonly buffer AlphaWords { uint alphaWords[]; };  // OccluderMesh::alphaWords (transparency)
+#endif
+
+layout(push_constant) uniform PC {
+    uint base;          // first texel of this dispatch
+    uint count;         // total texels
+    uint lightCount;
+    uint areaSamples;   // shadow rays per texel for lights with a size
+    vec4 ambient;
+    uint skySamples;    // cosine-weighted rays per texel for an occluded sky light
+    float bias;         // shadow ray offset (kShadowBias)
+    float farDistance;  // ray length towards infinitely distant lights (kShadowFar)
+    uint gi;            // bit 0: also write the bounce source (resB, atlas0); bit 1: ray traced shadows enabled; bit 2: write resB only; bit 3: transparent surfaces exist
+    uint sampleOffset;  // first index of the random sequences (progressive refinement draws new samples every pass)
+    uint superSamples;  // sub-texel positions per texel (1 = off, at most 8); only with ray traced shadows (bit 1 of gi)
+    uint pad1, pad2;
+} pc;
+
+uint gOffset = 0u;  // this invocation's first index of the random sequences: pc.sampleOffset + the sample's own pass offset (nrm.w bits)
+
+const float PI = 3.14159265358979323846;
+const float MIN_DIST = 0.05;
+const uint LREC = 8u;  // vec4 per light record
+
+float window(float d, float r) {
+    float q = d / r;
+    float w = clamp(1.0 - q * q * q * q, 0.0, 1.0);
+    return w * w;
+}
+
+// light record layout (8 vec4):
+//   0: position.xyz, radius
+//   1: colour * brightness (rgb), type (0 point, 1 spot, 2 directional, 3 rect, 4 sky)
+//   2: forward.xyz, cos(inner)
+//   3: right.xyz,   cos(outer)
+//   4: up.xyz,      source size
+//   5: width, height, cast shadows, style
+//   6: bounce power, 0, 0, 0
+//   7: reserved
+
+// Super sampling (RAY_QUERY only): subd[3 * i + 0] = (texel centre on the chart plane, bits of a uint mask: bit k = sub position k lies inside
+// the fragment), subd[3 * i + 1] = world displacement per +1 texel in u, subd[3 * i + 2] = per +1 texel in v. Sub position k = centre +
+// u * SUB[k].x + v * SUB[k].y (texels). SUB MUST match kSuperOffsets in lightbake.h (the D3D 8x MSAA pattern).
+const vec2 SUB[8] = vec2[8](vec2(0.0625, -0.1875), vec2(-0.0625, 0.1875), vec2(0.3125, 0.0625), vec2(-0.1875, -0.3125),
+                            vec2(-0.3125, 0.3125), vec2(-0.4375, -0.0625), vec2(0.1875, 0.4375), vec2(0.4375, -0.4375));
+
+// Fraction of the receiver's cosine-weighted hemisphere covered by the rectangle (Arvo), see rectFormFactor() in lightbake.cpp.
+float rectFormFactor(uint k, vec3 p, vec3 n) {
+    vec3 pos = lt[k * LREC + 0u].xyz;
+    vec3 right = lt[k * LREC + 3u].xyz;
+    vec3 up = lt[k * LREC + 4u].xyz;
+    vec3 hr = right * (lt[k * LREC + 5u].x * 0.5);
+    vec3 hu = up * (lt[k * LREC + 5u].y * 0.5);
+    vec3 corner[4] = vec3[4](pos - hr - hu, pos + hr - hu, pos + hr + hu, pos - hr + hu);
+    vec3 poly[8];
+    int count = 0;
+    for (int i = 0; i < 4; ++i) {
+        vec3 a = corner[i] - p;
+        vec3 b = corner[(i + 1) % 4] - p;
+        float da = dot(n, a), db = dot(n, b);
+        if (da >= 0.0) poly[count++] = a;
+        if ((da >= 0.0) != (db >= 0.0)) poly[count++] = a + (b - a) * (da / (da - db));
+    }
+    if (count < 3) return 0.0;
+    float sum = 0.0;
+    for (int i = 0; i < count; ++i) {
+        vec3 a = poly[i];
+        vec3 b = poly[(i + 1) % count];
+        float la = length(a), lb = length(b);
+        if (la < 1e-12 || lb < 1e-12) continue;
+        vec3 c = cross(a, b);
+        float lc = length(c);
+        if (lc < 1e-12) continue;
+        float theta = acos(clamp(dot(a, b) / (la * lb), -1.0, 1.0));
+        sum += theta * dot(c, n) / lc;
+    }
+    return abs(sum) / (2.0 * PI);
+}
+
+// Unshadowed irradiance (pi absorbed) from light k.
+vec3 evalLight(uint k, vec3 p, vec3 n) {
+    vec4 a = lt[k * LREC + 0u];
+    vec4 b = lt[k * LREC + 1u];
+    int type = int(b.w + 0.5);
+    if (type == 0 || type == 1) {  // point, spot
+        vec3 d = a.xyz - p;
+        float dist = length(d);
+        if (dist >= a.w) return vec3(0.0);
+        vec3 l = dist > 1e-9 ? d / dist : n;
+        float cosT = max(0.0, dot(n, l));
+        float dd = max(dist, MIN_DIST);
+        float s = window(dist, a.w) / (dd * dd) * cosT;
+        if (type == 1) {
+            vec4 f = lt[k * LREC + 2u];   // forward.xyz, cos(inner)
+            float cosOuter = lt[k * LREC + 3u].w;
+            float t = clamp((dot(f.xyz, -l) - cosOuter) / (f.w - cosOuter), 0.0, 1.0);
+            s *= t * t;
+        }
+        return b.rgb * s;
+    }
+    if (type == 2) {  // directional
+        return b.rgb * max(0.0, dot(n, -lt[k * LREC + 2u].xyz));
+    }
+    if (type == 3) {  // rect
+        vec3 d = a.xyz - p;
+        float dist = length(d);
+        if (dist >= a.w || dot(p - a.xyz, lt[k * LREC + 2u].xyz) <= 0.0) return vec3(0.0);
+        return b.rgb * (rectFormFactor(k, p, n) * window(dist, a.w));
+    }
+    if (type == 4) {  // sky
+        return b.rgb * ((1.0 + n.y) * 0.5);
+    }
+    return vec3(0.0);
+}
+
+// Bounce source near-field clamp: same as bounceNearFactor() in lightbake.cpp (kBounceNearDistance = 1 m).
+const float BOUNCE_NEAR = 1.0;
+float bounceNearFactor(uint k, vec3 p) {
+    int type = int(lt[k * LREC + 1u].w + 0.5);
+    if (type != 0 && type != 1) return 1.0;
+    float dist = length(lt[k * LREC + 0u].xyz - p);
+    float dd = max(dist, MIN_DIST), db = max(dist, BOUNCE_NEAR);
+    return (dd * dd) / (db * db);
+}
+
+#ifdef RAY_QUERY
+// ---- shadows ---------------------------------------------------------------------------------------------------------------
+uint pcg(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// two numbers in [0,1) for (texel, light, sample): per-texel random offset + R2 sequence (same code as sample2() on the CPU)
+vec2 sample2(uint texel, uint light, uint s) {
+    uint h = pcg(texel + pcg(light * 7919u + 12345u));
+    float u0 = float(h >> 8) * (1.0 / 16777216.0);
+    float v0 = float(pcg(h) >> 8) * (1.0 / 16777216.0);
+    return fract(vec2(u0, v0) + float(s) * vec2(0.7548776662, 0.5698402909));
+}
+
+void frameOf(vec3 n, out vec3 t, out vec3 b) {
+    t = abs(n.y) < 0.99 ? normalize(cross(n, vec3(0.0, 1.0, 0.0))) : vec3(1.0, 0.0, 0.0);
+    b = cross(n, t);
+}
+
+
+// ---- transparency (REQUIREMENTS §23). MUST equal surfaceAt() in src/raytrace.cpp ----------------------------------------------
+float srgbChannel(uint v) { float c = float(v) / 255.0; return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
+// -1 = hole (the ray passes), 0 = solid, 1 = translucent (the ray passes, light times `transmit`) for triangle `tri` hit at barycentrics `bc`
+int surfaceAt(uint tri, vec2 bc, out vec3 transmit) {
+    transmit = vec3(1.0);
+    vec4 a0 = albedoMeta[tri * 3u], a1 = albedoMeta[tri * 3u + 1u];
+    int id = int(floor(a1.z + 0.5));
+    if (id < 0) return 0;
+    uint h = uint(id) * 8u;
+    uint mode = alphaWords[h + 3u];
+    if (mode == 0u) return 0;
+    float w0 = 1.0 - bc.x - bc.y;
+    vec2 uv = w0 * a0.xy + bc.x * a0.zw + bc.y * a1.xy;
+    int w = int(alphaWords[h + 1u]), hh = int(alphaWords[h + 2u]);
+    int x = min(w - 1, int(fract(uv.x) * float(w))), y = min(hh - 1, int(fract(uv.y) * float(hh)));
+    uint px = alphaWords[alphaWords[h] + uint(y * w + x)];
+    float a = float(px >> 24) / 255.0;
+    if (mode == 1u) return a < uintBitsToFloat(alphaWords[h + 4u]) ? -1 : 0;
+    vec3 c = vec3(srgbChannel(px & 255u), srgbChannel((px >> 8) & 255u), srgbChannel((px >> 16) & 255u));
+    transmit = mix(vec3(1.0), c, uintBitsToFloat(alphaWords[h + 6u])) * (1.0 - uintBitsToFloat(alphaWords[h + 5u]) * a);
+    return 1;
+}
+
+// Light that gets through along the segment o + t * d, t in [0, tmax] (double sided): 0 behind an opaque surface, else the product of the
+// translucent layers' transmission (holes of cutout textures pass). MUST equal TriangleBvh::transmittance.
+vec3 transmit(vec3 o, vec3 d, float tmax) {
+    rayQueryEXT rq;
+    if ((pc.gi & 8u) == 0u) {  // no transparency in the scene: the geometry is opaque, the first hit ends it
+        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF, o, 0.0, d, tmax);
+        while (rayQueryProceedEXT(rq)) {}
+        return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? vec3(0.0) : vec3(1.0);
+    }
+    vec3 T = vec3(1.0);
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFF, o, 0.0, d, tmax);
+    while (rayQueryProceedEXT(rq)) {
+        if (rayQueryGetIntersectionTypeEXT(rq, false) != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+        vec3 tm;
+        int s = surfaceAt(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false), rayQueryGetIntersectionBarycentricsEXT(rq, false), tm);
+        if (s < 0) continue;
+        if (s == 1) {
+            // a translucent pane is a closed brush: dim the light where it enters (front side), not again where it leaves
+            if (dot(d, albedoMeta[rayQueryGetIntersectionPrimitiveIndexEXT(rq, false) * 3u + 2u].xyz) >= 0.0) continue;
+            T *= tm;
+            if (max(T.x, max(T.y, T.z)) >= 1e-3) continue;
+        }
+        rayQueryConfirmIntersectionEXT(rq);
+        rayQueryTerminateEXT(rq);
+    }
+    return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? vec3(0.0) : T;
+}
+
+vec3 blocked(vec3 o, vec3 target) {
+    vec3 d = target - o;
+    float dist = length(d);
+    if (dist <= pc.bias) return vec3(1.0);
+    return transmit(o, d / dist, dist - pc.bias);
+}
+
+// Light of light k that reaches o (surface point lifted along the normal), per channel. Not for sky lights.
+vec3 visibility(uint k, uint texel, vec3 o) {
+    vec4 a = lt[k * LREC + 0u];
+    int type = int(lt[k * LREC + 1u].w + 0.5);
+    float size = lt[k * LREC + 4u].w;
+    int n = int(max(1u, pc.areaSamples));
+    vec3 open = vec3(0.0);
+    int total = 1;
+    if (type == 0 || type == 1) {
+        if (size <= 0.0) {
+            open = blocked(o, a.xyz);
+        } else {
+            total = n;
+            vec3 l = normalize(a.xyz - o);
+            vec3 t, b;
+            frameOf(l, t, b);
+            for (int i = 0; i < n; ++i) {
+                vec2 uv = sample2(texel, k, uint(i) + gOffset);
+                float phi = 2.0 * PI * uv.y;
+                float r = size * sqrt(uv.x);
+                open += blocked(o, a.xyz + t * (cos(phi) * r) + b * (sin(phi) * r));
+            }
+        }
+    } else if (type == 2) {
+        vec3 toLight = -lt[k * LREC + 2u].xyz;
+        if (size <= 0.0) {
+            open = transmit(o, toLight, pc.farDistance);
+        } else {
+            total = n;
+            vec3 t, b;
+            frameOf(toLight, t, b);
+            float tanHalf = tan(radians(size * 0.5));
+            for (int i = 0; i < n; ++i) {
+                vec2 uv = sample2(texel, k, uint(i) + gOffset);
+                float phi = 2.0 * PI * uv.y;
+                float r = tanHalf * sqrt(uv.x);
+                vec3 dir = normalize(toLight + t * (cos(phi) * r) + b * (sin(phi) * r));
+                open += transmit(o, dir, pc.farDistance);
+            }
+        }
+    } else if (type == 3) {
+        total = n;
+        vec3 right = lt[k * LREC + 3u].xyz;
+        vec3 up = lt[k * LREC + 4u].xyz;
+        float w = lt[k * LREC + 5u].x, h = lt[k * LREC + 5u].y;
+        for (int i = 0; i < n; ++i) {
+            vec2 uv = sample2(texel, k, uint(i) + gOffset);
+            open += blocked(o, a.xyz + right * ((uv.x - 0.5) * w) + up * ((uv.y - 0.5) * h));
+        }
+    }
+    return open / float(total);
+}
+
+// Sky with occlusion: cosine-weighted rays around the normal; only upward rays that escape count.
+vec3 skyVisibility(uint k, uint texel, vec3 o, vec3 n) {
+    vec3 t, b;
+    frameOf(n, t, b);
+    int total = int(max(1u, pc.skySamples));
+    vec3 open = vec3(0.0);
+    for (int i = 0; i < total; ++i) {
+        vec2 uv = sample2(texel, k, uint(i) + gOffset);
+        float r = sqrt(uv.x), phi = 2.0 * PI * uv.y;
+        vec3 dir = t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - uv.x));
+        if (dir.y > 0.0) open += transmit(o, dir, pc.farDistance);
+    }
+    return open / float(total);
+}
+#endif
+
+// Adds the light of every light source at point p (normal n, random id `seed`) to sum, and its bounce-weighted share to sumB.
+void shade(vec3 p, vec3 n, uint seed, inout vec3 sum, inout vec3 sumB) {
+#ifdef RAY_QUERY
+    vec3 o = p + n * pc.bias;
+#endif
+    for (uint k = 0u; k < pc.lightCount; ++k) {
+        vec3 v;
+#ifdef RAY_QUERY
+        if ((pc.gi & 2u) != 0u && lt[k * LREC + 5u].z > 0.5) {  // shadows enabled and this light casts them
+            if (int(lt[k * LREC + 1u].w + 0.5) == 4) {
+                v = lt[k * LREC + 1u].rgb * skyVisibility(k, seed, o, n);
+            } else {
+                v = evalLight(k, p, n);
+                if (v.x > 0.0 || v.y > 0.0 || v.z > 0.0) v *= visibility(k, seed, o);
+            }
+        } else {
+            v = evalLight(k, p, n);
+        }
+#else
+        v = evalLight(k, p, n);
+#endif
+        sum += v;
+        sumB += v * (lt[k * LREC + 6u].x * bounceNearFactor(k, p));
+    }
+}
+
+void main() {
+    uint i = pc.base + gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+    gOffset = pc.sampleOffset + floatBitsToUint(nrm[i].w);
+    uint seed = floatBitsToUint(pos[i].w);  // the host stores each sample's random-number id in the bits of pos.w (TexelSamples::seedOf)
+    vec3 p = pos[i].xyz;
+    vec3 n = nrm[i].xyz;
+    vec3 sum = pc.ambient.rgb;
+    vec3 sumB = vec3(0.0);
+    uint mask = 0u;
+#ifdef RAY_QUERY
+    if ((pc.gi & 2u) != 0u && pc.superSamples > 1u)
+        mask = floatBitsToUint(subd[3u * i].w) & ((1u << min(pc.superSamples, 8u)) - 1u);
+#endif
+    if (mask != 0u) {
+        // super sampled: every light at each valid sub position (own random numbers: seed * 8 + k), averaged; ambient added once
+#ifdef RAY_QUERY
+        vec3 centre = subd[3u * i].xyz;
+        vec3 du = subd[3u * i + 1u].xyz;
+        vec3 dv = subd[3u * i + 2u].xyz;
+        vec3 acc = vec3(0.0);
+        vec3 accB = vec3(0.0);
+        uint cnt = 0u;
+        for (uint k = 0u; k < 8u; ++k) {
+            if ((mask & (1u << k)) == 0u) continue;
+            shade(centre + du * SUB[k].x + dv * SUB[k].y, n, seed * 8u + k, acc, accB);
+            ++cnt;
+        }
+        sum = pc.ambient.rgb + acc / float(cnt);
+        sumB = accB / float(cnt);
+#endif
+    } else {
+        shade(p, n, seed, sum, sumB);
+    }
+    res[i] = vec4(sum, 0.0);
+#ifdef RAY_QUERY
+    if ((pc.gi & 1u) != 0u) {
+        resB[i] = vec4(sumB, 0.0);
+        atlas0[texelIndex[i]] = vec4(sumB, 1.0);
+    } else if ((pc.gi & 4u) != 0u) {  // only the bounce-weighted direct light is wanted (live baker): no atlas
+        resB[i] = vec4(sumB, 0.0);
+    }
+#endif
+}

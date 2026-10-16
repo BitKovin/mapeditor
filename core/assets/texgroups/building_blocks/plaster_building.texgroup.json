@@ -1,0 +1,40 @@
+{
+  "format": 1,
+  "name": "Plaster building",
+  "description": "Plaster wall with a grimy ground row (bottom_*) and clean rows above (top_*). Plain tiles are common, windows and framed windows come now and then; a window of one style only sits on a window of the same style (Lines up with), so the frames line up between rows.",
+  "kit": {
+    "kind": "wall",
+    "bottom": {
+      "pieces": [
+        {
+          "tex": "building_blocks/building_pt_1_bottom_wall_1",
+          "weight": 3
+        },
+        {
+          "tex": "building_blocks/building_pt_1_bottom_window_1",
+          "match": "window 1"
+        },
+        {
+          "tex": "building_blocks/building_pt_1_bottom_window_2",
+          "match": "window 2"
+        }
+      ]
+    },
+    "middle": {
+      "pieces": [
+        {
+          "tex": "building_blocks/building_pt_1_top_wall_1",
+          "weight": 3
+        },
+        {
+          "tex": "building_blocks/building_pt_1_top_window_1",
+          "match": "window 1"
+        },
+        {
+          "tex": "building_blocks/building_pt_1_top_window_2",
+          "match": "window 2"
+        }
+      ]
+    }
+  }
+}

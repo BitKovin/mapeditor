@@ -1,0 +1,104 @@
+{
+  "format": 1,
+  "name": "Bordered floor",
+  "description": "A ring of trim around the edge and tiles of three kinds inside. Useful on floors, ceilings and rugs.",
+  "params": {
+    "border": {
+      "type": "number",
+      "default": 0.3,
+      "min": 0.05,
+      "max": 1,
+      "step": 0.05,
+      "label": "Border (m)"
+    },
+    "tile": {
+      "type": "number",
+      "default": 1,
+      "min": 0.25,
+      "max": 3,
+      "step": 0.25,
+      "label": "Tile (m)"
+    }
+  },
+  "slots": {
+    "tile": "dev/floor",
+    "tileB": "dev/concrete",
+    "tileC": "dev/grey",
+    "border": "dev/wood"
+  },
+  "fallback": "tile",
+  "rules": {
+    "tiles": {
+      "split": "v",
+      "parts": [
+        {
+          "size": "*",
+          "repeat": {
+            "size": {
+              "param": "tile"
+            },
+            "as": "r"
+          },
+          "split": "u",
+          "parts": [
+            {
+              "size": "*",
+              "repeat": {
+                "size": {
+                  "param": "tile"
+                },
+                "as": "c"
+              },
+              "choice": [
+                "tile",
+                "tile",
+                "tileB",
+                "tileC"
+              ],
+              "mode": "random"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "root": {
+    "split": "v",
+    "parts": [
+      {
+        "size": {
+          "param": "border"
+        },
+        "tex": "border"
+      },
+      {
+        "size": "*",
+        "split": "u",
+        "parts": [
+          {
+            "size": {
+              "param": "border"
+            },
+            "tex": "border"
+          },
+          {
+            "size": "*",
+            "ref": "tiles"
+          },
+          {
+            "size": {
+              "param": "border"
+            },
+            "tex": "border"
+          }
+        ]
+      },
+      {
+        "size": {
+          "param": "border"
+        },
+        "tex": "border"
+      }
+    ]
+  }
+}

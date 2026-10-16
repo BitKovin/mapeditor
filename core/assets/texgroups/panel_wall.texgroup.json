@@ -1,0 +1,76 @@
+{
+  "format": 1,
+  "name": "Panel wall",
+  "description": "Bottom and top trim with panels between. Panels vary by seed; every fourth bay has a vent.",
+  "params": {
+    "panelWidth": {
+      "type": "number",
+      "default": 1.5,
+      "min": 0.5,
+      "max": 4,
+      "step": 0.1,
+      "label": "Panel width (m)"
+    }
+  },
+  "slots": {
+    "panel": "dev/metal",
+    "panelB": "dev/concrete",
+    "vent": "dev/grey",
+    "trim": "dev/wall"
+  },
+  "fallback": "panel",
+  "root": {
+    "split": "v",
+    "parts": [
+      {
+        "size": 0.3,
+        "tex": "trim",
+        "fit": "height"
+      },
+      {
+        "size": "*",
+        "split": "u",
+        "parts": [
+          {
+            "size": "*",
+            "repeat": {
+              "size": {
+                "param": "panelWidth"
+              },
+              "as": "p"
+            },
+            "choice": [
+              {
+                "when": {
+                  "var": "p.index",
+                  "mod": [
+                    4,
+                    3
+                  ]
+                },
+                "tex": "vent",
+                "fit": "stretch"
+              },
+              {
+                "tex": "panel",
+                "fit": "stretch",
+                "weight": 3
+              },
+              {
+                "tex": "panelB",
+                "fit": "stretch",
+                "weight": 1
+              }
+            ],
+            "mode": "random"
+          }
+        ]
+      },
+      {
+        "size": 0.2,
+        "tex": "trim",
+        "fit": "height"
+      }
+    ]
+  }
+}

@@ -1,0 +1,161 @@
+#version 460
+// One diffuse bounce, one invocation per lightmap texel (REQUIREMENTS §18 step 5, DESIGN §6.5).
+//   I(p) = mean over cosine-weighted rays of  albedo * window(hit distance, farDistance = bounce range) * S(hit)       S = bounce-weighted direct light + previous indirect
+// The hit is looked up in the lightmap atlas (bilinear, invalid texels weigh 0) through the hit triangle's lightmap coordinates.
+// Albedo: with flag bit 1 the hit surface's colour is its texture at the hit point (the face's albedo uv, interpolated like the lightmap coordinates).
+// The textures are ONE array of sampled images ("bindless": binding 11) indexed with the id stored in the triangle's record (binding 9); the level of detail is
+// precomputed per triangle (one lightmap texel's footprint on the texture), so CPU and GPU sample the same level.
+// MUST stay equivalent to evaluateGiCpu() in src/lightbake.cpp; the sampler helpers are copies of lightmap_direct.comp's.
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Positions   { vec4 pos[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Normals     { vec4 nrm[]; };
+layout(std430, set = 0, binding = 2) readonly buffer BounceDirect { vec4 db[]; };     // direct light weighted by bounce power
+layout(std430, set = 0, binding = 3) readonly buffer TexelIndex  { uint texelIndex[]; };
+layout(std430, set = 0, binding = 4) readonly buffer AtlasIn     { vec4 atlasIn[]; };  // S (rgb) + valid (a), pages * atlas * atlas
+layout(std430, set = 0, binding = 5) writeonly buffer AtlasOut   { vec4 atlasOut[]; };
+layout(std430, set = 0, binding = 6) writeonly buffer Indirect   { vec4 ind[]; };      // I for this bounce, per sample
+layout(std430, set = 0, binding = 7) readonly buffer TriMeta     { vec4 meta[]; };     // per triangle: (u0 v0 u1 v1) (u2 v2 page valid)
+layout(set = 0, binding = 8) uniform accelerationStructureEXT tlas;
+layout(std430, set = 0, binding = 9) readonly buffer TriAlbedo   { vec4 albedoMeta[]; };  // per triangle: (au0 av0 au1 av1) (au2 av2 texture lod); texture < 0: white
+layout(set = 0, binding = 10) uniform sampler albedoSampler;
+layout(std430, set = 0, binding = 11) readonly buffer AlphaWords { uint alphaWords[]; };  // OccluderMesh::alphaWords (transparency, flag bit 2)
+layout(set = 0, binding = 12) uniform texture2D albedoTex[];  // the variable sized array must be the last binding
+
+layout(push_constant) uniform PC {
+    uint base;
+    uint count;
+    uint giSamples;
+    uint atlas;         // atlas size in texels of the samples (the lattice of gather directions); finer than the bounce atlas on the fine GI grid
+    float albedo;
+    float bias;
+    float farDistance;
+    uint sampleOffset;  // first index of the random sequence (progressive refinement)
+    uint sAtlas;        // atlas size in texels of the bounce source S (atlasIn / atlasOut)
+    uint flags;         // bit 0: do not write atlasOut (the fine GI grid has no texel of its own in S); bit 1: textured albedo; bit 2: transparent surfaces exist
+} pc;
+
+const float PI = 3.14159265358979323846;
+
+// Gather directions: R2 sequence with a per-texel hashed start (sampleGi() in lightbake.cpp; a lattice start correlated the errors along rows).
+uint pcg(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+vec2 sampleGi(uint atlasTexel, uint s) {
+    uint h = pcg(atlasTexel * 2654435761u + 977u);
+    float u0 = float(h >> 8) * (1.0 / 16777216.0);
+    float v0 = float(pcg(h) >> 8) * (1.0 / 16777216.0);
+    return fract(vec2(u0, v0) + float(s) * vec2(0.7548776662, 0.5698402909));
+}
+void frameOf(vec3 n, out vec3 t, out vec3 b) {
+    t = abs(n.y) < 0.99 ? normalize(cross(n, vec3(0.0, 1.0, 0.0))) : vec3(1.0, 0.0, 0.0);
+    b = cross(n, t);
+}
+
+
+// ---- transparency (REQUIREMENTS §23). MUST equal surfaceAt() in src/raytrace.cpp ----------------------------------------------
+float srgbChannel(uint v) { float c = float(v) / 255.0; return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
+// -1 = hole (the ray passes), 0 = solid, 1 = translucent (the ray passes, light times `transmit`) for triangle `tri` hit at barycentrics `bc`
+int surfaceAt(uint tri, vec2 bc, out vec3 transmit) {
+    transmit = vec3(1.0);
+    vec4 a0 = albedoMeta[tri * 2u], a1 = albedoMeta[tri * 2u + 1u];
+    int id = int(floor(a1.z + 0.5));
+    if (id < 0) return 0;
+    uint h = uint(id) * 8u;
+    uint mode = alphaWords[h + 3u];
+    if (mode == 0u) return 0;
+    float w0 = 1.0 - bc.x - bc.y;
+    vec2 uv = w0 * a0.xy + bc.x * a0.zw + bc.y * a1.xy;
+    int w = int(alphaWords[h + 1u]), hh = int(alphaWords[h + 2u]);
+    int x = min(w - 1, int(fract(uv.x) * float(w))), y = min(hh - 1, int(fract(uv.y) * float(hh)));
+    uint px = alphaWords[alphaWords[h] + uint(y * w + x)];
+    float a = float(px >> 24) / 255.0;
+    if (mode == 1u) return a < uintBitsToFloat(alphaWords[h + 4u]) ? -1 : 0;
+    vec3 c = vec3(srgbChannel(px & 255u), srgbChannel((px >> 8) & 255u), srgbChannel((px >> 16) & 255u));
+    transmit = mix(vec3(1.0), c, uintBitsToFloat(alphaWords[h + 6u])) * (1.0 - uintBitsToFloat(alphaWords[h + 5u]) * a);
+    return 1;
+}
+
+float window(float d, float r) {
+    float q = d / r;
+    float w = clamp(1.0 - q * q * q * q, 0.0, 1.0);
+    return w * w;
+}
+
+// bilinear lookup; returns false when no valid texel is near
+bool atlasSample(int page, vec2 uv, out vec3 result) {
+    vec2 xy = uv - 0.5;
+    ivec2 i0 = ivec2(floor(xy));
+    vec2 f = xy - vec2(i0);
+    float wsum = 0.0;
+    vec3 acc = vec3(0.0);
+    int a = int(pc.sAtlas);
+    for (int dy = 0; dy < 2; ++dy)
+        for (int dx = 0; dx < 2; ++dx) {
+            ivec2 t = clamp(i0 + ivec2(dx, dy), ivec2(0), ivec2(a - 1));
+            vec4 c = atlasIn[(uint(page) * pc.sAtlas + uint(t.y)) * pc.sAtlas + uint(t.x)];
+            float w = (dx == 1 ? f.x : 1.0 - f.x) * (dy == 1 ? f.y : 1.0 - f.y) * c.a;
+            if (w <= 0.0) continue;
+            acc += c.rgb * w;
+            wsum += w;
+        }
+    result = acc / max(wsum, 1e-9);
+    return wsum > 1e-9;
+}
+
+void main() {
+    uint i = pc.base + gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+    vec3 p = pos[i].xyz;
+    vec3 n = nrm[i].xyz;
+    vec3 o = p + n * pc.bias;
+    vec3 t, b;
+    frameOf(n, t, b);
+    int total = int(max(1u, pc.giSamples));
+    vec3 acc = vec3(0.0);
+    for (int k = 0; k < total; ++k) {
+        vec2 uv = sampleGi(texelIndex[i], uint(k) + pc.sampleOffset);
+        float r = sqrt(uv.x), phi = 2.0 * PI * uv.y;
+        vec3 dir = t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - uv.x));
+        rayQueryEXT rq;
+        if ((pc.flags & 4u) == 0u) {
+            rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFF, o, 0.0, dir, pc.farDistance);
+            while (rayQueryProceedEXT(rq)) {}
+        } else {  // holes of cutout textures let the gather ray through; translucent surfaces count as surfaces
+            rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFF, o, 0.0, dir, pc.farDistance);
+            while (rayQueryProceedEXT(rq)) {
+                if (rayQueryGetIntersectionTypeEXT(rq, false) != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+                vec3 tm;
+                if (surfaceAt(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false), rayQueryGetIntersectionBarycentricsEXT(rq, false), tm) >= 0) rayQueryConfirmIntersectionEXT(rq);
+            }
+        }
+        if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) continue;
+        uint tri = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+        vec2 bc = rayQueryGetIntersectionBarycentricsEXT(rq, true);  // weights of vertices 1 and 2
+        vec4 m0 = meta[tri * 2u], m1 = meta[tri * 2u + 1u];
+        if (m1.w < 0.5) continue;  // shadow caster without a lightmap absorbs
+        float w0 = 1.0 - bc.x - bc.y;
+        vec2 huv = w0 * m0.xy + bc.x * m0.zw + bc.y * m1.xy;
+        vec3 radiance;
+        if (atlasSample(int(m1.z + 0.5), huv, radiance)) {
+            vec3 colour = vec3(1.0);
+            if ((pc.flags & 2u) != 0u) {
+                vec4 a0 = albedoMeta[tri * 2u], a1 = albedoMeta[tri * 2u + 1u];
+                int tex = int(floor(a1.z + 0.5));
+                if (tex >= 0) {
+                    vec2 auv = w0 * a0.xy + bc.x * a0.zw + bc.y * a1.xy;
+                    colour = textureLod(sampler2D(albedoTex[nonuniformEXT(tex)], albedoSampler), auv, a1.w).rgb;
+                }
+            }
+            acc += radiance * colour * (pc.albedo * window(rayQueryGetIntersectionTEXT(rq, true), pc.farDistance));
+        }
+    }
+    vec3 indirect = acc / float(total);
+    ind[i] = vec4(indirect, 0.0);
+    if ((pc.flags & 1u) == 0u) atlasOut[texelIndex[i]] = vec4(db[i].rgb + indirect, 1.0);
+}

@@ -1,0 +1,12 @@
+{
+  "format": 1,
+  "name": "Frame (9-slice) example",
+  "description": "Nine textures: metal corners, wood edges and a floor middle. The corners keep their size; the edges and the middle repeat instead of stretching. Swap the textures for your own.",
+  "kit": {
+    "kind": "frame",
+    "tile": [1, 1],
+    "tl": "dev/metal", "t": "dev/wood", "tr": "dev/metal",
+    "l": "dev/wood", "c": "dev/floor", "r": "dev/wood",
+    "bl": "dev/metal", "b": "dev/wood", "br": "dev/metal"
+  }
+}

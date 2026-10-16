@@ -1,0 +1,178 @@
+<?xml version="1.0"?>
+<!--
+  Demo entity definitions in the GtkRadiant / NetRadiant .ent dialect (Quake 3).
+  This is a small stand-in, written from the format description: replace it with your game's real
+  entities.ent (game_profile.json -> "entityDefinitions" says which file is read).
+  Colours are 0..1 RGB, boxes are "minx miny minz maxx maxy maxz" in game units.
+-->
+<classes>
+
+<group name="worldspawn" color="0 0 0">
+Only one per map. Holds all the world brushes.
+<string key="message" name="Map title">Text shown when the level loads.</string>
+<string key="music" name="Music">Background music file.</string>
+<integer key="_blocksize" name="Vis block size">Size of the vis blocks (default 1024).</integer>
+<string key="_ambient" name="Ambient">Ambient light colour (0..1 RGB).</string>
+</group>
+
+<group name="func_group" color="0 .4 1">
+Editor-only grouping of brushes. Merged into the world at compile time.
+</group>
+
+<group name="func_detail" color="0 .5 .9">
+Brushes that do not seal the level or split vis.
+</group>
+
+<group name="func_static" color="0 .5 .8">
+A static brush entity (never moves).
+<string key="model" name="Model">Alternative model file to draw instead.</string>
+</group>
+
+<group name="func_door" color="0 .5 .8">
+A sliding door.
+<angle key="angle" name="Direction">Direction the door opens in (-1 up, -2 down).</angle>
+<real key="speed" name="Speed">Movement speed in units per second (default 100).</real>
+<integer key="wait" name="Wait">Seconds before closing again (default 2, -1 = never).</integer>
+<integer key="lip" name="Lip">Lip remaining at end of move (default 8).</integer>
+<list key="health" name="Health"><item name="Indestructible" value="0"/><item name="Shootable" value="100"/></list>
+<flag key="START_OPEN" name="Start open" bit="0">Door starts open and closes when triggered.</flag>
+<flag key="CRUSHER" name="Crusher" bit="2">Does not stop for blockers.</flag>
+<flag key="TOGGLE" name="Toggle" bit="4">Wait for a trigger to close.</flag>
+</group>
+
+<group name="func_button" color="0 .5 .8">
+A pushable button.
+<angle key="angle" name="Direction">Direction the button moves in.</angle>
+<targetname key="targetname" name="Name"/>
+<target key="target" name="Target">Entities to fire when pressed.</target>
+</group>
+
+<group name="trigger_multiple" color=".5 0 .5">
+A volume that fires its targets every time it is touched.
+<target key="target" name="Target">Entities to fire.</target>
+<real key="wait" name="Wait">Seconds between activations (default 0.5).</real>
+</group>
+
+<point name="info_player_start" color=".2 .9 .2" box="-16 -16 -24 16 16 32">
+Player spawn point for single player.
+<angle key="angle" name="Angle">Direction the player faces.</angle>
+</point>
+
+<point name="info_player_deathmatch" color="1 .5 0" box="-16 -16 -24 16 16 32">
+Deathmatch spawn point.
+<angle key="angle" name="Angle">Direction the player faces.</angle>
+<flag key="INITIAL" name="Initial" bit="0">Used for first spawns.</flag>
+</point>
+
+<point name="info_null" color="0 .5 0" box="-4 -4 -4 4 4 4">
+Point reference; removed at compile time.
+</point>
+
+<point name="info_notnull" color="0 .7 0" box="-4 -4 -4 4 4 4">
+Point reference that stays in the game.
+</point>
+
+<point name="target_position" color="0 .7 .3" box="-4 -4 -4 4 4 4">
+Aiming point for movers, cameras and spot lights.
+<targetname key="targetname" name="Name">Name other entities refer to.</targetname>
+</point>
+
+<point name="light" color="1 1 0" box="-8 -8 -8 8 8 8">
+Invisible light source. The default intensity is 300.
+-------- KEYS --------
+light: intensity
+<real key="light" name="Intensity">Light intensity (default 300).</real>
+<color1 key="_color" name="Colour">RGB colour, each component 0..1.</color1>
+<target key="target" name="Target">Aim a spot light at a target_position.</target>
+<real key="radius" name="Spot radius">Radius of a spot light at the target.</real>
+<flag key="LINEAR" name="Linear falloff" bit="0">Linear light falloff.</flag>
+<flag key="NOANGLE" name="No angle attenuation" bit="1">Ignore the surface angle.</flag>
+</point>
+
+<point name="lightJunior" color=".8 .8 0" box="-4 -4 -4 4 4 4">
+A dimmer light with a smaller default intensity.
+<real key="light" name="Intensity">Light intensity.</real>
+</point>
+
+<point name="light_point" color="1 0.9 0.3" box="-6 -6 -6 6 6 6">
+Point light: shines in every direction from its origin (Unreal's PointLight).
+-------- KEYS --------
+<color1 key="color" name="Colour" default="1 1 1">Light colour, "r g b", each 0..1.</color1>
+<real key="brightness" name="Brightness" default="1" min="0" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units.</real>
+<real key="bounce" name="Bounce power" default="1" min="0" max="10" step="0.05">How strongly the light it makes bounces off surfaces (global illumination). 0 = direct light only.</real>
+<boolean key="cast_shadows" name="Cast shadows" default="1">Cast ray traced shadows (hard, or soft when the light has a source size).</boolean>
+<integer key="style" name="Light style" default="0" min="0" max="63" step="1">0 = always on. Other styles are their own lightmap layer, animated at 10 Hz by the style's pattern (1 flicker, 2 slow pulse, 3 candle, 4 fast strobe, 5 gentle pulse, 9 slow strobe, ... see the game profile); at most 8 styles reach one surface.</integer>
+<real key="radius" name="Attenuation radius" default="10" min="0.1" max="1000" step="0.5">Distance in metres where the light has faded out completely (smooth window).</real>
+<real key="source_size" name="Source size" default="0" min="0" max="10" step="0.01">Radius of the light sphere in metres: bigger = softer shadows. 0 = the live bake's default softness (0.25 m, `defaultSourceSize` in lighting.json); a final bake of 0 is a perfect point.</real>
+</point>
+
+<point name="light_spot" color="1 0.6 0.2" box="-6 -6 -6 6 6 6">
+Spot light: a cone along the entity's direction arrow (Unreal's SpotLight). Place it, then rotate it (R) or edit the angles.
+-------- KEYS --------
+<color1 key="color" name="Colour" default="1 1 1">Light colour, "r g b", each 0..1.</color1>
+<real key="brightness" name="Brightness" default="1" min="0" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units.</real>
+<real key="bounce" name="Bounce power" default="1" min="0" max="10" step="0.05">How strongly the light it makes bounces off surfaces (global illumination). 0 = direct light only.</real>
+<boolean key="cast_shadows" name="Cast shadows" default="1">Cast ray traced shadows (hard, or soft when the light has a source size).</boolean>
+<integer key="style" name="Light style" default="0" min="0" max="63" step="1">0 = always on. Other styles are their own lightmap layer, animated at 10 Hz by the style's pattern (1 flicker, 2 slow pulse, 3 candle, 4 fast strobe, 5 gentle pulse, 9 slow strobe, ... see the game profile); at most 8 styles reach one surface.</integer>
+<real key="radius" name="Attenuation radius" default="10" min="0.1" max="1000" step="0.5">Distance in metres where the light has faded out completely (smooth window).</real>
+<real key="source_size" name="Source size" default="0" min="0" max="10" step="0.01">Radius of the light sphere in metres: bigger = softer shadows. 0 = the live bake's default softness (0.25 m, `defaultSourceSize` in lighting.json); a final bake of 0 is a perfect point.</real>
+<real key="inner_angle" name="Inner cone angle" default="20" min="0" max="89" step="0.5">Half angle in degrees of the cone with full brightness.</real>
+<real key="outer_angle" name="Outer cone angle" default="35" min="0.1" max="89.9" step="0.5">Half angle in degrees where the light has faded out. The inner angle is kept below it.</real>
+</point>
+
+<point name="light_directional" color="1 1 0.7" box="-6 -6 -6 6 6 6">
+Directional light (the sun): parallel rays along the direction arrow, no position and no attenuation (Unreal's DirectionalLight).
+-------- KEYS --------
+<color1 key="color" name="Colour" default="1 1 1">Light colour, "r g b", each 0..1.</color1>
+<real key="brightness" name="Brightness" default="1" min="0" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units.</real>
+<real key="bounce" name="Bounce power" default="1" min="0" max="10" step="0.05">How strongly the light it makes bounces off surfaces (global illumination). 0 = direct light only.</real>
+<boolean key="cast_shadows" name="Cast shadows" default="1">Cast ray traced shadows (hard, or soft when the light has a source size).</boolean>
+<integer key="style" name="Light style" default="0" min="0" max="63" step="1">0 = always on. Other styles are their own lightmap layer, animated at 10 Hz by the style's pattern (1 flicker, 2 slow pulse, 3 candle, 4 fast strobe, 5 gentle pulse, 9 slow strobe, ... see the game profile); at most 8 styles reach one surface.</integer>
+<real key="source_size" name="Angular diameter" default="0" min="0" max="20" step="0.05">Angular size of the sun in degrees (the real sun is 0.53): bigger = softer shadow edges. 0 = the live bake's default (0.5°, `defaultSunSize` in lighting.json).</real>
+</point>
+
+<point name="light_rect" color="0.4 0.9 1" box="-6 -6 -6 6 6 6">
+Rectangular area light: emits from one side of a width x height rectangle, towards the direction arrow (Unreal's RectLight).
+-------- KEYS --------
+<color1 key="color" name="Colour" default="1 1 1">Light colour, "r g b", each 0..1.</color1>
+<real key="brightness" name="Brightness" default="1" min="0" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units.</real>
+<real key="bounce" name="Bounce power" default="1" min="0" max="10" step="0.05">How strongly the light it makes bounces off surfaces (global illumination). 0 = direct light only.</real>
+<boolean key="cast_shadows" name="Cast shadows" default="1">Cast ray traced shadows (hard, or soft when the light has a source size).</boolean>
+<integer key="style" name="Light style" default="0" min="0" max="63" step="1">0 = always on. Other styles are their own lightmap layer, animated at 10 Hz by the style's pattern (1 flicker, 2 slow pulse, 3 candle, 4 fast strobe, 5 gentle pulse, 9 slow strobe, ... see the game profile); at most 8 styles reach one surface.</integer>
+<real key="radius" name="Attenuation radius" default="10" min="0.1" max="1000" step="0.5">Distance in metres where the light has faded out completely (smooth window).</real>
+<real key="width" name="Width" default="1" min="0.01" max="100" step="0.05">Size of the emitting rectangle along its right axis, metres.</real>
+<real key="height" name="Height" default="1" min="0.01" max="100" step="0.05">Size of the emitting rectangle along its up axis, metres.</real>
+</point>
+
+<point name="light_sky" color="0.5 0.7 1" box="-6 -6 -6 6 6 6">
+Sky light: uniform light from the whole upper hemisphere, occluded by geometry (ambient occlusion from the sky; Unreal's SkyLight).
+-------- KEYS --------
+<color1 key="color" name="Colour" default="1 1 1">Light colour, "r g b", each 0..1.</color1>
+<real key="brightness" name="Brightness" default="1" min="0" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units.</real>
+<real key="bounce" name="Bounce power" default="1" min="0" max="10" step="0.05">How strongly the light it makes bounces off surfaces (global illumination). 0 = direct light only.</real>
+<boolean key="cast_shadows" name="Cast shadows" default="1">Cast ray traced shadows (hard, or soft when the light has a source size).</boolean>
+<integer key="style" name="Light style" default="0" min="0" max="63" step="1">0 = always on. Other styles are their own lightmap layer, animated at 10 Hz by the style's pattern (1 flicker, 2 slow pulse, 3 candle, 4 fast strobe, 5 gentle pulse, 9 slow strobe, ... see the game profile); at most 8 styles reach one surface.</integer>
+</point>
+
+<point name="misc_model" color="0 .6 1" box="-16 -16 -16 16 16 16">
+Places a model in the map.
+<model key="model" name="Model">Model file, e.g. models/mapobjects/lamps/lamp.md3</model>
+<angle key="angle" name="Angle">Rotation around the vertical axis.</angle>
+<real key="modelscale" name="Scale">Uniform scale (default 1).</real>
+</point>
+
+<point name="target_speaker" color="0 1 1" box="-8 -8 -8 8 8 8">
+Plays a sound.
+<sound key="noise" name="Sound">Sound file to play.</sound>
+<flag key="LOOPED_ON" name="Looped on" bit="0">Loop the sound forever.</flag>
+</point>
+
+<point name="item_health" color=".9 .1 .1" box="-16 -16 -16 16 16 16">
+Health pickup (+25).
+</point>
+
+<point name="weapon_rocketlauncher" color=".7 .3 .1" box="-16 -16 -16 16 16 16">
+Rocket launcher pickup.
+</point>
+
+</classes>

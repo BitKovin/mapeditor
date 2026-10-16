@@ -1,0 +1,44 @@
+#pragma once
+#include "core/profile.h"
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace core {
+
+// Texture paths are Quake-style: relative to the profile's textureRoot, forward slashes, NO extension
+// ("base_wall/concrete01"). The extension is found by trying profile.textureExtensions in order.
+
+/// Every texture under the texture root, deduplicated across extensions, sorted. `limit` bounds the scan.
+std::vector<std::string> listTextures(const std::filesystem::path& assetsRoot, const GameProfile& profile,
+                                       size_t limit = 50000);
+
+struct TextureFile {
+    std::string ext;  // the extension that matched, e.g. ".tga"
+    std::vector<unsigned char> bytes;
+};
+
+/// nullopt if the path is unsafe (absolute, "..", odd characters), missing, or larger than `maxBytes`.
+std::optional<TextureFile> readTexture(const std::filesystem::path& assetsRoot, const GameProfile& profile,
+                                        const std::string& path, size_t maxBytes = 32u * 1024u * 1024u);
+
+// ---- texture properties (REQUIREMENTS 19 A7) -----------------------------------------------------------------------------------------------
+// Stored next to the texture file as `<texture file name incl. extension>.json` ("wall.tga.json"):
+//   { "pixelsPerMeter": 64, "repeat": { "u": AXIS, "v": AXIS } }
+//   AXIS = { "mode": "repeat"|"mirror"|"anchor", "anchor": "start"|"end", "split": 0.02..0.98, "fill": "repeat"|"mirror",
+//            "alt": null | { "texture": "<texture path>", "offset": [du, dv] } }
+// The Shell interprets them (shell/src/model/texprops.ts, uvmesh.ts); Core only validates and stores. Unknown keys are kept.
+
+/// A copy of `props` with every known key checked and clamped, and every unusable one dropped. Non-objects give an empty object.
+nlohmann::json sanitizeTextureProps(const nlohmann::json& props);
+
+/// The sidecar of an existing texture. nullopt = no texture, no sidecar, or an unreadable one (the texture then has the defaults).
+std::optional<nlohmann::json> readTextureProps(const std::filesystem::path& assetsRoot, const GameProfile& profile, const std::string& path);
+
+/// Merges the sanitised `props` into the sidecar (keys the Core does not know stay). Returns "" on success, else the reason.
+std::string writeTextureProps(const std::filesystem::path& assetsRoot, const GameProfile& profile, const std::string& path, const nlohmann::json& props);
+
+std::string base64Encode(const std::vector<unsigned char>& bytes);
+
+}  // namespace core

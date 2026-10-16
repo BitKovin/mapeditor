@@ -1,0 +1,16 @@
+{
+  "name": "demo (Quake 3-like)",
+  "textureRoot": "textures",
+  "textureExtensions": [
+    ".tga",
+    ".jpg",
+    ".png"
+  ],
+  "modelExtensions": [
+    ".md3"
+  ],
+  "lighting": {
+    "blockLight": [],
+    "receiveBakedLight": []
+  }
+}
