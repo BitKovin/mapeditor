@@ -208,6 +208,22 @@ TEST_CASE("entdef: keys carry default / min / max / step; bad numbers warn and a
     CHECK(!j[3].contains("min"));
 }
 
+TEST_CASE("entdef: NetRadiant's value attribute is the default; an explicit default wins") {
+    const EntityDefinitions d = parseEntityDefinitions(R"(
+<point name="p" color="1 1 1">
+<real key="wait" name="Wait" value="0.3" />
+<real3 key="loc" name="Location" value="0 0 0" />
+<real key="both" name="Both" value="1" default="2" />
+</point>)");
+    const EntClass* c = d.find("p");
+    REQUIRE(c);
+    REQUIRE(c->keys.size() == 3);
+    CHECK(*c->keys[0].defaultValue == "0.3");
+    CHECK(c->keys[1].type == "real3");
+    CHECK(*c->keys[1].defaultValue == "0 0 0");
+    CHECK(*c->keys[2].defaultValue == "2");
+}
+
 // The game's .ent is the single source of what the editor shows as a light's defaults; the baker reads the same keys. They must agree.
 TEST_CASE("entities.ent: the modern light classes exist, are complete, and their defaults are exactly what the baker uses") {
     const std::filesystem::path ent = std::filesystem::path(__FILE__).parent_path().parent_path() / "assets" / "entities.ent";

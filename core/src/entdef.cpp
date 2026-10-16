@@ -345,6 +345,7 @@ EntityDefinitions parseEntityDefinitions(std::string_view text) {
             k.type = t.name;
             k.name = t.has("name") ? t.attr("name") : k.key;
             if (t.has("default")) k.defaultValue = t.attr("default");
+            else if (t.has("value")) k.defaultValue = t.attr("value");  // NetRadiant's spelling of the default
             auto number = [&](const char* attr, std::optional<double>& out) {
                 if (!t.has(attr)) return;
                 char* end = nullptr;

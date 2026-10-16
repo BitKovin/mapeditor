@@ -17,7 +17,7 @@ namespace core {
 //     Free text = the class description.
 //     <real key="light" name="Intensity">description</real>    a key; the element name is its type
 //     <list key="style" name="Style"><item name="Off" value="0"/></list>
-//     <real key="radius" name="Radius" default="10" min="0" max="1000" step="0.5">...</real>   typed editor hints (default / min / max / step)
+//     <real key="radius" name="Radius" default="10" min="0" max="1000" step="0.5">...</real>   typed editor hints (default / min / max / step; NetRadiant's value="" is read as the default)
 //     <flag key="START_OPEN" name="Start open" bit="0">description</flag>   a spawnflags bit
 //   </point>
 //

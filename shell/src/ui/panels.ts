@@ -1,4 +1,4 @@
-import { propertyField, propertyKeys } from './properties'
+import { fieldKind, propertyField, propertyKeys } from './properties'
 import type { IContentRenderer } from 'dockview-core'
 import { Entity, PrefabInstance, classOf, instanceNames, isBrushEntity, originOf, showsCustomOrigin } from '../model/document'
 import { refKeysOf, refTargets, RefTarget } from '../model/refs'
@@ -84,7 +84,7 @@ export class InspectorPanel extends Panel {
   }
 
   /** One reference field: a grouped list of every entity (document first, then prefab content by instance), a pipette and a clear button. */
-  private refRow(key: string, current: string | undefined, exclude: string | null, ro: boolean, set: (path: string | null) => void, note = ''): HTMLElement {
+  private refRow(key: string, current: string | undefined, exclude: string | null, ro: boolean, set: (path: string | null) => void, note = '', label = key): HTMLElement {
     const st = this.store.state
     const targets = refTargets(st.doc, st.prefabEntities, st.library)
     const sel = h('select', {}, h('option', { value: '' }, '— none —'))
@@ -99,7 +99,7 @@ export class InspectorPanel extends Panel {
     sel.addEventListener('change', () => set(sel.value || null))
     pip.addEventListener('click', () => this.store.setPipette((p) => { if (p) set(p) }))
     clr.addEventListener('click', () => set(null))
-    return h('label', { class: 'field kv ref', title: note }, h('span', {}, key), sel, h('span', { class: 'refbtns' }, pip, clr))
+    return h('label', { class: 'field kv ref', title: [label !== key ? key : '', note].filter(Boolean).join('\n') }, h('span', {}, label), sel, h('span', { class: 'refbtns' }, pip, clr))
   }
 
   /** Entity (inside the open instance) whose keyvalues are being edited; a path relative to the instance. */
@@ -269,46 +269,64 @@ export class InspectorPanel extends Panel {
     if (!isBrushEntity(e) && e.classname !== 'decal')
       vec3('scale', parseScaleVec(e.keyvalues?.modelscale_vec), '0.05', (i, v) => setEntityScale(this.store, e.id, i, v))
 
-    // classes with typed keys (the modern lights): every key with its default, a widget that fits its type
-    const typed = propertyKeys(def)
+    // every key the class defines, in .ent order, with a widget chosen by its type (properties.ts); a target key is the entity picker with its pipette.
+    // Keys the form edits elsewhere are left out: targetname (top), angle / angles (the angles row), modelscale_vec (the scale row), spawnflags (the checkboxes)
+    const hidden = new Set(['classname', 'targetname', 'origin', 'angle', 'angles'])
+    if (!isBrushEntity(e) && e.classname !== 'decal') hidden.add('modelscale_vec')
+    if (def?.flags.length) hidden.add('spawnflags')
+    const typed = propertyKeys(def, hidden)
     if (typed.length) {
-      root.append(h('div', { class: 'section' }, def!.name === 'light_point' || def!.name.startsWith('light_') ? 'Light' : 'Properties'))
-      for (const k of typed) root.append(propertyField(k, e, ro, (v) => setKeyvalue(this.store, e.id, k.key, v)))
+      root.append(h('div', { class: 'section' }, def!.name.startsWith('light_') ? 'Light' : 'Properties'))
+      for (const k of typed) {
+        if (fieldKind(k) === 'ref') root.append(this.refRow(k.key, e.refs?.[k.key], e.id, ro, (p) => setEntityRef(this.store, e.id, k.key, p), k.description, k.name))
+        else root.append(propertyField(k, e, ro, (v) => setKeyvalue(this.store, e.id, k.key, v)))
+      }
     }
-    const typedKeys = new Set(typed.map((k) => k.key))
+    const shown = new Set([...hidden, ...typed.map((k) => k.key)])
+    // keys the class doesn't define: references set on the entity (or just added) keep their picker, the rest are text.
+    // A plain-text value of a target key (an imported name the picker can't show) stays visible here too.
+    const pending = this.pendingRefs.get(e.id) ?? new Set<string>()
+    for (const k of Object.keys(e.refs ?? {})) pending.delete(k)
+    const otherRefs = [...new Set([...Object.keys(e.refs ?? {}), ...pending])].filter((k) => !shown.has(k))
+    const otherKv = Object.entries(e.keyvalues ?? {}).filter(([k]) => !shown.has(k) || typed.some((t) => t.key === k && fieldKind(t) === 'ref'))
     root.append(h('div', { class: 'section' }, typed.length ? 'Other keyvalues' : 'Keyvalues'))
-    // references are ordinary keys here (REQUIREMENTS §17 #5): a key of type target gets the entity picker and the pipette next to its value
-    for (const k of refKeysOf(def, Object.keys(e.refs ?? {})))
-      root.append(this.refRow(k, e.refs?.[k], e.id, ro, (p) => setEntityRef(this.store, e.id, k, p)))
-    for (const [k, v] of Object.entries(e.keyvalues ?? {})) {
-      if (typedKeys.has(k)) continue // shown above
-      if (k === 'targetname') continue // on top of the form
-      if (k === 'spawnflags' && def?.flags.length) continue // edited through the checkboxes above
-      const keyDef = def?.keys.find((x) => x.key === k)
-      const inp: HTMLInputElement | HTMLSelectElement = keyDef?.items?.length
-        ? this.listSelect(keyDef.items, v)
-        : h('input', { value: v, ...(keyDef?.description ? { title: keyDef.description } : {}) })
+    for (const k of otherRefs)
+      root.append(this.refRow(k, e.refs?.[k], e.id, ro, (p) => { pending.delete(k); setEntityRef(this.store, e.id, k, p) }))
+    for (const [k, v] of otherKv) {
+      const inp = h('input', { value: v })
       const del = h('button', { title: 'Remove' }, '×')
       if (ro) { inp.setAttribute('disabled', ''); del.setAttribute('disabled', '') }
+      inp.addEventListener('keydown', (ev) => ev.stopPropagation())
       inp.addEventListener('change', () => setKeyvalue(this.store, e.id, k, inp.value))
       del.addEventListener('click', () => setKeyvalue(this.store, e.id, k, null))
-      root.append(h('label', { class: 'field kv', ...(keyDef?.name ? { title: keyDef.name } : {}) }, h('span', {}, k), inp, del))
+      root.append(h('label', { class: 'field kv' }, h('span', {}, k), inp, del))
     }
+    // adding a reference key (target, killtarget, ...) adds an empty picker row instead of a text value
+    const refKeys = refKeysOf(def).filter((k) => !shown.has(k) && !otherRefs.includes(k))
     const nk = h('input', { placeholder: 'new key', list: 'keynames' }), nv = h('input', { placeholder: 'value' })
-    if (def) root.append(h('datalist', { id: 'keynames' }, ...def.keys.filter((x) => !(e.keyvalues && x.key in e.keyvalues)).map((x) => h('option', { value: x.key }, x.name))))
+    root.append(h('datalist', { id: 'keynames' }, ...refKeys.map((k) => h('option', { value: k }, 'reference'))))
     const addBtn = h('button', {}, 'Add')
     if (ro) for (const x of [nk, nv, addBtn]) x.setAttribute('disabled', '')
-    addBtn.addEventListener('click', () => { if (nk.value.trim()) setKeyvalue(this.store, e.id, nk.value.trim(), nv.value) })
+    nk.addEventListener('keydown', (ev) => ev.stopPropagation())
+    nv.addEventListener('keydown', (ev) => ev.stopPropagation())
+    addBtn.addEventListener('click', () => {
+      const k = nk.value.trim()
+      if (!k) return
+      if (refKeysOf(def).includes(k) && !nv.value) {
+        this.pendingRefs.set(e.id, pending.add(k))
+        this.sig = ''
+        addBtn.blur() // the panel does not rebuild while one of its controls has focus
+        this.refresh()
+      } else setKeyvalue(this.store, e.id, k, nv.value)
+    })
     root.append(h('div', { class: 'field kv' }, nk, nv, addBtn))
+    if (pending.size) this.pendingRefs.set(e.id, pending)
+    else this.pendingRefs.delete(e.id)
     return root
   }
 
-  private listSelect(items: { name: string; value: string }[], value: string): HTMLSelectElement {
-    const sel = h('select', {}, ...items.map((i) => h('option', { value: i.value }, `${i.name} (${i.value})`)))
-    if (!items.some((i) => i.value === value)) sel.prepend(h('option', { value }, value)) // keep values the definition doesn't list
-    sel.value = value
-    return sel
-  }
+  /** Reference keys added with "Add" that have no target yet (they only exist as an empty picker row until one is chosen). */
+  private pendingRefs = new Map<string, Set<string>>()
 
   /** Details > Shape: the generator of a placed cylinder / wedge / arch / stairs, editable at any time (REQUIREMENTS §22 P1). */
   private shapeSection(root: HTMLElement, entityId: string, s: ShapeSpec, ro: boolean): void {
