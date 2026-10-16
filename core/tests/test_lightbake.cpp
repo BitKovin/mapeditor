@@ -1,6 +1,8 @@
 #include "core/lightbake.h"
 #include "../src/gpu_bake.h"
 #include "core/lights.h"
+#include "core/albedo.h"
+#include "core/sky.h"
 #include "test_util.h"
 #include <doctest.h>
 #include <cmath>
@@ -784,4 +786,82 @@ TEST_CASE("bake gpu: a sample subset keeps its random ids and sampleOffset advan
     CHECK(static_cast<double>(mismatches(g7, part)) < 0.005 * static_cast<double>(sub.count()));
     CHECK(static_cast<double>(mismatches(g0, part0)) < 0.005 * static_cast<double>(sub.count()));
     CHECK(mismatches(g0, part) > sub.count() / 100);  // the offset really reached the shader
+}
+
+// ---- the sky light from the level's skybox (REQUIREMENTS §28 K12) ---------------------------------------------------------------
+namespace {
+// six 4 x 4 faces (lf rt up dn ft bk), every texel of face `bright` white, the rest black; bright < 0 = all white
+std::vector<DecodedImage> skyFaces(int bright) {
+    std::vector<DecodedImage> faces(6);
+    for (int f = 0; f < 6; ++f) {
+        faces[static_cast<size_t>(f)].width = faces[static_cast<size_t>(f)].height = 4;
+        const uint8_t c = bright < 0 || f == bright ? 255 : 0;
+        for (int i = 0; i < 16; ++i) faces[static_cast<size_t>(f)].rgba.insert(faces[static_cast<size_t>(f)].rgba.end(), {c, c, c, 255});
+    }
+    return faces;
+}
+}  // namespace
+
+TEST_CASE("bake sky: a skybox bright on one side lights the faces that look at it, CPU and GPU, shadowed and not; a white one = the uniform sky") {
+    // white skybox: the same light as the uniform sky (1 + n.y) / 2, within the tables' resolution
+    const auto white = makeSkyRadiance(skyFaces(-1), false, "env/white_cube");
+    REQUIRE(white);
+    for (const Vec3& n : {Vec3{0, 1, 0}, Vec3{1, 0, 0}, Vec3{0, 0, -1}, Vec3{0.6, 0.8, 0}, Vec3{0, -1, 0}})
+        CHECK(white->irradianceAt(n).x == doctest::Approx((1 + n.y) * 0.5).epsilon(0.02).scale(1));
+    // bright in the east only (_rt is the face that looks towards +X)
+    const auto east = makeSkyRadiance(skyFaces(1), false, "env/east_cube");
+    REQUIRE(east);
+    CHECK(east->at({1, 0.2, 0}).x == doctest::Approx(1));
+    CHECK(east->at({-1, 0.2, 0}).x == 0);
+    CHECK(east->at({1, -0.2, 0}).x == 0);  // only directions that point up are sky
+    Scene1 sc({ent("w", "worldspawn", {Brush::makeBox("pillar", {-1, 0, -1}, {1, 6, 1})}), light("k", "light_sky", {0, 0, 0}, {{"brightness", "2"}})});
+    REQUIRE(sc.lights.lights.size() == 1);
+    sc.lights.lights[0].sky = east;
+    const size_t e = sc.nearest({1, 3, 0}, {1, 0, 0}), w = sc.nearest({-1, 3, 0}, {-1, 0, 0}), top = sc.nearest({0, 6, 0}, {0, 1, 0});
+    const auto v = evaluateDirectCpu(sc.samples, sc.lights);
+    MESSAGE("unshadowed east " << val(v, e) << ", west " << val(v, w) << ", top " << val(v, top));
+    CHECK(val(v, e) > 0.2);
+    CHECK(val(v, w) == doctest::Approx(0).scale(1));
+    CHECK(val(v, e) > val(v, top));
+    BakeOptions o;
+    o.skySamples = 512;
+    o.superSamples = 1;
+    const auto s = evalShadowed(sc, o);
+    MESSAGE("shadowed east " << val(s, e) << ", west " << val(s, w));
+    CHECK(val(s, e) == doctest::Approx(val(v, e)).epsilon(0.15));
+    CHECK(val(s, w) == 0.f);
+    // without the skybox: today's uniform sky
+    sc.lights.lights[0].sky = nullptr;
+    const auto u = evaluateDirectCpu(sc.samples, sc.lights);
+    CHECK(val(u, e) == doctest::Approx(1.0).epsilon(1e-6));
+    CHECK(val(u, w) == doctest::Approx(1.0).epsilon(1e-6));
+
+    // the GPU takes the same tables (lightmap_direct.comp skyRadiance / skyIrradiance)
+    sc.lights.lights[0].sky = east;
+    for (const bool shadows : {false, true}) {
+        CAPTURE(shadows);
+        BakeOptions g;
+        g.gpuValidation = true;
+        g.shadows = shadows;
+        g.skySamples = 64;
+        g.superSamples = 1;
+        BakeStats gst;
+        const LightmapPages gp = bakeLightmaps(sc.layout, sc.surfaces, sc.lights, g, &gst);
+        if (!gst.usedGpu) { MESSAGE("no Vulkan device" << (shadows ? " with ray query" : "") << ", GPU part skipped"); continue; }
+        for (const auto& m : gst.validationMessages) CHECK(m.rfind("[note]", 0) == 0);
+        BakeOptions c = g;
+        c.forceCpu = true;
+        const LightmapPages cp = bakeLightmaps(sc.layout, sc.surfaces, sc.lights, c);
+        double sumErr = 0, maxVal = 0;
+        size_t n = 0;
+        for (int p = 0; p < gp.pageCount; ++p)
+            for (size_t t = 0; t < gp.rgb[static_cast<size_t>(p)].size(); ++t) {
+                sumErr += std::fabs(gp.rgb[static_cast<size_t>(p)][t] - cp.rgb[static_cast<size_t>(p)][t]);
+                maxVal = std::max(maxVal, double(cp.rgb[static_cast<size_t>(p)][t]));
+                ++n;
+            }
+        MESSAGE("GPU vs CPU mean abs difference " << sumErr / std::max<size_t>(1, n) << ", brightest " << maxVal);
+        CHECK(maxVal > 0.2);
+        CHECK(sumErr / std::max<size_t>(1, n) < 1e-3);
+    }
 }

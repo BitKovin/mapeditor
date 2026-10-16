@@ -9,7 +9,7 @@ import { AxisRepeat, DEFAULT_PPM, PPM_MAX, PPM_MIN, TexInfo, TextureProps, Trans
 import type { TextureCache } from '../state/textures'
 import { openDialog } from './dialog'
 import { fmt, h } from './dom'
-import { ThumbnailLoader } from './textureThumbs'
+import { ThumbnailLoader, skyBadge } from './textureThumbs'
 
 export interface PropsWindowEnv {
   textures: TextureCache
@@ -25,7 +25,8 @@ const AXES = [{ key: 'u' as const, label: 'Horizontal', start: 'Left', end: 'Rig
 const PPM_PRESETS = [16, 32, 64, 128, 256]
 
 /** Searchable thumbnail picker; resolves the chosen path or null. */
-export function pickTexture(env: PropsWindowEnv, title: string, exclude?: string): Promise<string | null> {
+/** `only` keeps the textures it accepts (e.g. skyboxes for the level's sky). */
+export function pickTexture(env: PropsWindowEnv, title: string, exclude?: string, only?: (path: string) => boolean): Promise<string | null> {
   return new Promise((resolve) => {
     let chosen: string | null = null
     const search = h('input', { placeholder: 'Search textures', class: 'search' })
@@ -35,10 +36,13 @@ export function pickTexture(env: PropsWindowEnv, title: string, exclude?: string
     let all: string[] = []
     const render = () => {
       const q = search.value.toLowerCase()
-      const shown = all.filter((p) => p !== exclude && p.toLowerCase().includes(q)).slice(0, 400)
+      const shown = all.filter((p) => p !== exclude && (!only || only(p)) && p.toLowerCase().includes(q)).slice(0, 400)
       thumbs.reset()
       grid.replaceChildren(...shown.map((p) => {
         const tile = h('div', { class: 'tile', title: p }, thumbs.canvas(p), h('div', { class: 'tile-name' }, p.split('/').pop() ?? p))
+        const badge = skyBadge(p)
+        if (badge) tile.append(badge)
+        tile.dataset.path = p
         tile.addEventListener('click', () => { chosen = p; d.close() })
         return tile
       }))

@@ -420,3 +420,13 @@ Verified: Core 257 test cases pass (g++, no cmake: see /home/claude/build/Makefi
 - Tests: Core 293 pass, Shell 879 pass, typecheck clean.
 - **Open:** entities / characters in the game are lit from the light grid by the game's model shaders in gamma space (darker than the editor's Lit view); the engine does not read contents flags; `Build/SlasherGame_mapeditor` is a test folder that can be deleted.
 
+## Update 2026-10-17: enclosed sky and skyboxes (REQUIREMENTS §28, DESIGN §12 "Sky")
+- **Auto sky on export:** Level settings > Sky: `off / box / box per area`, margin (default 8 m), skybox. `box` = 6 inward sky quads around the level plus the margin (the floor is sky too), `box per area` = one box per group of touching brushes, boxes that meet are merged. Only the export has them.
+- **Sky faces** (automatic and hand-placed, `*cube` / `*sky*`): no lightmap, contents 0, never buried, not occluders (bake and visibility), in every cluster's leafs; the Core's lighting never sees them (`Scene::lightSurfaces()`).
+- **The engine's convention, pinned down from its code** (`Quake3Bsp.cpp`, `TextureCube.hpp`, `fs_bsp_cube.sc`): `env/<last part>` faces `_lf _rt _up _dn _ft _bk` (or a panorama), `_up` / `_dn` turned on load, sampled with `(-x, y, z)` in the editor's own space. Core `core/sky.h` and Shell `model/sky.ts` share the mapping; tests check up, north, east, ... and replay the engine's panorama conversion. No engine change.
+- **Texture browser:** skyboxes listed (`env/`, a "Skyboxes" entry), SKY badge, cross preview; assign like any texture; the views draw sky faces by direction (Unlit and Lit) and, with Auto sky on, the level's sky behind everything.
+- **Sky light from the skybox:** `light_sky` takes its light per direction from the level's skybox (32 x 8 cell average over the upper hemisphere + an irradiance table), CPU and GPU; uniform when there is none.
+- Test map `core/assets/maps/sky_test.map.json` with a labelled test skybox `core/assets/env/test_sky_cube_*.png` (each face names its direction and its edges), exported to `maps/sky_test.bsp`.
+- Tests: Core sky + bsp cases + related lighting cases pass (23 cases), Shell 902 pass, typecheck clean. Prebuilt SPIR-V of `lightmap_direct` refreshed.
+- **Open:** checked in the editor, not yet in the game; the engine's far plane (3000 m) clips sky boxes larger than that (warning; suggested fix in DESIGN §12); a non-cubemap sky texture stays flat in the game; the checked-in `lightmap_gather.spv.h` is stale against its source (its hash does not match; untouched here).
+

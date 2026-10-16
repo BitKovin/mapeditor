@@ -58,7 +58,9 @@ float window(float d, float r) {
 //   4: up.xyz,      source size
 //   5: width, height, cast shadows, style
 //   6: bounce power, 0, 0, 0
-//   7: reserved
+//   7: sky light: first vec4 of its skybox tables in lt[] (behind the records), 1 = has them (0 = uniform sky); else unused
+// Skybox tables (core/sky.h SkyRadiance, REQUIREMENTS §28 K12): SKY_LON x SKY_LAT radiance cells (rgb), then SKY_NLON x SKY_NLAT irradiance samples.
+const int SKY_LON = 32, SKY_LAT = 8, SKY_NLON = 16, SKY_NLAT = 9;
 
 // Super sampling (RAY_QUERY only): subd[3 * i + 0] = (texel centre on the chart plane, bits of a uint mask: bit k = sub position k lies inside
 // the fragment), subd[3 * i + 1] = world displacement per +1 texel in u, subd[3 * i + 2] = per +1 texel in v. Sub position k = centre +
@@ -99,6 +101,26 @@ float rectFormFactor(uint k, vec3 p, vec3 n) {
     return abs(sum) / (2.0 * PI);
 }
 
+// SkyRadiance::at / irradianceAt in src/sky.cpp: longitude atan2(x, -z) from -pi, elevation asin(y).
+vec3 skyRadiance(uint k, vec3 dir) {
+    if (dir.y <= 0.0) return vec3(0.0);
+    uint base = uint(lt[k * LREC + 7u].x + 0.5);
+    int i = clamp(int(floor((atan(dir.x, -dir.z) + PI) / (2.0 * PI) * float(SKY_LON))), 0, SKY_LON - 1);
+    int j = clamp(int(floor(asin(clamp(dir.y / length(dir), -1.0, 1.0)) / (0.5 * PI) * float(SKY_LAT))), 0, SKY_LAT - 1);
+    return lt[base + uint(j * SKY_LON + i)].rgb;
+}
+vec3 skyIrradiance(uint k, vec3 n) {
+    uint base = uint(lt[k * LREC + 7u].x + 0.5) + uint(SKY_LON * SKY_LAT);
+    float fu = (atan(n.x, -n.z) + PI) / (2.0 * PI) * float(SKY_NLON);
+    float fv = (asin(clamp(n.y / length(n), -1.0, 1.0)) + 0.5 * PI) / PI * float(SKY_NLAT - 1);
+    int i0 = int(floor(fu)), j0 = clamp(int(floor(fv)), 0, SKY_NLAT - 2);
+    float a = fu - float(i0), b = clamp(fv - float(j0), 0.0, 1.0);
+    int ia = ((i0 % SKY_NLON) + SKY_NLON) % SKY_NLON, ib = (ia + 1) % SKY_NLON;
+    vec3 e00 = lt[base + uint(j0 * SKY_NLON + ia)].rgb, e10 = lt[base + uint(j0 * SKY_NLON + ib)].rgb;
+    vec3 e01 = lt[base + uint((j0 + 1) * SKY_NLON + ia)].rgb, e11 = lt[base + uint((j0 + 1) * SKY_NLON + ib)].rgb;
+    return mix(mix(e00, e10, a), mix(e01, e11, a), b);
+}
+
 // Unshadowed irradiance (pi absorbed) from light k.
 vec3 evalLight(uint k, vec3 p, vec3 n) {
     vec4 a = lt[k * LREC + 0u];
@@ -129,8 +151,8 @@ vec3 evalLight(uint k, vec3 p, vec3 n) {
         if (dist >= a.w || dot(p - a.xyz, lt[k * LREC + 2u].xyz) <= 0.0) return vec3(0.0);
         return b.rgb * (rectFormFactor(k, p, n) * window(dist, a.w));
     }
-    if (type == 4) {  // sky
-        return b.rgb * ((1.0 + n.y) * 0.5);
+    if (type == 4) {  // sky: the level's skybox when it has one, else a uniform upper hemisphere
+        return lt[k * LREC + 7u].y > 0.5 ? b.rgb * skyIrradiance(k, n) : b.rgb * ((1.0 + n.y) * 0.5);
     }
     return vec3(0.0);
 }
@@ -278,7 +300,7 @@ vec3 visibility(uint k, uint texel, vec3 o) {
     return open / float(total);
 }
 
-// Sky with occlusion: cosine-weighted rays around the normal; only upward rays that escape count.
+// Sky with occlusion: cosine-weighted rays around the normal; only upward rays that escape count, each with the skybox's light from its direction.
 vec3 skyVisibility(uint k, uint texel, vec3 o, vec3 n) {
     vec3 t, b;
     frameOf(n, t, b);
@@ -288,7 +310,7 @@ vec3 skyVisibility(uint k, uint texel, vec3 o, vec3 n) {
         vec2 uv = sample2(texel, k, uint(i) + gOffset);
         float r = sqrt(uv.x), phi = 2.0 * PI * uv.y;
         vec3 dir = t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - uv.x));
-        if (dir.y > 0.0) open += transmit(o, dir, pc.farDistance);
+        if (dir.y > 0.0) open += transmit(o, dir, pc.farDistance) * (lt[k * LREC + 7u].y > 0.5 ? skyRadiance(k, dir) : vec3(1.0));
     }
     return open / float(total);
 }

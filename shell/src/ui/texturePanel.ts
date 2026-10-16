@@ -11,6 +11,7 @@ import { fmt, h } from './dom'
 import { drawFitted } from './fitImage'
 import { layoutSection } from './layoutSection'
 import { groupEnv } from '../model/texgroup'
+import { isCubemapPath, isSkyTexture } from '../model/sky'
 
 /**
  * Surface Inspector (REQUIREMENTS §6, §19 B1; layout after NetRadiant, without an Apply button): texture, shift (texels) and stretch of both axes,
@@ -111,6 +112,9 @@ export class TexturePanel implements IContentRenderer {
     this.element.replaceChildren(h('div', { class: 'form surface' },
       h('div', { class: 'texhead' }, thumb, h('div', {}, h('div', { class: 'dim' }, who), density ? h('div', { class: 'dim', title: 'Texel density of the selected face against the texture\'s pixels per meter' }, density) : h('span'))),
       row('Texture', name, propsBtn, reliefBtn),
+      ...(isSkyTexture(texName) ? [h('div', { class: 'dim', title: 'REQUIREMENTS §28' }, isCubemapPath(texName)
+        ? 'Sky: a skybox (env/), drawn by the view direction as in the game; no lightmap, blocks no light, not solid.'
+        : 'Sky texture: no lightmap, blocks no light, not solid. The engine draws only skyboxes (env/<name>_cube) as sky; this one stays flat in the game.')] : []),
       h('div', { class: 'btns' }, fttBtn),
       row('Horizontal shift', num(sh[0], st.texSteps.shiftU, setShift(0), 'Texels'), stepCell('shiftU')),
       row('Vertical shift', num(sh[1], st.texSteps.shiftV, setShift(1), 'Texels'), stepCell('shiftV')),

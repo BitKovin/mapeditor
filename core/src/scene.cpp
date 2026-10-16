@@ -1,5 +1,9 @@
 #include "core/scene.h"
+#include "core/albedo.h"
+#include "core/bsp_compile.h"
 #include "core/derived.h"
+#include "core/sky.h"
+#include "core/textures.h"
 #include "core/settings.h"
 #include <algorithm>
 #include <fstream>
@@ -238,9 +242,13 @@ json Scene::derivedGeometryJson() {
     return deriveGeometry(doc_, resolveForDerived(*this, doc_, currentPath_, loader), rev_);
 }
 
-std::vector<LightSurface> Scene::lightSurfaces() {
+std::vector<LightSurface> Scene::lightSurfaces(bool withSky) {
     auto loader = [this](const std::string& p) -> const Document& { return loadPrefab(normalizeAssetPath(p)).typed; };
     std::vector<LightSurface> surfaces = collectSurfaces(doc_, resolveForDerived(*this, doc_, currentPath_, loader));
+    if (!withSky) {
+        const BspContentRules rules = BspContentRules::fromJson(profile_.bsp);
+        surfaces.erase(std::remove_if(surfaces.begin(), surfaces.end(), [&](const LightSurface& s) { return rules.isSky(s.texture); }), surfaces.end());
+    }
     if (relief_.size() > 0)
         for (auto& s : surfaces) s.relief = relief_.find(s);
     return surfaces;
@@ -254,7 +262,49 @@ std::shared_ptr<SolidSet> Scene::lightSolids() {
 
 LightScene Scene::lightScene() {
     auto loader = [this](const std::string& p) -> const Document& { return loadPrefab(normalizeAssetPath(p)).typed; };
-    return collectLights(doc_, resolveForDerived(*this, doc_, currentPath_, loader));
+    LightScene scene = collectLights(doc_, resolveForDerived(*this, doc_, currentPath_, loader));
+    if (std::none_of(scene.lights.begin(), scene.lights.end(), [](const Light& l) { return l.type == LightType::Sky; })) return scene;
+    const auto w = std::find_if(doc_.entities.begin(), doc_.entities.end(), [](const Entity& e) { return e.classname == "worldspawn"; });
+    if (w == doc_.entities.end()) return scene;
+    const SkySettings sky = skySettingsOf(*w, [this]() { return listSkyboxes(assetsRoot_); });
+    if (sky.texture.empty()) return scene;  // no skybox: the uniform sky
+    std::string warning;
+    const auto table = skyTable(sky.texture, warning);
+    if (!warning.empty()) scene.warnings.push_back(warning);
+    for (Light& l : scene.lights) if (l.type == LightType::Sky) l.sky = table;
+    return scene;
+}
+
+std::shared_ptr<const SkyRadiance> Scene::skyTable(const std::string& texture, std::string& warning) {
+    // the files the engine would look at, with their sizes and times: a skybox edited on disk is read again
+    std::string key = texture;
+    if (isCubemapTexture(texture)) {
+        const std::string base = texture.substr(texture.find_last_of('/') == std::string::npos ? 0 : texture.find_last_of('/') + 1);
+        std::error_code ec;
+        for (const char* ext : {".png", ".jpg", ".jpeg"})
+            for (const char* f : {"", "_lf", "_rt", "_up", "_dn", "_ft", "_bk"}) {
+                const fs::path p = assetsRoot_ / "env" / (base + f + ext);
+                if (!fs::is_regular_file(p, ec)) continue;
+                key += "|" + p.filename().string() + ":" + std::to_string(fs::file_size(p, ec)) + ":" + std::to_string(fs::last_write_time(p, ec).time_since_epoch().count());
+            }
+    }
+    std::lock_guard<std::mutex> lock(skyMutex_);
+    if (key == skyKey_) { warning = skyWarning_; return sky_; }
+    skyKey_ = key;
+    skyWarning_.clear();
+    sky_.reset();
+    const auto files = readSkybox(assetsRoot_, texture);
+    std::vector<DecodedImage> images;
+    if (files)
+        for (const auto& f : files->images) {
+            auto img = decodeImage(f.bytes, f.ext);
+            if (!img) break;
+            images.push_back(std::move(*img));
+        }
+    if (files && images.size() == files->images.size()) sky_ = makeSkyRadiance(images, files->panorama, texture);
+    if (!sky_) skyWarning_ = "sky light: the skybox " + texture + (files ? " could not be decoded (PNG or baseline JPEG)" : " has no image in env/") + "; the sky is uniform";
+    warning = skyWarning_;
+    return sky_;
 }
 
 LightmapLayout Scene::lightmapLayout(const LightmapSettings& settings) {

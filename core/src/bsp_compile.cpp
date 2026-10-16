@@ -3,6 +3,7 @@
 #include "core/csg.h"
 #include "core/parallel.h"
 #include "core/raytrace.h"
+#include "core/textures.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -205,6 +206,8 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     std::vector<rbsp::Surface> surfaces;
     std::vector<std::vector<int>> modelSurfaces(modelCount), modelDecals(modelCount);
     std::vector<Bounds> surfaceBounds;  // Quake units, per output surface (before reordering)
+    std::vector<char> surfaceSky;       // ... and whether it is sky
+    std::set<std::string> flatSky;      // sky textures that are not skyboxes (the engine draws them flat)
     std::vector<rbsp::Surface> unordered;
     std::vector<std::pair<size_t, size_t>> unorderedVerts, unorderedIdx;  // ranges into the staging arrays
     std::vector<rbsp::DrawVert> stageVerts;
@@ -252,7 +255,9 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     };
     auto emit = [&](const Poly& s) {
         rbsp::Surface out{};
-        const BspContentRules::Flags fl = cfg.contents.forTexture(s.texture);
+        const bool sky = cfg.contents.isSky(s.texture);  // no lightmap, no contents, seen from every cluster (REQUIREMENTS §28 K4)
+        if (sky && !isCubemapTexture(s.texture)) flatSky.insert(s.texture);
+        const BspContentRules::Flags fl = cfg.contents.forFace(s.texture);
         out.shader = s.decal ? shaders.add(s.texture, 0, fl.surface | cfg.contents.decalFlag()) : shaders.add(s.texture, fl.contents, fl.surface);
         out.fog = -1;
         out.type = s.decal || !s.triPos.empty() ? rbsp::kSurfaceTriangles : rbsp::kSurfacePolygon;
@@ -264,7 +269,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
 
         const LightmapFace* lf = nullptr;
         const LightmapChart* chart = nullptr;
-        if (lit && in.classes.isLightmapped(s.classname)) {
+        if (lit && !sky && in.classes.isLightmapped(s.classname)) {
             lf = layout->findForFragment(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, pv);
             if (lf && lf->chart >= 0) chart = &layout->charts[static_cast<size_t>(lf->chart)];
         }
@@ -340,6 +345,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             unorderedVerts.push_back({vFirst, stageVerts.size() - vFirst});
             unorderedIdx.push_back({iFirst, stageIdx.size() - iFirst});
             surfaceBounds.push_back(bb);
+            surfaceSky.push_back(sky);
             return;
         }
         const size_t n = pv.size();
@@ -375,11 +381,13 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         unorderedVerts.push_back({vFirst, n});
         unorderedIdx.push_back({iFirst, stageIdx.size() - iFirst});
         surfaceBounds.push_back(bb);
+        surfaceSky.push_back(sky);
     };
     for (const LightSurface& s : in.surfaces) {
         const auto mit = modelOf.find(entityKey(s.instance, s.entityId));
         if (mit == modelOf.end() || s.verts.size() < 3) continue;
-        if (mit->second == 0 && in.solids && buried(s)) { ++res.stats.droppedSurfaces; continue; }  // buried in a static solid: never seen (a moving entity keeps all its faces)
+        // buried in a static solid: never seen (a moving entity keeps all its faces); sky faces are always kept
+        if (mit->second == 0 && in.solids && !cfg.contents.isSky(s.texture) && buried(s)) { ++res.stats.droppedSurfaces; continue; }
         Poly p;
         p.model = mit->second;
         p.texture = s.texture; p.classname = s.classname; p.instance = s.instance; p.entityId = s.entityId;
@@ -440,9 +448,49 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         emit(p);
         ++res.stats.decals;
     }
+    // the automatic sky (REQUIREMENTS §28 K2 / K3): per box 6 inward-facing quads of the world (no lightmap, no contents, in every cluster)
+    if (cfg.sky.mode != AutoSky::Off) {
+        std::string tex = cfg.sky.texture;
+        if (tex.empty()) { tex = "env/sky_cube"; res.warnings.push_back("auto sky: no skybox in env/ and no sky texture set; using env/sky_cube"); }
+        const std::string worldId = worldspawn ? worldspawn->entity.id : std::string();
+        for (const SkyBox& box : autoSkyBoxes(in.surfaces, cfg.sky.mode, cfg.sky.margin, cfg.contents)) {
+            const double across = (box.mx - box.mn).length();
+            if (across > cfg.engineFarPlane)
+                res.warnings.push_back("auto sky: a sky box is " + std::to_string(static_cast<int>(across)) + " m across, beyond the engine's far plane (" +
+                                       std::to_string(static_cast<int>(cfg.engineFarPlane)) + " m): its far corners are clipped in the game");
+            const Vec3 c[2] = {box.mn, box.mx};
+            auto comp = [](const Vec3& v, int a) { return a == 0 ? v.x : a == 1 ? v.y : v.z; };
+            for (int axis = 0; axis < 3; ++axis)
+                for (int side = 0; side < 2; ++side) {
+                    Vec3 n{0, 0, 0};
+                    (axis == 0 ? n.x : axis == 1 ? n.y : n.z) = side == 0 ? 1 : -1;  // the face at the min side looks towards +axis: inwards
+                    const int a1 = (axis + 1) % 3, a2 = (axis + 2) % 3;
+                    std::vector<Vec3> quad;
+                    for (int k = 0; k < 4; ++k) {
+                        const int u = (k == 1 || k == 2) ? 1 : 0, v = k >= 2 ? 1 : 0;
+                        double q[3];
+                        q[axis] = comp(c[side], axis);
+                        q[a1] = comp(c[u], a1);
+                        q[a2] = comp(c[v], a2);
+                        quad.push_back({q[0], q[1], q[2]});
+                    }
+                    if ((quad[1] - quad[0]).cross(quad[2] - quad[0]).dot(n) < 0) std::reverse(quad.begin(), quad.end());  // CCW seen from inside
+                    Poly p;
+                    p.model = 0;
+                    p.texture = tex; p.classname = "worldspawn"; p.entityId = worldId;
+                    p.normal = n;
+                    p.verts = &quad;
+                    p.st = [](size_t, const Vec3&) { return Vec2{0, 0}; };  // a skybox is sampled by direction
+                    emit(p);
+                    ++res.stats.skySurfaces;
+                }
+        }
+    }
+    for (const auto& t : flatSky) res.warnings.push_back("sky texture " + t + " is not a skybox (env/<name>_cube): the engine draws it as a flat texture");
     // emit model by model (a model's surfaces are one contiguous range): its decals first
     std::vector<Bounds> modelBounds(modelCount);
     std::vector<std::pair<int, int>> modelSurfRange(modelCount);
+    std::vector<char> outSky;  // per output surface
     for (size_t m = 0; m < modelCount; ++m) {
         modelSurfRange[m].first = static_cast<int>(surfaces.size());
         std::vector<int> order = modelDecals[m];
@@ -456,6 +504,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             verts.insert(verts.end(), stageVerts.begin() + static_cast<std::ptrdiff_t>(vf), stageVerts.begin() + static_cast<std::ptrdiff_t>(vf + vn));
             indexes.insert(indexes.end(), stageIdx.begin() + static_cast<std::ptrdiff_t>(xf), stageIdx.begin() + static_cast<std::ptrdiff_t>(xf + xn));
             surfaces.push_back(s);
+            outSky.push_back(surfaceSky[static_cast<size_t>(u)]);
             modelBounds[m].add(surfaceBounds[static_cast<size_t>(u)]);
         }
         modelSurfRange[m].second = static_cast<int>(surfaces.size()) - modelSurfRange[m].first;
@@ -510,7 +559,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             std::string firstTex;
             for (const HalfSpace& h : hs) {
                 const std::string tex = h.texture.empty() ? std::string("common/caulk") : h.texture;
-                const BspContentRules::Flags fl = cfg.contents.forTexture(tex);
+                const BspContentRules::Flags fl = cfg.contents.forFace(tex);
                 contents |= fl.contents;
                 if (firstTex.empty()) { firstTex = tex; firstSurface = fl.surface; }
                 sides.push_back({planes.add(toQuakeDir(h.normal), h.dist * rbsp::kUnitsPerMeter), shaders.add(tex, fl.contents, fl.surface)});
@@ -529,7 +578,14 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
 
     // ---- cells (the leafs of an axis aligned tree) and sampled visibility ---------------------------------------------------------------------
     stage("cells", 0.25);
-    Bounds world = modelBounds[0];
+    // the cells cover the world's geometry; the sky around it is not cut into cells (its surfaces go into every cluster's leafs)
+    Bounds world;
+    for (int sf = modelSurfRange[0].first; sf < modelSurfRange[0].first + modelSurfRange[0].second; ++sf)
+        if (!outSky[static_cast<size_t>(sf)]) {
+            const auto& su = surfaces[static_cast<size_t>(sf)];
+            for (int v = 0; v < su.numVerts; ++v) { const float* p = verts[static_cast<size_t>(su.firstVert + v)].xyz; world.add(Vec3{p[0], p[1], p[2]}); }
+        }
+    for (int b = modelBrushRange[0].first; b < modelBrushRange[0].first + modelBrushRange[0].second; ++b) world.add(brushBounds[static_cast<size_t>(b)]);
     if (!world.valid()) { world.add(Vec3{-32, -32, -32}); world.add(Vec3{32, 32, 32}); }
     world.mn = world.mn - Vec3{1, 1, 1};
     world.mx = world.mx + Vec3{1, 1, 1};
@@ -629,6 +685,10 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         }
     };
     for (int s = modelSurfRange[0].first; s < modelSurfRange[0].first + modelSurfRange[0].second; ++s) {
+        if (outSky[static_cast<size_t>(s)]) {  // sky: seen from every cluster
+            for (size_t ci = 0; ci < cellCount; ++ci) if (clusterOf[ci] >= 0) leafSurf[ci].push_back(s);
+            continue;
+        }
         Bounds b;
         const auto& sf = surfaces[static_cast<size_t>(s)];
         for (int v = 0; v < sf.numVerts; ++v) { const float* p = verts[static_cast<size_t>(sf.firstVert + v)].xyz; b.add(Vec3{p[0], p[1], p[2]}); }
@@ -674,6 +734,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             const auto mit = modelOf.find(entityKey(s.instance, s.entityId));
             if (mit == modelOf.end() || mit->second != 0) continue;                // only the static world occludes
             if (in.opaque && !in.opaque(s.texture)) continue;                      // glass, grates: see-through
+            if (cfg.contents.isSky(s.texture)) continue;                            // sky: open
             occ.push_back(s);
             occ.back().classname = "worldspawn";
         }
@@ -970,7 +1031,8 @@ const char* kDefaultBspConfig = R"BSP({
     {"match": "*water*", "contents": ["water", "translucent"], "surface": ["nonsolid"]},
     {"match": "*lava*", "contents": ["lava"], "surface": ["nonsolid"]},
     {"match": "*slime*", "contents": ["slime"], "surface": ["nonsolid"]},
-    {"match": "*sky*", "contents": ["solid"], "surface": ["sky", "nolightmap"]}
+    {"match": "*cube", "contents": [], "surface": ["sky", "nolightmap"]},
+    {"match": "*sky*", "contents": [], "surface": ["sky", "nolightmap"]}
   ],
   "classes": [
     {"match": "trigger_*", "contents": ["trigger"]}
@@ -1043,6 +1105,95 @@ bool BspContentRules::forClass(const std::string& classname, uint32_t& contents)
     for (const auto& r : classes)
         if (r.hasContents && globMatch(r.match, classname)) { contents = r.contents; return true; }
     return false;
+}
+
+bool BspContentRules::isSky(const std::string& texture) const {
+    if (isCubemapTexture(texture)) return true;
+    const auto it = surfaceFlags.find("sky");
+    return it != surfaceFlags.end() && it->second != 0 && (forTexture(texture).surface & it->second) != 0;
+}
+
+BspContentRules::Flags BspContentRules::forFace(const std::string& texture) const {
+    Flags f = forTexture(texture);
+    if (!isSky(texture)) return f;
+    f.contents = 0;
+    for (const char* name : {"sky", "nolightmap"})
+        if (const auto it = surfaceFlags.find(name); it != surfaceFlags.end()) f.surface |= it->second;
+    return f;
+}
+
+SkySettings skySettingsOf(const Entity& w, const std::function<std::vector<std::string>()>& skyboxes, std::vector<std::string>* warnings) {
+    SkySettings s;
+    auto key = [&](const char* k) -> std::string { const auto it = w.keyvalues.find(k); return it == w.keyvalues.end() ? std::string() : it->second; };
+    const std::string mode = key("_sky_auto");
+    if (mode == "box") s.mode = AutoSky::Box;
+    else if (mode == "areas") s.mode = AutoSky::Areas;
+    else if (!mode.empty() && mode != "off" && warnings) warnings->push_back("worldspawn: _sky_auto must be box or areas; auto sky is off");
+    if (const std::string m = key("_sky_margin"); !m.empty()) {
+        try { s.margin = std::clamp(std::stod(m), 0.0, 1000.0); } catch (...) { if (warnings) warnings->push_back("worldspawn: _sky_margin is not a number; ignored"); }
+    }
+    s.texture = key("_sky_texture");
+    if (s.texture.empty() && s.mode != AutoSky::Off && skyboxes) {
+        const auto list = skyboxes();
+        if (!list.empty()) s.texture = list.front();
+    }
+    return s;
+}
+
+std::vector<SkyBox> autoSkyBoxes(const std::vector<LightSurface>& surfaces, AutoSky mode, double margin, const BspContentRules& rules) {
+    if (mode == AutoSky::Off) return {};
+    // bounds per brush (the pieces of one authored brush belong together)
+    auto join = [](SkyBox& a, const SkyBox& b) {
+        a.mn = {std::min(a.mn.x, b.mn.x), std::min(a.mn.y, b.mn.y), std::min(a.mn.z, b.mn.z)};
+        a.mx = {std::max(a.mx.x, b.mx.x), std::max(a.mx.y, b.mx.y), std::max(a.mx.z, b.mx.z)};
+    };
+    std::map<std::string, SkyBox> byBrush;
+    for (const LightSurface& s : surfaces) {
+        if (s.verts.empty() || rules.isSky(s.texture)) continue;
+        const std::string key = s.instance + '\x1f' + s.entityId + '\x1f' + s.brushInstance + '\x1f' + s.brushId;
+        auto it = byBrush.try_emplace(key, SkyBox{s.verts[0], s.verts[0]}).first;
+        for (const Vec3& v : s.verts) join(it->second, SkyBox{v, v});
+    }
+    std::vector<SkyBox> boxes;
+    for (const auto& kv : byBrush) boxes.push_back(kv.second);
+    if (boxes.empty()) return {};
+    auto grow = [](SkyBox b, double m) { b.mn = b.mn - Vec3{m, m, m}; b.mx = b.mx + Vec3{m, m, m}; return b; };
+    if (mode == AutoSky::Box) {
+        SkyBox all = boxes[0];
+        for (const auto& b : boxes) join(all, b);
+        return {grow(all, margin)};
+    }
+    // merge touching / overlapping boxes until none do: first the brushes themselves (the groups), then the groups' boxes with the margin
+    auto touch = [](const SkyBox& a, const SkyBox& b) {
+        const double e = 1e-4;
+        return a.mn.x <= b.mx.x + e && b.mn.x <= a.mx.x + e && a.mn.y <= b.mx.y + e && b.mn.y <= a.mx.y + e && a.mn.z <= b.mx.z + e && b.mn.z <= a.mx.z + e;
+    };
+    auto mergeAll = [&](std::vector<SkyBox> list, double m) {
+        for (bool merged = true; merged;) {
+            merged = false;
+            for (size_t i = 0; i < list.size() && !merged; ++i)
+                for (size_t j = i + 1; j < list.size(); ++j)
+                    if (touch(grow(list[i], m), grow(list[j], m))) { join(list[i], list[j]); list.erase(list.begin() + static_cast<std::ptrdiff_t>(j)); merged = true; break; }
+        }
+        return list;
+    };
+    // groups: brushes whose bounds touch, transitively (union-find over the pairs)
+    std::vector<size_t> parent(boxes.size());
+    for (size_t i = 0; i < parent.size(); ++i) parent[i] = i;
+    std::function<size_t(size_t)> root = [&](size_t i) { return parent[i] == i ? i : parent[i] = root(parent[i]); };
+    for (size_t i = 0; i < boxes.size(); ++i)
+        for (size_t j = i + 1; j < boxes.size(); ++j)
+            if (touch(boxes[i], boxes[j])) parent[root(i)] = root(j);
+    std::map<size_t, SkyBox> byGroup;
+    for (size_t i = 0; i < boxes.size(); ++i) {
+        auto it = byGroup.find(root(i));
+        if (it == byGroup.end()) byGroup.emplace(root(i), boxes[i]); else join(it->second, boxes[i]);
+    }
+    std::vector<SkyBox> groups;
+    for (const auto& kv : byGroup) groups.push_back(kv.second);
+    groups = mergeAll(groups, margin);
+    for (auto& g : groups) g = grow(g, margin);
+    return groups;
 }
 
 uint32_t BspContentRules::decalFlag() const {

@@ -33,7 +33,7 @@ bool isStatic(const std::string& c, const LightingClasses& classes) {
 }  // namespace
 
 json BspExportResult::toJson() const {
-    json s = {{"surfaces", stats.surfaces}, {"decals", stats.decals}, {"laidOut", stats.laidOutSurfaces}, {"droppedSurfaces", stats.droppedSurfaces}, {"brushes", stats.brushes}, {"models", stats.models},
+    json s = {{"surfaces", stats.surfaces}, {"decals", stats.decals}, {"sky", stats.skySurfaces}, {"laidOut", stats.laidOutSurfaces}, {"droppedSurfaces", stats.droppedSurfaces}, {"brushes", stats.brushes}, {"models", stats.models},
               {"leafs", stats.leafs}, {"clusters", stats.clusters}, {"lightmapPages", stats.lightmapPages}, {"gridPoints", stats.gridPoints},
               {"palette", stats.palette}, {"visCell", stats.visCell}, {"visSeconds", stats.visSeconds}};
     return {{"type", "export_result"}, {"ok", ok}, {"cancelled", cancelled}, {"error", error}, {"warnings", warnings}, {"stats", s},
@@ -70,7 +70,7 @@ BspExportResult exportBsp(const BspExportRequest& req, const ProgressFn& progres
 
         BspInput in;
         in.entities = std::move(flat.entities);
-        in.surfaces = scene.lightSurfaces();
+        in.surfaces = scene.lightSurfaces(true);  // sky faces too: the lighting never sees them, the BSP draws them
         in.classes = classes;
         const SolidSet statics = collectSolids(doc, prefabs, [&](const std::string& c) { return isStatic(c, classes); });
         in.solids = &statics;
@@ -135,6 +135,9 @@ BspExportResult exportBsp(const BspExportRequest& req, const ProgressFn& progres
         in.settings.contents = BspContentRules::fromJson(scene.profile().bsp, &r.warnings);
         for (const auto& e : doc.entities)
             if (e.classname == "worldspawn") {
+                in.settings.sky = skySettingsOf(e, [&]() { return listSkyboxes(req.assetsRoot); }, &r.warnings);  // REQUIREMENTS §28
+                if (in.settings.sky.mode != AutoSky::Off && !in.settings.sky.texture.empty() && !readSkybox(req.assetsRoot, in.settings.sky.texture))
+                    r.warnings.push_back("auto sky: " + in.settings.sky.texture + " has no image in env/ (the engine would draw nothing)");
                 if (const auto it = e.keyvalues.find("_vis_cell"); it != e.keyvalues.end()) {
                     try { const double c = std::stod(it->second); if (c > 0) in.settings.visCell = c; } catch (...) { r.warnings.push_back("_vis_cell is not a number"); }
                 }

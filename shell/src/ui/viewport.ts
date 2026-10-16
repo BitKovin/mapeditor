@@ -32,6 +32,8 @@ import { DragItem, dragItem, isDragTransfer, itemFromTransfer, onDragItemChange 
 import type { Box } from '../model/entityBox'
 import { entityOrigin, prefabOrigin } from '../model/placement'
 import type { Entity } from '../model/document'
+import { autoSkyOf, isCubemapPath, SKY_TEXTURE_KEY } from '../model/sky'
+import { worldspawnOf } from '../model/levelSettings'
 import type { PrefabPreviews } from '../state/prefabPreview'
 import type { Selection, Store } from '../state/store'
 import { wholeEntityIfSole } from '../state/store'
@@ -358,6 +360,7 @@ export class ViewportPanel implements IContentRenderer {
       overlays: [...this.arrowOverlays(), ...this.lightOverlays(), ...this.decalSelectionOverlay()],
       preview: [...(preview ?? []), ...(this.loopPreview ?? []), ...this.knifeOverlay(), ...this.clipOverlay(), ...this.resizeOverlay()],
       highlight: selBrush && sel!.faceId !== undefined ? { brush: selBrush, faceId: sel!.faceId } : null,
+      sky: viewportSky(st.doc),
       mesh: mt ? { brush: mt.brush, mode: st.meshMode, sel: st.meshSel } : null,
       time: this.styleTimeOverride ?? (this.element.ownerDocument.defaultView ?? window).performance.now() / 1000,
     })
@@ -1692,4 +1695,10 @@ export class ViewportPanel implements IContentRenderer {
       h('div', { class: 'vp-group' }, h('span', { class: 'vp-label' }, 'Perspective'), cam, speed, mode, lightStatus, viewWrap, frame, ...(this.onPopout ? [pop] : [])),
       h('div', { class: 'vp-group' }, ...gizmoBtns, snapBtn, size, rot, scl))
   }
+}
+
+/** The level's sky behind the geometry (REQUIREMENTS §28 K10): with Auto sky on and a skybox chosen in the Level settings. */
+export function viewportSky(doc: MapDocument): string | undefined {
+  const w = worldspawnOf(doc), t = w?.keyvalues?.[SKY_TEXTURE_KEY]?.trim()
+  return autoSkyOf(w) !== 'off' && t && isCubemapPath(t) ? t : undefined
 }

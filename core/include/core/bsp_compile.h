@@ -64,8 +64,28 @@ struct BspContentRules {
     Flags forTexture(const std::string& texture) const;
     bool forClass(const std::string& classname, uint32_t& contents) const;
     uint32_t decalFlag() const;
+    /// A sky texture (REQUIREMENTS §28 K4): a skybox (textures.h isCubemapTexture) or a texture whose rule gives it the `sky` surface flag.
+    bool isSky(const std::string& texture) const;
+    /// What a face with this texture gets: forTexture, and for a sky texture no contents and the `sky` + `nolightmap` surface flags.
+    Flags forFace(const std::string& texture) const;
 };
 bool globMatch(const std::string& pattern, const std::string& text);  // case-insensitive, '*' and '?'
+
+// ---- sky (REQUIREMENTS §28, DESIGN §12 "Sky") -------------------------------------------------------------------------------------------------
+// Level settings (worldspawn keys): _sky_auto "box" | "areas" (absent = off), _sky_margin (m, default 8), _sky_texture (a skybox). The level's sky
+// texture is _sky_texture, else (Auto sky on) the first skybox of the assets' env folder, else none.
+enum class AutoSky { Off, Box, Areas };
+struct SkySettings {
+    AutoSky mode = AutoSky::Off;
+    double margin = 8;
+    std::string texture;  // "" = none
+};
+/// `skyboxes` lists the skyboxes (textures.h listSkyboxes); it is only called when the default texture is needed.
+SkySettings skySettingsOf(const Entity& worldspawn, const std::function<std::vector<std::string>()>& skyboxes, std::vector<std::string>* warnings = nullptr);
+struct SkyBox { Vec3 mn, mx; };  // editor space
+/// The automatic sky boxes around the surfaces that are not sky: one box (Box), or one per group of brushes whose bounds touch or overlap, groups
+/// whose boxes (with the margin) touch or overlap merged until none do (Areas). Each box is the group's bounds grown by `margin`.
+std::vector<SkyBox> autoSkyBoxes(const std::vector<LightSurface>& surfaces, AutoSky mode, double margin, const BspContentRules& rules);
 
 // ---- compiler -------------------------------------------------------------------------------------------------------------------------------
 struct BspSettings {
@@ -77,6 +97,8 @@ struct BspSettings {
     int visSamples = 16;                   // sample points per cell
     int visRays = 256;                     // rays per sample point
     bool visibility = true;                // false: every cluster sees every cluster
+    SkySettings sky;                       // the automatic sky (its texture "" = env/sky_cube with a warning)
+    double engineFarPlane = 3000;          // m: the engine's Camera::FarPlane; a sky box larger than that across is clipped (warning)
 };
 
 struct BspInput {
@@ -107,7 +129,7 @@ struct BspOutput {
     std::vector<BspLightmapPage> lightmaps;  // lm_0000.exr, lm_0001.exr, ...
     std::vector<std::string> warnings;
     struct Stats {
-        size_t surfaces = 0, decals = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, gridPoints = 0, palette = 0;
+        size_t surfaces = 0, decals = 0, skySurfaces = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, gridPoints = 0, palette = 0;
         double visCell = 0, visSeconds = 0;
     } stats;
 };

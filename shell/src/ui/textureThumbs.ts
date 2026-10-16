@@ -3,9 +3,17 @@
 // Each thumbnail keeps the texture's aspect ratio and is drawn once into a small cached canvas, so re-filtering a grid costs nothing.
 import type { TextureCache } from '../state/textures'
 import { drawFitted } from './fitImage'
+import { h } from './dom'
+import { isCubemapPath, isSkyTexture } from '../model/sky'
 
 const cache = new WeakMap<TextureCache, Map<string, HTMLCanvasElement>>()
 const thumbsOf = (t: TextureCache) => { let m = cache.get(t); if (!m) { m = new Map(); cache.set(t, m) } return m }
+
+/** The SKY badge of a tile (REQUIREMENTS §28 K7): skyboxes, and textures the export treats as sky; null for the others. */
+export function skyBadge(path: string): HTMLElement | null {
+  if (!isSkyTexture(path)) return null
+  return h('span', { class: 'tile-badge', title: isCubemapPath(path) ? 'Skybox: drawn by direction (env/ cubemap), no lightmap, blocks no light' : 'Sky texture: no lightmap, blocks no light; the engine draws it flat (a skybox is env/<name>_cube)' }, 'SKY')
+}
 
 /** Forget the drawn thumbnails of `textures` (e.g. the texture list was rescanned and files may have changed). */
 export function forgetThumbnails(textures: TextureCache): void { thumbsOf(textures).clear() }

@@ -940,10 +940,52 @@ one entry per (texture, contents, surface flags); brush shader = the class rule'
 lifted `decalOffset` (0.25 Quake units) along its normal, lit through the chart of the face it lies on, written before the model's other surfaces,
 shader surface flag `decal` = 0x100000 (contents 0). The engine draws flagged faces first in its transparent pass.
 
-**Files.** `core/bsp_format.h` (structs), `core/exr.h` (EXR half + ZIP, miniz), `core/bsp_compile.h` (`compileBsp`: pure, plus `convexPieces` /
+**Files.** `core/bsp_format.h` (structs), `core/sky.h` (skybox mapping, sky light tables), `core/exr.h` (EXR half + ZIP, miniz), `core/bsp_compile.h` (`compileBsp`: pure, plus `convexPieces` /
 `subtractConvex` in `bsp_convex.cpp`), `core/bsp_export.h` (`exportBsp`: own Scene from a copy of the document, headless `LightingService` with
 `Options::qualityScale`, files; `BspExportJob`: one export thread, polled by `Router::onTick`). Messages: protocol.h `export_bsp` / `export_cancel` /
 `export_progress` / `export_result`. Shell: toolbar `Export BSP`, `state/exportStatus.ts`.
+
+**Sky (REQUIREMENTS §28): an enclosed, automatically generated sky; the engine's skybox convention, no engine change.**
+*Level settings* (worldspawn keys; `skySettingsOf` in `bsp_compile.h`, Shell `model/sky.ts`): `_sky_auto` = `box` | `areas` (absent = off), `_sky_margin`
+(m, default 8, 0..1000), `_sky_texture`. The level's sky texture is `_sky_texture`, else (Auto sky on) the first skybox of `env/`, else none.
+*Auto sky* (`autoSkyBoxes`, `compileBsp`): the bounds of every brush whose faces are not sky; `box` = one box around all of them, `areas` = brushes whose
+bounds touch or overlap are one group (union-find), then group boxes that touch once grown by the margin are merged until none do; every box is
+grown by the margin and becomes 6 quads of model 0 facing inwards (wound like every face: clockwise seen from the front = from inside), texture coordinates 0.
+The floor is sky too. Only the export has them; no collision brushes. A box larger across than `BspSettings::engineFarPlane` (3000 m, the engine's
+`Camera::FarPlane`) is reported: its far corners would be clipped in the game. Suggested engine fix (not made): a `vs_bsp_cube` that
+sets `gl_Position.z = gl_Position.w` (the sky at the far plane, drawn with depth test LEQUAL) or keeps the sky vertex at `cameraPosition + dir * 100`.
+*Sky faces* (`BspContentRules::isSky`: a skybox name, or a texture whose rule gives the `sky` surface flag; built-in rules `*cube` and `*sky*` have no
+contents and `sky` + `nolightmap`; `forFace` forces that for every sky face): no lightmap slot (all 255, `lightmapNum` -1), contents 0, never dropped as
+buried, not occluders of the visibility rays, put into the leaf list of EVERY leaf that has a cluster (seen from everywhere); the cell grid covers only
+the non-sky geometry, so the sky does not add clusters. `Scene::lightSurfaces()` leaves sky faces out (the bake neither lights them nor lets them block
+light: sun and sky light pass as through open sky); `lightSurfaces(true)` (the export) keeps them. A sky texture that is not a skybox is drawn flat by
+the engine: the export warns.
+*How the engine loads and draws a skybox* (SdlWasmEngine, read, not changed): `Quake3Bsp.cpp ResolveFaceTextureData`: a shader name ending in `cube`
+(`nameL > 5`) is a cubemap loaded from `GameData/env/<last path part>` + `.png`, `.jpg`, `.jpeg` in that order; `CubemapTexture::DecodeSmart` takes the
+six files `<base>_lf _rt _up _dn _ft _bk` when all exist (bgfx faces +X -X +Y -Y +Z -Z, `_up` turned 90 degrees clockwise and `_dn` counter-clockwise
+on load), else converts `<base>` as an equirectangular panorama into those files (written next to it) and loads them. No mip maps. The face is drawn with
+`bsp/vs_bsp` + `bsp/fs_bsp_cube`: `dir = normalize(v_world - cameraPosition)` in the engine's world space (vertices are loaded as `(qx, qz, -qy)` and the
+model matrix scales by 1/32, so world = the editor's space: metres, Y up), `dir = (worldOrientation * dir) * (-1, 1, 1)`, `textureCube(dir)`; no light,
+no fog. `worldOrientation` is the inverse of the rotation from +Y to the world's up vector (`WorldOrientationManager`), identity unless a game turns gravity.
+The engine's collision puts faces whose texture contains `_cube` into a separate `WorldSkybox` body that only collides with the character capsule, so a
+skybox name should end in `_cube`. Only the direction matters: the box's size and position do not change the picture.
+*The resulting mapping* (editor directions; north = -Z = Quake +Y, east = +X), Core `core/sky.h` `cubemapLookup` / `panoramaLookup` and Shell
+`model/sky.ts` (identical code, tested for the same directions): `_lf` looks west, `_rt` east, `_ft` south (+Z, the engine's forward), `_bk` north, each
+upright and not mirrored as seen from inside; `_up` has west at its top and south at its right; `_dn` has east at its top and south at its right.
+Standard cube selection on `s = (-x, y, z)`: +X: `(u, v) = ((-s.z / |s.x| + 1) / 2, (-s.y / |s.x| + 1) / 2)`, -X: `(s.z, -s.y)`, +Y: `(s.x, s.z)`,
+-Y: `(s.x, -s.z)`, +Z: `(s.x, -s.y)`, -Z: `(-s.x, -s.y)` (each over the major axis); then `_up` file = `(v, 1 - u)`, `_dn` file = `(1 - v, u)`.
+A panorama: `u = atan2(x, -z) / 2 pi + 0.5` (north in the middle, east at three quarters), `v = 0.5 - asin(y) / pi`; tests replay the engine's
+panorama-to-faces conversion (`bgfxFaceDir`, its write order `_lf _rt _up _dn _bk _ft` and turns) and land on the same point.
+*Editor* (Shell): Core `listTextures` adds `listSkyboxes` (`env/<base>`); `read_texture` of a skybox answers `{sky: {panorama, images}}` with the
+engine's files; `TextureCache` keeps the faces (`SkyImages`) and a preview (the faces as a cross, or the panorama); the browser has a "Skyboxes" entry and
+a SKY badge; the views draw sky faces with `SKY_VS` / `SKY_FS` (a WebGL cube map uploaded with the engine's face order and turns, sampled with
+`(-x, y, z)`; a panorama with the formula above), never lit; with Auto sky on and `_sky_texture` set the perspective views draw the sky behind everything.
+*Sky light from the skybox*: a `light_sky` takes its light per direction from the level's sky texture (`Scene::lightScene` attaches `Light::sky`, cached
+while the files are unchanged): `SkyRadiance` = the skybox averaged (16 x 16 samples per cell, sRGB to linear) into 32 x 8 longitude / elevation cells over
+the upper hemisphere, plus an irradiance table for 16 x 9 normals (cosine weighted / pi, bilinear). Only directions that point up are sky, as for the
+uniform sky; a white skybox gives the uniform sky's `(1 + n.y) / 2`. Unshadowed: colour x brightness x irradiance(n); shadowed: each upward cosine ray's
+transmittance x the cell's radiance. On the GPU the tables follow the light records in the lights buffer (record 7 = where they start, 1), the same
+lookups in `lightmap_direct.comp`. No sky texture (or an unreadable one): the uniform sky as before.
 
 **Not yet:** texture repetition modes (mirror / anchor) are exported as plain repeat; decals and reliefs; vertex colours; classic IBSP export;
 reliefs; the engine decides collision from texture names and does not read the contents flags yet; only SlasherGame's BSP shader has the 8 slots.

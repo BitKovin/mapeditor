@@ -59,6 +59,8 @@ export type Inbound =
   | { type: 'lighting_status'; enabled: boolean; rev: number; chunks: number; stale: number; minPasses: number; maxPasses: number; converged: boolean; texels: number; pages: number; /** the light style layers that exist (0 = base first) */ styles?: number[]; styleWarnings?: string[]; /** display multiplier (Level settings exposure); absent = 1 */ exposure?: number; /** display offset added after the exposure (Level settings brightness); absent = 0 */ brightness?: number }
   | { type: 'derived_geometry'; rev: number; carved: DerivedEntry[]; skipped: { entityId: string; instance?: string; brushId: string }[]; decals: DecalEntry[] }
   | { type: 'response'; requestId: RequestId; ok: boolean; path?: string; rev?: number; error?: string; ext?: string; data?: string; props?: unknown; textures?: string[]; texgroups?: string[]; group?: unknown
+      // read_texture of a skybox (REQUIREMENTS §28): its faces (lf rt up dn ft bk) or its panorama, as the engine loads them from env/
+      sky?: { panorama: boolean; images: { ext: string; data: string }[] }
       // list_directory
       entries?: DirEntry[]
       // browse_filesystem (parent: null = top, '' = the Windows drive list)

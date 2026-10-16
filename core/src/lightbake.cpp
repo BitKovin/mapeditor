@@ -449,8 +449,8 @@ Vec3 evalLight(const Light& L, const Vec3& p, const Vec3& n) {
             if (dist >= L.radius || (p - L.position).dot(L.forward) <= 0) return {};  // beyond the radius, or behind the emitter
             return tint * (rectFormFactor(L, p, n) * window(dist, L.radius));
         }
-        case LightType::Sky:
-            return tint * ((1.0 + n.y) * 0.5);
+        case LightType::Sky:  // the level's skybox when it has one (sky.h), else a uniform upper hemisphere
+            return L.sky ? tint.mul(L.sky->irradianceAt(n)) : tint * ((1.0 + n.y) * 0.5);
     }
     return {};
 }
@@ -561,8 +561,9 @@ Vec3 visibility(const Light& L, uint32_t lightIdx, uint32_t texel, const Vec3& o
     return open * (1.0 / total);
 }
 
-// Sky with occlusion: cosine-weighted rays around the normal; only those pointing up count as sky.
-Vec3 skyVisibility(uint32_t lightIdx, uint32_t texel, const Vec3& o, const Vec3& n, const ShadowCtx& sc) {
+// Sky with occlusion: cosine-weighted rays around the normal; only those pointing up count as sky, each with the skybox's light from its direction
+// when the light has one (sky.h), else 1.
+Vec3 skyVisibility(const Light& L, uint32_t lightIdx, uint32_t texel, const Vec3& o, const Vec3& n, const ShadowCtx& sc) {
     Vec3 t, b;
     frameOf(n, t, b);
     const int total = std::max(1, sc.skySamples);
@@ -572,7 +573,10 @@ Vec3 skyVisibility(uint32_t lightIdx, uint32_t texel, const Vec3& o, const Vec3&
         sample2(texel, lightIdx, static_cast<uint32_t>(i) + sc.sampleOffset, u, v);
         const double r = std::sqrt(static_cast<double>(u)), phi = 2.0 * kPi * v;
         const Vec3 dir = t * (r * std::cos(phi)) + b * (r * std::sin(phi)) + n * std::sqrt(std::max(0.0, 1.0 - u));
-        if (dir.y > 0) open = open + sc.bvh->transmittance(o, dir, kShadowFar);
+        if (dir.y > 0) {
+            const Vec3 tr = sc.bvh->transmittance(o, dir, kShadowFar);
+            open = open + (L.sky ? L.sky->at(dir).mul(tr) : tr);
+        }
     }
     return open * (1.0 / total);
 }
@@ -602,7 +606,7 @@ std::vector<float> directCpu(const TexelSamples& s, const LightScene& scene, con
                 const bool traced = sc.bvh && L.castShadows;
                 Vec3 v;
                 if (L.type == LightType::Sky && traced) {
-                    v = (L.color * L.brightness).mul(skyVisibility(static_cast<uint32_t>(k), seedId, o, n, sc));
+                    v = (L.color * L.brightness).mul(skyVisibility(L, static_cast<uint32_t>(k), seedId, o, n, sc));
                 } else {
                     v = evalLight(L, p, n);
                     if (traced && (v.x > 0 || v.y > 0 || v.z > 0)) v = v.mul(visibility(L, static_cast<uint32_t>(k), seedId, o, sc));

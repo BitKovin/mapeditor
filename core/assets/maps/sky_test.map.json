@@ -1,0 +1,606 @@
+{
+ "schemaVersion": "0.2",
+ "entities": [
+  {
+   "id": "world",
+   "classname": "worldspawn",
+   "origin": [
+    0,
+    0,
+    0
+   ],
+   "keyvalues": {
+    "_sky_auto": "box",
+    "_sky_margin": "8",
+    "_sky_texture": "env/test_sky_cube"
+   },
+   "brushes": [
+    {
+     "id": "floor",
+     "op": "add",
+     "vertices": [
+      [
+       -16,
+       -0.5,
+       -16
+      ],
+      [
+       16,
+       -0.5,
+       -16
+      ],
+      [
+       16,
+       0,
+       -16
+      ],
+      [
+       -16,
+       0,
+       -16
+      ],
+      [
+       -16,
+       -0.5,
+       16
+      ],
+      [
+       16,
+       -0.5,
+       16
+      ],
+      [
+       16,
+       0,
+       16
+      ],
+      [
+       -16,
+       0,
+       16
+      ]
+     ],
+     "faces": [
+      {
+       "id": 0,
+       "loop": [
+        0,
+        3,
+        2,
+        1
+       ],
+       "texture": "dev/floor"
+      },
+      {
+       "id": 1,
+       "loop": [
+        4,
+        5,
+        6,
+        7
+       ],
+       "texture": "dev/floor"
+      },
+      {
+       "id": 2,
+       "loop": [
+        0,
+        4,
+        7,
+        3
+       ],
+       "texture": "dev/floor"
+      },
+      {
+       "id": 3,
+       "loop": [
+        1,
+        2,
+        6,
+        5
+       ],
+       "texture": "dev/floor"
+      },
+      {
+       "id": 4,
+       "loop": [
+        0,
+        1,
+        5,
+        4
+       ],
+       "texture": "dev/floor"
+      },
+      {
+       "id": 5,
+       "loop": [
+        3,
+        7,
+        6,
+        2
+       ],
+       "texture": "dev/floor"
+      }
+     ]
+    },
+    {
+     "id": "wallN",
+     "op": "add",
+     "vertices": [
+      [
+       -16,
+       0,
+       -16
+      ],
+      [
+       16,
+       0,
+       -16
+      ],
+      [
+       16,
+       3,
+       -16
+      ],
+      [
+       -16,
+       3,
+       -16
+      ],
+      [
+       -16,
+       0,
+       -15.5
+      ],
+      [
+       16,
+       0,
+       -15.5
+      ],
+      [
+       16,
+       3,
+       -15.5
+      ],
+      [
+       -16,
+       3,
+       -15.5
+      ]
+     ],
+     "faces": [
+      {
+       "id": 0,
+       "loop": [
+        0,
+        3,
+        2,
+        1
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 1,
+       "loop": [
+        4,
+        5,
+        6,
+        7
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 2,
+       "loop": [
+        0,
+        4,
+        7,
+        3
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 3,
+       "loop": [
+        1,
+        2,
+        6,
+        5
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 4,
+       "loop": [
+        0,
+        1,
+        5,
+        4
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 5,
+       "loop": [
+        3,
+        7,
+        6,
+        2
+       ],
+       "texture": "dev/wall"
+      }
+     ]
+    },
+    {
+     "id": "wallW",
+     "op": "add",
+     "vertices": [
+      [
+       -16,
+       0,
+       -15.5
+      ],
+      [
+       -15.5,
+       0,
+       -15.5
+      ],
+      [
+       -15.5,
+       2,
+       -15.5
+      ],
+      [
+       -16,
+       2,
+       -15.5
+      ],
+      [
+       -16,
+       0,
+       8
+      ],
+      [
+       -15.5,
+       0,
+       8
+      ],
+      [
+       -15.5,
+       2,
+       8
+      ],
+      [
+       -16,
+       2,
+       8
+      ]
+     ],
+     "faces": [
+      {
+       "id": 0,
+       "loop": [
+        0,
+        3,
+        2,
+        1
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 1,
+       "loop": [
+        4,
+        5,
+        6,
+        7
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 2,
+       "loop": [
+        0,
+        4,
+        7,
+        3
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 3,
+       "loop": [
+        1,
+        2,
+        6,
+        5
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 4,
+       "loop": [
+        0,
+        1,
+        5,
+        4
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 5,
+       "loop": [
+        3,
+        7,
+        6,
+        2
+       ],
+       "texture": "dev/wall"
+      }
+     ]
+    },
+    {
+     "id": "tower",
+     "op": "add",
+     "vertices": [
+      [
+       6,
+       0,
+       -6
+      ],
+      [
+       9,
+       0,
+       -6
+      ],
+      [
+       9,
+       10,
+       -6
+      ],
+      [
+       6,
+       10,
+       -6
+      ],
+      [
+       6,
+       0,
+       -3
+      ],
+      [
+       9,
+       0,
+       -3
+      ],
+      [
+       9,
+       10,
+       -3
+      ],
+      [
+       6,
+       10,
+       -3
+      ]
+     ],
+     "faces": [
+      {
+       "id": 0,
+       "loop": [
+        0,
+        3,
+        2,
+        1
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 1,
+       "loop": [
+        4,
+        5,
+        6,
+        7
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 2,
+       "loop": [
+        0,
+        4,
+        7,
+        3
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 3,
+       "loop": [
+        1,
+        2,
+        6,
+        5
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 4,
+       "loop": [
+        0,
+        1,
+        5,
+        4
+       ],
+       "texture": "dev/wall"
+      },
+      {
+       "id": 5,
+       "loop": [
+        3,
+        7,
+        6,
+        2
+       ],
+       "texture": "dev/wall"
+      }
+     ]
+    },
+    {
+     "id": "pillar",
+     "op": "add",
+     "vertices": [
+      [
+       -4,
+       0,
+       4
+      ],
+      [
+       -3,
+       0,
+       4
+      ],
+      [
+       -3,
+       4,
+       4
+      ],
+      [
+       -4,
+       4,
+       4
+      ],
+      [
+       -4,
+       0,
+       5
+      ],
+      [
+       -3,
+       0,
+       5
+      ],
+      [
+       -3,
+       4,
+       5
+      ],
+      [
+       -4,
+       4,
+       5
+      ]
+     ],
+     "faces": [
+      {
+       "id": 0,
+       "loop": [
+        0,
+        3,
+        2,
+        1
+       ],
+       "texture": "dev/grey"
+      },
+      {
+       "id": 1,
+       "loop": [
+        4,
+        5,
+        6,
+        7
+       ],
+       "texture": "dev/grey"
+      },
+      {
+       "id": 2,
+       "loop": [
+        0,
+        4,
+        7,
+        3
+       ],
+       "texture": "dev/grey"
+      },
+      {
+       "id": 3,
+       "loop": [
+        1,
+        2,
+        6,
+        5
+       ],
+       "texture": "dev/grey"
+      },
+      {
+       "id": 4,
+       "loop": [
+        0,
+        1,
+        5,
+        4
+       ],
+       "texture": "dev/grey"
+      },
+      {
+       "id": 5,
+       "loop": [
+        3,
+        7,
+        6,
+        2
+       ],
+       "texture": "dev/grey"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "start",
+   "classname": "info_player_start",
+   "origin": [
+    0,
+    0.1,
+    8
+   ],
+   "angles": [
+    0,
+    180,
+    0
+   ],
+   "keyvalues": {}
+  },
+  {
+   "id": "sky",
+   "classname": "light_sky",
+   "origin": [
+    0,
+    6,
+    0
+   ],
+   "keyvalues": {
+    "brightness": "1"
+   }
+  },
+  {
+   "id": "sun",
+   "classname": "light_directional",
+   "origin": [
+    2,
+    8,
+    2
+   ],
+   "angles": [
+    50,
+    30,
+    0
+   ],
+   "keyvalues": {
+    "brightness": "1.5"
+   }
+  }
+ ],
+ "prefabInstances": []
+}

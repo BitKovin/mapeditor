@@ -48,7 +48,8 @@ bool sameLight(const Light& a, const Light& b) {
     auto eq = [](const Vec3& x, const Vec3& y) { return x.x == y.x && x.y == y.y && x.z == y.z; };
     return a.type == b.type && eq(a.position, b.position) && eq(a.forward, b.forward) && eq(a.right, b.right) && eq(a.up, b.up) && eq(a.color, b.color) &&
            a.brightness == b.brightness && a.radius == b.radius && a.bounce == b.bounce && a.castShadows == b.castShadows && a.style == b.style &&
-           a.sourceSize == b.sourceSize && a.innerAngle == b.innerAngle && a.outerAngle == b.outerAngle && a.width == b.width && a.height == b.height;
+           a.sourceSize == b.sourceSize && a.innerAngle == b.innerAngle && a.outerAngle == b.outerAngle && a.width == b.width && a.height == b.height &&
+           a.sky == b.sky;
 }
 
 std::string lightKey(const Light& l) { return l.instance + "|" + l.id; }

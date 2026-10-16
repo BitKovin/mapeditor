@@ -15,6 +15,7 @@ inline constexpr const char* kOpenDocument = "open_document";      // { requestI
 inline constexpr const char* kSaveDocument = "save_document";      // { requestId, path? }
 inline constexpr const char* kListTextures = "list_textures";      // { requestId }            -> response { textures: [path] }
 inline constexpr const char* kReadTexture = "read_texture";        // { requestId, path }      -> response { ext, data: base64, props?: <texture>.json contents }
+                                                                    //   a skybox (name ends in "cube") -> response { sky: { panorama, images: [{ ext, data }] } } (faces lf rt up dn ft bk)
 inline constexpr const char* kWriteTextureProps = "write_texture_props";  // { requestId, path, props } -> response { props } (sanitised, merged into <texture file>.json)
 inline constexpr const char* kListTexGroups = "list_texgroups";    // { requestId }            -> response { texgroups: [name] }
 inline constexpr const char* kReadTexGroup = "read_texgroup";      // { requestId, path }      -> response { path, group: <the file's JSON> }

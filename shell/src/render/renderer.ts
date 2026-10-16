@@ -36,6 +36,8 @@ import { boxFromQuake } from '../model/entityBox'
 import type { OrientedBox } from '../model/pointBox'
 import { cornersOf, drawsBox, pointBox, toWorld, worldCorners } from '../model/pointBox'
 import type { ViewportSettings } from './viewportSettings'
+import { SKY_FACES, SKY_GLSL, isSkyTexture } from '../model/sky'
+import { mat4 } from 'gl-matrix'
 
 /** `instanceId` = the top-level prefab instance this content belongs to (undefined for the document's own entities). */
 /** `instance` = the full instance path of prefab content ("a/b" for nested; undefined for the document's own entities), the key under which Core files its carved result. */
@@ -83,6 +85,8 @@ export interface Frame {
   selections?: { entityId: string; brushId?: string; instanceId?: string }[]
   /** The selected face, drawn as a translucent overlay. */
   highlight: { brush: Brush; faceId: number } | null
+  /** The level's sky (a skybox) drawn behind everything in perspective views (Auto sky, REQUIREMENTS §28 K10); absent = the plain background. */
+  sky?: string
 }
 
 // Texture transparency in the views (REQUIREMENTS §23), the same rules the bake uses: uTransp = (mode 0 opaque | 1 cutout | 2 translucent, cutoff,
@@ -174,6 +178,22 @@ void main() {
   for (int i = 0; i < 8; i++) { if (i >= uN) break; light += uAmb[i] + uDc[i] * max(0.0, dot(n, uDir)); } // weights (style values) are already in uAmb / uDc; ONE direction for every layer (REQUIREMENTS §27 G4)
   o = vec4(linearToSrgb(albedo * light * uExposure + uBrightness), mix(1.0, t.a, uAlphaTex) * transparency(t.a * uHasTex + (1.0 - uHasTex)));
 }`
+// Sky faces (REQUIREMENTS §28 K10): the skybox sampled by the view direction, exactly as the engine's bsp/fs_bsp_cube does (model/sky.ts), no light,
+// no fog. SKYBG draws the level's sky behind everything (a full-screen triangle at the far plane).
+const SKY_VS = `#version 300 es
+uniform mat4 uViewProj; uniform vec3 uEye; layout(location = 0) in vec3 aPos; out vec3 vDir;
+void main() { vDir = aPos - uEye; gl_Position = uViewProj * vec4(aPos, 1.0); }`
+const SKY_FS = `#version 300 es
+precision highp float; uniform samplerCube uCube; uniform sampler2D uPano; uniform float uIsPano; in vec3 vDir; out vec4 o;
+${SKY_GLSL}
+void main() { o = vec4(skyColor(vDir, uCube, uPano, uIsPano), 1.0); }`
+const SKYBG_VS = `#version 300 es
+layout(location = 0) in vec2 aCorner; out vec2 vNdc;
+void main() { vNdc = aCorner; gl_Position = vec4(aCorner, 1.0, 1.0); }`
+const SKYBG_FS = `#version 300 es
+precision highp float; uniform mat4 uInvViewProj; uniform vec3 uEye; uniform samplerCube uCube; uniform sampler2D uPano; uniform float uIsPano; in vec2 vNdc; out vec4 o;
+${SKY_GLSL}
+void main() { vec4 p = uInvViewProj * vec4(vNdc, 1.0, 1.0); o = vec4(skyColor(p.xyz / p.w - uEye, uCube, uPano, uIsPano), 1.0); }`
 const LINE_VS = `#version 300 es
 uniform mat4 uViewProj; in vec3 aPos;
 void main() { gl_Position = uViewProj * vec4(aPos, 1.0); }`
@@ -285,6 +305,11 @@ export class Renderer {
   private glTex = new Map<string, WebGLTexture>()
   private label: WebGLProgram
   private labelVao: WebGLVertexArrayObject
+  private skyProg: WebGLProgram
+  private skyBgProg: WebGLProgram
+  private skyBgVao: WebGLVertexArrayObject
+  /** GL textures of the skyboxes: a cube map (faces) or a 2D panorama */
+  private skyTex = new Map<string, { tex: WebGLTexture; pano: boolean }>()
   private labelTex = new Map<string, { tex: WebGLTexture; w: number; h: number }>()
 
   constructor(private canvas: HTMLCanvasElement, private textures: TextureCache) {
@@ -304,6 +329,14 @@ export class Renderer {
     this.litTexProg = this.program(LITTEX_VS, LITTEX_FS)
     this.entLit = this.program(MESH_VS, ENTLIT_FS)
     this.label = this.program(LABEL_VS, LABEL_FS)
+    this.skyProg = this.program(SKY_VS, SKY_FS)
+    this.skyBgProg = this.program(SKYBG_VS, SKYBG_FS)
+    this.skyBgVao = gl.createVertexArray()!
+    gl.bindVertexArray(this.skyBgVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()!)
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW)
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0)
+    gl.bindVertexArray(null)
     this.dyn = gl.createBuffer()!
     this.dynVao = gl.createVertexArray()!
     gl.bindVertexArray(this.dynVao)
@@ -446,6 +479,58 @@ export class Renderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT)
     this.glTex.set(path, t)
     return t
+  }
+
+  /**
+   * The GL texture of a skybox once its images arrived: the six faces as a cube map, each put where the engine puts it (model/sky.ts SKY_FACES: the
+   * file order, _up turned clockwise, _dn counter-clockwise, all scaled to the first face's size), or the panorama as a 2D texture. No mip maps, linear
+   * filtering, like the engine's CubemapTexture.
+   */
+  private skyTexture(path: string): { tex: WebGLTexture; pano: boolean } | null {
+    const have = this.skyTex.get(path)
+    if (have) return have
+    const sky = this.textures.sky(path)
+    if (!sky) return null
+    const gl = this.gl, tex = gl.createTexture()!
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
+    if (sky.panorama) {
+      gl.bindTexture(gl.TEXTURE_2D, tex)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sky.faces[0].source as TexImageSource)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    } else {
+      const size = Math.max(1, sky.faces[0].width)
+      gl.bindTexture(gl.TEXTURE_CUBE_MAP, tex)
+      SKY_FACES.forEach((f, i) => {
+        const img = sky.faces[i]
+        if (!img) return
+        const c = Object.assign(document.createElement('canvas'), { width: size, height: size })
+        const g = c.getContext('2d')
+        if (!g) return
+        g.translate(size / 2, size / 2)
+        g.rotate((f.turn * Math.PI) / 2)
+        g.drawImage(img.source as CanvasImageSource, -size / 2, -size / 2, size, size)
+        gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c)
+      })
+      gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    }
+    const out = { tex, pano: sky.panorama }
+    this.skyTex.set(path, out)
+    return out
+  }
+
+  /** Binds a skybox for the sky programs (cube on unit 2, panorama on unit 3); false while it is not loaded. */
+  private bindSky(P: WebGLProgram, path: string): boolean {
+    const gl = this.gl, t = this.skyTexture(path)
+    if (!t) return false
+    gl.uniform1i(gl.getUniformLocation(P, 'uCube'), 2)
+    gl.uniform1i(gl.getUniformLocation(P, 'uPano'), 3)
+    gl.uniform1f(gl.getUniformLocation(P, 'uIsPano'), t.pano ? 1 : 0)
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_CUBE_MAP, t.pano ? null : t.tex)
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, t.pano ? t.tex : null)
+    gl.activeTexture(gl.TEXTURE0)
+    return true
   }
 
   private tris(vp: Float32Array, data: number[], color: [number, number, number, number]): void {
@@ -835,6 +920,22 @@ export class Renderer {
       this.lines(vp, [0, 0, -50, 0, 0, 50], [0.3, 0.45, 0.9, 0.6])
     }
 
+    // the level's sky behind everything (perspective views only: an orthographic view would show one colour)
+    if (frame.sky && !(frame.camera instanceof OrthoCamera)) {
+      gl.useProgram(this.skyBgProg)
+      if (this.bindSky(this.skyBgProg, frame.sky)) {
+        const inv = mat4.invert(mat4.create(), vp)
+        if (inv) {
+          gl.uniformMatrix4fv(gl.getUniformLocation(this.skyBgProg, 'uInvViewProj'), false, inv)
+          gl.uniform3fv(gl.getUniformLocation(this.skyBgProg, 'uEye'), frame.camera.eye)
+          gl.depthMask(false); gl.disable(gl.CULL_FACE)
+          gl.bindVertexArray(this.skyBgVao); gl.drawArrays(gl.TRIANGLES, 0, 3)
+          gl.depthMask(true)
+          if (frame.settings.backfaceCulling) gl.enable(gl.CULL_FACE)
+        }
+      }
+    }
+
     // opaque fills, pushed back a little so edges drawn on top don't z-fight
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
     gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1)
@@ -849,11 +950,14 @@ export class Renderer {
     const uTransp = gl.getUniformLocation(this.mesh, 'uTransp')
     gl.uniform3f(uTransp, 0, 0, 0)
     const entityLit: { g: GpuBrush; lights: NonNullable<ReturnType<LightvolStore['entity']>> }[] = []
+    // sky faces (REQUIREMENTS §28 K10): never lit, not in the Core's lit mesh; drawn by direction after the other opaque faces
+    const skyDraws: { vao: WebGLVertexArrayObject; grp: Group }[] = []
     for (const { entity, instance } of frame.entities)
       for (const b of entity.brushes ?? []) {
         const carved = b.op !== 'subtract' ? frame.carved?.get(carvedKey(entity.id, b.id, instance)) : undefined
         const g = carved ? this.uploadCarved(carved) : this.upload(b)
         if (b.op === 'subtract') { subtractive.push({ g }); continue }
+        for (const grp of g.groups) if (isSkyTexture(grp.texture)) skyDraws.push({ vao: g.vao, grp })
         if (litMode) {
           // lightmapped entities come from the Core's lit mesh below; the others are lit from the light volume; without it (not baked yet)
           // Lit shows them unlit, Lighting-only leaves them out
@@ -864,6 +968,7 @@ export class Renderer {
         }
         gl.bindVertexArray(g.vao)
         for (const grp of g.groups) {
+          if (isSkyTexture(grp.texture)) continue
           const [r, gg, bl] = textureColor(grp.texture)
           const tex = this.texture(grp.texture)
           const tp = drawTransparency(this.textures.info(grp.texture))
@@ -940,12 +1045,33 @@ export class Renderer {
         gl.uniform1i(uN, n); gl.uniform3fv(uAmb, amb); gl.uniform3fv(uDc, dc); gl.uniform3fv(uDir, lights[0].dir)
         gl.bindVertexArray(g.vao)
         for (const grp of g.groups) {
+          if (isSkyTexture(grp.texture)) continue
           const [r, gg, bl] = lightingOnly ? [1, 1, 1] : textureColor(grp.texture)
           const tex = lightingOnly ? null : this.texture(grp.texture)
           if (tex) gl.bindTexture(gl.TEXTURE_2D, tex)
           gl.uniform1f(uHas, tex ? 1 : 0); gl.uniform3f(uCol, r, gg, bl)
           gl.drawArrays(gl.TRIANGLES, grp.first, grp.count)
         }
+      }
+      gl.useProgram(this.mesh)
+    }
+    if (skyDraws.length) {
+      const P = this.skyProg
+      gl.useProgram(P)
+      gl.uniformMatrix4fv(gl.getUniformLocation(P, 'uViewProj'), false, vp)
+      gl.uniform3fv(gl.getUniformLocation(P, 'uEye'), frame.camera.eye)
+      for (const { vao, grp } of skyDraws) {
+        if (!this.bindSky(P, grp.texture)) {
+          // not loaded yet, or an ordinary 2D sky texture: its flat colour / image
+          gl.useProgram(this.mesh)
+          const tex = this.texture(grp.texture), [r, gg, bl] = textureColor(grp.texture)
+          if (tex) gl.bindTexture(gl.TEXTURE_2D, tex)
+          gl.uniform1f(uHasTex, tex ? 1 : 0); gl.uniform4f(uColor, r, gg, bl, 1); gl.uniform3f(uTransp, 0, 0, 0)
+          gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, grp.first, grp.count)
+          gl.useProgram(P)
+          continue
+        }
+        gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, grp.first, grp.count)
       }
       gl.useProgram(this.mesh)
     }

@@ -879,6 +879,21 @@ export function setLevelKey(store: Store, key: string, value: string | null): bo
   })
 }
 
+/** Several worldspawn keys as ONE undo step (null removes a key), e.g. Auto sky on together with its skybox. False when nothing changed. */
+export function setLevelKeys(store: Store, label: string, changes: Record<string, string | null>): boolean {
+  return store.edit(label, (d) => {
+    const world = Object.values(changes).some((v) => v !== null) ? ensureWorldspawn(d) : d
+    const w = world.entities.find((e) => classOf(e) === 'worldspawn')
+    if (!w) return d
+    const kv = { ...(w.keyvalues ?? {}) }
+    let changed = false
+    for (const [k, v] of Object.entries(changes)) {
+      if (v === null) { if (k in kv) { delete kv[k]; changed = true } } else if (kv[k] !== v) { kv[k] = v; changed = true }
+    }
+    return changed ? mapEntity(world, w.id, (e) => ({ ...e, keyvalues: kv })) : d
+  })
+}
+
 // ---- right-click: hide, group, copy / paste UV (REQUIREMENTS §24 C4) -----------------------------
 /** Hides what is selected (brushes, whole entities) and clears the selection. Returns how many things were hidden. */
 export function hideSelection(store: Store): number {

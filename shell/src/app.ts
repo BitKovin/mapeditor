@@ -44,6 +44,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   store = new Store(conn)
   textures = new TextureCache(async (path) => {
     const r = await conn.request((id) => msg.readTexture(id, path))
+    if (r.ok && r.sky) return { ext: '', bytes: new Uint8Array(0), sky: { panorama: r.sky.panorama, images: r.sky.images.map((im) => ({ ext: im.ext, bytes: base64ToBytes(im.data) })) } }
     if (!r.ok || !r.data || !r.ext) throw new Error(r.error ?? `texture '${path}' not found`)
     return { ext: r.ext, bytes: base64ToBytes(r.data), props: r.props }
   }, undefined, (run) => { if (document.visibilityState === 'visible') requestAnimationFrame(run); else setTimeout(run, 0) })  // textures arriving in one frame redraw once
@@ -131,7 +132,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
         case 'groups': { const p = new TexGroupsPanel(store, textures, groups, { list: listGroups, edit: openGroup, duplicate: duplicateGroup, remove: deleteGroup }); groupsPanels.push(p); return p }
         case 'browser': return new ContentBrowserPanel(store, textures, listTextures, openProps, openRelief)
         case 'history': return new HistoryPanel(store)
-        case 'level': return new LevelSettingsPanel(store)
+        case 'level': return new LevelSettingsPanel(store, { textures, listTextures })
         default: throw new Error(`unknown panel '${name}'`)
       }
     },

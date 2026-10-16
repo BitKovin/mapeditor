@@ -2,6 +2,7 @@
 #include "core/document.h"
 #include "core/entdef.h"
 #include <memory>
+#include <mutex>
 #include "core/lighting_classes.h"
 #include "core/lightmap_uv.h"
 #include "core/lights.h"
@@ -88,12 +89,14 @@ public:
     // Lightmap UV layout of the current document (lightmap_uv.h): final carved surfaces of every lightmapped class
     // (game_profile.json `lighting`, defaults otherwise), prefab instances included.
     LightmapLayout lightmapLayout(const LightmapSettings& settings = {});
-    // The inputs of a bake: final surfaces of the document (prefabs resolved) and its light entities.
-    std::vector<LightSurface> lightSurfaces();
+    // The inputs of a bake: final surfaces of the document (prefabs resolved) and its light entities. Sky faces (REQUIREMENTS §28 K4: no lightmap,
+    // never block light) are left out unless `withSky` (the BSP export draws them).
+    std::vector<LightSurface> lightSurfaces(bool withSky = false);
     /// The relief of textures as geometry, as the Shell sent it (relief_geometry.h); attached to the surfaces `lightSurfaces()` returns. True when it changed.
     bool setReliefGeometry(const nlohmann::json& message) { return relief_.assign(message); }
     // Volumes of light-blocking brushes (lightmap texels buried inside them are skipped).
     std::shared_ptr<SolidSet> lightSolids();
+    // The light entities; a sky light takes its light from the level's skybox (REQUIREMENTS §28 K12) when the level has one.
     LightScene lightScene();
 
     // True once the in-memory document differs from what was last opened or saved.
@@ -144,6 +147,12 @@ private:
     // Keyed by normalized path; entries are reloaded when the file's mtime
     // changes, so editing a prefab on disk is picked up on the next access.
     std::unordered_map<std::string, CachedPrefab> prefabCache_;
+
+    // The sky light's tables of the last skybox used, kept while its files are unchanged (sky.h).
+    std::shared_ptr<const SkyRadiance> skyTable(const std::string& texture, std::string& warning);
+    std::mutex skyMutex_;
+    std::string skyKey_, skyWarning_;
+    std::shared_ptr<const SkyRadiance> sky_;
 };
 
 }  // namespace core

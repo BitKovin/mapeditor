@@ -2,6 +2,8 @@
 #include "core/document.h"
 #include "core/math3.h"
 #include "core/prefab.h"
+#include "core/sky.h"
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -40,6 +42,8 @@ struct Light {
     double sourceSize = 0;
     double innerAngle = 20, outerAngle = 35;
     double width = 1, height = 1;
+    // Sky light only: the incoming light per direction from the level's skybox (REQUIREMENTS §28 K12), times colour x brightness; null = uniform.
+    std::shared_ptr<const SkyRadiance> sky;
 };
 
 // Level settings (REQUIREMENTS §22 P2), stored as worldspawn keys so they travel with the map:

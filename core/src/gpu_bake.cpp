@@ -140,6 +140,26 @@ GpuLight pack(const Light& L) {
     return g;
 }
 
+// Records of every light, then the skybox tables of the first sky light that has them (lightmap_direct.comp `skyRadiance`): record 7 of each sky light
+// using them holds where they start (in vec4) and 1.
+constexpr size_t kSkyTableRecords = (SkyRadiance::kLon * SkyRadiance::kLat + SkyRadiance::kNLon * SkyRadiance::kNLat + 7) / 8;  // GpuLight-sized blocks
+std::vector<GpuLight> packLights(const std::vector<Light>& lights) {
+    std::vector<GpuLight> out;
+    for (const auto& L : lights) out.push_back(pack(L));
+    const SkyRadiance* sky = nullptr;
+    for (const auto& L : lights) if (L.type == LightType::Sky && L.sky) { sky = L.sky.get(); break; }
+    if (!sky) return out;
+    const size_t base = out.size() * 8;  // vec4 index
+    for (size_t k = 0; k < lights.size(); ++k)
+        if (lights[k].type == LightType::Sky && lights[k].sky.get() == sky) { out[k].v[28] = static_cast<float>(base); out[k].v[29] = 1.f; }
+    std::vector<float> table;
+    for (const Vec3& c : sky->radiance) table.insert(table.end(), {static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z), 0.f});
+    for (const Vec3& c : sky->irradiance) table.insert(table.end(), {static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.z), 0.f});
+    table.resize(kSkyTableRecords * 32, 0.f);
+    for (size_t r = 0; r < kSkyTableRecords; ++r) { GpuLight g{}; std::memcpy(g.v, &table[r * 32], sizeof(g.v)); out.push_back(g); }
+    return out;
+}
+
 struct PushConstants {  // layout of `PC` in shaders/lightmap_direct.comp
     uint32_t base, count, lightCount, areaSamples;
     float ambient[4];
@@ -864,7 +884,7 @@ void run(const TexelSamples& samples, const LightScene& scene, const OccluderMes
     };
     const size_t n = samples.count();
     std::vector<GpuLight> lights;
-    for (const auto& L : scene.lights) lights.push_back(pack(L));
+    lights = packLights(scene.lights);
     if (lights.empty()) lights.push_back(GpuLight{});  // zero-sized buffers are invalid
 
     const VkDeviceSize sampleBytes = std::max<size_t>(n, 1) * 16;
@@ -1361,7 +1381,7 @@ public:
         bPos = mk(totalBytes, MemKind::DeviceHost);
         bNrm = mk(totalBytes, MemKind::DeviceHost);
         bIdx = mk((n + m) * 4, MemKind::DeviceHost);
-        bLights = mk(lightCap * sizeof(GpuLight), MemKind::DeviceHost);
+        bLights = mk((lightCap + kSkyTableRecords) * sizeof(GpuLight), MemKind::DeviceHost);
         bOut = mk(sampleBytes, MemKind::HostCached);
         bDb = mk(sampleBytes, MemKind::HostCached);
         bInd = mk(cfg.gather ? totalBytes : 16, MemKind::HostCached);
@@ -1582,10 +1602,9 @@ public:
 
     bool setLightsImpl(const LightScene& L) {
         if (L.lights.size() > lightCap) return false;
-        std::vector<GpuLight> g;
-        for (const auto& l : L.lights) g.push_back(pack(l));
+        const std::vector<GpuLight> g = packLights(L.lights);
         if (!g.empty()) std::memcpy(bLights.mapped, g.data(), g.size() * sizeof(GpuLight));
-        lightCount = static_cast<uint32_t>(g.size());
+        lightCount = static_cast<uint32_t>(L.lights.size());
         ambient[0] = static_cast<float>(L.ambient.x);
         ambient[1] = static_cast<float>(L.ambient.y);
         ambient[2] = static_cast<float>(L.ambient.z);

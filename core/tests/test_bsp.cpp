@@ -11,6 +11,8 @@
 #include "core/router.h"
 #include "core/bsp_export.h"
 #include "core/scene.h"
+#include "core/sky.h"
+#include "core/textures.h"
 
 using namespace core;
 using namespace testutil;
@@ -636,4 +638,275 @@ TEST_CASE("bsp export: repeat modes, texture group layouts and reliefs are expor
     }
     CHECK(topPlain);
     CHECK(topMirror);
+}
+
+// ---- sky (REQUIREMENTS §28, DESIGN §12 "Sky") ------------------------------------------------------------------------------------------------
+namespace {
+// the engine's own code, transcribed (SdlWasmEngine TextureCube.hpp bgfxFaceDir): the direction a pixel of a generated face slot shows
+Vec3 bgfxFaceDir(int slot, double u, double v) {
+    switch (slot) {
+        case 0: return {-1, -v, u};
+        case 1: return {1, -v, -u};
+        case 2: return {u, 1, v};
+        case 3: return {u, -1, -v};
+        case 4: return {u, -v, 1};
+        default: return {-u, -v, -1};
+    }
+}
+void writeBytes(const TempDir& dir, const std::string& rel, const std::string& bytes) {
+    const auto full = dir.path / rel;
+    std::filesystem::create_directories(full.parent_path());
+    std::ofstream(full, std::ios::binary) << bytes;
+}
+// a solid-colour face as a PNG (writePagePng: linear 1 = white)
+void writeFace(const TempDir& dir, const std::string& rel, float value) {
+    LightmapPages p;
+    p.atlas = 4;
+    p.pageCount = 1;
+    p.rgb = {std::vector<float>(48, value)};
+    p.valid = {std::vector<uint8_t>(16, 1)};
+    std::filesystem::create_directories((dir.path / rel).parent_path());
+    REQUIRE(writePagePng(p, 0, (dir.path / rel).string()));
+}
+std::vector<int> surfacesWithShader(const BspView& v, const std::string& shader) {
+    const auto shaders = v.lump<rbsp::Shader>(rbsp::kShaders);
+    const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+    std::vector<int> out;
+    for (size_t i = 0; i < surfaces.size(); ++i) if (shaders[static_cast<size_t>(surfaces[i].shader)].name == shader) out.push_back(static_cast<int>(i));
+    return out;
+}
+}  // namespace
+
+TEST_CASE("sky: the engine's skybox mapping for known directions (up, north, east, ...), and its panorama conversion agrees") {
+    // which face file: north (-Z, Quake +Y) = _bk, east (+X) = _rt, south = _ft, west = _lf, up = _up, down = _dn; the centre of each
+    const std::pair<Vec3, int> faces[] = {{{0, 0, -1}, 5}, {{1, 0, 0}, 1}, {{0, 0, 1}, 4}, {{-1, 0, 0}, 0}, {{0, 1, 0}, 2}, {{0, -1, 0}, 3}};
+    for (const auto& [d, f] : faces) {
+        CAPTURE(d.x); CAPTURE(d.y); CAPTURE(d.z);
+        const SkyTexel t = cubemapLookup(d);
+        CHECK(t.face == f);
+        CHECK(t.u == doctest::Approx(0.5));
+        CHECK(t.v == doctest::Approx(0.5));
+    }
+    // upright and not mirrored, as seen from inside: looking north, east is to the right and up is above
+    CHECK(cubemapLookup({0.2, 0, -1}).u > 0.5);
+    CHECK(cubemapLookup({0, 0.2, -1}).v < 0.5);
+    CHECK(cubemapLookup({1, 0, 0.2}).u > 0.5);    // looking east, south is to the right
+    CHECK(cubemapLookup({-1, 0, -0.2}).u > 0.5);  // looking west, north is to the right
+    CHECK(cubemapLookup({1, 0.2, 0}).v < 0.5);
+    // _up (turned on load): west at its top, south at its right
+    SkyTexel up = cubemapLookup({-0.2, 1, 0});
+    CHECK(up.face == 2); CHECK(up.v < 0.5); CHECK(up.u == doctest::Approx(0.5));
+    up = cubemapLookup({0, 1, 0.2});
+    CHECK(up.u > 0.5); CHECK(up.v == doctest::Approx(0.5));
+    // panorama: north in the middle, east at three quarters, up at the top
+    CHECK(panoramaLookup({0, 0, -1}).u == doctest::Approx(0.5));
+    CHECK(panoramaLookup({0, 0, -1}).v == doctest::Approx(0.5));
+    CHECK(panoramaLookup({1, 0, 0}).u == doctest::Approx(0.75));
+    CHECK(panoramaLookup({0, 1, 0}).v == doctest::Approx(0));
+    // The engine turns a panorama into face files (DecodeFromPanorama: slot k of bgfxFaceDir written as _lf _rt _up (turned cw) _dn (turned ccw) _bk _ft)
+    // and loads them like any faces: for every direction, the faces' lookup lands on the panorama point panoramaLookup gives.
+    const int slotOfFile[6] = {0, 1, 2, 3, 5, 4};  // file lf rt up dn ft bk -> the slot it was written from
+    for (int i = 0; i < 400; ++i) {
+        const double z = 1 - 2 * (i + 0.5) / 400, r = std::sqrt(1 - z * z), phi = i * 2.399963;
+        const Vec3 d{r * std::cos(phi), z, r * std::sin(phi)};
+        const SkyTexel t = cubemapLookup(d);
+        double ru = t.u, rv = t.v;  // the file's pixel -> the raw slot pixel it was written from
+        if (t.face == 2) { ru = t.v; rv = 1 - t.u; }       // written turned clockwise
+        else if (t.face == 3) { ru = 1 - t.v; rv = t.u; }  // written turned counter-clockwise
+        const Vec3 p = bgfxFaceDir(slotOfFile[t.face], ru * 2 - 1, rv * 2 - 1).normalized();
+        const double pu = std::atan2(p.x, p.z) / (2 * 3.14159265358979323846) + 0.5;  // sampleEquirect: lon = atan2(x, z), lat = asin(y)
+        const double pv = 0.5 - std::asin(p.y) / 3.14159265358979323846;
+        const Vec2 mine = panoramaLookup(d);
+        double du = std::fabs(pu - mine.u);
+        du = std::min(du, 1 - du);
+        CAPTURE(i);
+        CHECK(du < 1e-9);
+        CHECK(pv == doctest::Approx(mine.v));
+    }
+}
+
+TEST_CASE("sky: skyboxes in env/ are listed and read the engine's way (per extension: faces first, then the panorama)") {
+    TempDir dir;
+    for (const char* f : {"_lf", "_rt", "_up", "_dn", "_ft", "_bk"}) {
+        writeBytes(dir, std::string("env/day_cube") + f + ".jpg", f);
+        writeBytes(dir, std::string("env/dusk_cube") + f + ".jpg", "jpg face");
+    }
+    writeBytes(dir, "env/dusk_cube.png", "png panorama");  // .png is tried first: its panorama wins over the .jpg faces
+    writeBytes(dir, "env/night_cube.jpg", "panorama");
+    writeBytes(dir, "env/notes.png", "not a skybox");
+    writeBytes(dir, "env/half_cube_lf.png", "one face only");
+    writeBytes(dir, "textures/dev/wall.png", "wall");
+    CHECK(listSkyboxes(dir.path) == std::vector<std::string>{"env/day_cube", "env/dusk_cube", "env/half_cube", "env/night_cube"});
+    const auto all = listTextures(dir.path, GameProfile{});
+    CHECK(std::find(all.begin(), all.end(), "env/day_cube") != all.end());
+    CHECK(std::find(all.begin(), all.end(), "dev/wall") != all.end());
+    CHECK(isCubemapTexture("env/day_cube"));
+    CHECK(isCubemapTexture("sky/whatever/day_cube"));
+    CHECK_FALSE(isCubemapTexture("env/cube_day"));
+    const auto day = readSkybox(dir.path, "env/day_cube");
+    REQUIRE(day);
+    CHECK_FALSE(day->panorama);
+    REQUIRE(day->images.size() == 6);
+    CHECK(std::string(day->images[2].bytes.begin(), day->images[2].bytes.end()) == "_up");  // the engine's order lf rt up dn ft bk
+    CHECK(day->images[5].ext == ".jpg");
+    const auto dusk = readSkybox(dir.path, "anything/dusk_cube");  // only the last part of the name counts, as in the engine
+    REQUIRE(dusk);
+    CHECK(dusk->panorama);
+    CHECK(std::string(dusk->images[0].bytes.begin(), dusk->images[0].bytes.end()) == "png panorama");
+    CHECK(readSkybox(dir.path, "env/night_cube")->panorama);
+    CHECK_FALSE(readSkybox(dir.path, "env/half_cube"));
+    CHECK_FALSE(readSkybox(dir.path, "env/../x_cube"));
+}
+
+TEST_CASE("bsp sky: auto sky box of 6 inward quads, no lightmap, non-solid, in every cluster; per area; far plane warning") {
+    // an open level: a floor slab with a wall on it
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", {Brush::makeBox("floor", {0, -0.5, 0}, {20, 0, 20}, "dev/floor"), Brush::makeBox("wall", {5, 0, 5}, {6, 3, 15}, "dev/wall")}));
+    d.entities.push_back(ent("p", "info_player_start", {}, {2, 1, 2}));
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visCell = 4;
+    const BspOutput plain = compileBsp(in);
+    in.settings.sky = {AutoSky::Box, 8, "env/test_cube"};
+    const BspOutput out = compileBsp(in);
+    CHECK(out.stats.skySurfaces == 6);
+    CHECK(out.stats.clusters == plain.stats.clusters);  // the sky is not cut into cells
+    for (const auto& w : out.warnings) CHECK(w.find("far plane") == std::string::npos);
+    BspView v;
+    REQUIRE(v.open(out.bsp));
+    const auto sky = surfacesWithShader(v, "textures/env/test_cube");
+    REQUIRE(sky.size() == 6);
+    const auto shaders = v.lump<rbsp::Shader>(rbsp::kShaders);
+    const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto verts = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    const auto idx = v.lump<int32_t>(rbsp::kDrawIndexes);
+    const Vec3 centre = toQuake({10, 1, 10});
+    for (int si : sky) {
+        const auto& s = surfaces[static_cast<size_t>(si)];
+        const auto& sh = shaders[static_cast<size_t>(s.shader)];
+        CHECK(sh.contentFlags == 0);
+        CHECK((sh.surfaceFlags & 4) != 0);     // sky
+        CHECK((sh.surfaceFlags & 1024) != 0);  // nolightmap
+        CHECK(s.lightmapStyles[0] == rbsp::kNoStyle);
+        CHECK(s.lightmapNum[0] == -1);
+        CHECK(s.numVerts == 4);
+        // faces inwards (towards the level), wound clockwise seen from inside like every other face
+        const Vec3 n{s.normal[0], s.normal[1], s.normal[2]};
+        const float* p0 = verts[static_cast<size_t>(s.firstVert)].xyz;
+        CHECK(n.dot(centre - Vec3{p0[0], p0[1], p0[2]}) > 0);
+        const auto& a = verts[static_cast<size_t>(s.firstVert + idx[static_cast<size_t>(s.firstIndex)])].xyz;
+        const auto& b = verts[static_cast<size_t>(s.firstVert + idx[static_cast<size_t>(s.firstIndex) + 1])].xyz;
+        const auto& c = verts[static_cast<size_t>(s.firstVert + idx[static_cast<size_t>(s.firstIndex) + 2])].xyz;
+        CHECK(Vec3{b[0] - a[0], b[1] - a[1], b[2] - a[2]}.cross(Vec3{c[0] - a[0], c[1] - a[1], c[2] - a[2]}).dot(n) < 0);
+    }
+    // the box: the geometry's bounds (x 0..20, y -0.5..3, z 0..20) plus 8 m; the floor is sky too
+    const auto models = v.lump<rbsp::Model>(rbsp::kModels);
+    CHECK(models[0].mins[2] == doctest::Approx(-8.5 * 32));
+    CHECK(models[0].maxs[2] == doctest::Approx(11 * 32));
+    CHECK(models[0].mins[0] == doctest::Approx(-8 * 32));
+    // every leaf with a cluster lists all six sky faces: seen from everywhere
+    const auto leafs = v.lump<rbsp::Leaf>(rbsp::kLeafs);
+    const auto leafSurfaces = v.lump<int32_t>(rbsp::kLeafSurfaces);
+    int withCluster = 0;
+    for (const auto& l : leafs) {
+        if (l.cluster < 0) continue;
+        ++withCluster;
+        const std::set<int> has(leafSurfaces.begin() + l.firstLeafSurface, leafSurfaces.begin() + l.firstLeafSurface + l.numLeafSurfaces);
+        for (int si : sky) CHECK(has.count(si) == 1);
+    }
+    CHECK(withCluster > 1);
+    CHECK(out.stats.brushes == plain.stats.brushes);  // no collision brush for the auto sky
+
+    // per area: two islands 100 m apart get a box each; 10 m apart their boxes (with the 8 m margin) overlap and merge
+    for (const double gap : {100.0, 10.0}) {
+        CAPTURE(gap);
+        Document two;
+        two.entities.push_back(ent("w", "worldspawn", {Brush::makeBox("a", {0, -0.5, 0}, {10, 0, 10}), Brush::makeBox("a2", {2, 0, 2}, {3, 2, 3}),
+                                                       Brush::makeBox("b", {10 + gap, -0.5, 0}, {20 + gap, 0, 10})}));
+        std::shared_ptr<SolidSet> s2;
+        BspInput ti = inputFor(two, s2);
+        ti.settings.visibility = false;
+        ti.settings.sky = {AutoSky::Areas, 8, "env/test_cube"};
+        CHECK(compileBsp(ti).stats.skySurfaces == (gap > 16 ? 12u : 6u));
+        ti.settings.sky.mode = AutoSky::Box;
+        CHECK(compileBsp(ti).stats.skySurfaces == 6u);
+    }
+    // a box larger than the engine's far plane (3000 m) is reported
+    in.settings.sky.margin = 1000;
+    in.settings.visibility = false;
+    const BspOutput huge = compileBsp(in);
+    bool warned = false;
+    for (const auto& w : huge.warnings) warned |= w.find("far plane") != std::string::npos;
+    CHECK(warned);
+}
+
+TEST_CASE("bsp sky: hand-placed sky faces are kept even when buried, have no lightmap and no contents; flat sky textures are reported") {
+    Document d;
+    // a sky slab lying on the floor (its bottom face is buried in the floor) and a flat sky texture on a second slab
+    d.entities.push_back(ent("w", "worldspawn", {Brush::makeBox("floor", {0, -0.5, 0}, {20, 0, 20}, "dev/floor"), Brush::makeBox("sky", {0, 0, 0}, {20, 0.5, 20}, "env/test_cube"),
+                                                 Brush::makeBox("flat", {0, 6, 0}, {4, 6.5, 4}, "sky/blue")}));
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visibility = false;
+    const BspOutput out = compileBsp(in);
+    BspView v;
+    REQUIRE(v.open(out.bsp));
+    const auto sky = surfacesWithShader(v, "textures/env/test_cube");
+    CHECK(sky.size() == 6);  // the face lying on the floor too
+    const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+    for (int si : sky) CHECK(surfaces[static_cast<size_t>(si)].lightmapNum[0] == -1);
+    const auto brushes = v.lump<rbsp::Brush>(rbsp::kBrushes);
+    const auto shaders = v.lump<rbsp::Shader>(rbsp::kShaders);
+    int nonSolid = 0;
+    for (const auto& b : brushes) nonSolid += shaders[static_cast<size_t>(b.shader)].contentFlags == 0;
+    CHECK(nonSolid == 2);  // the two sky brushes
+    bool flat = false;
+    for (const auto& w : out.warnings) flat |= w.find("sky/blue") != std::string::npos;
+    CHECK(flat);
+    const BspContentRules def = BspContentRules::defaults();
+    CHECK(def.isSky("env/test_cube"));
+    CHECK(def.isSky("sky/blue"));
+    CHECK_FALSE(def.isSky("dev/wall"));
+    CHECK(def.forFace("env/test_cube").contents == 0);
+}
+
+TEST_CASE("bsp sky: the lighting never sees sky faces; the sky light takes the level's skybox; the export draws the auto sky") {
+    TempDir dir;
+    // a skybox bright in the east only (_rt), black elsewhere
+    for (const char* f : {"_lf", "_rt", "_up", "_dn", "_ft", "_bk"}) writeFace(dir, std::string("env/east_cube") + f + ".png", std::string(f) == "_rt" ? 1.f : 0.f);
+    json world = entityJson("w", "worldspawn", {Brush::makeBox("floor", {-4, -1, -4}, {4, 0, 4}), Brush::makeBox("lid", {-4, 3, -4}, {4, 3.2, 4}, "env/east_cube")});
+    world["keyvalues"] = {{"_sky_auto", "box"}, {"_sky_margin", "4"}};
+    json sun = entityJson("k", "light_sky", {}, {0, 0, 0});
+    sun["keyvalues"] = {{"brightness", "2"}};
+    dir.write("maps/sky.map.json", docJson({world, sun, entityJson("p", "info_player_start", {}, {1, 0.5, 1})}));
+    Scene scene(dir.path);
+    scene.loadGameProfile();
+    scene.openDocument("maps/sky.map.json");
+    size_t lidFaces = 0, all = 0;
+    for (const auto& s : scene.lightSurfaces(true)) { ++all; lidFaces += s.texture == "env/east_cube"; }
+    CHECK(lidFaces == 6);
+    CHECK(scene.lightSurfaces().size() == all - 6);  // no lightmap for them, and they block no light
+    const LightScene lights = scene.lightScene();
+    REQUIRE(lights.lights.size() == 1);
+    REQUIRE(lights.lights[0].sky);  // no _sky_texture: Auto sky is on, so the first skybox of env/
+    CHECK(lights.lights[0].sky->texture == "env/east_cube");
+    CHECK(lights.lights[0].sky->at({1, 0.3, 0}).x > 0.9);
+    CHECK(lights.lights[0].sky->at({-1, 0.3, 0}).x < 0.01);
+    CHECK(scene.lightScene().lights[0].sky == lights.lights[0].sky);  // cached while the files do not change
+
+    BspExportRequest req;
+    req.assetsRoot = dir.path;
+    req.document = scene.documentSyncJson()["doc"];
+    req.mapPath = "maps/sky.map.json";
+    req.outPath = "maps/sky.bsp";
+    req.bake = false;
+    const BspExportResult r = exportBsp(req);
+    INFO(r.toJson().dump());
+    REQUIRE(r.ok);
+    CHECK(r.stats.skySurfaces == 6);
+    std::ifstream f(dir.path / "maps/sky.bsp", std::ios::binary);
+    const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    BspView v;
+    REQUIRE(v.open(bytes));
+    CHECK(surfacesWithShader(v, "textures/env/east_cube").size() == 12);  // the lid's 6 faces and the auto box's 6
 }

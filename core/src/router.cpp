@@ -273,6 +273,15 @@ void Router::handleListTextures(const json& req, RouterOutput& out) {
 
 void Router::handleReadTexture(const json& req, RouterOutput& out) {
     const std::string path = req.at("path").get<std::string>();
+    if (isCubemapTexture(path)) {  // a skybox (REQUIREMENTS §28 K5): the files the engine loads from env/
+        const auto sky = readSkybox(scene_.assetsRoot(), path);
+        if (!sky) { out.toSender.push_back(failedResponse(req, "skybox '" + path + "' has no image in env/")); return; }
+        json images = json::array();
+        for (const auto& f : sky->images) images.push_back(json{{"ext", f.ext}, {"data", base64Encode(f.bytes)}});
+        out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"path", path},
+                                    {"sky", {{"panorama", sky->panorama}, {"images", images}}}}.dump());
+        return;
+    }
     auto tex = readTexture(scene_.assetsRoot(), scene_.profile(), path);
     if (!tex) {
         out.toSender.push_back(failedResponse(req, "texture '" + path + "' not found"));

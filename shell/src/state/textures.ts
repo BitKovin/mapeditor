@@ -5,9 +5,12 @@ import { decodeTga } from '../model/tga'
 import { AlphaKind, DEFAULT_PPM, TexInfo, TextureProps, defaultProps, parseProps, texEnv } from '../model/texprops'
 
 export interface TexImage { width: number; height: number; source: ImageBitmap | HTMLCanvasElement | ImageData; /** per axis (u, v): do the opposite edges continue each other? Unknown = undefined. */ seamless?: [boolean, boolean]; /** what the alpha channel holds (the Core's classifyAlpha, REQUIREMENTS §23): none, on / off holes, or half transparency (glass) */ alpha?: AlphaKind }
-export type TexState = { status: 'loading' } | { status: 'missing'; error: string } | { status: 'ready'; image: TexImage; props: TextureProps }
-/** `props` = the contents of `<texture file>.json` as Core read it (absent = no such file). */
-export type FetchTexture = (path: string) => Promise<{ ext: string; bytes: Uint8Array; props?: unknown }>
+/** A skybox's images (REQUIREMENTS §28): the six faces in the engine's order (model/sky.ts SKY_FACES), or one panorama. */
+export interface SkyImages { panorama: boolean; faces: TexImage[] }
+/** `image` of a skybox is its preview (the faces as a cross, or the panorama); `sky` holds what the views sample by direction. */
+export type TexState = { status: 'loading' } | { status: 'missing'; error: string } | { status: 'ready'; image: TexImage; props: TextureProps; sky?: SkyImages }
+/** `props` = the contents of `<texture file>.json` as Core read it (absent = no such file). `sky` = the files of a skybox (then `bytes` is empty). */
+export type FetchTexture = (path: string) => Promise<{ ext: string; bytes: Uint8Array; props?: unknown; sky?: { panorama: boolean; images: { ext: string; bytes: Uint8Array }[] } }>
 export type DecodeTexture = (ext: string, bytes: Uint8Array) => Promise<TexImage>
 
 export const base64ToBytes = (b64: string): Uint8Array => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -77,6 +80,30 @@ export const browserDecode: DecodeTexture = async (ext, bytes) => {
   return { width: bmp.width, height: bmp.height, source: bmp, seamless: analyseSeams(bmp, bmp.width, bmp.height), alpha: rgba ? classifyAlpha(rgba) : 'none' }
 }
 
+/**
+ * The browser's preview of a skybox: a panorama as it is, six faces as a cross (west, north, east, south in a row, up above north, down below it), each
+ * turned so that neighbouring edges meet. Without a canvas (tests) the first image.
+ */
+export function skyPreview(sky: SkyImages): TexImage {
+  if (sky.panorama || sky.faces.length !== 6) return sky.faces[0]
+  try {
+    const s = Math.max(1, Math.min(128, sky.faces[1].width))
+    const c = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(s * 4, s * 3) : typeof document !== 'undefined' ? Object.assign(document.createElement('canvas'), { width: s * 4, height: s * 3 }) : null
+    const g = c?.getContext('2d') as CanvasRenderingContext2D | null
+    if (!c || !g) return sky.faces[0]
+    // [face, column, row, quarter turns clockwise]: _up has west at its top (north at its left), _dn east at its top (north at its left)
+    const place: [number, number, number, number][] = [[0, 0, 1, 0], [5, 1, 1, 0], [1, 2, 1, 0], [4, 3, 1, 0], [2, 1, 0, -1], [3, 1, 2, 1]]
+    for (const [f, col, row, turn] of place) {
+      g.save()
+      g.translate(col * s + s / 2, row * s + s / 2)
+      g.rotate((turn * Math.PI) / 2)
+      g.drawImage(sky.faces[f].source as CanvasImageSource, -s / 2, -s / 2, s, s)
+      g.restore()
+    }
+    return { width: s * 4, height: s * 3, source: c as unknown as HTMLCanvasElement, alpha: 'none' }
+  } catch { return sky.faces[0] }
+}
+
 /** Textures read from Core at the same time; the rest wait in line (map textures before browser thumbnails). */
 export const MAX_PARALLEL_LOADS = 4
 
@@ -104,6 +131,12 @@ export class TextureCache {
     const st = this.get(path)
     if (st.status !== 'ready') return undefined
     return { path, width: st.image.width, height: st.image.height, ppm: st.props.pixelsPerMeter ?? this.defaultPpm, props: st.props, seamless: st.image.seamless, alpha: st.image.alpha }
+  }
+
+  /** The images of a loaded skybox (undefined while loading, when missing, or for an ordinary texture). */
+  sky(path: string): SkyImages | undefined {
+    const st = this.get(path)
+    return st.status === 'ready' ? st.sky : undefined
   }
 
   /** The properties as stored (defaults for a texture that is not loaded). */
@@ -179,8 +212,12 @@ export class TextureCache {
 
   private async load(path: string): Promise<void> {
     try {
-      const { ext, bytes, props } = await this.fetchTexture(path)
-      this.entries.set(path, { status: 'ready', image: await this.decode(ext, bytes), props: parseProps(props, path) })
+      const { ext, bytes, props, sky } = await this.fetchTexture(path)
+      if (sky) {
+        const images: SkyImages = { panorama: sky.panorama, faces: await Promise.all(sky.images.map((im) => this.decode(im.ext, im.bytes))) }
+        if (!images.faces.length) throw new Error(`skybox '${path}' has no images`)
+        this.entries.set(path, { status: 'ready', image: skyPreview(images), props: parseProps(props, path), sky: images })
+      } else this.entries.set(path, { status: 'ready', image: await this.decode(ext, bytes), props: parseProps(props, path) })
     } catch (e) {
       this.entries.set(path, { status: 'missing', error: (e as Error).message })
     }

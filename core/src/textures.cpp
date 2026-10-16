@@ -26,9 +26,10 @@ bool safePath(const std::string& p) {
 
 std::vector<std::string> listTextures(const fs::path& assetsRoot, const GameProfile& profile, size_t limit) {
     std::set<std::string> found;
+    for (const auto& s : listSkyboxes(assetsRoot)) found.insert(s);
     const fs::path root = assetsRoot / profile.textureRoot;
     std::error_code ec;
-    if (!fs::is_directory(root, ec)) return {};
+    if (!fs::is_directory(root, ec)) return {found.begin(), found.end()};
     std::set<std::string> exts;
     for (const auto& e : profile.textureExtensions) exts.insert(lower(e));
     for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; it != end && !ec;
@@ -57,6 +58,67 @@ std::optional<TextureFile> readTexture(const fs::path& assetsRoot, const GamePro
         f.bytes.resize(static_cast<size_t>(size));
         if (!in.read(reinterpret_cast<char*>(f.bytes.data()), static_cast<std::streamsize>(size))) return std::nullopt;
         return f;
+    }
+    return std::nullopt;
+}
+
+bool isCubemapTexture(const std::string& path) {
+    const std::string name = path.substr(path.find_last_of('/') == std::string::npos ? 0 : path.find_last_of('/') + 1);
+    return name.size() >= 4 && name.compare(name.size() - 4, 4, "cube") == 0;
+}
+
+namespace {
+const char* const kSkyExtensions[] = {".png", ".jpg", ".jpeg"};                  // the engine's order (Quake3Bsp ResolveFaceTextureData)
+const char* const kSkyFaces[] = {"_lf", "_rt", "_up", "_dn", "_ft", "_bk"};      // CubemapTexture::DecodeSmart, bgfx faces +X -X +Y -Y +Z -Z
+
+std::optional<TextureFile> readFile(const fs::path& full, size_t maxBytes) {
+    std::error_code ec;
+    if (!fs::is_regular_file(full, ec)) return std::nullopt;
+    const auto size = fs::file_size(full, ec);
+    if (ec || size > maxBytes) return std::nullopt;
+    std::ifstream in(full, std::ios::binary);
+    TextureFile f;
+    f.ext = lower(full.extension().string());
+    f.bytes.resize(static_cast<size_t>(size));
+    if (!in.read(reinterpret_cast<char*>(f.bytes.data()), static_cast<std::streamsize>(size))) return std::nullopt;
+    return f;
+}
+}  // namespace
+
+std::vector<std::string> listSkyboxes(const fs::path& assetsRoot) {
+    std::set<std::string> found;
+    std::error_code ec;
+    const fs::path env = assetsRoot / "env";
+    if (!fs::is_directory(env, ec)) return {};
+    for (fs::directory_iterator it(env, fs::directory_options::skip_permission_denied, ec), end; it != end && !ec; it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        const std::string ext = lower(it->path().extension().string());
+        if (ext != ".png" && ext != ".jpg" && ext != ".jpeg") continue;
+        std::string base = it->path().stem().string();
+        for (const char* f : kSkyFaces)
+            if (base.size() > 3 && base.compare(base.size() - 3, 3, f) == 0) { base.resize(base.size() - 3); break; }
+        if (isCubemapTexture(base) && safePath(base)) found.insert("env/" + base);
+    }
+    return {found.begin(), found.end()};
+}
+
+std::optional<SkyboxFiles> readSkybox(const fs::path& assetsRoot, const std::string& path, size_t maxBytes) {
+    if (!safePath(path) || !isCubemapTexture(path)) return std::nullopt;
+    const std::string base = path.substr(path.find_last_of('/') == std::string::npos ? 0 : path.find_last_of('/') + 1);
+    const fs::path env = assetsRoot / "env";
+    for (const char* ext : kSkyExtensions) {
+        SkyboxFiles out;
+        for (const char* f : kSkyFaces) {
+            auto file = readFile(env / (base + f + ext), maxBytes);
+            if (!file) break;
+            out.images.push_back(std::move(*file));
+        }
+        if (out.images.size() == 6) return out;
+        if (auto pano = readFile(env / (base + ext), maxBytes)) {
+            out.panorama = true;
+            out.images = {std::move(*pano)};
+            return out;
+        }
     }
     return std::nullopt;
 }

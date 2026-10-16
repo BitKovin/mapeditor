@@ -141,6 +141,8 @@ kbd { font: 10px monospace; color: var(--dim); background: var(--bg0); padding: 
 .thumbs { flex: 1; overflow: auto; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 8px; padding: 8px; }
 .tile { width: 84px; cursor: pointer; border: 2px solid transparent; border-radius: 3px; padding: 2px; } .tile:hover { background: var(--bg3); } .tile.sel { border-color: var(--accent); background: var(--accent-bg); }
 .tile canvas { display: block; width: 84px; height: 84px; background: var(--bg2); } .tile-name { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; padding-top: 2px; }
+/* skyboxes (REQUIREMENTS §28 K7): a badge on the thumbnail */
+.tile { position: relative; } .tile-badge { position: absolute; top: 4px; left: 4px; padding: 0 4px; border-radius: 2px; font-size: 10px; font-weight: 600; background: #2f6fb3; color: #fff; pointer-events: none; }
 
 /* modify texture */
 .texhead { display: flex; gap: 10px; align-items: center; } .tex-preview { width: 64px; height: 64px; border: 1px solid var(--line2); }
