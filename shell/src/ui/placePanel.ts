@@ -191,7 +191,7 @@ export class PlacePanel implements IContentRenderer {
       { label: 'Entities', content: () => points.length ? this.classList(points.filter((c) => !isLight(c))) : h('div', { class: 'toolrows pad-top' }, ...ENTITIES.map((e) => this.entityRow(e.classname, e.label, e.classname, e.keyvalues))) },
       { label: 'Lights', content: () => h('div', {}, h('div', { class: 'toolrows pad-top' }, ...LIGHTS.map((l) => this.entityRow(l.classname, l.label, `${l.classname}: ${l.sub}`))),
         ...(points.some((c) => isLight(c) && c.name !== 'light' && !isModernLight(c.name)) ? [h('div', { class: 'section' }, 'Classic Quake 3 lights'), this.classList(points.filter((c) => isLight(c) && !isModernLight(c.name)))] : [])) },
-    ]))
+    ], { vertical: true }))
   }
 
   /** A filterable list of point classes: preview icon, .ent colour, size from the .ent box. */

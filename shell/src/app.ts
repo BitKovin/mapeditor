@@ -12,6 +12,7 @@ import { confirmDialog } from './ui/dialog'
 import { chooseFile, parentDir } from './ui/fileDialog'
 import { openSettings } from './ui/settingsDialog'
 import { h } from './ui/dom'
+import { menuBar } from './ui/menuBar'
 import { isOutsideWindow } from './ui/windowGeometry'
 import { HistoryPanel, InspectorPanel, OutlinerPanel } from './ui/panels'
 import { LevelSettingsPanel } from './ui/levelSettingsPanel'
@@ -106,7 +107,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   /** Live viewports in creation order (disposed ones, e.g. after a popout round trip, are pruned). */
   const liveViewports = (): ViewportPanel[] => { for (const v of [...viewports]) if (v.disposed) viewports.delete(v); return [...viewports] }
   let viewportSeq = 0
-  const bar = h('div', { class: 'toolbar' }), body = h('div', { class: 'dock' }), status = h('div', { class: 'statusbar' })
+  const bar = h('div', { class: 'topbar' }), body = h('div', { class: 'dock' }), status = h('div', { class: 'statusbar' })
   root.replaceChildren(bar, body, status)
   const dock: DockviewApi = createDockview(body, {
     theme: themeDark,
@@ -213,7 +214,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     if (dead) dock.removePanel(dead) // it still exists but its group lives in the closed window
     const n = ++viewportSeq
     const ref = [...dock.panels].find((x) => x.api.component === 'viewport')
-    dock.addPanel({ id: `viewport-${n}`, component: 'viewport', title: `Viewport ${n}`, ...(ref ? { position: { referenceGroup: ref.group, direction: 'right' as const } } : { position: { referencePanel: 'place', direction: 'left' as const } }) })
+    dock.addPanel({ id: `viewport-${n}`, component: 'viewport', title: `Viewport ${n}`, ...(ref ? { position: { referenceGroup: ref.group, direction: 'right' as const } } : { position: { referencePanel: 'place', direction: 'right' as const } }) })
   }
   const MAP_EXT = '.map.json'
   const listDir = async (dir: string) => {
@@ -264,21 +265,73 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     catch (e) { store.setMessage((e as Error).message) }
   }
 
-  // ---- toolbar ----------------------------------------------------------------------
+  // ---- menu bar: every action lives here (with its shortcut); the toolbar below keeps the frequent ones -------------
+  const EXPORT_TIP = 'Export the map as rBSP for the engine: bakes the final lighting (Level settings: bake quality), writes <name>.bsp and <name>/lm_*.exr'
+  const exportLabel = () => store.state.exporting ? `Cancel export (${Math.round(store.state.exporting.fraction * 100)}%)` : 'Export BSP…'
+  /** View menu: brings a panel to the front, or docks it again where it lives by default if it was closed. */
+  const PANELS: [id: string, title: string, near: string, dir: 'within' | 'left' | 'right' | 'below'][] = [
+    ['place', 'Place', 'viewport-1', 'left'], ['meshedit', 'Mesh Edit', 'place', 'within'], ['outliner', 'Outliner', 'viewport-1', 'right'],
+    ['inspector', 'Details', 'outliner', 'below'], ['texture', 'Texture', 'inspector', 'within'], ['level', 'Level', 'inspector', 'within'],
+    ['browser', 'Content Browser', 'viewport-1', 'below'], ['groups', 'Texture Groups', 'browser', 'within'], ['history', 'History', 'browser', 'within'],
+  ]
+  const showPanel = (id: string): void => {
+    const p = dock.getPanel(id)
+    if (p) { p.api.setActive(); return }
+    const [, title, near, dir] = PANELS.find((x) => x[0] === id)!
+    const ref = dock.getPanel(near) ?? [...dock.panels].find((x) => x.api.component === 'viewport')
+    dock.addPanel({ id, component: id, title, ...(ref ? { position: { referencePanel: ref.id, direction: dir } } : {}) })
+  }
+  bar.append(menuBar([
+    { label: 'File', items: () => [
+      { label: 'Open…', shortcut: 'Ctrl+O', title: 'Open a map from the assets folder', action: () => void open() },
+      { label: 'Save', shortcut: 'Ctrl+S', action: () => void save() },
+      { label: 'Save As…', shortcut: 'Ctrl+Shift+S', title: 'Save under a new name', action: () => void saveAs() },
+      '-',
+      { label: exportLabel(), title: EXPORT_TIP, action: () => void exportBsp() },
+      '-',
+      { label: 'Settings…', title: 'Assets folder, game profile', action: () => openSettings(store, conn) },
+    ] },
+    { label: 'Edit', items: () => [
+      { label: 'Undo', shortcut: 'Ctrl+Z', action: () => store.undo() },
+      { label: 'Redo', shortcut: 'Ctrl+Y', action: () => store.redo() },
+      '-',
+      { label: 'Delete', shortcut: 'Del', title: 'Delete the selection', action: () => deleteSelection(store) },
+      '-',
+      { label: 'UV lock', checked: store.state.uvLock, title: 'On = textures stay on the faces when you move, rotate or scale brushes', action: () => store.setUvLock(!store.state.uvLock) },
+    ] },
+    { label: 'Tools', items: () => [
+      { label: 'Select', shortcut: 'Q', checked: store.state.tool === 'select', action: () => store.setTool('select') },
+      { label: 'Shape', shortcut: 'B', checked: store.state.tool === 'box', title: 'Draw a shape: drag, release, move, click. Pick the shape in the Place panel', action: () => store.setTool('box') },
+      { label: 'Decal', checked: store.state.tool === 'decal', title: 'Click a surface to place a decal projector', action: () => store.setTool('decal') },
+      '-',
+      { label: 'Brush mode', shortcut: 'Tab', checked: store.state.editMode === 'object', action: () => store.setEditMode('object') },
+      { label: 'Mesh mode', shortcut: 'Tab', checked: store.state.editMode === 'mesh', action: () => store.setEditMode('mesh') },
+      '-',
+      { label: 'Fast Texture Tool', shortcut: 'Shift+Q', action: () => toggleFastTextureTool({ store, textures }) },
+    ] },
+    { label: 'View', items: () => [
+      { label: 'Add viewport', disabled: liveViewports().length >= MAX_VIEWPORTS, title: `At most ${MAX_VIEWPORTS}; the ⧉ button of a group moves it to its own window`, action: addViewport },
+      { label: 'Frame all', shortcut: 'F', action: () => liveViewports()[0]?.frameAll() },
+      '-',
+      ...PANELS.map(([id, title]) => ({ label: title, title: `Show the ${title} panel (reopens it if it was closed)`, action: () => showPanel(id) })),
+    ] },
+  ]))
+
+  // ---- toolbar: only the frequent actions, grouped; everything is also in the menus --------------------------------
   const btn = (label: string, title: string, fn: () => void, cls = '') => { const b = h('button', { title, class: cls }, label); b.addEventListener('click', fn); return b }
-  const sep = () => h('span', { class: 'sep' })
-  const toolBtns = { select: btn('Select', 'Select tool (Q)', () => store.setTool('select'), 'tool'), box: btn('Shape', 'Draw a shape: drag, release, move, click (B). Pick the shape in the Place tab', () => store.setTool('box'), 'tool'), decal: btn('Decal', 'Click a surface to place a decal projector', () => store.setTool('decal'), 'tool') }
-  const exportBtn = btn('Export BSP', 'Export the map as rBSP for the engine: bakes the final lighting (Level settings: bake quality), writes <name>.bsp and <name>/lm_*.exr', () => void exportBsp())
+  const group = (...kids: HTMLElement[]) => h('div', { class: 'tb-group' }, ...kids)
+  const toolBtns = { select: btn('Select', 'Select tool (Q)', () => store.setTool('select'), 'tool'), box: btn('Shape', 'Draw a shape: drag, release, move, click (B). Pick the shape in the Place panel', () => store.setTool('box'), 'tool'), decal: btn('Decal', 'Click a surface to place a decal projector', () => store.setTool('decal'), 'tool') }
+  const exportBtn = btn('', 'Cancel the BSP export', () => void exportBsp(), 'tb-export')
   const uvLockBtn = btn('UV lock', 'UV lock (global): on = textures stay on the faces when you move, rotate or scale brushes', () => store.setUvLock(!store.state.uvLock), 'tool')
   const modeBtns = { object: btn('Brush', 'Brush mode: NetRadiant-style object editing (Tab toggles Brush / Mesh)', () => store.setEditMode('object'), 'tool'), mesh: btn('Mesh', 'Mesh mode: Blender-style vertex / edge / face editing of the selected brush (Tab)', () => store.setEditMode('mesh'), 'tool') }
-  bar.append(
-    btn('Open', 'Open a map from the assets folder (Ctrl+O)', () => void open()), btn('Save', 'Save (Ctrl+S)', () => void save()), btn('Save As', 'Save under a new name (Ctrl+Shift+S)', () => void saveAs()),
-    exportBtn,
-    btn('⚙', 'Settings: assets folder, game profile', () => openSettings(store, conn)), sep(),
-    btn('Undo', 'Ctrl+Z', () => store.undo()), btn('Redo', 'Ctrl+Y', () => store.redo()), sep(),
-    toolBtns.select, toolBtns.box, toolBtns.decal, sep(), modeBtns.object, modeBtns.mesh, sep(), uvLockBtn, sep(),
-    btn('Delete', 'Delete selection (Del)', () => deleteSelection(store)), sep(),
-    btn('+ Viewport', `Add a viewport (max ${MAX_VIEWPORTS}); drag a tab out of the browser window, or use the ⧉ button of a group, to move it to another monitor`, addViewport))
+  const tools = h('div', { class: 'toolbar' },
+    group(btn('Save', 'Save (Ctrl+S)', () => void save()), btn('Undo', 'Undo (Ctrl+Z)', () => store.undo()), btn('Redo', 'Redo (Ctrl+Y)', () => store.redo())),
+    h('span', { class: 'tb-label' }, 'Tool'), group(toolBtns.select, toolBtns.box, toolBtns.decal),
+    h('span', { class: 'tb-label' }, 'Mode'), group(modeBtns.object, modeBtns.mesh),
+    group(uvLockBtn), group(btn('Delete', 'Delete selection (Del)', () => deleteSelection(store))),
+    group(btn('+ Viewport', `Add a viewport (max ${MAX_VIEWPORTS}); drag a tab out of the browser window, or use the ⧉ button of a group, to move it to another monitor`, addViewport)),
+    h('span', { class: 'tb-spacer' }), exportBtn)
+  bar.append(tools)
 
   const conn$ = h('span', { class: 'status' }), path$ = h('span', { class: 'dim' }), hint$ = h('span', { class: 'hint' }), msg$ = h('span', { class: 'message' })
   status.append(conn$, path$, hint$, msg$)
@@ -299,7 +352,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     for (const k of ['select', 'box', 'decal'] as const) toolBtns[k].classList.toggle('on', s.tool === k)
     for (const k of ['object', 'mesh'] as const) modeBtns[k].classList.toggle('on', s.editMode === k)
     uvLockBtn.classList.toggle('on', s.uvLock)
-    exportBtn.textContent = s.exporting ? `Cancel export (${Math.round(s.exporting.fraction * 100)}%)` : 'Export BSP'
+    exportBtn.textContent = exportLabel(); exportBtn.hidden = !s.exporting
   })
 
   // ---- keys (Blender/UE conventions, DESIGN.md §17) ---------------------------------
@@ -330,25 +383,27 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     w2.addEventListener('pagehide', () => { w2.document.removeEventListener('keydown', onAppKey); popoutDocs.delete(w2.document) })
   }
 
-  // ---- layout: viewport | (Place, Mesh Edit) over Outliner over (Details, Texture, Level); bottom: (Content Browser, History)
+  // ---- layout: ((Place, Mesh Edit) | viewport) over (Content Browser, History), full width | Outliner over (Details, Texture, Level)
   addViewport()
-  dock.addPanel({ id: 'place', component: 'place', title: 'Place', position: { referencePanel: 'viewport-1', direction: 'right' } })
+  dock.addPanel({ id: 'browser', component: 'browser', title: 'Content Browser', position: { referencePanel: 'viewport-1', direction: 'below' } })
+  dock.addPanel({ id: 'place', component: 'place', title: 'Place', position: { referencePanel: 'viewport-1', direction: 'left' } })
   dock.addPanel({ id: 'meshedit', component: 'meshedit', title: 'Mesh Edit', position: { referencePanel: 'place', direction: 'within' } })
-  dock.addPanel({ id: 'outliner', component: 'outliner', title: 'Outliner', position: { referencePanel: 'place', direction: 'below' } })
+  dock.addPanel({ id: 'outliner', component: 'outliner', title: 'Outliner', position: { direction: 'right' } })
   dock.addPanel({ id: 'inspector', component: 'inspector', title: 'Details', position: { referencePanel: 'outliner', direction: 'below' } })
   dock.addPanel({ id: 'texture', component: 'texture', title: 'Texture', position: { referencePanel: 'inspector', direction: 'within' } })
   dock.addPanel({ id: 'level', component: 'level', title: 'Level', position: { referencePanel: 'inspector', direction: 'within' } })
-  dock.addPanel({ id: 'browser', component: 'browser', title: 'Content Browser', position: { referencePanel: 'viewport-1', direction: 'below' } })
   dock.addPanel({ id: 'groups', component: 'groups', title: 'Texture Groups', position: { referencePanel: 'browser', direction: 'within' } })
   dock.addPanel({ id: 'history', component: 'history', title: 'History', position: { referencePanel: 'browser', direction: 'within' } })
   dock.getPanel('place')?.api.setActive(); dock.getPanel('inspector')?.api.setActive(); dock.getPanel('browser')?.api.setActive()
-  store.showPanel = (id) => dock.getPanel(id)?.api.setActive()  // right-click > Properties
+  store.showPanel = showPanel  // right-click > Properties
   // sizes only take effect once the layout has been measured
   requestAnimationFrame(() => {
     const H = body.clientHeight, W = body.clientWidth
-    dock.getPanel('viewport-1')?.api.setSize({ width: Math.round(W * 0.76) })
-    dock.getPanel('place')?.api.setSize({ height: Math.round(H * 0.24) })
-    dock.getPanel('outliner')?.api.setSize({ height: Math.round(H * 0.3) })
+    dock.layout(W, H) // Dockview's own resize observer may not have run yet; sizes set before it would be rescaled away
+    const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(hi, Math.max(lo, v)))
+    dock.getPanel('place')?.api.setSize({ width: clamp(W * 0.2, 190, 360) })
+    dock.getPanel('outliner')?.api.setSize({ width: clamp(W * 0.22, 210, 420) })
+    dock.getPanel('outliner')?.api.setSize({ height: Math.round(H * 0.34) })
     dock.getPanel('browser')?.api.setSize({ height: Math.round(H * 0.27) })
   })
 

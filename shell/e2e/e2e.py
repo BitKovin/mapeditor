@@ -259,7 +259,7 @@ def run(page, log):
     check(not any(k.endswith("/b_e2e_wall") for k in E("[...window.__editor.store.carved().keys()]")) and not any(b["id"] == "b_e2e_hole" for b in world()["brushes"]), "undo removes the subtractor and the carve with it")
 
     # ---- file dialog, settings dialog, entity definitions
-    page.click("button:has-text('Open')"); page.wait_for_selector(".modal .fd-row", timeout=3000)
+    page.click(".menu-title:has-text('File')"); page.click(".menu-item:has-text('Open')"); page.wait_for_selector(".modal .fd-row", timeout=3000)
     rows = page.locator(".modal .fd-row").all_inner_texts()
     check(any("demo.map.json" in r for r in rows), f"Open shows a file browser listing the maps folder ({[r.strip() for r in rows][:4]})")
     page.keyboard.press("Escape"); page.wait_for_timeout(200)
