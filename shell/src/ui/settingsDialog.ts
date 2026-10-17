@@ -145,6 +145,9 @@ export function openSettings(store: Store, conn: CoreConnection, start: Settings
       const ent = textInput(p.entityDefinitions)
       const texExt = textInput(p.textureExtensions.join(', ')), modelExt = textInput(p.modelExtensions.join(', '))
       const ppm = numInput(p.pixelsPerMeter ?? 64, '1')
+      // the export format (REQUIREMENTS §31 X2): File > Export and Play map use it
+      const exporter = h('select', {}, h('option', { value: 'rbsp' }, 'rBSP (.bsp)'), h('option', { value: 'obj' }, 'OBJ + JSON (.obj)')) as HTMLSelectElement
+      exporter.value = (p as unknown as { exporter?: string }).exporter === 'obj' ? 'obj' : 'rbsp'
       const block = stop(h('textarea', { rows: '3', placeholder: 'func_door' }, (lighting.blockLight ?? []).join('\n'))) as HTMLTextAreaElement
       const recv = stop(h('textarea', { rows: '3', placeholder: 'func_wall' }, (lighting.receiveBakedLight ?? []).join('\n'))) as HTMLTextAreaElement
       const list = (s: string) => s.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean)
@@ -153,13 +156,14 @@ export function openSettings(store: Store, conn: CoreConnection, start: Settings
       fields = [
         f('name', () => name.value.trim()), f('textureRoot', () => tex.value.trim()), f('mapRoot', () => maps.value.trim()), f('prefabRoot', () => prefabs.value.trim()),
         f('texGroupRoot', () => groups.value.trim()), f('entityDefinitions', () => ent.value.trim()), f('textureExtensions', () => exts(texExt.value)),
-        f('modelExtensions', () => exts(modelExt.value)), f('pixelsPerMeter', () => Number(ppm.value)),
+        f('modelExtensions', () => exts(modelExt.value)), f('pixelsPerMeter', () => Number(ppm.value)), f('exporter', () => exporter.value),
         f('lighting.blockLight', () => list(block.value)), f('lighting.receiveBakedLight', () => list(recv.value)),
       ]
       loaded = true
       el.replaceChildren(
         ...(Object.keys(file).length ? [] : [note('This folder has no game_profile.json yet: the values below are the built-in defaults, and Apply creates the file.')]),
         h('div', { class: 'section' }, 'Game'), row('Name', name),
+        row('Export format', exporter, 'What File > Export and Play map write: rBSP for the engine, or OBJ + JSON (.obj geometry, .json entities, .lightvol, lightmaps)'),
         h('div', { class: 'section' }, 'Folders (inside the game folder)'),
         row('Textures', relFolder(tex, 'Textures folder')), row('Maps', relFolder(maps, 'Maps folder')), row('Prefabs', relFolder(prefabs, 'Prefabs folder')), row('Texture groups', relFolder(groups, 'Texture groups folder')),
         row('Entity definitions', pathField(ent, () => nativePick(conn, store, { kind: 'open', title: 'Entity definitions file', startDir: ent.value.split('/').slice(0, -1).join('/'), filters: [{ name: 'Entity definitions (*.ent;*.def)', pattern: '*.ent;*.def' }], relative: true })), 'Quake 3 style .ent (XML) file'),
