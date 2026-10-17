@@ -20,7 +20,8 @@ struct BspExportRequest {
     nlohmann::json document;       // the document (as in document_sync)
     std::string mapPath;           // assets relative path of the map ("" = unsaved), for prefab cycle detection
     nlohmann::json relief;         // the last relief_geometry message (optional)
-    std::string outPath;           // assets relative .bsp path
+    std::string outPath;           // assets relative path of the main file (.bsp, or the format's extension)
+    std::string format = "rbsp";   // the exporter (exporter.h; the game profile's "exporter")
     LightingService::Options lighting;  // lighting.json, as the live view uses it
     bool bake = true;              // false: geometry only (no lightmaps, no light grid)
     double maxBakeSeconds = 0;     // 0 = until converged
@@ -33,13 +34,27 @@ struct BspExportResult {
     std::string error;
     std::vector<std::string> warnings;
     BspOutput::Stats stats;
-    std::string bspPath, lightmapDir;  // assets relative
+    std::string format = "rbsp";       // the exporter that wrote the files
+    std::string bspPath, lightmapDir;  // assets relative: the main file (the .bsp, or the format's), the lightmap folder
     double seconds = 0, bakeSeconds = 0;
     std::string device;                // what baked the lightmaps
     nlohmann::json toJson() const;
 };
 
-/// Runs the whole export on the calling thread. `progress` (optional) is called with a stage name and 0..1 (also from helper threads);
+/// What every exporter starts from (exporter.h): the final bake and the rBSP compiled in memory (its lumps hold the geometry as the game gets it).
+struct PreparedExport {
+    BspOutput bsp;
+    std::map<int, LightvolGrid> lightvol;  // light style -> the baked light volume (editor space); empty without a bake
+};
+/// Builds the scene, bakes (request.bake) and compiles. Throws on errors; false when cancelled (`result.cancelled` / `error` set). Warnings,
+/// stats, bake time and device go into `result`.
+bool prepareExport(const BspExportRequest& request, const ProgressFn& progress, const std::function<bool()>& cancelled, BspExportResult& result, PreparedExport& out);
+/// `rel` normalised, or throws when it leaves the assets folder or does not end in `extension`.
+std::string sandboxedExportPath(const std::string& rel, const std::string& extension);
+/// lm_0000.exr, lm_0001.exr, ... in `dir` (pages of an older export are removed first; no folder when there are no pages).
+void writeLightmapPages(const std::filesystem::path& dir, const std::vector<BspLightmapPage>& pages);
+
+/// The rBSP exporter: runs the whole export on the calling thread. `progress` (optional) is called with a stage name and 0..1 (also from helper threads);
 /// `cancelled` (optional) is polled between steps.
 BspExportResult exportBsp(const BspExportRequest& request, const ProgressFn& progress = {}, const std::function<bool()>& cancelled = {});
 

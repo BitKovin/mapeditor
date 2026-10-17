@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <thread>
 
 namespace fs = std::filesystem;
@@ -95,9 +96,17 @@ int main(int argc, char** argv) {
             }).detach();
     };
 
-    core::WsServer server(
-        port, [&](uint64_t id) { dispatch(id, router.onConnect()); },
-        [&](uint64_t id, const std::string& text) { dispatch(id, router.onMessage(text)); }, [](uint64_t) {});
+    std::unique_ptr<core::WsServer> serverOwner;
+    try {
+        serverOwner = std::make_unique<core::WsServer>(
+            port, [&](uint64_t id) { dispatch(id, router.onConnect()); },
+            [&](uint64_t id, const std::string& text) { dispatch(id, router.onMessage(text)); }, [](uint64_t) {});
+    } catch (const std::exception& e) {
+        std::cerr << "cannot listen on 127.0.0.1:" << port << ": " << e.what()
+                  << "\nIs another mapeditor_core already running on this port? Close it, or start this one with another port." << std::endl;
+        return 1;
+    }
+    core::WsServer& server = *serverOwner;
     serverPtr = &server;
     server.setTick(std::chrono::seconds(1), [&] { dispatch(0, router.onTick()); });  // only toAll is used by onTick
     // Live lighting runs on its own thread: it never waits for the socket thread and the socket thread never waits for it. The bake thread hands its

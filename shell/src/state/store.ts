@@ -24,6 +24,7 @@ import { LightvolStore } from '../render/lightvolStore'
 import type { Status } from '../net/connection'
 import { texEnv } from '../model/texprops'
 import { progressMessage, resultMessage } from './exportStatus'
+import { ExportFormat, RBSP_FORMAT, formatFromProfile } from './exportFormat'
 import { editorPrefs } from './editorPrefs'
 
 const DEFAULT_BOX: Box = boxFromQuake(null)
@@ -102,6 +103,8 @@ export interface State {
   /** True when the document differs from what is on disk (as far as this window knows). */
   dirty: boolean
   profile: GameProfile | null
+  /** The game's export format (game_profile.json "exporter", REQUIREMENTS §31). */
+  exportFormat: ExportFormat
   /** Classes from the game's .ent file; empty means none were found and the built-in lists are used. */
   entityDefs: EntityClassDef[]
   entityWarnings: string[]
@@ -160,7 +163,7 @@ export class Store {
       problems: [], selection: null, multi: [], history: [{ label: 'Empty', doc }], historyIndex: 0, message: null,
       tool: 'select', editMode: 'object', activeTexture: 'dev/grey',
       uvLock: true, pipette: null, autoDetail: true, proportional: false, propRadius: 1, hidden: [], uvClipboard: null, exporting: null, texSteps: { ...DEFAULT_TEX_STEPS }, shape: 'box', shapeParams: defaultShapeParams(), decalParams: { width: 1, height: 1, depth: 0.5 }, meshMode: 'vertex', meshSel: emptySel(),
-      dirty: false, profile: null, entityDefs: [], entityWarnings: [], assetsRoot: '', coreSettings: null, lastExport: null,
+      dirty: false, profile: null, exportFormat: RBSP_FORMAT, entityDefs: [], entityWarnings: [], assetsRoot: '', coreSettings: null, lastExport: null,
     }
   }
 
@@ -442,7 +445,7 @@ export class Store {
         else this.set({})
         return
       case 'profile':
-        this.set({ profile: m.profile })
+        this.set({ profile: m.profile, exportFormat: formatFromProfile(m) })
         return
       case 'entity_defs':
         // near-black markers would vanish against the dark viewport, so lift them to a readable grey

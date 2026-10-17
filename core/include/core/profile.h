@@ -38,6 +38,8 @@ struct GameProfile {
     //            "classes":  [{"match": "trigger_*", "contents": ["trigger"]}] }
     // Absent: Quake 3's flag values and rules for common/*, water, sky and trigger_* classes.
     nlohmann::json bsp;
+    // The export format of this game (REQUIREMENTS §31 X2): an exporter id of exporter.h ("rbsp", "obj"). An unknown id exports rBSP, with a warning.
+    std::string exporter = "rbsp";
 
     nlohmann::json toJson() const;
 };

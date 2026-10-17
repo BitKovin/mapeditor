@@ -1,0 +1,17 @@
+{
+  "name": "level-editor",
+  "productName": "Level Editor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Level Editor desktop app: the Shell in an Electron window, the Core started next to it",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "package": "node package.mjs",
+    "test": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.5.1"
+  }
+}

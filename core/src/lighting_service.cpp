@@ -47,7 +47,7 @@ LightingService::Options LightingService::loadOptions(const std::filesystem::pat
         num("texelsPerMeter", o.layout.texelsPerMeter, 0.25, 256);
         integer("atlasSize", o.layout.atlasSize, 64, 4096);
         { int a = 64; while (a < o.layout.atlasSize) a *= 2; o.layout.atlasSize = a; }  // power of two (the engine uses a texture array)
-        integer("padding", o.layout.padding, 1, 8);
+        integer("padding", o.layout.padding, 2, 8);  // at least 2: the bicubic lightmap lookup (editor and game) reads 2 texels around a chart
         num("mergeAngleDeg", o.layout.mergeAngleDeg, 0, 180);
         num("exposure", o.exposure, 0.05, 20);
         integer("directSupersample", o.live.directSupersample, 1, kMaxSuperSamples);

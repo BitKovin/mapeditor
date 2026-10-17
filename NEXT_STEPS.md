@@ -430,3 +430,25 @@ Verified: Core 257 test cases pass (g++, no cmake: see /home/claude/build/Makefi
 - Tests: Core sky + bsp cases + related lighting cases pass (23 cases), Shell 902 pass, typecheck clean. Prebuilt SPIR-V of `lightmap_direct` refreshed.
 - **Open:** checked in the editor, not yet in the game; the engine's far plane (3000 m) clips sky boxes larger than that (warning; suggested fix in DESIGN §12); a non-cubemap sky texture stays flat in the game; the checked-in `lightmap_gather.spv.h` is stale against its source (its hash does not match; untouched here).
 
+## Update 2026-10-17 (second): the editor as a desktop app (REQUIREMENTS §29, DESIGN §11)
+- **`build_app.bat [notests]`** builds the Core (Release, in `core\build_release`), the Shell and the Electron app into `release\LevelEditor\` - one folder to zip and publish; nothing to install on the target PC. `LevelEditor.exe [assetsFolder] [initialMap]`.
+- **`desktop/`**: `main.cjs` (starts the Core hidden on a free port, serves `shell\dist` on 127.0.0.1, popouts, unsaved-changes question, Core log + restart dialog, window state), `paths.cjs` (layout, Core arguments, static server), `package.mjs` (stages the Core, its tools, DLLs, MSVC runtime, `core\assets`, the Shell; runs @electron/packager), `tests/` (`npm test`, node:test, 5 pass). `npm start` runs it from the working tree.
+- Checked with the packaged app: Core starts, Shell connects (WebGL2), popout window opens, killing the Core shows the dialog and Restart reconnects, closing ends the Core. Built with `notests` (the Core's full suite was not run for this; Shell typecheck clean).
+- **Open:** no app icon yet (put `desktop\icon.ico`, it is picked up); settings live inside the folder (`resources\core\settings.json`), so it must not go to Program Files; no installer / code signing / auto-update; the Electron `vulkan-1.dll` in the app root is not on the Core's DLL path (the Core uses the system Vulkan loader, as before).
+
+## Update 2026-10-17 (third): smooth lightmaps (REQUIREMENTS §30)
+- **Cause of the "sharp pixels" in diffuse light:** not the bake (super sampling works: 1 vs 8 sub-texel positions changes ~33k texels of demo_lit, CPU, GPU and live), but bilinear filtering, whose slope jumps at every texel border.
+- **Fix:** bicubic B-spline lightmap lookup (4 bilinear fetches) in the editor's Lighting-only / Lit views and in the game's `fs_bsp.sc` for rBSP v2 (all three games, recompiled, 0 failed); lightmap padding 2 (default and minimum), since the lookup reads 2 texels around a chart. Old exported maps were packed with padding 1: re-export them.
+- Tests: Core layout / settings / bsp / live bake cases (49) pass, Shell 902 pass, typecheck clean; checked in the editor's Lit view. **Open:** not checked in the game.
+
+## Fix 2026-10-17: two Cores on one port
+- The user saw no sky in the editor nor in the export: the Shell was talking to an OLD Core (a build from before the sky work, started from `.claude/worktrees/happy-brattain-1e55ef` the day before) that still listened on 8787 next to the new one from `run.bat`. Asio's default SO_REUSEADDR let both bind the port on Windows.
+- `ws_server.cpp`: the port is bound with SO_EXCLUSIVEADDRUSE on Windows (reuse_address elsewhere); `main.cpp`: a port in use ends the Core with "cannot listen on 127.0.0.1:<port> ... Is another mapeditor_core already running" (exit 1). Checked both ways (a fixed Core refuses a taken port; an old build cannot join a fixed Core's port).
+
+## Update 2026-10-17 (fourth): several exporters, OBJ (REQUIREMENTS §31, DESIGN "Exporters")
+- **Exporter interface** (`core/exporter.h`): id, name, extension, run; `prepareExport` (bake + rBSP in memory) is shared. Registry: `rbsp`, `obj`.
+- **The format is the game's:** `game_profile.json` `"exporter": "obj"` (default `rbsp`). File > Export and Play map follow it; `export_map` message (alias `export_bsp`).
+- **OBJ exporter:** `<name>.obj` (geometry read back from the compiled rBSP, metres / Y up, `vl` = lightmap UVs), `<name>.json` (entities), `<name>.lightvol` (binary light volume), `<name>/lm_NNNN.exr`. `bsp_export_tool ... maps/x.obj` works from the command line.
+- Tests: Core exporters (3) + bsp / sky / router / settings cases (39) pass; Shell 906 pass (new `tests/exportFormat.test.ts`); typecheck clean; menu checked in the browser.
+- **Open:** the OBJ carries the base light style's lightmap coordinates only (the other styles' pages are written but not referenced); no .mtl file.
+

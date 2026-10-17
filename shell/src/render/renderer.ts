@@ -123,8 +123,22 @@ vec3 srgbToLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(
 vec3 linearToSrgb(vec3 c) { c = clamp(c, 0.0, 1.0); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)); }`
 const LAYERS_GLSL = `
 uniform sampler2DArray uLightmap; uniform float uPages; uniform float uSlot[64]; uniform float uW[64];
+// Bicubic B-spline lookup from 4 bilinear fetches (GPU Gems 2, ch. 20): smooth across texel borders, where bilinear's slope jumps and soft
+// shadows show creases on the texel grid (REQUIREMENTS §30). It reads up to 2 texels around a chart's edge: the layout's padding is 2.
+// The engine's fs_bsp.sc samples rBSP v2 lightmaps the same way.
+vec3 lightmapTexel(vec3 uvp) {
+  vec2 size = vec2(textureSize(uLightmap, 0).xy);
+  vec2 p = uvp.xy * size - 0.5, f = fract(p), i = p - f;
+  vec2 f2 = f * f, f3 = f2 * f;
+  vec2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0, w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+  vec2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0, w3 = f3 / 6.0;
+  vec2 g0 = w0 + w1, g1 = w2 + w3;
+  vec2 a = (i - 0.5 + w1 / g0) / size, b = (i + 1.5 + w3 / g1) / size;  // texel i-1+w1/g0 and i+1+w3/g1, as coordinates
+  return g0.y * (g0.x * texture(uLightmap, vec3(a.x, a.y, uvp.z)).rgb + g1.x * texture(uLightmap, vec3(b.x, a.y, uvp.z)).rgb)
+       + g1.y * (g0.x * texture(uLightmap, vec3(a.x, b.y, uvp.z)).rgb + g1.x * texture(uLightmap, vec3(b.x, b.y, uvp.z)).rgb);
+}
 vec3 lightmapLight(vec3 uvp, vec3 mask) {
-  vec3 sum = texture(uLightmap, uvp).rgb * uW[0];
+  vec3 sum = lightmapTexel(uvp) * uW[0];
   int m0 = int(mask.x + 0.5), m1 = int(mask.y + 0.5), m2 = int(mask.z + 0.5);
   if ((m0 | m1 | m2) == 0) return sum;
   for (int k = 1; k <= 63; k++) {
@@ -132,7 +146,7 @@ vec3 lightmapLight(vec3 uvp, vec3 mask) {
     if (((w >> ((k - 1) % 21)) & 1) == 0) continue;
     float slot = uSlot[k];
     if (slot < 0.0) continue;
-    sum += texture(uLightmap, vec3(uvp.xy, uvp.z + slot * uPages)).rgb * uW[k];
+    sum += lightmapTexel(vec3(uvp.xy, uvp.z + slot * uPages)) * uW[k];
   }
   return sum;
 }`

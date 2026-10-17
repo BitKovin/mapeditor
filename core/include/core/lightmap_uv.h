@@ -17,7 +17,7 @@ namespace core {
 struct LightmapSettings {
     double texelsPerMeter = 16;   // base density
     int atlasSize = 1024;         // every page is atlasSize x atlasSize texels
-    int padding = 1;              // empty texels around every chart (gutter for dilation / bilinear filtering)
+    int padding = 2;              // empty texels around every chart (gutter for dilation; the views sample bicubic, which reads 2 texels out)
     // Faces that share an edge are unfolded into one chart ("connected edges stay connected") when the angle between
     // their normals is at most this. 0 = only coplanar faces, 90 = box corners connect, 180 = anything.
     // Faces sharing an edge are unfolded into one chart when the dihedral angle is <= this. Kept small on purpose: bilinear filtering reads

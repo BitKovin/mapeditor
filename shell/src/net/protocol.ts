@@ -48,7 +48,7 @@ export type Inbound =
   | { type: 'document_sync'; rev: number; path: string; doc: MapDocument; dirty?: boolean }
   | { type: 'update_ack'; rev: number }
   | { type: 'prefab_library'; prefabs: Library }
-  | { type: 'profile'; profile: GameProfile }
+  | { type: 'profile'; profile: GameProfile; exporter?: string; exporters?: { id: string; name: string; extension: string }[] }
   | { type: 'entity_defs'; classes: EntityClassDef[]; warnings: string[] }
   | ({ type: 'settings' } & CoreSettings)
   | { type: 'lit_mesh'; rev: number; atlas: number; pageCount: number; triangleCount: number; /** the Core mirrors what we hold: only differing tiles follow and the pages stay */ keepPages?: boolean; vertices: string; faces?: LitFace[] }
@@ -199,6 +199,8 @@ export const msg = {
   lighting: (o: { enabled?: boolean; exposure?: number; camera?: [number, number, number] }) => JSON.stringify({ type: 'lighting', ...o }),
   /** BSP export of the map as it is now (REQUIREMENTS §25): `path` is an assets relative .bsp; bake false = geometry only. */
   exportBsp: (requestId: number, path: string, bake = true) => JSON.stringify({ type: 'export_bsp', requestId, path, bake }),
+  /** Export with the game's format (REQUIREMENTS §31): the Core gives `path` the format's extension and answers { ok, path, format }. */
+  exportMap: (requestId: number, path: string, bake = true) => JSON.stringify({ type: 'export_map', requestId, path, bake }),
   exportCancel: (requestId: number) => JSON.stringify({ type: 'export_cancel', requestId }),
   saveDocument: (requestId: number, path?: string) => JSON.stringify({ type: 'save_document', requestId, ...(path ? { path } : {}) }),
   /** The operating system's file / folder dialog, shown by Core; answered when the person closes it. relative: paths inside the assets root. */

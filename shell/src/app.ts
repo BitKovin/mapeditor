@@ -10,7 +10,8 @@ import { PrefabIcons, clearEntityIcons } from './render/icons'
 import { ContentBrowserPanel } from './ui/contentBrowser'
 import { confirmDialog } from './ui/dialog'
 import { chooseFile, joinPath, parentDir } from './ui/fileDialog'
-import { BSP_FILTERS, MAP_FILTERS, nativePick } from './ui/nativeDialog'
+import { MAP_FILTERS, nativePick } from './ui/nativeDialog'
+import { formatFilters, withFormatExt } from './state/exportFormat'
 import { editorPrefs, viewportDefaults } from './state/editorPrefs'
 import { openSettings } from './ui/settingsDialog'
 import { h } from './ui/dom'
@@ -248,32 +249,35 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     if (p === undefined) p = await chooseFile({ mode: 'save', title: 'Save map as', ext: MAP_EXT, startDir: mapDir(), startName: store.state.path.split('/').pop() ?? '', list: listDir })
     return p ? save(withExt(p, MAP_EXT)) : false
   }
-  /** File > Export BSP (REQUIREMENTS §25 E9): the map as it is now -> <name>.bsp + <name>/lm_NNNN.exr, baked in the Core. While it runs the button cancels. */
-  async function exportBsp(): Promise<void> {
+  /** File > Export (REQUIREMENTS §25 E9, §31): the map as it is now, in the game's format (game_profile.json "exporter"; rBSP: <name>.bsp +
+   *  <name>/lm_NNNN.exr), baked in the Core. While it runs the button cancels. */
+  async function exportMap(): Promise<void> {
     if (!store.canEdit) { store.setMessage('Not connected to Core - cannot export'); return }
     if (store.state.exporting) { await conn.request((id) => msg.exportCancel(id)).catch(() => undefined); return }
-    let p = await nativePick(conn, store, { kind: 'save', title: 'Export BSP', startDir: mapDir(), fileName: `${mapBase()}.bsp`, filters: BSP_FILTERS, defaultExt: 'bsp', relative: true })
-    if (p === undefined) p = await chooseFile({ mode: 'save', title: 'Export BSP', ext: '.bsp', startDir: mapDir(), startName: `${mapBase()}.bsp`, list: listDir })
-    if (p) await startExport(withExt(p, '.bsp'))
+    const f = store.state.exportFormat, title = `Export ${f.name}`, fileName = `${mapBase()}${f.extension}`
+    let p = await nativePick(conn, store, { kind: 'save', title, startDir: mapDir(), fileName, filters: formatFilters(f), defaultExt: f.extension.slice(1), relative: true })
+    if (p === undefined) p = await chooseFile({ mode: 'save', title, ext: f.extension, startDir: mapDir(), startName: fileName, list: listDir })
+    if (p) await startExport(withFormatExt(p, f))
   }
   const mapBase = (): string => (store.state.path.split('/').pop() ?? '').replace(/\.map\.json$/, '') || 'untitled'
-  /** Starts the export to `p` (assets relative); false when Core refused it. */
-  async function startExport(p: string): Promise<boolean> {
+  /** Starts the export to `p` (assets relative); the path the Core writes (with its format's extension), or null when it refused. */
+  async function startExport(p: string): Promise<string | null> {
     try {
       await conn.whenIdle()
-      const r = await conn.request((id) => msg.exportBsp(id, p))
-      if (!r.ok) { store.setMessage(`BSP export: ${r.error ?? 'refused'}`); return false }
+      const r = await conn.request((id) => msg.exportMap(id, p))
+      if (!r.ok) { store.setMessage(`Export: ${r.error ?? 'refused'}`); return null }
       store.onMessage({ type: 'export_progress', stage: 'starting', fraction: 0 })
-      return true
-    } catch (e) { store.setMessage((e as Error).message); return false }
+      return typeof r.path === 'string' && r.path ? r.path : p
+    } catch (e) { store.setMessage((e as Error).message); return null }
   }
-  /** File > Play map (F5): exports <map>.bsp next to the map file, then starts the game set in Settings > Run game with it. */
+  /** File > Play map (F5): exports <map>.<format's extension> next to the map file, then starts the game set in Settings > Run game with it. */
   async function playMap(): Promise<void> {
     if (!store.canEdit) { store.setMessage('Not connected to Core - cannot play'); return }
     if (store.state.exporting) { store.setMessage('An export is already running'); return }
     if (!store.state.coreSettings?.game.exe) { store.setMessage('Play map: choose the game executable first'); openSettings(store, conn, 'game'); return }
-    const bsp = joinPath(mapDir(), `${mapBase()}.bsp`), before = store.state.lastExport
-    if (!(await startExport(bsp))) return
+    const before = store.state.lastExport
+    const bsp = await startExport(joinPath(mapDir(), `${mapBase()}${store.state.exportFormat.extension}`))
+    if (!bsp) return
     const done = await new Promise<NonNullable<typeof before>>((resolve) => {
       const un = store.subscribe(() => { const r = store.state.lastExport; if (r && r !== before && !store.state.exporting) { un(); resolve(r) } })
     })
@@ -299,8 +303,10 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   async function openRecent(p: string): Promise<void> { if (p !== store.state.path && await okToDiscard()) await openPath(p) }
 
   // ---- menu bar: every action lives here (with its shortcut); the toolbar below keeps the frequent ones -------------
-  const EXPORT_TIP = 'Export the map as rBSP for the engine: bakes the final lighting (Level settings: bake quality), writes <name>.bsp and <name>/lm_*.exr'
-  const exportLabel = () => store.state.exporting ? `Cancel export (${Math.round(store.state.exporting.fraction * 100)}%)` : 'Export BSP…'
+  const exportTip = (): string => store.state.exportFormat.id === 'obj'
+    ? `Export the map as OBJ (the game's format, game_profile.json "exporter"): bakes the final lighting, writes <name>.obj, <name>.json (entities), <name>.lightvol and <name>/lm_*.exr`
+    : `Export the map as ${store.state.exportFormat.name} (the game's format, game_profile.json "exporter"): bakes the final lighting (Level settings: bake quality), writes <name>${store.state.exportFormat.extension} and <name>/lm_*.exr`
+  const exportLabel = () => store.state.exporting ? `Cancel export (${Math.round(store.state.exporting.fraction * 100)}%)` : `Export ${store.state.exportFormat.name}…`
   /** View menu: brings a panel to the front, or docks it again where it lives by default if it was closed. */
   const PANELS: [id: string, title: string, near: string, dir: 'within' | 'left' | 'right' | 'below'][] = [
     ['place', 'Place', 'viewport-1', 'left'], ['meshedit', 'Mesh Edit', 'place', 'within'], ['outliner', 'Outliner', 'viewport-1', 'right'],
@@ -325,7 +331,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
       { label: 'Save', shortcut: 'Ctrl+S', action: () => void save() },
       { label: 'Save As…', shortcut: 'Ctrl+Shift+S', title: 'Save under a new name', action: () => void saveAs() },
       '-',
-      { label: exportLabel(), title: EXPORT_TIP, action: () => void exportBsp() },
+      { label: exportLabel(), title: exportTip(), action: () => void exportMap() },
       { label: 'Play Map', shortcut: 'F5', title: 'Export the map as BSP next to the map file and start the game with it (Settings > Run game)', action: () => void playMap() },
       '-',
       { label: 'Game Folder…', title: 'Choose the game folder (textures, maps, game_profile.json)', action: () => openSettings(store, conn, 'general') },
@@ -361,7 +367,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   const btn = (label: string, title: string, fn: () => void, cls = '') => { const b = h('button', { title, class: cls }, label); b.addEventListener('click', fn); return b }
   const group = (...kids: HTMLElement[]) => h('div', { class: 'tb-group' }, ...kids)
   const toolBtns = { select: btn('Select', 'Select tool (Q)', () => store.setTool('select'), 'tool'), box: btn('Shape', 'Draw a shape: drag, release, move, click (B). Pick the shape in the Place panel', () => store.setTool('box'), 'tool'), decal: btn('Decal', 'Click a surface to place a decal projector', () => store.setTool('decal'), 'tool') }
-  const exportBtn = btn('', 'Cancel the BSP export', () => void exportBsp(), 'tb-export')
+  const exportBtn = btn('', 'Cancel the export', () => void exportMap(), 'tb-export')
   const uvLockBtn = btn('UV lock', 'UV lock (global): on = textures stay on the faces when you move, rotate or scale brushes', () => store.setUvLock(!store.state.uvLock), 'tool')
   const modeBtns = { object: btn('Brush', 'Brush mode: NetRadiant-style object editing (Tab toggles Brush / Mesh)', () => store.setEditMode('object'), 'tool'), mesh: btn('Mesh', 'Mesh mode: Blender-style vertex / edge / face editing of the selected brush (Tab)', () => store.setEditMode('mesh'), 'tool') }
   const tools = h('div', { class: 'toolbar' },

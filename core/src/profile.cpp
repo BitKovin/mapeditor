@@ -13,7 +13,7 @@ json GameProfile::toJson() const {
                 {"modelExtensions", modelExtensions}, {"entityDefinitions", entityDefinitions},
                 {"mapRoot", mapRoot}, {"prefabRoot", prefabRoot}, {"texGroupRoot", texGroupRoot}, {"pixelsPerMeter", pixelsPerMeter},
                 {"lighting", json{{"blockLight", blockLight}, {"receiveBakedLight", receiveBakedLight}, {"lightStyles", lightStylesJson}}},
-                {"bsp", bsp.is_object() ? bsp : json::object()}};
+                {"bsp", bsp.is_object() ? bsp : json::object()}, {"exporter", exporter}};
 }
 
 static std::vector<std::string> extensions(const json& j, const char* key) {
@@ -96,6 +96,10 @@ GameProfile profileFromJson(const json& j) {
     if (j.contains("bsp")) {
         if (!j["bsp"].is_object()) throw std::runtime_error("game_profile.json: bsp must be an object");
         p.bsp = j["bsp"];
+    }
+    if (j.contains("exporter")) {
+        if (!j["exporter"].is_string()) throw std::runtime_error("game_profile.json: exporter must be a string (rbsp, obj)");
+        p.exporter = j["exporter"].get<std::string>();
     }
     return p;
 }

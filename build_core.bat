@@ -1,7 +1,8 @@
 @echo off
 rem ============================================================================
 rem  Builds the Core (C++20) with CMake + Ninja using the Visual Studio toolchain.
-rem  Usage:  build_core.bat [Release|Debug]        (default: Release)
+rem  Usage:  build_core.bat [Release|Debug] [notests]        (default: Release, with the unit tests)
+rem         set CORE_BUILD_DIR to build somewhere else than core\build (build_app.bat uses core\build_release)
 rem  Needs:  Visual Studio 2019/2022 (or Build Tools) with the "Desktop development
 rem          with C++" workload. It ships CMake and Ninja; nothing else to install.
 rem  Output: core\build\mapeditor_core.exe, core\build\core_tests.exe and core\build\lightbake_tool.exe
@@ -13,6 +14,8 @@ setlocal
 set "CONFIG=%~1"
 if "%CONFIG%"=="" set "CONFIG=Release"
 set "ROOT=%~dp0"
+set "BUILD=%CORE_BUILD_DIR%"
+if "%BUILD%"=="" set "BUILD=%ROOT%core\build"
 
 where cl >nul 2>nul
 if not errorlevel 1 goto have_cl
@@ -33,16 +36,18 @@ where cmake >nul 2>nul
 if errorlevel 1 goto no_cmake
 
 echo === Configuring (%CONFIG%) ===
-cmake -S "%ROOT%core" -B "%ROOT%core\build" -G Ninja -DCMAKE_BUILD_TYPE=%CONFIG%
+cmake -S "%ROOT%core" -B "%BUILD%" -G Ninja -DCMAKE_BUILD_TYPE=%CONFIG%
 if errorlevel 1 goto fail
 echo === Building ===
-cmake --build "%ROOT%core\build"
+cmake --build "%BUILD%"
 if errorlevel 1 goto fail
+if /i "%~2"=="notests" goto built
 echo === Running unit tests ===
-"%ROOT%core\build\core_tests.exe"
+"%BUILD%\core_tests.exe"
 if errorlevel 1 goto fail
+:built
 echo.
-echo Core built OK: %ROOT%core\build\mapeditor_core.exe
+echo Core built OK: %BUILD%\mapeditor_core.exe
 exit /b 0
 
 :no_vs

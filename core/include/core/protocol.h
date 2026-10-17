@@ -60,6 +60,9 @@ inline constexpr const char* kPrefabLibrary = "prefab_library";  // { prefabs: {
 // BSP export (REQUIREMENTS §25): `export_bsp` { path (assets relative .bsp), bake?: bool (default true), requestId } -> response { ok, error? };
 // then, to every session, export_progress { stage, fraction } about once a second and export_result { ok, cancelled, error, warnings, stats, bsp, lightmaps,
 // seconds, bakeSeconds, device } at the end. `export_cancel` { } stops a running export.
+// Several exporters (REQUIREMENTS §31): `export_map` { path, bake?, requestId } exports with the game profile's format (exporter.h); the path's extension is
+// replaced by the format's; response { ok, path, format, warning? }. `export_bsp` is the same message (older name). `profile` carries { exporter, exporters }.
+inline constexpr const char* kExportMap = "export_map";
 inline constexpr const char* kExportBsp = "export_bsp";
 inline constexpr const char* kExportCancel = "export_cancel";
 inline constexpr const char* kExportProgress = "export_progress";

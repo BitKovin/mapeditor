@@ -42,11 +42,24 @@ struct WsServer::Impl {
     std::vector<std::unique_ptr<Tick>> ticks;
 
     Impl(uint16_t p, OnConnect c, OnMessage m, OnDisconnect d)
-        : acceptor(ioc, tcp::endpoint(asio::ip::make_address("127.0.0.1"), p)),
+        : acceptor(ioc),
           port(p),
           onConnect(std::move(c)),
           onMessage(std::move(m)),
-          onDisconnect(std::move(d)) {}
+          onDisconnect(std::move(d)) {
+        // The port is ours alone. Asio's default SO_REUSEADDR lets a second process listen on the same port on Windows, and a Shell then
+        // reaches whichever Core Windows picks (an old build left running took the connections of a fresh one).
+        const tcp::endpoint ep(asio::ip::make_address("127.0.0.1"), p);
+        acceptor.open(ep.protocol());
+#ifdef _WIN32
+        BOOL exclusive = TRUE;
+        ::setsockopt(acceptor.native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive), sizeof exclusive);
+#else
+        acceptor.set_option(tcp::acceptor::reuse_address(true));  // quick restarts (TIME_WAIT); Linux never shares a listening port
+#endif
+        acceptor.bind(ep);
+        acceptor.listen();
+    }
 
     void doAccept();
     void scheduleTick(Tick& t);

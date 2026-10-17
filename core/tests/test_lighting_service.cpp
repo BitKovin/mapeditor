@@ -318,11 +318,13 @@ TEST_CASE("lighting settings: file values are clamped, unknown keys ignored, def
     CHECK(d.live.directSupersample == 8);
     CHECK(d.live.giScale == 2);
     CHECK(d.live.denoiseIndirect);
-    dir.write("lighting.json", json{{"texelsPerMeter", 32}, {"atlasSize", 1000}, {"directSupersample", 99}, {"giScale", 3}, {"gpuTargetStepMs", 9000},
+    CHECK(d.layout.padding == 2);  // the bicubic lightmap lookup reads 2 texels around a chart (REQUIREMENTS §30)
+    dir.write("lighting.json", json{{"padding", 1}, {"texelsPerMeter", 32}, {"atlasSize", 1000}, {"directSupersample", 99}, {"giScale", 3}, {"gpuTargetStepMs", 9000},
                                     {"tickBudgetMs", 250}, {"nonsense", 1}, {"denoise", false}});
     const LightingService::Options o = LightingService::loadOptions(file, &warn);
     CHECK(o.layout.texelsPerMeter == doctest::Approx(32));
     CHECK(o.layout.atlasSize == 1024);              // rounded up to a power of two
+    CHECK(o.layout.padding == 2);                   // an old file's 1 is raised to 2
     CHECK(o.live.directSupersample == kMaxSuperSamples);
     CHECK(o.live.giScale == 4);                     // 3 -> 4
     CHECK(o.live.gpuTargetStepMs == doctest::Approx(400));

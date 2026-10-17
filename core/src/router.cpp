@@ -1,4 +1,5 @@
 #include "core/router.h"
+#include "core/exporter.h"
 #include "core/native_dialog.h"
 #include "core/profile.h"
 #include "core/texgroups.h"
@@ -25,6 +26,13 @@ json requestId(const json& req) { return req.contains("requestId") ? req["reques
 
 std::string failedResponse(const json& req, const std::string& message) {
     return json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", false}, {"error", message}}.dump();
+}
+
+// The game profile, plus the export format it picks and the formats there are (REQUIREMENTS §31 X2).
+json profileMessage(const GameProfile& profile) {
+    json list = json::array();
+    for (const Exporter& e : exporters()) list.push_back({{"id", e.id}, {"name", e.name}, {"extension", e.extension}});
+    return {{"type", proto::kProfile}, {"profile", profile.toJson()}, {"exporter", exporterFor(profile.exporter).id}, {"exporters", list}};
 }
 }  // namespace
 
@@ -65,7 +73,7 @@ void Router::pushDerivedAll(RouterOutput& out) {
 
 void Router::pushConfig(RouterOutput& out) {
     lighting_.markDirty();  // the profile decides which classes block / receive light
-    out.toAll.push_back(json{{"type", proto::kProfile}, {"profile", scene_.profile().toJson()}}.dump());
+    out.toAll.push_back(profileMessage(scene_.profile()).dump());
     out.toAll.push_back(scene_.entityDefsJson().dump());
     out.toAll.push_back(settingsJson().dump());
     lastConfigFingerprint_ = scene_.configFingerprint();
@@ -99,17 +107,24 @@ void Router::handleExport(const json& req, RouterOutput& out) {
         out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}}.dump());
         return;
     }
-    if (!req.contains("path") || !req["path"].is_string()) { out.toSender.push_back(failedResponse(req, "export_bsp needs a path")); return; }
+    if (!req.contains("path") || !req["path"].is_string()) { out.toSender.push_back(failedResponse(req, "export_map needs a path")); return; }
+    // the game's format (REQUIREMENTS §31 X2); the path gets its extension
     BspExportRequest r;
     r.assetsRoot = scene_.assetsRoot();
     r.document = scene_.documentSyncJson()["doc"];
     r.mapPath = scene_.currentPath();
     r.relief = lastRelief_;
-    r.outPath = req["path"].get<std::string>();
+    std::string formatWarning;
+    const Exporter& exporter = exporterFor(scene_.profile().exporter, &formatWarning);
+    r.format = exporter.id;
+    r.outPath = withExporterExtension(req["path"].get<std::string>(), exporter);
     r.lighting = lightingOptions_;
     r.bake = req.value("bake", true);
+    const std::string outPath = r.outPath;
     if (!export_.start(std::move(r))) { out.toSender.push_back(failedResponse(req, "an export is already running")); return; }
-    out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}}.dump());
+    json res = {{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"path", outPath}, {"format", exporter.id}};
+    if (!formatWarning.empty()) res["warning"] = formatWarning;
+    out.toSender.push_back(res.dump());
 }
 
 void Router::pushLibraryIfChanged(RouterOutput& out, bool force) {
@@ -126,7 +141,7 @@ RouterOutput Router::onConnect() {
     RouterOutput out;
     out.toSender.push_back(scene_.documentSyncJson().dump());
     out.toSender.push_back(scene_.prefabLibraryJson().dump());
-    out.toSender.push_back(json{{"type", proto::kProfile}, {"profile", scene_.profile().toJson()}}.dump());
+    out.toSender.push_back(profileMessage(scene_.profile()).dump());
     out.toSender.push_back(scene_.entityDefsJson().dump());
     out.toSender.push_back(settingsJson().dump());
     pushDerived(out.toSender);
@@ -176,7 +191,7 @@ RouterOutput Router::onMessage(const std::string& text) {
         else if (type == proto::kSetAssetsRoot) handleSetAssetsRoot(req, out);
         else if (type == proto::kLighting) handleLighting(req, out);
         else if (type == proto::kReliefGeometry) { if (scene_.setReliefGeometry(req)) lighting_.markDirty(); lastRelief_ = req; }
-        else if (type == proto::kExportBsp || type == proto::kExportCancel) handleExport(req, out);
+        else if (type == proto::kExportMap || type == proto::kExportBsp || type == proto::kExportCancel) handleExport(req, out);
         else if (type == proto::kNativeDialog) handleNativeDialog(req, out);
         else if (type == proto::kSetSettings) handleSetSettings(req, out);
         else if (type == proto::kReadGameProfile || type == proto::kWriteGameProfile) handleGameProfile(req, out);
@@ -605,7 +620,7 @@ void Router::handleLaunchGame(const json& req, RouterOutput& out) {
     const std::string map = req.value("map", std::string());
     const fs::path rel = pathFromUtf8(map);
     if (map.empty() || rel.is_absolute() || rel.has_root_name() || rel.lexically_normal().generic_string().rfind("..", 0) == 0) {
-        out.toSender.push_back(failedResponse(req, "launch_game needs a .bsp inside the game folder"));
+        out.toSender.push_back(failedResponse(req, "launch_game needs an exported map inside the game folder"));
         return;
     }
     const std::string args = expandLaunchText(g->second.args, scene_.assetsRoot(), map), wd = expandLaunchText(g->second.workingDir, scene_.assetsRoot(), map);

@@ -1,5 +1,6 @@
 // The BSP export driver (REQUIREMENTS §25, DESIGN §12): own Scene -> final bake -> compileBsp -> files.
 #include "core/bsp_export.h"
+#include "core/exporter.h"
 #include "core/albedo.h"
 #include "core/exr.h"
 #include "core/relief_geometry.h"
@@ -15,16 +16,29 @@ namespace core {
 namespace fs = std::filesystem;
 using nlohmann::json;
 
-namespace {
-
-std::string sandboxed(const std::string& rel) {
+std::string sandboxedExportPath(const std::string& rel, const std::string& extension) {
     const fs::path p(rel);
     if (rel.empty() || p.is_absolute() || p.has_root_name() || p.has_root_directory()) throw std::runtime_error("the export path must be inside the assets folder: " + rel);
     const fs::path norm = p.lexically_normal();
     for (const auto& part : norm) if (part == "..") throw std::runtime_error("the export path escapes the assets folder: " + rel);
-    if (norm.extension() != ".bsp") throw std::runtime_error("the export path must end in .bsp: " + rel);
+    if (norm.extension() != extension) throw std::runtime_error("the export path must end in " + extension + ": " + rel);
     return norm.generic_string();
 }
+
+void writeLightmapPages(const fs::path& lmDir, const std::vector<BspLightmapPage>& pages) {
+    std::error_code ec;
+    if (fs::exists(lmDir, ec))
+        for (const auto& f : fs::directory_iterator(lmDir, ec))
+            if (f.path().filename().string().rfind("lm_", 0) == 0 && f.path().extension() == ".exr") fs::remove(f.path(), ec);  // pages of an older export
+    if (!pages.empty()) fs::create_directories(lmDir);
+    for (size_t i = 0; i < pages.size(); ++i) {
+        char name[32];
+        std::snprintf(name, sizeof(name), "lm_%04d.exr", static_cast<int>(i));
+        if (!writeExr((lmDir / name).string(), pages[i].size, pages[i].size, pages[i].rgb.data())) throw std::runtime_error("cannot write " + (lmDir / name).string());
+    }
+}
+
+namespace {
 
 bool isStatic(const std::string& c, const LightingClasses& classes) {
     return c == "worldspawn" || c == "func_group" || c == "func_detail" || classes.isLightmapped(c);  // lightmapped = static (moving ones use the light volume)
@@ -37,16 +51,13 @@ json BspExportResult::toJson() const {
               {"leafs", stats.leafs}, {"clusters", stats.clusters}, {"lightmapPages", stats.lightmapPages}, {"gridPoints", stats.gridPoints},
               {"palette", stats.palette}, {"visCell", stats.visCell}, {"visSeconds", stats.visSeconds}};
     return {{"type", "export_result"}, {"ok", ok}, {"cancelled", cancelled}, {"error", error}, {"warnings", warnings}, {"stats", s},
-            {"bsp", bspPath}, {"lightmaps", lightmapDir}, {"seconds", seconds}, {"bakeSeconds", bakeSeconds}, {"device", device}};
+            {"format", format}, {"bsp", bspPath}, {"lightmaps", lightmapDir}, {"seconds", seconds}, {"bakeSeconds", bakeSeconds}, {"device", device}};
 }
 
-BspExportResult exportBsp(const BspExportRequest& req, const ProgressFn& progress, const std::function<bool()>& cancelled) {
-    BspExportResult r;
-    const auto t0 = std::chrono::steady_clock::now();
+bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, const std::function<bool()>& cancelled, BspExportResult& r, PreparedExport& prepared) {
     auto stop = [&]() { return cancelled && cancelled(); };
     auto report = [&](const std::string& stage, double f) { if (progress) progress(stage, f); };
-    try {
-        const std::string out = sandboxed(req.outPath);
+    {
         Scene scene(req.assetsRoot);
         scene.loadGameProfile();
         const Scene::UpdateResult up = scene.applyUpdate(req.document);
@@ -156,7 +167,7 @@ BspExportResult exportBsp(const BspExportRequest& req, const ProgressFn& progres
             const auto b0 = std::chrono::steady_clock::now();
             int idle = 0;
             for (;;) {
-                if (stop()) { r.cancelled = true; r.error = "cancelled"; return r; }
+                if (stop()) { r.cancelled = true; r.error = "cancelled"; return false; }
                 svc->tick(0.25);
                 // progress: passes of the least refined layer, then the light volume
                 double f = 1;
@@ -184,28 +195,34 @@ BspExportResult exportBsp(const BspExportRequest& req, const ProgressFn& progres
                 if (svc->lightvol(st).count() > 0) in.lightvol[st] = svc->lightvol(st);
             if (!svc->lightvolReady()) in.lightvol.clear();
         }
-        if (stop()) { r.cancelled = true; r.error = "cancelled"; return r; }
+        if (stop()) { r.cancelled = true; r.error = "cancelled"; return false; }
 
-        const BspOutput o = compileBsp(in, [&](const std::string& stage, double f) { report(stage, (req.bake ? 0.8 : 0.0) + f * (req.bake ? 0.18 : 0.98)); });
+        prepared.lightvol = in.lightvol;
+        BspOutput o = compileBsp(in, [&](const std::string& stage, double f) { report(stage, (req.bake ? 0.8 : 0.0) + f * (req.bake ? 0.18 : 0.98)); });
         for (const auto& w : o.warnings) r.warnings.push_back(w);
         r.stats = o.stats;
+
+        prepared.bsp = std::move(o);
+    }
+    return true;
+}
+
+BspExportResult exportBsp(const BspExportRequest& req, const ProgressFn& progress, const std::function<bool()>& cancelled) {
+    BspExportResult r;
+    r.format = "rbsp";
+    const auto t0 = std::chrono::steady_clock::now();
+    auto report = [&](const std::string& stage, double f) { if (progress) progress(stage, f); };
+    try {
+        const std::string out = sandboxedExportPath(req.outPath, ".bsp");
+        PreparedExport p;
+        if (!prepareExport(req, progress, cancelled, r, p)) return r;
+        const BspOutput& o = p.bsp;
 
         // files: <name>.bsp and <name>/lm_NNNN.exr
         report("writing files", 0.99);
         const fs::path bspFile = req.assetsRoot / fs::path(out);
-        const fs::path lmDir = bspFile.parent_path() / bspFile.stem();
         fs::create_directories(bspFile.parent_path());
-        std::error_code ec;
-        if (fs::exists(lmDir, ec))
-            for (const auto& f : fs::directory_iterator(lmDir, ec))
-                if (f.path().filename().string().rfind("lm_", 0) == 0 && f.path().extension() == ".exr") fs::remove(f.path(), ec);  // pages of an older export
-        if (!o.lightmaps.empty()) fs::create_directories(lmDir);
-        for (size_t i = 0; i < o.lightmaps.size(); ++i) {
-            char name[32];
-            std::snprintf(name, sizeof(name), "lm_%04d.exr", static_cast<int>(i));
-            if (!writeExr((lmDir / name).string(), o.lightmaps[i].size, o.lightmaps[i].size, o.lightmaps[i].rgb.data()))
-                throw std::runtime_error("cannot write " + (lmDir / name).string());
-        }
+        writeLightmapPages(bspFile.parent_path() / bspFile.stem(), o.lightmaps);
         {
             const fs::path tmp = bspFile.string() + ".tmp";
             std::ofstream f(tmp, std::ios::binary);
@@ -244,7 +261,7 @@ bool BspExportJob::start(BspExportRequest request) {
         progressDue_ = true;
     }
     thread_ = std::thread([this, req = std::move(request)]() {
-        BspExportResult res = exportBsp(
+        BspExportResult res = exporterFor(req.format).run(
             req,
             [this](const std::string& stage, double f) {
                 std::lock_guard<std::mutex> lock(m_);

@@ -35,3 +35,8 @@ desktop.ini
 .env.*
 core/assets/maps/smoke_out.map.json
 CMakeUserPresets.json
+
+# ---- desktop app (build_app.bat)
+release/
+desktop/node_modules/
+desktop/out/

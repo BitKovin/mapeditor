@@ -76,9 +76,9 @@ light, resizing a brush, or tweaking a prefab should feel instantaneous.
   `build_core.bat`, `build_shell.bat`, `run.bat` (§16). Linux is kept building (the Core is
   portable C++20) but Windows decides every trade-off. Hardware ray tracing therefore targets
   D3D12/Vulkan on Windows GPUs first.
-- **No Electron for now.** Phase 1 is the Core process + a plain browser tab. Electron (or
-  another native-webview shell) is an optional *later* packaging step; it should need ~zero
-  Shell code changes, though the origin policy (§10) will need to admit its origin.
+- **Electron is the packaging, not a new architecture** (§11, REQUIREMENTS §29). The desktop app starts the same
+  Core and shows the same Shell build; development still runs Core + a plain browser tab (`run.bat`). No Shell or
+  Core code changed for it: the window loads the Shell from `http://127.0.0.1:<port>`, which the origin policy (§10) admits.
 - **The working format is not the export format.** Quake 3 BSP is produced by a separate
   compile stage that also does the unit/axis conversion (§4, §12).
 
@@ -312,6 +312,8 @@ still affine in world space.
 **Chart rectangle.** Bounding box of the fragments' footprint in island texel space, rounded out to integers, plus `padding` empty texels on
 each side (gutter for dilation / bilinear filtering). A chart larger than a page is scaled down uniformly (density drops, a warning is
 reported). Charts are not rotated (rotation by 90 degrees would keep the lattice but is deferred). A face map is `s = p.su + so`, `t = p.sv + to` in page texels, composed from the unfold rotations, so it is exactly isometric (texel distance = metres x density) and tested as such.
+
+**Sampling (REQUIREMENTS §30).** The editor's views and the game (`fs_bsp.sc`, rBSP v2) read lightmaps with a bicubic B-spline built from 4 bilinear fetches: bilinear's slope jumps at every texel border and shows soft shadows as creases on the texel grid. The B-spline reads up to 2 texels from a chart's edge, so `padding` is 2 (a `lighting.json` value below 2 is raised).
 
 **Edge leaks (rules that keep corners clean).** Bilinear filtering reads the texel ring around a sample, so (1) the default merge angle is small (corners are separate charts, each with its own gutter), (2) unrelated faces unfolded into one island keep a gap of `2 * padding + 1` texels, (3) the baker uses conservative rasterisation: every texel overlapping a fragment is baked, texels that only partly overlap at the nearest point inside the fragment (`kEdgeInset`), centre-inside texels win.
 
@@ -848,10 +850,35 @@ Local WebSocket, JSON text frames, multiple sessions. Constants live in
 
 ## 11. Packaging & Distribution
 
-- **Now:** run the Core binary, open a browser tab pointed at its local server.
-- **Later, optional:** wrap in Electron (bundled Chromium → predictable WebGPU/GL support
-  across platforms) for handing the tool to people who aren't setting up a dev environment.
-  Explicitly deferred per your instruction — revisit once the core editing UX is solid.
+- **Development:** `run.bat` (Core + Vite dev server + a browser tab).
+- **Publishing:** `build_app.bat [notests]` builds everything into ONE folder, `release\LevelEditor\`, that runs on a
+  Windows 10/11 x64 PC with nothing installed (zip it and hand it over). Steps: `build_core.bat Release` into
+  `core\build_release` (a separate build dir, so a Core running from `core\build` does not lock it), `build_shell.bat`
+  (`shell\dist`), then `desktop\package.mjs` (@electron/packager) which stages and packages:
+
+  | In `release\LevelEditor\` | What |
+  |---|---|
+  | `LevelEditor.exe` + Electron runtime | `desktop/main.cjs` (in `resources\app.asar`) |
+  | `resources\core\` | `mapeditor_core.exe`, `lightbake_tool.exe`, `bsp_export_tool.exe`, the OIDN / TBB DLLs, the MSVC runtime DLLs (app-local, from the VS `VC\Redist`), `assets\` (copy of `core\assets` without the generator scripts) |
+  | `resources\shell\` | the built Shell (`shell\dist`) |
+  | `README.txt` | where settings and logs live |
+
+- **The app at run time** (`desktop/main.cjs`, helpers in `desktop/paths.cjs`, tests `desktop/tests`):
+  - one instance (a second start focuses the window); arguments `[assetsFolder] [initialMap]` like `run.bat`, passed to the Core;
+  - the Core runs hidden in `resources\core` (so `./assets` is the bundled folder) on a free port; its stdout / stderr go to
+    `%APPDATA%\LevelEditor\logs\core.log`; if it cannot start or exits, a message shows the last lines and offers Restart (same
+    port, the Shell reconnects by itself), Open the log, Quit; it is killed when the app quits;
+  - the Shell is served by a tiny static server on `127.0.0.1:<free port>` (only files inside `resources\shell`), opened as
+    `index.html?core=ws://127.0.0.1:<corePort>`; the Core's origin check admits it unchanged;
+  - no Electron menu (the Shell has its own; no default accelerators); F12 / Ctrl+Shift+I = DevTools;
+  - Dockview popouts: same-origin `window.open` is allowed (they share the page's JavaScript, as in a browser); other links
+    open in the system browser; navigation away from the Shell (a dropped file) is blocked;
+  - the Shell's `beforeunload` (unsaved changes) becomes a Close without saving / Cancel question (`will-prevent-unload`);
+  - window size, position and maximised state in `%APPDATA%\LevelEditor\window.json`.
+- **Unchanged:** settings and `lighting.json` stay next to the Core exe (`resources\core\`), so the folder must be writable
+  (not Program Files). Native file dialogs and Play map are the Core's and work as before. An app icon is used when
+  `desktop\icon.ico` exists (none yet). No installer, no code signing, no auto-update; Windows only.
+- `cd desktop && npm start` runs the app from the working tree (`core\build`, `shell\dist`) without packaging.
 
 ## 12. Export: the `rBSP` format and the compiler (M6, REQUIREMENTS §25)
 
@@ -990,9 +1017,28 @@ lookups in `lightmap_direct.comp`. No sky texture (or an unreadable one): the un
 **Not yet:** texture repetition modes (mirror / anchor) are exported as plain repeat; decals and reliefs; vertex colours; classic IBSP export;
 reliefs; the engine decides collision from texture names and does not read the contents flags yet; only SlasherGame's BSP shader has the 8 slots.
 
+### Exporters (REQUIREMENTS §31)
+
+- **Interface** (`core/exporter.h`): `Exporter { id, name, extension, run(request, progress, cancelled) }`; `exporters()` lists them (`rbsp`, `obj`). Every exporter starts from
+  `prepareExport` (`bsp_export.h`): the document in its own Scene, the final bake, the rBSP compiled in memory; it then writes what it needs. A new format = one
+  function + one entry in `exporters()`.
+- **Which one:** the game's `game_profile.json` `"exporter"` (default `rbsp`; unknown = rBSP with a warning). The `profile` message carries `exporter` and
+  `exporters`; the Shell names the format in File > Export, asks for its extension, and Play map exports `<map><ext>`. `export_map` (alias `export_bsp`)
+  replaces the path's extension by the format's. `bsp_export_tool` picks the format from the output's extension, else the profile's.
+- **OBJ** (`exportObj`), for `maps/<name>.obj`; everything in the editor's space (metres, Y up). The geometry is read back from the compiled rBSP
+  (BspView), so it is exactly what the game gets (texture layouts, reliefs, decals, auto sky, buried faces dropped):
+  - `<name>.obj`: one object per model (`world`, `model_N` = the brush entity whose `"model"` is `*N`), one group per texture and lightmap page
+    (`g <texture>@lm_NNNN`, `usemtl <texture>`), `v` / `vt` (texture, V up: `1 - t`) / `vn`, and `vl u v` = the base light style's lightmap coordinate in its
+    page ((0,0) = the page's first row; not standard OBJ, readers skip unknown lines). Faces counter-clockwise; v, vt, vn and vl share one index.
+  - `<name>.json`: the entity lump as an array of objects (worldspawn first), every value a string; point entities in the editor's space (as in the rBSP);
+    `gridsize` (Quake units) left out.
+  - `<name>.lightvol` (little endian): `char[4] "LVOL"`, `uint32 version = 1`, `float origin[3]` (m, position of probe 0,0,0), `float cell` (m),
+    `int32 nx, ny, nz, styleCount`; then per style `int32 style` + nx*ny*nz probes of 9 bytes (`lightvol.h` PackedProbe: ambient rgb, directed rgb,
+    lat, lng, flags; values / 2 * 255, dir from lat / lng as in the editor), x fastest, then y, then z. Absent without a bake.
+  - `<name>/lm_NNNN.exr`: the pages, as for rBSP (all light styles; the OBJ refers to the base style's).
+
 ## 13. Explicitly Deferred / Not Yet Decided
 
-- Electron packaging (§11); the origin policy will need to admit it.
 - The entire real-time lighting pipeline (§6.3) and the light-volume format (§5.3) — waiting on
   your engine's convention.
 - Derived geometry (§5.6): boolean library choice (Manifold vs EMBER, spike needed), decals,
@@ -1108,7 +1154,7 @@ authored brushes, prefab contents are not carved, and there is no fragment mergi
 
 ### Later
 - [ ] Modeling tools (§8); rotate/scale gizmos; multi-select; duplicate; more primitives
-- [ ] Derived geometry (§5.6); lighting (§6.3); UV & texturing (§9); BSP export (§12); Electron (§11)
+- [ ] Derived geometry (§5.6); lighting (§6.3); UV & texturing (§9); BSP export (§12); Electron (§11, done 2026-10-17)
 - [ ] Prefab placement + edit-in-place UI, override authoring (§5.4)
 - [ ] Outliner extras: selection sets, visgroups/cordons, hide, groups (§7)
 
@@ -1116,7 +1162,7 @@ authored brushes, prefab contents are not carved, and there is no fragment mergi
 
 - **Windows (primary):** `build_core.bat` (finds MSVC via `vswhere`, CMake + Ninja, runs the tests),
   `build_shell.bat` (npm install, typecheck, tests, build), `run.bat` (starts Core and the dev server,
-  opens the browser). Needs Visual Studio's C++ workload (bundles CMake and Ninja) and Node 20+.
+  opens the browser), `build_app.bat` (the publishable desktop app, §11). Needs Visual Studio's C++ workload (bundles CMake and Ninja) and Node 20+.
 - **Vendored dependencies:** `core/vendored/` holds Boost (Beast/Asio/System subset), nlohmann/json and
   doctest. No package manager. See `core/vendored/README.md` for versions and how to update.
 - **Linux/macOS:** `cmake -S core -B core/build -G Ninja && cmake --build core/build`. The Core is portable;
