@@ -181,6 +181,7 @@ constexpr double kShadowBias = 0.01;        // m: rays start this far above the 
 constexpr double kBounceNearDistance = 1.0; // m: the bounce source of a point / spot light stops growing closer than this (a light never feeds more than
                                             // its brightness into the bounce, so a light next to a wall cannot flood the room through hot spots)
 constexpr double kShadowFar = 10000.0;      // m: length of rays towards infinitely distant lights (directional, sky)
+constexpr double kAoBias = 1e-3;            // m: baked ambient occlusion rays start this far above the surface (CPU and shaders/lightmap_ao.comp)
 
 // Spreads sample values into pages, then fills the gutter (`padding` texels) by dilation.
 LightmapPages assemblePages(const LightmapLayout& layout, const TexelSamples& samples, const std::vector<float>& values4);

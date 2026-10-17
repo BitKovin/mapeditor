@@ -332,3 +332,37 @@ TEST_CASE("albedo UVs from the face's stored uvs (§24 C3): bounce colour and tr
     }
     CHECK(checked);
 }
+
+TEST_CASE("transparency (live baker): ray traced ambient occlusion passes the holes like the CPU (skipped without a ray query device)") {
+    PaneScene s;
+    s.lights.level.ao.radius = 3;  // the pane is 2 m above the floor
+    s.lights.level.ao.rays = 64;
+    auto bake = [&](bool gpu) {
+        LiveSettings cfg;
+        cfg.useGpu = gpu;
+        cfg.gpuValidation = gpu;
+        cfg.bounces = false;
+        cfg.maxPasses = 1;
+        cfg.directSupersample = 1;
+        cfg.albedoLoader = loaderOf({{"pane", grate()}});
+        auto b = std::make_unique<LiveBaker>(cfg);
+        b->setGeometry(s.layout, s.surfaces);
+        b->setLights(s.lights);
+        const Vec3 cam{0, 5, 0};
+        while (!b->converged()) b->step(&cam, 1 << 20);
+        return b;
+    };
+    const auto c = bake(false), g = bake(true);
+    CHECK(c->aoEvaluator() == "cpu");
+    if (g->aoEvaluator() == "cpu") { MESSAGE("no GPU session: " << g->gpuError()); return; }
+    for (const auto& m : g->gpuValidation()) CHECK(m.rfind("[note]", 0) == 0);
+    REQUIRE(c->sampleCount() == g->sampleCount());
+    size_t occluded = 0, off = 0;
+    for (size_t i = 0; i < c->sampleCount(); ++i) {
+        const double a = c->occlusion(i), b = g->occlusion(i);
+        occluded += a > 0.01;
+        off += std::fabs(a - b) > 0.02;
+    }
+    CHECK(occluded > 0);
+    CHECK(static_cast<double>(off) / static_cast<double>(c->sampleCount()) < 0.02);
+}

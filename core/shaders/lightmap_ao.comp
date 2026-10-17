@@ -1,0 +1,81 @@
+#version 460
+// Baked ambient occlusion of lightmap texels (level settings `_ao_*`), hardware ray traced through VK_KHR_ray_query, one invocation per texel.
+// MUST stay equivalent to the CPU reference LiveBaker::computeOcclusion (src/live_bake.cpp); tests compare them.
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Positions { vec4 pos[]; };       // xyz world position, w = bits of the random-number id
+layout(std430, set = 0, binding = 1) readonly buffer Normals   { vec4 nrm[]; };       // xyz normal
+layout(std430, set = 0, binding = 2) writeonly buffer Result   { float occ[]; };      // occluded fraction 0..1
+layout(set = 0, binding = 3) uniform accelerationStructureEXT tlas;                   // occluders, one instance
+layout(std430, set = 0, binding = 4) readonly buffer TriAlbedo { vec4 albedoMeta[]; };  // per triangle (transparency), see lightmap_direct.comp
+layout(std430, set = 0, binding = 5) readonly buffer AlphaWords { uint alphaWords[]; };  // OccluderMesh::alphaWords (transparency)
+
+layout(push_constant) uniform PC {
+    uint base;    // first texel of this dispatch
+    uint count;   // end of the range
+    uint rays;    // rays per texel
+    uint flags;   // bit 0: transparent surfaces exist
+    float radius; // m: how far the rays look
+    float bias;   // origin offset along the normal
+    uint pad0, pad1;
+} pc;
+
+const float PI = 3.14159265358979323846;
+const float GOLDEN = 0.6180339887498949;
+
+// True when the ray passes triangle `tri` at barycentrics `bc`: a hole of a cutout texture. Everything else (solid, translucent) occludes,
+// like TriangleBvh::nearestHit (surface() >= 0).
+bool isHole(uint tri, vec2 bc) {
+    vec4 a0 = albedoMeta[tri * 3u], a1 = albedoMeta[tri * 3u + 1u];
+    int id = int(floor(a1.z + 0.5));
+    if (id < 0) return false;
+    uint h = uint(id) * 8u;
+    if (alphaWords[h + 3u] != 1u) return false;
+    float w0 = 1.0 - bc.x - bc.y;
+    vec2 uv = w0 * a0.xy + bc.x * a0.zw + bc.y * a1.xy;
+    int w = int(alphaWords[h + 1u]), hh = int(alphaWords[h + 2u]);
+    int x = min(w - 1, int(fract(uv.x) * float(w))), y = min(hh - 1, int(fract(uv.y) * float(hh)));
+    uint px = alphaWords[alphaWords[h] + uint(y * w + x)];
+    return float(px >> 24) / 255.0 < uintBitsToFloat(alphaWords[h + 4u]);
+}
+
+// Distance to the nearest occluding surface along o + t * d within the radius, or -1.
+float nearestHit(vec3 o, vec3 d) {
+    rayQueryEXT rq;
+    if ((pc.flags & 1u) == 0u) {
+        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFF, o, 0.0, d, pc.radius);
+        while (rayQueryProceedEXT(rq)) {}
+    } else {
+        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFF, o, 0.0, d, pc.radius);
+        while (rayQueryProceedEXT(rq)) {
+            if (rayQueryGetIntersectionTypeEXT(rq, false) != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+            if (!isHole(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false), rayQueryGetIntersectionBarycentricsEXT(rq, false))) rayQueryConfirmIntersectionEXT(rq);
+        }
+    }
+    return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? rayQueryGetIntersectionTEXT(rq, true) : -1.0;
+}
+
+void main() {
+    uint i = pc.base + gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+    vec3 n = normalize(nrm[i].xyz);
+    vec3 helper = abs(n.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    vec3 tu = normalize(cross(n, helper)), tv = cross(n, tu);
+    // the same turn of the stratified directions per sample as on the CPU (a hash of the sample's random-number id)
+    uint h = floatBitsToUint(pos[i].w) * 2654435761u;
+    h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15;
+    float turn = float(h & 0xFFFFFFu) / 16777216.0;
+    vec3 o = pos[i].xyz + n * pc.bias;
+    uint rays = max(1u, pc.rays);
+    float sum = 0.0;
+    for (uint k = 0u; k < rays; ++k) {
+        float u1 = (float(k) + 0.5) / float(rays), u2 = fract(float(k) * GOLDEN + turn);
+        float r = sqrt(u1), phi = 2.0 * PI * u2;
+        vec3 dir = normalize(tu * (r * cos(phi)) + tv * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - u1)));
+        float d = nearestHit(o, dir);
+        if (d >= 0.0 && d < pc.radius) sum += 1.0 - d / pc.radius;
+    }
+    occ[i] = sum / float(rays);
+}

@@ -179,11 +179,13 @@ public:
     // times the baked ambient occlusion factor (aoFactor).
     Vec3 shownValue(size_t sample) const;
     // Baked ambient occlusion (level settings `_ao_*`, REQUIREMENTS §22 P2): the factor the sample's light is multiplied by (1 = open, or AO off,
-    // or not computed yet), and the raw occluded fraction (NaN = not computed). Occlusion depends on geometry and the radius only: it is computed
-    // on the CPU (bvh) when the sample's chunk is next refined, kept for unchanged texels, recomputed within the radius of an edit.
+    // or not computed yet), and the raw occluded fraction (NaN = not computed). Occlusion depends on geometry, the radius and the ray count only: it
+    // is computed when the sample's chunk is next refined (hardware ray traced on the resident GPU session, else on the CPU bvh with the same rays),
+    // kept for unchanged texels, recomputed within the radius of an edit.
     float aoFactor(size_t sample) const;
     float occlusion(size_t sample) const { return sample < occ_.size() ? occ_[sample] : std::numeric_limits<float>::quiet_NaN(); }
-    static constexpr int kAoRays = 32;
+    // Which evaluator produced the occlusion of the last step: the GPU name, or "cpu" (empty: none computed yet).
+    const std::string& aoEvaluator() const { return aoEvaluator_; }
 
     // Denoises the indirect light of ONE page whose chunks all reached maxPasses and that changed since its last denoise (OIDN, ~10..500 ms).
     // `chunks` (optional) receives the chunks of that page: their tiles must be re-sent. False when nothing was pending, the denoiser is switched
@@ -229,7 +231,8 @@ private:
     std::vector<LiveChunk> chunks_;
     std::vector<float> direct_, db_, indirect_;   // 4 floats per sample
     std::vector<float> occ_;                      // ambient occlusion per sample: occluded fraction 0..1, NaN = not computed (see aoFactor)
-    void computeOcclusion(const std::vector<int>& chunks);  // fills the unknown occ_ of these chunks' samples
+    void computeOcclusion(const std::vector<int>& chunks);  // fills the unknown occ_ of these chunks' samples (GPU when it can, else CPU)
+    bool occlusionOnGpu(const std::vector<int>& chunks);    // the same on the resident session; false = not done (no session, or it failed)
     void forgetOcclusion(const Aabb& box);                  // occlusion of the samples in `box` is unknown again; their chunks refine once more
     std::vector<float> atlasS_;                   // bounce source S = Db + I per atlas texel (rgb) + validity (a)
     GiSamples gi_;                                // the fine GI grid (scale 1 = none: the gather runs on the samples themselves)
@@ -267,7 +270,7 @@ private:
     GeometryTimings geomTimings_;
     double lastSessionSeconds_ = 0, lastResidentSeconds_ = 0;
     TexelSamples samplesOf(const LiveChunk& chunk) const;
-    std::string evaluator_ = "cpu", gpuError_;
+    std::string evaluator_ = "cpu", gpuError_, aoEvaluator_;
     std::vector<std::string> gpuValidation_;
     bool gpuDisabled_ = false;  // a GPU call failed: stay on the CPU until geometry or lights change
     void markStale(const Aabb& direct, bool directToo, double indirectRadius);

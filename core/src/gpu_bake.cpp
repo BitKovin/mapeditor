@@ -1,4 +1,5 @@
 #include "gpu_bake.h"
+#include <core_shaders/lightmap_ao.spv.h>
 #include <core_shaders/lightmap_direct.spv.h>
 #include <core_shaders/lightmap_direct_rq.spv.h>
 #include <core_shaders/lightmap_gather.spv.h>
@@ -180,6 +181,14 @@ struct GatherPush {  // layout of `PC` in shaders/lightmap_gather.comp
     uint32_t flags;   // bit 0: do not write the bounce source; bit 1: the hit surface's albedo comes from its texture (bindless array)
 };
 
+struct AoPush {  // layout of `PC` in shaders/lightmap_ao.comp
+    uint32_t base, count, rays, flags;  // flags bit 0: transparent surfaces exist
+    float radius, bias;
+    uint32_t pad[2];
+};
+// Bindings of the ambient occlusion shader: 0 pos, 1 nrm, 2 result, 3 tlas, 4 per triangle albedo record (raw ids), 5 transparency words.
+constexpr uint32_t kAoBindings = 6;
+
 // Bindings of the ray traced direct shader: 0..3 pos nrm lights result, 4 tlas, 5 bounce result, 6 texel index, 7 atlas0, 8 sub-texel positions.
 constexpr uint32_t kDirectRtBindings = 11;  // 0..8, 9 per triangle albedo record (raw ids), 10 transparency words
 // Bindings of the gather shader: 0..7 buffers, 8 tlas, 9 per triangle albedo record, 10 sampler, 11 texture array.
@@ -307,8 +316,10 @@ struct Context {
     std::vector<std::shared_ptr<const AlbedoImage>> textureKey;    // its images, to recognise the same set again
     std::unique_ptr<DirectPipe> direct;
     std::unique_ptr<GatherPipe> gather;
+    std::unique_ptr<DirectPipe> ao;
     const DirectPipe& directPipe();
     const GatherPipe& gatherPipe();
+    const DirectPipe& aoPipe();
 };
 
 void makeContext(Context& c, bool useRT, bool wantValidation) {
@@ -586,6 +597,47 @@ const GatherPipe& Context::gatherPipe() {
     g->dsl = gdsl; g->pl = gpl; g->pipe = gpipe;
     gather = std::move(g);
     return *gather;
+}
+
+const DirectPipe& Context::aoPipe() {
+    if (ao) return *ao;
+    Fns& f = this->f;
+    const VkDevice device = this->device;
+    Cleanup& cleanup = this->cleanup;
+    VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    smi.codeSize = sizeof(core::shaders::k_lightmap_ao_spv);
+    smi.pCode = core::shaders::k_lightmap_ao_spv;
+    VkShaderModule shader;
+    check(f.vkCreateShaderModule(device, &smi, nullptr, &shader), "vkCreateShaderModule(ao)");
+    cleanup.add([&f, device, shader] { f.vkDestroyShaderModule(device, shader, nullptr); });
+    VkDescriptorSetLayoutBinding binds[kAoBindings];
+    for (uint32_t i = 0; i < kAoBindings; ++i)
+        binds[i] = {i, i == 3 ? VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo dli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    dli.bindingCount = kAoBindings;
+    dli.pBindings = binds;
+    VkDescriptorSetLayout dsl;
+    check(f.vkCreateDescriptorSetLayout(device, &dli, nullptr, &dsl), "vkCreateDescriptorSetLayout(ao)");
+    cleanup.add([&f, device, dsl] { f.vkDestroyDescriptorSetLayout(device, dsl, nullptr); });
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(AoPush)};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &dsl;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    VkPipelineLayout pl;
+    check(f.vkCreatePipelineLayout(device, &pli, nullptr, &pl), "vkCreatePipelineLayout(ao)");
+    cleanup.add([&f, device, pl] { f.vkDestroyPipelineLayout(device, pl, nullptr); });
+    VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, shader, "main", nullptr};
+    cpi.layout = pl;
+    VkPipeline pipe;
+    check(f.vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &pipe), "vkCreateComputePipelines(ao)");
+    cleanup.add([&f, device, pipe] { f.vkDestroyPipeline(device, pipe, nullptr); });
+    auto d = std::make_unique<DirectPipe>();
+    d->shader = shader; d->dsl = dsl; d->pl = pl; d->pipe = pipe;
+    ao = std::move(d);
+    return *ao;
 }
 
 enum class MemKind { Host, HostCached, DeviceHost, Device };
@@ -1342,12 +1394,12 @@ public:
     size_t n = 0, m = 0, atlasTexels = 0, lightCap = 0;  // n base samples, m fine GI grid entries behind them
     uint32_t atlasSize = 0, lightCount = 0;
     float ambient[3] = {0, 0, 0};
-    Buffer bPos, bNrm, bLights, bOut, bDb, bInd, bIdx, bAtlas, bScratch, bDummy, bMeta, bSub, bAlb, bTMeta, bTWords;
+    Buffer bPos, bNrm, bLights, bOut, bDb, bInd, bIdx, bAtlas, bScratch, bDummy, bMeta, bSub, bAlb, bTMeta, bTWords, bOcc;
     bool transparent = false;          // the mesh has transparent surfaces (direct bit 3, gather bit 2; the geometry is not opaque)
     std::shared_ptr<GpuTextures> tex;  // after `ctx`: released first
     bool textured = false;             // bounces use the albedo textures (flag bit 1 of the gather)
     uint32_t superSamples = 1;  // sub-texel positions per texel (1 = off)
-    VkDescriptorSet dset = VK_NULL_HANDLE, gset = VK_NULL_HANDLE;
+    VkDescriptorSet dset = VK_NULL_HANDLE, gset = VK_NULL_HANDLE, aset = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
 
@@ -1383,6 +1435,7 @@ public:
         bIdx = mk((n + m) * 4, MemKind::DeviceHost);
         bLights = mk((lightCap + kSkyTableRecords) * sizeof(GpuLight), MemKind::DeviceHost);
         bOut = mk(sampleBytes, MemKind::HostCached);
+        bOcc = mk(n * 4, MemKind::HostCached);                     // ambient occlusion, one float per base sample
         bDb = mk(sampleBytes, MemKind::HostCached);
         bInd = mk(cfg.gather ? totalBytes : 16, MemKind::HostCached);
         bDummy = mk(sampleBytes, MemKind::Device);                 // gather's db input: only feeds its (unused) atlas write
@@ -1534,11 +1587,12 @@ public:
         // ---- descriptors (written once: every buffer has a fixed size for the life of the session) ----
         const DirectPipe& dp0 = c.directPipe();
         const GatherPipe& gp0 = c.gatherPipe();
+        const DirectPipe& ap0 = c.aoPipe();
         const uint32_t texCount = tex ? static_cast<uint32_t>(tex->views.size()) : 1u;
-        VkDescriptorPoolSize ps[4] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2},
+        VkDescriptorPoolSize ps[4] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 29}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 3},
                                       {VK_DESCRIPTOR_TYPE_SAMPLER, 1}, {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texCount}};
         VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        dpi.maxSets = 2;
+        dpi.maxSets = 3;
         dpi.poolSizeCount = 4;
         dpi.pPoolSizes = ps;
         VkDescriptorPool dpool;
@@ -1550,6 +1604,8 @@ public:
             dai.descriptorSetCount = 1;
             dai.pSetLayouts = &dp0.dsl;
             check(f.vkAllocateDescriptorSets(device, &dai, &dset), "vkAllocateDescriptorSets");
+            dai.pSetLayouts = &ap0.dsl;
+            check(f.vkAllocateDescriptorSets(device, &dai, &aset), "vkAllocateDescriptorSets(ao)");
             VkDescriptorSetVariableDescriptorCountAllocateInfo vc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO};
             vc.descriptorSetCount = 1;
             vc.pDescriptorCounts = &texCount;
@@ -1564,8 +1620,8 @@ public:
         const Buffer* dbufs[kDirectRtBindings] = {&bPos, &bNrm, &bLights, &bOut, nullptr, &bDb, &bIdx, &bScratch, &bSub, &bTMeta, &bTWords};
         // gather: pos nrm db(dummy) texel index | atlas in, atlas out(scratch), indirect, triangle meta | tlas
         const Buffer* gbufs[10] = {&bPos, &bNrm, &bDummy, &bIdx, &bAtlas, &bScratch, &bInd, &bMeta, nullptr, &bAlb};
-        VkDescriptorBufferInfo infos[kDirectRtBindings + 11];
-        VkWriteDescriptorSet w[kDirectRtBindings + 11];
+        VkDescriptorBufferInfo infos[kDirectRtBindings + 11 + kAoBindings];
+        VkWriteDescriptorSet w[kDirectRtBindings + 11 + kAoBindings];
         uint32_t k = 0;
         for (int set = 0; set < 2; ++set) {
             const Buffer* const* bufs = set == 0 ? dbufs : gbufs;
@@ -1583,6 +1639,16 @@ public:
         infos[k] = {bTWords.buffer, 0, VK_WHOLE_SIZE};  // gather binding 11: transparency words
         w[k] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, gset, 11, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &infos[k], nullptr};
         ++k;
+        // ambient occlusion: pos nrm result | tlas | triangle records, transparency words
+        const Buffer* abufs[kAoBindings] = {&bPos, &bNrm, &bOcc, nullptr, &bTMeta, &bTWords};
+        for (uint32_t i = 0; i < kAoBindings; ++i, ++k) {
+            if (i == 3) {
+                w[k] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, &asw, aset, i, 0, 1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, nullptr, nullptr, nullptr};
+            } else {
+                infos[k] = {abufs[i]->buffer, 0, VK_WHOLE_SIZE};
+                w[k] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, aset, i, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &infos[k], nullptr};
+            }
+        }
         f.vkUpdateDescriptorSets(device, k, w, 0, nullptr);
         writeTextureDescriptors(f, device, gset, *tex);
     }
@@ -1632,6 +1698,70 @@ public:
             err = e.what();
             g_contexts.erase(key());  // a lost device stays lost: the next session starts from a fresh one
             return false;
+        }
+    }
+
+    bool occlusion(const std::vector<Job>& jobs, double radius, int rays, std::vector<float>& occ) override {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        try {
+            occlusionImpl(jobs, radius, rays, occ);
+            val = ctx->collector.messages;
+            return true;
+        } catch (const std::exception& e) {
+            err = e.what();
+            g_contexts.erase(key());
+            return false;
+        }
+    }
+
+    void occlusionImpl(const std::vector<Job>& jobs, double radius, int rays, std::vector<float>& occ) {
+        Fns& f = ctx->f;
+        size_t total = 0;
+        for (const Job& j : jobs) {
+            if (static_cast<size_t>(j.first) + j.count > n) fail("job outside the resident samples");
+            total += j.count;
+        }
+        occ.assign(total, 0.f);
+        if (!total) return;
+        std::vector<Job> order = jobs;
+        std::sort(order.begin(), order.end(), [](const Job& a, const Job& b) { return a.first < b.first; });
+        std::vector<Job> merged;  // adjacent ranges become one dispatch
+        for (const Job& j : order) {
+            if (!j.count) continue;
+            if (!merged.empty() && merged.back().first + merged.back().count == j.first) merged.back().count += j.count;
+            else merged.push_back(j);
+        }
+        const DirectPipe& ap = ctx->aoPipe();
+        const uint32_t maxGroups = std::max<uint32_t>(1, std::min<uint32_t>(ctx->props.limits.maxComputeWorkGroupCount[0], 65535));
+        check(f.vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer");
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(f.vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
+        AoPush push{};
+        push.rays = static_cast<uint32_t>(std::max(1, rays));
+        push.flags = transparent ? 1u : 0u;
+        push.radius = static_cast<float>(radius);
+        push.bias = static_cast<float>(kAoBias);
+        f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ap.pipe);
+        f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ap.pl, 0, 1, &aset, 0, nullptr);
+        for (const Job& j : merged)
+            for (uint64_t base = j.first; base < static_cast<uint64_t>(j.first) + j.count; base += static_cast<uint64_t>(maxGroups) * 64) {
+                push.base = static_cast<uint32_t>(base);
+                push.count = j.first + j.count;
+                const uint64_t groups = std::min<uint64_t>(maxGroups, (push.count - base + 63) / 64);
+                f.vkCmdPushConstants(cmd, ap.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+                f.vkCmdDispatch(cmd, static_cast<uint32_t>(groups), 1, 1);
+            }
+        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};  // shader writes -> host reads
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        f.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+        check(f.vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
+        submitAndWait();
+        size_t at = 0;
+        for (const Job& j : jobs) {
+            std::memcpy(occ.data() + at, static_cast<const float*>(bOcc.mapped) + j.first, static_cast<size_t>(j.count) * 4);
+            at += j.count;
         }
     }
 
