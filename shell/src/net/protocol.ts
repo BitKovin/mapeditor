@@ -161,7 +161,7 @@ export function parseInbound(text: string): Inbound | null {
       const g = m.game && typeof m.game === 'object' ? m.game : {}
       return {
         type: 'settings', assetsRoot: m.assetsRoot, recentMaps: Array.isArray(m.recentMaps) ? m.recentMaps.filter((p: any) => typeof p === 'string') : [],
-        game: { exe: str(g.exe), args: typeof g.args === 'string' ? g.args : '+map {mapname}', workingDir: str(g.workingDir) },
+        game: { exe: str(g.exe), args: typeof g.args === 'string' ? g.args : '--map {mapname}.bsp', workingDir: str(g.workingDir) },
         editor: m.editor && typeof m.editor === 'object' && !Array.isArray(m.editor) ? m.editor : {},
         nativeDialogs: m.nativeDialogs === true, settingsFile: str(m.settingsFile), lightingFile: str(m.lightingFile),
       }

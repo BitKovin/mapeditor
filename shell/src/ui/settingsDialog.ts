@@ -200,7 +200,7 @@ export function openSettings(store: Store, conn: CoreConnection, start: Settings
     const exe = textInput('', 'C:\\Games\\MyGame\\game.exe'), args = textInput(), wd = textInput('', "(the executable's folder)")
     let initial = ''
     const value = () => JSON.stringify({ exe: exe.value.trim(), args: args.value, workingDir: wd.value.trim() })
-    const load = () => { const g = st().coreSettings?.game; exe.value = g?.exe ?? ''; args.value = g?.args ?? '+map {mapname}'; wd.value = g?.workingDir ?? ''; initial = value(); refreshButtonsSoon() }
+    const load = () => { const g = st().coreSettings?.game; exe.value = g?.exe ?? ''; args.value = g?.args ?? '--map {mapname}.bsp'; wd.value = g?.workingDir ?? ''; initial = value(); refreshButtonsSoon() }
     load()
     const el = h('div', {},
       h('div', { class: 'section' }, 'Play map (F5)'),

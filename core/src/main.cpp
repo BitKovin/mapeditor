@@ -23,7 +23,7 @@ int main(int argc, char** argv) {
     fs::path exeDir = fs::absolute(fs::path(argc > 0 ? argv[0] : ""), ec).parent_path();
     if (ec || exeDir.empty()) exeDir = fs::current_path();
     const fs::path settingsFile = exeDir / "settings.json";
-    const core::Settings saved = core::loadSettings(settingsFile);
+    core::Settings saved = core::loadSettings(settingsFile);
 
     fs::path root = "assets";
     if (rootFromArg) root = core::pathFromUtf8(argv[2]);
@@ -32,6 +32,10 @@ int main(int argc, char** argv) {
         else std::cerr << "saved assets folder '" << saved.assetsRoot << "' no longer exists; using ./assets" << std::endl;
     }
     root = fs::absolute(root, ec).lexically_normal();
+    if (core::pathFromUtf8(saved.assetsRoot) != root) {  // another game folder than last time: its own last map (REQUIREMENTS §32)
+        saved.lastMap.clear();
+        core::loadGameSettings(saved, root);
+    }
 
     core::Scene scene(root);
     try {
@@ -65,7 +69,10 @@ int main(int argc, char** argv) {
     }
     std::cout << "assets: " << core::pathToUtf8(root) << "   settings: " << core::pathToUtf8(settingsFile) << std::endl;
     // Lighting quality / load settings: lighting.json next to settings.json (written with the defaults when missing, so there is something to edit)
-    const fs::path lightingFile = settingsFile.empty() ? fs::path("lighting.json") : settingsFile.parent_path() / "lighting.json";
+    // in the game folder (REQUIREMENTS §32); a lighting.json left next to the executable by an older version is copied there once
+    const fs::path lightingFile = root / "lighting.json";
+    if (!fs::exists(lightingFile, ec) && !settingsFile.empty() && fs::exists(settingsFile.parent_path() / "lighting.json", ec))
+        fs::copy_file(settingsFile.parent_path() / "lighting.json", lightingFile, ec);
     core::LightingService::writeDefaultOptions(lightingFile);
     std::string lightingWarning;
     const core::LightingService::Options lightingOptions = core::LightingService::loadOptions(lightingFile, &lightingWarning);

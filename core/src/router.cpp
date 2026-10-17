@@ -40,6 +40,7 @@ Router::Router(Scene& scene, fs::path settingsFile, const LightingService::Optio
     : scene_(scene), lastLibraryFingerprint_(scene.libraryFingerprint()), lastConfigFingerprint_(scene.configFingerprint()),
       settingsFile_(std::move(settingsFile)), lighting_(scene, lightingOptions), lightingOptions_(lightingOptions) {
     if (!settingsFile_.empty()) settings_ = loadSettings(settingsFile_);  // keep what this run does not change (recent maps, games, editor)
+    if (pathFromUtf8(settings_.assetsRoot) != scene.assetsRoot()) loadGameSettings(settings_, scene.assetsRoot());  // started on another game folder
     settings_.assetsRoot = pathToUtf8(scene.assetsRoot());
     settings_.lastMap = scene.currentPath();
     settings_.touchRecent(settings_.assetsRoot, settings_.lastMap);  // the map reopened at start-up is the most recent one
@@ -452,6 +453,12 @@ void Router::handleSetAssetsRoot(const json& req, RouterOutput& out) {
     } catch (const std::exception& e) {
         out.toSender.push_back(failedResponse(req, e.what()));
         return;
+    }
+    // the new game folder's own settings (REQUIREMENTS §32): its editor_settings.json, and its lighting.json from the next Core start
+    loadGameSettings(settings_, scene_.assetsRoot());
+    if (!lightingFile_.empty()) {
+        lightingFile_ = scene_.assetsRoot() / "lighting.json";
+        LightingService::writeDefaultOptions(lightingFile_);
     }
     const bool persisted = persistSettings();
     pushConfig(out);

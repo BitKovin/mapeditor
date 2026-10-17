@@ -14,7 +14,7 @@ namespace core {
 // extension, {bsp} = its absolute path, {game} = the game folder (absolute). An empty workingDir means the executable's folder.
 struct GameLaunch {
     std::string exe;         // absolute path of the game executable
-    std::string args = "+map {mapname}";
+    std::string args = "--map {mapname}.bsp";
     std::string workingDir;
     bool operator==(const GameLaunch&) const = default;
 };
@@ -37,10 +37,19 @@ struct Settings {
     void touchRecent(const std::string& root, const std::string& path);
 };
 
-/// Missing or unreadable file -> defaults (never throws: a damaged settings file must not stop start-up).
-Settings loadSettings(const std::filesystem::path& file);
+// Where they live (REQUIREMENTS §32): the game folder's own part (its last map, how to start it, the editor preferences) is
+// <assetsRoot>/editor_settings.json, next to game_profile.json and lighting.json; the file next to the executable keeps only what is needed
+// before a game folder is known (which one to open, the recent maps of every folder) and the launch settings of other game folders.
+inline constexpr const char* kGameSettingsFile = "editor_settings.json";
 
-/// Atomic write (temp file + rename). Returns false (and does not throw) if the file can't be written.
+/// Missing or unreadable file -> defaults (never throws: a damaged settings file must not stop start-up). Then the game folder's
+/// editor_settings.json (of the loaded assetsRoot) over it, when there is one.
+Settings loadSettings(const std::filesystem::path& file);
+/// Reads <assetsRoot>/editor_settings.json into `s` (lastMap, games[assetsRoot], editor); false (s unchanged) when there is none.
+bool loadGameSettings(Settings& s, const std::filesystem::path& assetsRoot);
+
+/// Atomic writes (temp file + rename): the game folder's part to <s.assetsRoot>/editor_settings.json when that folder exists, the rest to
+/// `file`. Returns false (and does not throw) if a file can't be written.
 bool saveSettings(const std::filesystem::path& file, const Settings& s);
 
 /// UTF-8 <-> path conversion that is correct on Windows (where `std::string` paths are the ANSI code page).

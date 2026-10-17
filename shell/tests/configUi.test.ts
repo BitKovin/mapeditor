@@ -8,7 +8,7 @@ import { makeApp } from './helpers'
 describe('protocol: settings window messages', () => {
   it('fills a settings message from an older Core with defaults', () => {
     expect(parseInbound('{"type":"settings","assetsRoot":"C:/g"}')).toEqual({
-      type: 'settings', assetsRoot: 'C:/g', recentMaps: [], game: { exe: '', args: '+map {mapname}', workingDir: '' }, editor: {}, nativeDialogs: false, settingsFile: '', lightingFile: '',
+      type: 'settings', assetsRoot: 'C:/g', recentMaps: [], game: { exe: '', args: '--map {mapname}.bsp', workingDir: '' }, editor: {}, nativeDialogs: false, settingsFile: '', lightingFile: '',
     })
     const m = parseInbound(JSON.stringify({ type: 'settings', assetsRoot: 'C:/g', recentMaps: ['maps/a.map.json', 5], game: { exe: 'C:/g/x.exe', args: '-map {mapname}' }, editor: { gridSize: 1 }, nativeDialogs: true }))
     expect(m).toMatchObject({ recentMaps: ['maps/a.map.json'], game: { exe: 'C:/g/x.exe', args: '-map {mapname}', workingDir: '' }, editor: { gridSize: 1 }, nativeDialogs: true })

@@ -452,3 +452,6 @@ Verified: Core 257 test cases pass (g++, no cmake: see /home/claude/build/Makefi
 - Tests: Core exporters (3) + bsp / sky / router / settings cases (39) pass; Shell 906 pass (new `tests/exportFormat.test.ts`); typecheck clean; menu checked in the browser.
 - **Open:** the OBJ carries the base light style's lightmap coordinates only (the other styles' pages are written but not referenced); no .mtl file.
 
+## Update 2026-10-17 (fifth): settings in the game folder (REQUIREMENTS §32)
+- `<assets>/editor_settings.json` + `<assets>/lighting.json`; `settings.json` next to the Core keeps the game folder to open and the recent maps.
+

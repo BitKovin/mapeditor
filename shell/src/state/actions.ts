@@ -256,8 +256,8 @@ export function applyTexture(store: Store, texture: string): void {
   if (!targets.length) return
   store.edit('Apply texture', (d) => mapFaces(d, targets, (b, f) => {
     if (f.texture === texture) return f
-    // a face without its own projection gets the texture at its natural size starting at the face's bottom-left corner (when the texture's size is known)
-    if (!f.projection && texEnv.info(texture)) {
+    // a new texture keeps the face's UVs; only a face without any UVs gets the texture at its natural size from its bottom-left corner
+    if (!f.projection && !f.uvs?.length && texEnv.info(texture)) {
       const p = bottomLeft(b, { ...f, texture }, defaultProjectionFor(texture))
       return { ...f, texture, projection: p, uvs: projectFace(b, f, p) }
     }
