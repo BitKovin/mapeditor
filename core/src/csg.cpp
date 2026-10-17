@@ -116,7 +116,9 @@ public:
         if (polys.empty()) return;
         if (!hasPlane_) { plane_ = polys[0].plane; hasPlane_ = true; }
         std::vector<Poly> front, back;
-        for (auto& p : polys) splitPolygon(plane_, p, polys_, polys_, front, back);
+        // A coplanar polygon facing the other way bounds solid that lies in front of this plane (concave brushes have them):
+        // it belongs to the front subtree. Keeping it here, as csg.js does, makes the tree call part of that solid air.
+        for (auto& p : polys) splitPolygon(plane_, p, polys_, front, front, back);
         if (!front.empty()) { if (!front_) front_ = std::make_unique<Node>(); front_->build(std::move(front)); }
         if (!back.empty()) { if (!back_) back_ = std::make_unique<Node>(); back_->build(std::move(back)); }
     }

@@ -3,6 +3,7 @@
 #include "core/router.h"
 #include "test_util.h"
 #include <doctest.h>
+#include <algorithm>
 #include <map>
 
 using namespace core;
@@ -198,4 +199,49 @@ TEST_CASE("validation: the convex rule is for solids - a concave subtractor is f
     auto err = validateDocument(d);
     REQUIRE(err.has_value());
     CHECK(err->find("convex") != std::string::npos);
+}
+
+TEST_CASE("csg: a target whose faces meet back to back on one plane still gets its cut walls") {
+    // One brush made of two boxes of different height glued along x = 2, both glued faces kept back to back (mesh-edited walls,
+    // e.g. a hollow building made of one brush, end up like this). Whichever face the BSP happens to split by first, it must not
+    // call solid on the far side of that plane air: the subtractor's faces would be clipped away and the cut would show no walls.
+    Brush wall = Brush::makeBox("wall", {0, 0, 0}, {2, 3, 1});
+    const Brush b = Brush::makeBox("b", {2, 0, 0}, {4, 2, 1});
+    const uint32_t base = static_cast<uint32_t>(wall.vertices.size());
+    wall.vertices.insert(wall.vertices.end(), b.vertices.begin(), b.vertices.end());
+    for (BrushFace f : b.faces) {
+        for (auto& i : f.loop) i += base;
+        f.id += 100;
+        wall.faces.push_back(f);
+    }
+    const double whole = 2 * 3 + 2 * 2;
+    REQUIRE(wall.signedVolume() == doctest::Approx(whole));
+
+    struct Case { const char* name; Vec3 lo, hi; double removed, cutArea; };
+    const Case cases[] = {
+        {"cavity across the glued plane", {1.5, 0.5, 0.25}, {2.5, 1.5, 0.75}, 0.5, 2 * (1 + 0.5 + 0.5)},
+        {"doorway across the glued plane, flush with the floor", {1.5, 0, -1}, {2.5, 1.5, 2}, 1.5, 2 * 1.5 + 1},
+        {"cavity at the glued corner", {1.7, -0.3, 0.2}, {2.4, 0.4, 0.9}, 0.7 * 0.4 * 0.7, 0.7 * 0.7 + 2 * 0.7 * 0.4 + 2 * 0.7 * 0.4},
+    };
+    for (size_t r = 0; r < wall.faces.size(); ++r) {
+        Brush w = wall;
+        std::rotate(w.faces.begin(), w.faces.begin() + static_cast<std::ptrdiff_t>(r), w.faces.end());  // the BSP splits by faces[0] first
+        for (const auto& c : cases) {
+            INFO(c.name, ", first face ", r);
+            const Brush cut = sub("cut", c.lo, c.hi);
+            std::vector<CsgFragment> out;
+            REQUIRE(csgSubtract(w, {&cut}, out));
+            CHECK(volume(out) == doctest::Approx(whole - c.removed));
+            CHECK(areaOfSource(out, 1) == doctest::Approx(c.cutArea));
+            for (const auto& f : out) {  // the new walls face into the opening: against the subtractor's own face normals
+                if (f.source != 1) continue;
+                const BrushFace* face = nullptr;
+                for (const auto& bf : cut.faces) if (bf.id == f.faceId) face = &bf;
+                REQUIRE(face);
+                Vec3 fn;
+                for (size_t i = 1; i + 1 < f.verts.size(); ++i) fn = fn + (f.verts[i] - f.verts[0]).cross(f.verts[i + 1] - f.verts[0]);
+                CHECK(fn.normalized().dot(cut.faceNormal(*face)) < -0.99);
+            }
+        }
+    }
 }
