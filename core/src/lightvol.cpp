@@ -48,34 +48,71 @@ std::vector<Vec3> sphereNormals(int count) {
 
 Vec3 probeLight(const Probe& p, const Vec3& n) { return p.ambient + p.directed * std::max(0.0, n.dot(p.dir)); }
 
-Probe fitProbe(const std::vector<Vec3>& normals, const std::vector<Vec3>& values) {
-    Probe out;
+ProbeMoments probeMoments(const std::vector<Vec3>& normals, const std::vector<Vec3>& values, const std::vector<Vec3>* direct) {
+    ProbeMoments m;
     const size_t k = std::min(normals.size(), values.size());
-    if (k == 0) return out;
-    Vec3 A;
-    Vec3 G[3];  // first moment per colour channel
+    if (k == 0) return m;
     for (size_t i = 0; i < k; ++i) {
-        A = A + values[i];
-        G[0] = G[0] + normals[i] * values[i].x;
-        G[1] = G[1] + normals[i] * values[i].y;
-        G[2] = G[2] + normals[i] * values[i].z;
+        m.mean = m.mean + values[i];
+        m.first[0] = m.first[0] + normals[i] * values[i].x;
+        m.first[1] = m.first[1] + normals[i] * values[i].y;
+        m.first[2] = m.first[2] + normals[i] * values[i].z;
+        if (direct && i < direct->size()) {
+            const Vec3& d = (*direct)[i];
+            m.directMean = m.directMean + d;
+            m.directFirst[0] = m.directFirst[0] + normals[i] * d.x;
+            m.directFirst[1] = m.directFirst[1] + normals[i] * d.y;
+            m.directFirst[2] = m.directFirst[2] + normals[i] * d.z;
+        }
     }
     const double inv = 1.0 / static_cast<double>(k);
-    A = A * inv;
-    for (auto& g : G) g = g * inv;
-    const Vec3 gl = G[0] * 0.2126 + G[1] * 0.7152 + G[2] * 0.0722;
+    m.mean = m.mean * inv;
+    for (auto& g : m.first) g = g * inv;
+    m.directMean = m.directMean * inv;
+    for (auto& g : m.directFirst) g = g * inv;
+    m.set = true;
+    return m;
+}
+
+Probe fitProbeAlong(const ProbeMoments& m, const Vec3& dir) {
+    Probe out;
     out.valid = true;
-    if (gl.length() < 1e-12) { out.ambient = {std::max(0.0, A.x), std::max(0.0, A.y), std::max(0.0, A.z)}; return out; }
-    out.dir = gl.normalized();
-    const double a[3] = {A.x, A.y, A.z};
+    out.dir = dir.normalized();
+    const double a[3] = {m.mean.x, m.mean.y, m.mean.z};
     double dc[3], amb[3];
     for (int c = 0; c < 3; ++c) {
-        dc[c] = std::min(std::max(0.0, 6.0 * G[c].dot(out.dir)), 4.0 * std::max(0.0, a[c]));
+        const double along = std::max(m.first[c].dot(out.dir), m.directFirst[c].dot(out.dir));
+        dc[c] = std::min(std::max(0.0, 6.0 * along), 4.0 * std::max(0.0, a[c]));
         amb[c] = std::max(0.0, a[c] - dc[c] / 4.0);
     }
     out.directed = {dc[0], dc[1], dc[2]};
     out.ambient = {amb[0], amb[1], amb[2]};
     return out;
+}
+
+Probe fitProbe(const std::vector<Vec3>& normals, const std::vector<Vec3>& values) {
+    if (std::min(normals.size(), values.size()) == 0) return Probe{};
+    const ProbeMoments m = probeMoments(normals, values);
+    const Vec3 gl = m.first[0] * 0.2126 + m.first[1] * 0.7152 + m.first[2] * 0.0722;
+    if (gl.length() < 1e-12) {
+        Probe out;
+        out.valid = true;
+        out.ambient = {std::max(0.0, m.mean.x), std::max(0.0, m.mean.y), std::max(0.0, m.mean.z)};
+        return out;
+    }
+    return fitProbeAlong(m, gl);
+}
+
+Probe fitProbeDirectFirst(const ProbeMoments& m, double bounceWeight) {
+    const Vec3 up{0, 1, 0};
+    const Vec3 total = m.first[0] * 0.2126 + m.first[1] * 0.7152 + m.first[2] * 0.0722, direct = m.directFirstLuminance();
+    const Vec3 v = direct + (total - direct) * bounceWeight;
+    // the direct share of the probe's mean light: from 12% up the weighted direction alone, below 2% light from above alone, smooth in between
+    const double share = luminance(m.directMean) / std::max(luminance(m.mean), 1e-12);
+    const double t = std::clamp((share - 0.02) / 0.10, 0.0, 1.0), keep = t * t * (3 - 2 * t);
+    Vec3 dir = v.length() > 1e-12 ? v.normalized() * keep + up * (1 - keep) : up;
+    dir = dir.length() > 1e-6 ? dir.normalized() : up;
+    return fitProbeAlong(m, dir);
 }
 
 void shareDirection(const std::vector<Probe*>& layers) {
@@ -109,6 +146,46 @@ void shareProbeDirections(std::map<int, LightvolGrid>& grids) {
         layers.clear();
         for (auto& [style, g] : grids) if (g.count() == n) layers.push_back(&g.probes[i]);
         shareDirection(layers);
+    }
+}
+
+namespace {
+constexpr int kNeighbour[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+}  // namespace
+
+void fillInvalidProbes(LightvolGrid& grid) {
+    std::vector<char> filled(grid.count());
+    for (size_t i = 0; i < grid.count(); ++i) filled[i] = grid.probes[i].valid;
+    for (bool changed = true; changed;) {
+        changed = false;
+        std::vector<std::pair<size_t, Probe>> ring;
+        for (int z = 0; z < grid.nz; ++z)
+            for (int y = 0; y < grid.ny; ++y)
+                for (int x = 0; x < grid.nx; ++x) {
+                    const size_t i = grid.index(x, y, z);
+                    if (filled[i]) continue;
+                    Probe sum;
+                    Vec3 dir;
+                    int count = 0;
+                    for (const auto& o : kNeighbour) {
+                        const int xx = x + o[0], yy = y + o[1], zz = z + o[2];
+                        if (xx < 0 || yy < 0 || zz < 0 || xx >= grid.nx || yy >= grid.ny || zz >= grid.nz) continue;
+                        const size_t j = grid.index(xx, yy, zz);
+                        if (!filled[j]) continue;
+                        const Probe& q = grid.probes[j];
+                        sum.ambient = sum.ambient + q.ambient;
+                        sum.directed = sum.directed + q.directed;
+                        dir = dir + q.dir * (luminance(q.directed) + 1e-6);
+                        ++count;
+                    }
+                    if (count == 0) continue;
+                    sum.ambient = sum.ambient * (1.0 / count);
+                    sum.directed = sum.directed * (1.0 / count);
+                    sum.dir = dir.length() > 1e-12 ? dir.normalized() : Vec3{0, 1, 0};
+                    sum.valid = true;
+                    ring.push_back({i, sum});
+                }
+        for (auto& [i, p] : ring) { grid.probes[i] = p; filled[i] = 1; changed = true; }
     }
 }
 
@@ -213,14 +290,15 @@ std::vector<char> solidProbes(const LightvolGrid& grid, const SolidSet* solids) 
 
 namespace {
 // V(n_k) for one probe from the evaluators' per-sample outputs and the fit.
-void fitFrom(LightvolGrid& grid, size_t probe, const std::vector<Vec3>& normals, const float* direct, const float* indirect, size_t at) {
-    std::vector<Vec3> v(normals.size());
+void fitFrom(LightvolGrid& grid, size_t probe, const std::vector<Vec3>& normals, const float* direct, const float* indirect, size_t at,
+             double bounceWeight) {
+    std::vector<Vec3> v(normals.size()), d(normals.size());
     for (size_t k = 0; k < normals.size(); ++k) {
         const size_t t = (at + k) * 4;
-        v[k] = {direct[t], direct[t + 1], direct[t + 2]};
+        d[k] = v[k] = {direct[t], direct[t + 1], direct[t + 2]};
         if (indirect) v[k] = v[k] + Vec3{indirect[t], indirect[t + 1], indirect[t + 2]};
     }
-    grid.probes[probe] = fitProbe(normals, v);
+    grid.probes[probe] = fitProbeDirectFirst(probeMoments(normals, v, &d), bounceWeight);
 }
 
 BakeOptions probeOptions(const LightvolSource& src, const LightvolSettings& cfg) {
@@ -269,7 +347,7 @@ void bakeProbesCpu(LightvolGrid& grid, const std::vector<char>& solid, std::vect
     std::vector<float> indirect;
     const bool gather = canGather(src, cfg);
     if (gather) indirect = gatherCpu(s, *src.mesh, *src.bvh, *src.atlasS, cfg.albedo, cfg.giSamples, 0, cfg.bounceRange);
-    for (size_t j = 0; j < ids.size(); ++j) fitFrom(grid, ids[j], normals, direct.data(), gather ? indirect.data() : nullptr, j * K);
+    for (size_t j = 0; j < ids.size(); ++j) fitFrom(grid, ids[j], normals, direct.data(), gather ? indirect.data() : nullptr, j * K, cfg.bounceDirectionWeight);
 }
 
 struct ProbeBaker::Impl {
@@ -335,7 +413,7 @@ struct ProbeBaker::Impl {
             job.count = static_cast<uint32_t>((b - a) * K);
             std::vector<float> d, db, ind;
             if (!session->run({job}, d, db, gather ? &ind : nullptr)) { gpuError = session->error(); return false; }
-            for (size_t j = a; j < b; ++j) fitFrom(grid, ids[j], normals, d.data(), gather ? ind.data() : nullptr, (j - a) * K);
+            for (size_t j = a; j < b; ++j) fitFrom(grid, ids[j], normals, d.data(), gather ? ind.data() : nullptr, (j - a) * K, cfg.bounceDirectionWeight);
         }
         return true;
     }

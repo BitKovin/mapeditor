@@ -322,7 +322,7 @@ TEST_CASE("lightvol bake: indirect light from the bounce source reaches a probe;
     // for the opposite normal (up) it is ~0: the mean over the sphere is ~ 0.8 * 0.97 / 2, with the direction pointing down.
     const double mean = p.ambient.x + p.directed.x / 4.0;
     CHECK(mean == doctest::Approx(0.8 * 0.5 * 0.97).epsilon(0.08));
-    CHECK(p.dir.y < -0.9);
+    CHECK(p.dir.y > 0.99);  // no direct light: light from above (fitProbeDirectFirst), the bounce from below is ambient
 
     cfg.bounces = false;
     LightvolGrid g2 = buildLightvolGrid(room.surfaces, room.solids.get(), cfg);
@@ -430,11 +430,13 @@ TEST_CASE("lightvol ProbeBaker: ray traced shadows and GI on the GPU session agr
     CHECK(mag > 0);
     CHECK(err / mag < 0.12);  // different random draws: Monte Carlo noise only
 
-    // GI shows up as light from below: a probe above the floor sees the S = 1 floor, so its light for a downward normal is about albedo * (floor fraction)
+    // GI shows up in the light a downward normal gets: a probe above the floor sees the S = 1 floor (half the sphere's mean is about
+    // albedo * floor fraction / 2). The direction stays the sun's, so that light from below is ambient (without GI it is ~0, below).
     for (const LightvolGrid* gr : {&g, &c}) {
         const Probe p = gr->sample({5, 1.5, 5});
         REQUIRE(p.valid);
-        CHECK(probeLight(p, {0, -1, 0}).x > 0.35);
+        CHECK(p.dir.y > 0.9);
+        CHECK(probeLight(p, {0, -1, 0}).x > 0.2);
     }
 
     // direct light only: the shadow of the roof and the sun above are seen with either evaluator
@@ -505,4 +507,129 @@ TEST_CASE("lightvol: one direction per point for every style layer (REQUIREMENTS
     }
     shareProbeDirections(grids);
     for (size_t i = 0; i < 2; ++i) CHECK((grids[0].probes[i].dir - grids[3].probes[i].dir).length() < 1e-12);
+}
+
+namespace {
+// A floor lit by a sun from above, a roof (2 x 2 m at 3 m) shading the floor under it, and a bounce source of S = 1 on every floor texel: under the
+// roof the only light is bounce light from below.
+struct ShadedRoom {
+    Room room{{ent("w", "worldspawn", {Brush::makeBox("floor", {-8, -1, -8}, {8, 0, 8}), Brush::makeBox("roof", {-2, 3, -2}, {2, 3.5, 2})}), directional({90, 0, 0}, 1.0)}};
+    LightmapLayout layout;
+    std::vector<float> atlas;
+    LightvolSource src;
+    ShadedRoom() {
+        for (Light& l : room.lights.lights) l.castShadows = true;
+        LightmapSettings ls;
+        ls.texelsPerMeter = 1;
+        layout = buildLightmapLayout(room.surfaces, LightingClasses::defaults(), ls);
+        room.mesh = buildOccluders(room.surfaces, LightingClasses::defaults(), &layout);
+        room.bvh = std::make_unique<TriangleBvh>(room.mesh);
+        atlas.assign(static_cast<size_t>(layout.pageCount) * layout.settings.atlasSize * layout.settings.atlasSize * 4, 1.f);
+        src = room.source();
+        src.atlasS = &atlas;
+        src.atlasSize = layout.settings.atlasSize;
+        src.pages = layout.pageCount;
+    }
+};
+}  // namespace
+
+TEST_CASE("lightvol directions: direct light decides before bounce light; with (nearly) no direct light, light comes from above") {
+    const auto normals = sphereNormals(64);
+    auto model = [&](const Vec3& dir, double e) { Probe p; p.valid = true; p.directed = {e, e, e}; p.dir = dir.normalized(); return sampleModel(p, normals); };
+    auto add = [](std::vector<Vec3> a, const std::vector<Vec3>& b) { for (size_t i = 0; i < a.size(); ++i) a[i] = a[i] + b[i]; return a; };
+    const Vec3 sun = Vec3{0.3, 1, 0.2}.normalized();
+
+    // a sunlit probe over a bright floor: more bounce light from below than sun from above. The total light's moment would point down
+    // (the engine would cast shadows upwards); the direct light keeps the direction, and its strength stays directed.
+    const auto direct = model(sun, 1.0), bounce = model({0, -1, 0}, 2.0), total = add(direct, bounce);
+    REQUIRE(fitProbe(normals, total).dir.y < 0);
+    const ProbeMoments m = probeMoments(normals, total, &direct);
+    const Probe p = fitProbeDirectFirst(m, 0.25);
+    CHECK(p.dir.dot(sun) > 0.9);
+    CHECK(p.dir.y > 0.5);
+    CHECK(p.directed.x == doctest::Approx(1.0).epsilon(0.1));
+    CHECK(p.ambient.x + p.directed.x / 4 == doctest::Approx(m.mean.x));  // the mean light is kept: the bounce is ambient
+    // bounce counts with its weight: at weight 1 it is the total light again
+    CHECK(fitProbeDirectFirst(m, 1.0).dir.dot(fitProbe(normals, total).dir) > 0.999);
+
+    // in the shade, bounce light only: light from above, all of it ambient
+    const ProbeMoments shade = probeMoments(normals, bounce, nullptr);
+    const Probe q = fitProbeDirectFirst(shade, 0.25);
+    CHECK(q.dir.y == doctest::Approx(1.0));
+    CHECK(q.directed.length() < 1e-9);
+    CHECK(q.ambient.x == doctest::Approx(shade.mean.x));
+
+    // a trace of direct light (1% of the mean) does not steer it either; a fair share (30%) does
+    const auto faint = model({1, 0, 0}, 0.04), fair = model({1, 0, 0}, 2.0);
+    CHECK(fitProbeDirectFirst(probeMoments(normals, add(faint, bounce), &faint), 0.25).dir.y == doctest::Approx(1.0));
+    CHECK(fitProbeDirectFirst(probeMoments(normals, add(fair, bounce), &fair), 0.25).dir.x > 0.9);
+}
+
+TEST_CASE("lightvol directions: under a roof next to a sunlit floor the direction stays the sun's side, never from below") {
+    // The engine casts stencil shadows along the probe direction: the bounce off the floor under the roof comes from below.
+    ShadedRoom s;
+    LightvolSettings cfg;
+    cfg.gridSize = 1;
+    cfg.areaSamples = 4;
+    cfg.giSamples = 32;
+    cfg.useGpu = false;
+    LightvolGrid g = buildLightvolGrid(s.room.surfaces, s.room.solids.get(), cfg);
+    std::vector<char> solid = solidProbes(g, s.room.solids.get()), baked;
+    bakeProbesCpu(g, solid, baked, 0, g.count(), s.src, cfg);
+    const Probe under = g.sample({0, 1.5, 0}), open = g.sample({6, 1.5, 6});
+    REQUIRE(under.valid);
+    REQUIRE(open.valid);
+    CHECK(under.dir.y > 0.9);
+    CHECK(open.dir.y > 0.9);
+    CHECK(open.directed.x > 0.8);
+    CHECK(under.directed.x < 0.35 * open.directed.x);  // the shadow stays a shadow: the bounce from below is ambient
+    size_t air = 0;
+    for (size_t i = 0; i < g.count(); ++i) {
+        const Vec3 p = g.position(i);
+        if (!g.probes[i].valid || p.y < 0.5 || p.y > 2.5) continue;
+        CHECK(g.probes[i].dir.y > 0.5);  // nowhere in the air does the light come from below
+        ++air;
+    }
+    CHECK(air > 100);
+}
+
+TEST_CASE("lightvol directions: where no direct light reaches at all, light comes from above (ProbeBaker)") {
+    // no light at all, only bounce light from the floor (S = 1): every probe would point down
+    ShadedRoom s;
+    s.room.lights.lights.clear();
+    LightvolSettings cfg;
+    cfg.gridSize = 2;
+    cfg.giSamples = 32;
+    cfg.useGpu = false;
+    const LightvolGrid g = bakeAll(s.room, s.src, cfg);
+    size_t lit = 0;
+    for (size_t i = 0; i < g.count(); ++i) {
+        const Probe& p = g.probes[i];
+        if (!p.valid) continue;
+        CHECK(p.dir.y == doctest::Approx(1.0));
+        const Vec3 at = g.position(i);
+        // above the floor and away from the roof (whose lit underside does send light down) all the light comes from below: none of it is directed
+        if (at.y > 0.5 && (std::fabs(at.x) > 2.5 || std::fabs(at.z) > 2.5)) CHECK(p.directed.length() < 1e-9);
+        if (p.ambient.x > 0.1) ++lit;
+    }
+    CHECK(lit > 10);  // the bounce light is still there, as ambient
+}
+
+TEST_CASE("lightvol fill: in-wall probes take their neighbours' light ring by ring, an all-invalid grid stays as it is") {
+    LightvolGrid g;
+    g.origin = {0, 0, 0};
+    g.cell = 1;
+    g.nx = 4; g.ny = 1; g.nz = 1;
+    g.probes.assign(4, Probe{});
+    g.probes[0].valid = true; g.probes[0].ambient = {0.4, 0.4, 0.4}; g.probes[0].directed = {1, 1, 1}; g.probes[0].dir = {0, 1, 0};
+    g.probes[3].valid = true; g.probes[3].ambient = {0.2, 0.2, 0.2}; g.probes[3].directed = {0, 0, 0}; g.probes[3].dir = {1, 0, 0};
+    fillInvalidProbes(g);
+    for (const Probe& p : g.probes) CHECK(p.valid);
+    CHECK(g.probes[1].ambient.x == doctest::Approx(0.4));  // only probe 0 was next to it in the first ring
+    CHECK(g.probes[2].ambient.x == doctest::Approx(0.2));
+    CHECK(g.probes[1].dir.y == doctest::Approx(1.0));
+    LightvolGrid none = g;
+    for (Probe& p : none.probes) p = Probe{};
+    fillInvalidProbes(none);
+    for (const Probe& p : none.probes) CHECK(!p.valid);
 }

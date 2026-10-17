@@ -507,10 +507,17 @@ bounce source `S` that texels use (a probe sample is a TexelSamples entry that h
 is one submission: ray traced direct light and ray traced one-bounce gather in the same shaders as the lightmaps. Without a device (or after any GPU failure) the CPU
 evaluator runs the same maths on the BVH (`ProbeBaker`, `bakeProbesCpu`); a test compares both. Directional light and GI therefore both show in the probe.
 
-**Fit to the ambient + directed model.** With `A = mean_k V(n_k)` and `G = mean_k V(n_k) n_k` (sphere moments): `d = normalize(luminance(G))`,
-`directed_c = 6 (G_c . d)`, `ambient_c = A_c - directed_c / 4`, both clamped at 0 (and `directed_c <= 4 A_c`). This reproduces a single unshadowed delta light
-(`V = E max(0, n . l)`: ambient 0, directed E, dir l) and a uniform ambient exactly, and matches the zeroth and first moment of everything else. The normal set is
-antipodal, so a constant `V` has no first moment.
+**Fit to the ambient + directed model.** With `A = mean_k V(n_k)` and `G = mean_k V(n_k) n_k` (sphere moments), and `Gd` the same first moment of the
+direct light alone (lights, sun, sky; no gathered bounce): `directed_c = 6 max(G_c . d, Gd_c . d)`, `ambient_c = A_c - directed_c / 4`, both clamped at 0 (and
+`directed_c <= 4 A_c`), so every probe keeps its mean light. This reproduces a single unshadowed delta light (`V = E max(0, n . l)`: ambient 0, directed E, dir l) and
+a uniform ambient exactly. The normal set is antipodal, so a constant `V` has no first moment.
+
+**The direction is an artistic choice, made for shadows** (`fitProbeDirectFirst`). The engine shades entities with it AND casts their stencil shadows along it, so
+direct light decides it before bounce light: `d = normalize(luminance(Gd) + w * luminance(G - Gd))`, `w = LightvolSettings::bounceDirectionWeight` (0.25). Where
+direct light is (nearly) absent the light comes from straight above instead, blended by the direct share of the mean light (`luminance(mean direct) / luminance(A)`:
+2% and below fully from above, 12% and above not at all, smoothstep between). Without this, bounce off a sunlit floor (light from below) sets the direction in every
+shadow and indoors: shadows go onto ceilings, and neighbouring probes that disagree up / down average to a near-horizontal direction in the engine's interpolation
+(huge stretched shadows). Light that does not come from `d` (the floor's bounce) ends up in ambient.
 
 **Storage and the x2 range (REQUIREMENTS §9).** Per probe: ambient rgb, directed rgb (each `round(clamp(v / 2, 0, 1) * 255)`, read back `byte / 255 * 2`), direction as
 lat / lng bytes (`lat = acos(y) / pi * 255`, `lng = (atan2(z, x) + pi) / (2 pi) * 255`) and a flag byte (bit 0 = valid). The byte layout of the shipping BSP lump is
@@ -519,7 +526,8 @@ very bright light cannot exceed 2; its direction is kept). No other constant is 
 
 **Grid.** Axis aligned, origin at the minimum of all surface bounds minus one cell, `gridSize` m (default 1) per cell, at most `maxProbes` (65536, the GPU keeps
 probes x normals samples resident; the cell grows until it fits). A probe inside a light-blocking solid (`SolidSet`) is invalid; lookups interpolate trilinearly over
-valid corners only and use the nearest valid probe when none of the 8 is valid.
+valid corners only and use the nearest valid probe when none of the 8 is valid. The rBSP light grid has no validity flag and the engine interpolates its 8 corners blindly, so the
+export fills every invalid probe from its valid neighbours, ring by ring outwards (`fillInvalidProbes`): an in-wall probe never darkens or turns the light near a wall.
 
 **Progressive.** `LightingService` bakes probes in steps (a GPU step is one submission of thousands of probes) after the lightmap converged (they read its final `S`),
 restarts when geometry, lights or the lightmap change, and re-sends `lightvol` + `entity_light` when it finishes. The editor never waits for it: until the first result,

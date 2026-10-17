@@ -24,6 +24,7 @@ struct LightvolSettings {
     bool bounces = true;       // add the indirect light gathered from the baker's bounce source
     double albedo = 0.7;
     double bounceRange = 20;
+    double bounceDirectionWeight = 0.25;  // how much bounce light counts towards the probe direction next to direct light (fitProbeDirectFirst)
     bool useGpu = true;        // direct light on the Vulkan ray query path when available
     LightingClasses classes = LightingClasses::defaults();
 };
@@ -58,6 +59,27 @@ std::vector<Vec3> sphereNormals(int count);
 // Fits ambient + directed * max(0, n . dir) to values V(n_k) (one rgb per normal) by matching the sphere mean and first moment
 // (DESIGN §6.7). A single unshadowed delta light and a constant ambient are reproduced exactly.
 Probe fitProbe(const std::vector<Vec3>& normals, const std::vector<Vec3>& values);
+
+// The sphere moments of one probe's V(n) (DESIGN §6.7): all the fit needs, with the direct light's own moments beside the total.
+struct ProbeMoments {
+    Vec3 mean;            // A_c = mean_k V_c(n_k)
+    Vec3 first[3];        // G_c = mean_k V_c(n_k) n_k
+    Vec3 directMean;      // the same two for the direct light alone (lights, sun, sky: no gathered bounce)
+    Vec3 directFirst[3];
+    bool set = false;
+    Vec3 directFirstLuminance() const { return directFirst[0] * 0.2126 + directFirst[1] * 0.7152 + directFirst[2] * 0.0722; }
+};
+// `direct` (optional, one rgb per normal) is the direct part of `values`.
+ProbeMoments probeMoments(const std::vector<Vec3>& normals, const std::vector<Vec3>& values, const std::vector<Vec3>* direct = nullptr);
+// The ambient + directed fit with the direction given: directed_c = 6 max(G_c . dir, Gdirect_c . dir) and ambient_c = A_c - directed_c / 4
+// (clamped as in fitProbe), so the mean light is kept whatever the direction. The direct light along `dir` stays directed even when bounce light
+// from the other side (a sunlit floor below) cancels part of the total first moment; light that does not come from `dir` ends up in ambient.
+Probe fitProbeAlong(const ProbeMoments& m, const Vec3& dir);
+// What the bake uses (DESIGN §6.7): the direction is chosen for what the engine does with it, shading entities AND casting their stencil shadows, so
+// direct light (lights, sun, sky) decides it before bounce light: dir = normalize(Gdirect + bounceWeight * Gbounce) (luminance first moments). Where
+// direct light is (nearly) absent the light comes from straight above instead (by the direct share of the mean light: 2% and below fully, 12% and
+// above not at all): bounce off a sunlit floor alone would otherwise point up from below and throw shadows onto the ceiling. Then fitProbeAlong.
+Probe fitProbeDirectFirst(const ProbeMoments& m, double bounceWeight);
 // The model evaluated for a normal.
 Vec3 probeLight(const Probe& p, const Vec3& n);
 
@@ -89,6 +111,11 @@ public:
 // shareDirection for every point of grids that share one geometry (the style layers of a light volume).
 void shareProbeDirections(std::map<int, LightvolGrid>& grids);
 
+// For formats without a validity flag (the rBSP light grid: the engine interpolates the 8 corners blindly): every invalid probe (inside a solid) takes
+// the mean of its valid neighbours, ring by ring outwards, so a black in-wall probe never darkens or turns the light near a wall. Filled probes are
+// marked valid; probes with no valid probe anywhere stay as they are.
+void fillInvalidProbes(LightvolGrid& grid);
+
 // Axis aligned grid over the bounds of every surface (plus one cell). Probes inside a light-blocking solid are invalid, the others wait to be baked
 // (valid = false until then: use `isBaked`).
 LightvolGrid buildLightvolGrid(const std::vector<LightSurface>& surfaces, const SolidSet* solids, const LightvolSettings& settings);
@@ -102,7 +129,7 @@ struct LightvolSource {
     int atlasSize = 0, pages = 0;
 };
 
-// CPU reference evaluator: bakes probes [first, first + count): V(n_k) = direct + (optional) indirect per normal, then fitProbe. Probes marked `solid`
+// CPU reference evaluator: bakes probes [first, first + count): V(n_k) = direct + (optional) indirect per normal, then fitProbeDirectFirst. Probes marked `solid`
 // stay invalid. `baked` (size = probe count) is set for the probes that were processed. The ProbeBaker below is what the editor runs.
 void bakeProbesCpu(LightvolGrid& grid, const std::vector<char>& solid, std::vector<char>& baked, size_t first, size_t count, const LightvolSource& src,
                    const LightvolSettings& settings);

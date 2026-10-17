@@ -840,7 +840,10 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     // ---- light grid ---------------------------------------------------------------------------------------------------------------------------
     std::vector<rbsp::GridPoint> palette;
     std::vector<uint8_t> lightArray;
-    if (const auto g0 = in.lightvol.find(0); g0 != in.lightvol.end() && g0->second.count() > 0) {
+    // the grid has no validity flag and the engine interpolates the 8 corners as they are: in-wall probes take their neighbours' light
+    std::map<int, LightvolGrid> lightvol = in.lightvol;
+    for (auto& [st, grid] : lightvol) fillInvalidProbes(grid);
+    if (const auto g0 = lightvol.find(0); g0 != lightvol.end() && g0->second.count() > 0) {
         const LightvolGrid& g = g0->second;
         rbsp::LightGridHeader hdr{};
         put3(hdr.origin, toQuake(g.origin + Vec3{0, 0, (g.nz - 1) * g.cell}));
@@ -859,7 +862,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     gp.styles[0] = 0;
                     // slots: style 0, then the brightest other styles
                     std::vector<std::pair<double, int>> rank;
-                    for (const auto& [st, grid] : in.lightvol) {
+                    for (const auto& [st, grid] : lightvol) {
                         if (st == 0 || grid.count() != g.count()) continue;
                         const Probe& p = grid.probes[ei];
                         if (!p.valid) continue;
@@ -868,7 +871,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     }
                     std::sort(rank.begin(), rank.end(), [](auto& a, auto& b) { return a.first > b.first; });
                     std::vector<std::pair<int, const Probe*>> slots = {{0, &g.probes[ei]}};
-                    for (const auto& [lum, st] : rank) if (slots.size() < rbsp::kStyles) slots.push_back({st, &in.lightvol.at(st).probes[ei]});
+                    for (const auto& [lum, st] : rank) if (slots.size() < rbsp::kStyles) slots.push_back({st, &lightvol.at(st).probes[ei]});
                     Vec3 dir, dirW;
                     for (size_t k = 0; k < slots.size(); ++k) {
                         const Probe& p = *slots[k].second;
