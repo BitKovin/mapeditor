@@ -18,7 +18,7 @@ import { UnwrapMode, Xform, transformFaces, unwrapFaces } from '../model/ftt'
 import { parseFaceRepeat } from '../model/texprops'
 import { FaceLayout, ParamValue, faceLayoutToJson, parseFaceLayout } from '../model/texgroup'
 import { alignBrush, resetSurface } from '../model/surface'
-import { texEnv } from '../model/texprops'
+import { naturalSize, texEnv } from '../model/texprops'
 import { Projection, clampLightmapScale, defaultProjectionFor, fitProjection, lightmapScaleOf, projectFace, projectionOf } from '../model/uv'
 import { selectionPivot } from '../model/transform'
 import type { Selection, Store } from './store'
@@ -256,10 +256,21 @@ export function applyTexture(store: Store, texture: string): void {
   if (!targets.length) return
   store.edit('Apply texture', (d) => mapFaces(d, targets, (b, f) => {
     if (f.texture === texture) return f
-    // a new texture keeps the face's UVs; only a face without any UVs gets the texture at its natural size from its bottom-left corner
+    // a face without any UVs gets the texture at its natural size from its bottom-left corner
     if (!f.projection && !f.uvs?.length && texEnv.info(texture)) {
       const p = bottomLeft(b, { ...f, texture }, defaultProjectionFor(texture))
       return { ...f, texture, projection: p, uvs: projectFace(b, f, p) }
+    }
+    // otherwise the face keeps its Texture panel values: stretch (scale / the texture's natural size), shift in texels, rotation, shear
+    const was = texEnv.info(f.texture ?? 'dev/grey'), now = texEnv.info(texture)
+    if (was && now && was.width > 0 && was.height > 0 && now.width > 0 && now.height > 0) {
+      const [aw, ah] = naturalSize(was), [nw, nh] = naturalSize(now), kx = nw / aw, ky = nh / ah
+      if (f.projection) {
+        const p = projectionOf(f)
+        const q: Projection = { ...p, scale: [p.scale[0] * kx, p.scale[1] * ky], shift: [p.shift[0] * was.width / now.width, p.shift[1] * was.height / now.height] }
+        return { ...f, texture, projection: q, uvs: projectFace(b, { ...f, texture }, q) }
+      }
+      if (f.uvs?.length) return { ...f, texture, uvs: f.uvs.map(([u, v]) => [u / kx, v / ky] as [number, number]) }
     }
     return { ...f, texture }
   }))
