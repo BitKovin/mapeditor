@@ -72,7 +72,7 @@ TEST_CASE("level settings: worldspawn keys are read, clamped and defaulted") {
     CHECK(d.raysPerTexel == 0);
     w.keyvalues = {{"_light_scale", "2.5"}, {"_ao_radius", "1.5"}, {"_ao_power", "2"}, {"_ao_intensity", "7"}, {"_cc_exposure", "0.01"},
                    {"_cc_brightness", "0.1"}, {"_rays_per_texel", "512"}, {"_supersample", "40"}, {"_lightvol_grid", "0.1"}, {"_rays_per_probe", "64"},
-                   {"_bake_quality", "4"}, {"_ao_rays", "5000"}, {"_ao_power_typo", "x"}};
+                   {"_bake_quality", "4"}, {"_ao_rays", "5000"}, {"_ao_strength", "40"}, {"_ao_falloff", "0"}, {"_ao_power_typo", "x"}};
     std::vector<std::string> warnings;
     const LevelSettings s = levelSettingsOf(w, &warnings);
     CHECK(s.lightScale == 2.5);
@@ -80,6 +80,8 @@ TEST_CASE("level settings: worldspawn keys are read, clamped and defaulted") {
     CHECK(s.ao.power == 2);
     CHECK(s.ao.intensity == 1);  // clamped to 0..1
     CHECK(s.ao.rays == 1024);    // clamped
+    CHECK(s.ao.strength == 16);  // clamped
+    CHECK(s.ao.falloff == 0);
     CHECK(s.exposure == doctest::Approx(0.05));
     CHECK(s.brightness == doctest::Approx(0.1));
     CHECK(s.raysPerTexel == 512);
@@ -255,7 +257,7 @@ TEST_CASE("level settings: another AO ray count traces the occlusion again") {
 }
 
 TEST_CASE("level settings: ambient occlusion is ray traced on the GPU and matches the CPU") {
-    World w(floorAndWall({{"_ao_radius", "1.5"}, {"_ao_rays", "64"}}));
+    World w(floorAndWall({{"_ao_radius", "1.5"}, {"_ao_rays", "64"}, {"_ao_falloff", "0.5"}}));
     auto bake = [&](bool gpu, std::string& evaluator) {
         LiveSettings s = cpuOnly();
         s.useGpu = gpu;
@@ -290,4 +292,29 @@ TEST_CASE("level settings: ambient occlusion is ray traced on the GPU and matche
     CHECK(occluded > 10);
     CHECK(sumDiff / cpu.size() < 1e-3);
     CHECK(off <= cpu.size() / 100);
+}
+
+TEST_CASE("level settings: AO strength darkens corners fully; distance falloff 0 counts every hit and traces again") {
+    World w(floorAndWall({{"_ao_radius", "1"}}));
+    LiveBaker b(cpuOnly());
+    b.setGeometry(w.layout, w.surfaces);
+    b.setLights(w.lights);
+    const Vec3 cam{0, 2, 0};
+    while (!b.converged()) b.step(&cam, 100000);
+    const auto nearWall = floorSamples(b, 0.25, 0.4);
+    REQUIRE(!nearWall.empty());
+    const size_t i = nearWall[0];
+    const float linear = b.occlusion(i), base = b.aoFactor(i);
+    LightScene strong = w.lights;
+    strong.level.ao.strength = 1.0 / linear;  // the occlusion reaches 1: no light left at full intensity
+    b.setLights(strong);
+    CHECK(b.converged());  // shown values only
+    CHECK(b.aoFactor(i) < 1e-3f);
+    CHECK(b.aoFactor(i) < base);
+    LightScene binary = w.lights;
+    binary.level.ao.falloff = 0;
+    b.setLights(binary);
+    CHECK(std::isnan(b.occlusion(i)));
+    while (!b.converged()) b.step(&cam, 100000);
+    CHECK(b.occlusion(i) > linear * 1.5f);  // every hit counts 1 instead of by its distance
 }

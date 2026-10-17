@@ -19,7 +19,8 @@ layout(push_constant) uniform PC {
     uint flags;   // bit 0: transparent surfaces exist
     float radius; // m: how far the rays look
     float bias;   // origin offset along the normal
-    uint pad0, pad1;
+    float falloff; // a hit weighs (1 - d / radius)^falloff (0: every hit 1)
+    uint pad0;
 } pc;
 
 const float PI = 3.14159265358979323846;
@@ -75,7 +76,7 @@ void main() {
         float r = sqrt(u1), phi = 2.0 * PI * u2;
         vec3 dir = normalize(tu * (r * cos(phi)) + tv * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - u1)));
         float d = nearestHit(o, dir);
-        if (d >= 0.0 && d < pc.radius) sum += 1.0 - d / pc.radius;
+        if (d >= 0.0 && d < pc.radius) sum += pc.falloff == 1.0 ? 1.0 - d / pc.radius : pow(1.0 - d / pc.radius, pc.falloff);
     }
     occ[i] = sum / float(rays);
 }

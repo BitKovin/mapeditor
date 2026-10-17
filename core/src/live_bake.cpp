@@ -103,7 +103,7 @@ Vec3 LiveBaker::shownValue(size_t i) const {
 float LiveBaker::aoFactor(size_t i) const {
     const AoSettings& ao = lights_.level.ao;
     if (!ao.active() || i >= occ_.size() || std::isnan(occ_[i])) return 1.f;
-    const double open = std::pow(std::clamp(1.0 - static_cast<double>(occ_[i]), 0.0, 1.0), ao.power);
+    const double open = std::pow(std::clamp(1.0 - ao.strength * static_cast<double>(occ_[i]), 0.0, 1.0), ao.power);
     return static_cast<float>(1.0 - ao.intensity * (1.0 - open));
 }
 
@@ -126,7 +126,7 @@ bool LiveBaker::occlusionOnGpu(const std::vector<int>& chunkIds) {
     }
     if (jobs.empty()) return true;
     std::vector<float> occ;
-    if (!session_->occlusion(jobs, lights_.level.ao.radius, lights_.level.ao.rays, occ)) {
+    if (!session_->occlusion(jobs, lights_.level.ao.radius, lights_.level.ao.rays, lights_.level.ao.falloff, occ)) {
         if (!session_->error().empty()) {  // the device failed (not just "this session cannot"): the light falls back to the CPU too
             gpuError_ = session_->error();
             gpuDisabled_ = true;
@@ -145,7 +145,7 @@ bool LiveBaker::occlusionOnGpu(const std::vector<int>& chunkIds) {
 }
 
 // Like q3map2's "dirt": `_ao_rays` cosine-weighted rays over the hemisphere of the normal; a hit nearer than the radius counts by how near it is
-// (1 at the surface, 0 at the radius). Deterministic per sample (stratified directions, turned by a hash of the sample's id). Traced with hardware
+// ((1 - d / radius)^falloff: 1 at the surface, 0 at the radius; falloff 0 = every hit counts 1). Deterministic per sample (stratified directions, turned by a hash of the sample's id). Traced with hardware
 // ray queries on the GPU session when there is one, else here on the bvh (same directions, same weights).
 void LiveBaker::computeOcclusion(const std::vector<int>& chunkIds) {
     const double radius = lights_.level.ao.radius;
@@ -158,6 +158,7 @@ void LiveBaker::computeOcclusion(const std::vector<int>& chunkIds) {
     if (todo.empty()) return;
     aoEvaluator_ = "cpu";
     const int rays = std::max(1, lights_.level.ao.rays);
+    const double falloff = lights_.level.ao.falloff;
     constexpr double kPi = 3.14159265358979323846, kGolden = 0.6180339887498949;
     parallelFor(todo.size(), 64, [&](size_t b, size_t e) {
         for (size_t t = b; t < e; ++t) {
@@ -176,7 +177,7 @@ void LiveBaker::computeOcclusion(const std::vector<int>& chunkIds) {
                 const double r = std::sqrt(u1), phi = 2 * kPi * u2;
                 const Vec3 dir = (tu * (r * std::cos(phi)) + tv * (r * std::sin(phi)) + n * std::sqrt(std::max(0.0, 1 - u1))).normalized();
                 const double d = bvh_->nearestHit(origin, dir, radius);
-                if (d >= 0 && d < radius) occ += 1.0 - d / radius;
+                if (d >= 0 && d < radius) occ += falloff == 1 ? 1.0 - d / radius : std::pow(1.0 - d / radius, falloff);
             }
             occ_[i] = static_cast<float>(occ / rays);
         }
@@ -656,10 +657,10 @@ void LiveBaker::setLights(const LightScene& next) {
     bool global = (next.ambient - lights_.ambient).length() > 0;
     const AoSettings aoOld = lights_.level.ao, aoNew = next.level.ao;
     if (aoOld != aoNew) {
-        const bool retrace = aoOld.radius != aoNew.radius || aoOld.rays != aoNew.rays;
+        const bool retrace = !aoOld.sameTrace(aoNew);
         if (retrace) std::fill(occ_.begin(), occ_.end(), std::numeric_limits<float>::quiet_NaN());
         if (aoNew.active() && retrace) for (auto& c : chunks_) c.passes = std::min(c.passes, std::max(0, cfg_.maxPasses - 1));
-        markAllChunksDirty();  // power / intensity: only the shown values change
+        markAllChunksDirty();  // power / intensity / strength: only the shown values change
     }
     std::map<std::string, const Light*> before, after;
     for (const auto& l : lights_.lights) before[lightKey(l)] = &l;

@@ -183,8 +183,8 @@ struct GatherPush {  // layout of `PC` in shaders/lightmap_gather.comp
 
 struct AoPush {  // layout of `PC` in shaders/lightmap_ao.comp
     uint32_t base, count, rays, flags;  // flags bit 0: transparent surfaces exist
-    float radius, bias;
-    uint32_t pad[2];
+    float radius, bias, falloff;
+    uint32_t pad;
 };
 // Bindings of the ambient occlusion shader: 0 pos, 1 nrm, 2 result, 3 tlas, 4 per triangle albedo record (raw ids), 5 transparency words.
 constexpr uint32_t kAoBindings = 6;
@@ -1701,10 +1701,10 @@ public:
         }
     }
 
-    bool occlusion(const std::vector<Job>& jobs, double radius, int rays, std::vector<float>& occ) override {
+    bool occlusion(const std::vector<Job>& jobs, double radius, int rays, double falloff, std::vector<float>& occ) override {
         std::lock_guard<std::mutex> lock(g_mutex);
         try {
-            occlusionImpl(jobs, radius, rays, occ);
+            occlusionImpl(jobs, radius, rays, falloff, occ);
             val = ctx->collector.messages;
             return true;
         } catch (const std::exception& e) {
@@ -1714,7 +1714,7 @@ public:
         }
     }
 
-    void occlusionImpl(const std::vector<Job>& jobs, double radius, int rays, std::vector<float>& occ) {
+    void occlusionImpl(const std::vector<Job>& jobs, double radius, int rays, double falloff, std::vector<float>& occ) {
         Fns& f = ctx->f;
         size_t total = 0;
         for (const Job& j : jobs) {
@@ -1742,6 +1742,7 @@ public:
         push.flags = transparent ? 1u : 0u;
         push.radius = static_cast<float>(radius);
         push.bias = static_cast<float>(kAoBias);
+        push.falloff = static_cast<float>(falloff);
         f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ap.pipe);
         f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ap.pl, 0, 1, &aset, 0, nullptr);
         for (const Job& j : merged)

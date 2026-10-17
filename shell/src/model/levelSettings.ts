@@ -24,10 +24,12 @@ export const LEVEL_SECTIONS: LevelSection[] = [
     { key: '_cc_exposure', label: 'Exposure', dflt: null, min: 0.05, max: 20, step: 0.05, hint: 'Multiplies the shown light; empty = the Core\'s lighting.json exposure' },
     { key: '_cc_brightness', label: 'Brightness', dflt: 0, min: -1, max: 1, step: 0.01, hint: 'Added to the shown light after the exposure (linear)' },
   ] },
-  { title: 'Ambient occlusion (baked)', note: 'Darkens light in corners and creases. Radius 0 = off.', fields: [
+  { title: 'Ambient occlusion (baked)', note: 'Darkens light in corners and creases. Radius 0 = off. Darker: raise Strength or Exponent, or lower Distance falloff.', fields: [
     { key: '_ao_radius', label: 'Radius (m)', dflt: 0, min: 0, max: 64, step: 0.1, hint: 'How far rays look for nearby geometry' },
-    { key: '_ao_power', label: 'Exponent', dflt: 1, min: 0.1, max: 10, step: 0.1, hint: 'Contrast: higher = only the tightest corners stay dark' },
+    { key: '_ao_power', label: 'Exponent', dflt: 1, min: 0.1, max: 10, step: 0.1, hint: 'Curve of the darkening: higher = darker, wider shadows; below 1 = softer' },
     { key: '_ao_intensity', label: 'Intensity', dflt: 1, min: 0, max: 1, step: 0.05, hint: '0 = no darkening, 1 = full' },
+    { key: '_ao_strength', label: 'Strength', dflt: 1, min: 0, max: 16, step: 0.1, hint: 'Multiplies the occlusion before the exponent: 2 or more turns tight corners fully dark' },
+    { key: '_ao_falloff', label: 'Distance falloff', dflt: 1, min: 0, max: 8, step: 0.1, hint: 'How a hit fades with its distance: 0 = every hit within the radius counts fully (strongest), 1 = linear, higher = only very near geometry' },
     { key: '_ao_rays', label: 'Rays', dflt: 32, min: 1, max: 1024, step: 8, int: true, hint: 'Occlusion rays per texel (ray traced on the GPU when it supports ray queries): more = smoother' },
   ] },
   { title: 'Optimisation', note: 'Empty = the Core\'s lighting.json value.', fields: [

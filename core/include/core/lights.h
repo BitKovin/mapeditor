@@ -49,9 +49,12 @@ struct Light {
 // Level settings (REQUIREMENTS §22 P2), stored as worldspawn keys so they travel with the map:
 //   _light_scale     multiplies the brightness of every light entity (not the ambient)          (default 1)
 //   _ao_radius       baked ambient occlusion: how far (m) rays look for nearby geometry; 0 = off (default 0)
-//   _ao_power        contrast of the occlusion (exponent on the unoccluded fraction)            (default 1)
+//   _ao_power        exponent on the unoccluded fraction: higher = darker and wider shadows      (default 1)
 //   _ao_intensity    0..1: how much the occlusion darkens the light                            (default 1)
 //   _ao_rays         occlusion rays per texel (hardware ray traced when a GPU has ray queries)  (default 32)
+//   _ao_strength     gain on the occluded fraction before the exponent (clamped to 1 after)    (default 1)
+//   _ao_falloff      distance falloff of a hit: weight (1 - d / radius)^falloff; 0 = every hit within the radius counts fully (default 1)
+// Shown factor = 1 - intensity * (1 - (1 - min(1, strength * occlusion))^power), occlusion = mean over the rays of the hit weights.
 //   _cc_exposure     display multiplier of the Lit view (colour correction); 0 = lighting.json's exposure (default 0)
 //   _cc_brightness   display offset added after the exposure (linear)                           (default 0)
 //   _rays_per_texel  gather rays per lightmap texel over the whole live bake; 0 = lighting.json  (default 0)
@@ -60,10 +63,12 @@ struct Light {
 //   _rays_per_probe  gather rays per light volume probe; 0 = lighting.json                      (default 0)
 //   _bake_quality    multiplier of the ray counts for the final bake (M6 export); the live bake uses x1 (default 2)
 struct AoSettings {
-    double radius = 0, power = 1, intensity = 1;
+    double radius = 0, power = 1, intensity = 1, strength = 1, falloff = 1;
     int rays = 32;
-    bool active() const { return radius > 0 && intensity > 0; }
-    bool operator==(const AoSettings& o) const { return radius == o.radius && power == o.power && intensity == o.intensity && rays == o.rays; }
+    bool active() const { return radius > 0 && intensity > 0 && strength > 0; }
+    // what the traced occlusion depends on (the rest only changes how it is shown)
+    bool sameTrace(const AoSettings& o) const { return radius == o.radius && rays == o.rays && falloff == o.falloff; }
+    bool operator==(const AoSettings& o) const { return sameTrace(o) && power == o.power && intensity == o.intensity && strength == o.strength; }
     bool operator!=(const AoSettings& o) const { return !(*this == o); }
 };
 struct LevelSettings {
