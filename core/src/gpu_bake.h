@@ -67,6 +67,10 @@ public:
     // atlas as it was after the previous step. All outputs: 4 floats per sample, ranges back to back in `jobs` order; `ind` holds one value per
     // grid entry (giCount per job) when config.giEntries > 0.
     virtual bool run(const std::vector<Job>& jobs, std::vector<float>& d, std::vector<float>& db, std::vector<float>* ind) = 0;
+    // Baked ambient occlusion (shaders/lightmap_ao.comp, ray queries) of the ranges: `rays` rays per sample that look `radius` far, one occluded
+    // fraction 0..1 per sample, ranges back to back in `jobs` order (Job::offset and the grid ranges are unused). The same directions and weights
+    // as LiveBaker's CPU occlusion. False when it failed (`error()`) or this session cannot do it: then the caller traces on the CPU.
+    virtual bool occlusion(const std::vector<Job>& jobs, double radius, int rays, std::vector<float>& occ) { (void)jobs; (void)radius; (void)rays; (void)occ; return false; }
     // The resident bounce source S: pages * atlas * atlas texels of (rgb, valid). Write only (it may be write-combined memory).
     virtual float* atlas() = 0;
     virtual const std::string& error() const = 0;

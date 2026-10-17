@@ -26,8 +26,9 @@ export const LEVEL_SECTIONS: LevelSection[] = [
   ] },
   { title: 'Ambient occlusion (baked)', note: 'Darkens light in corners and creases. Radius 0 = off.', fields: [
     { key: '_ao_radius', label: 'Radius (m)', dflt: 0, min: 0, max: 64, step: 0.1, hint: 'How far rays look for nearby geometry' },
-    { key: '_ao_power', label: 'Power', dflt: 1, min: 0.1, max: 10, step: 0.1, hint: 'Contrast: higher = only the tightest corners stay dark' },
+    { key: '_ao_power', label: 'Exponent', dflt: 1, min: 0.1, max: 10, step: 0.1, hint: 'Contrast: higher = only the tightest corners stay dark' },
     { key: '_ao_intensity', label: 'Intensity', dflt: 1, min: 0, max: 1, step: 0.05, hint: '0 = no darkening, 1 = full' },
+    { key: '_ao_rays', label: 'Rays', dflt: 32, min: 1, max: 1024, step: 8, int: true, hint: 'Occlusion rays per texel (ray traced on the GPU when it supports ray queries): more = smoother' },
   ] },
   { title: 'Optimisation', note: 'Empty = the Core\'s lighting.json value.', fields: [
     { key: '_lightvol_grid', label: 'Lightvol grid size (m)', dflt: null, min: 0.25, max: 64, step: 0.25, hint: 'Spacing of the light volume probes' },

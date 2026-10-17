@@ -53,6 +53,7 @@ LevelSettings levelSettingsOf(const Entity& w, std::vector<std::string>* warning
     num("_ao_radius", s.ao.radius, 0.0, 64.0);
     num("_ao_power", s.ao.power, 0.1, 10.0);
     num("_ao_intensity", s.ao.intensity, 0.0, 1.0);
+    integer("_ao_rays", s.ao.rays, 1, 1024);
     num("_cc_exposure", s.exposure, 0.0, 20.0);
     if (s.exposure > 0 && s.exposure < 0.05) s.exposure = 0.05;
     num("_cc_brightness", s.brightness, -1.0, 1.0);

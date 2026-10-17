@@ -67,17 +67,19 @@ TEST_CASE("level settings: worldspawn keys are read, clamped and defaulted") {
     LevelSettings d = levelSettingsOf(w);
     CHECK(d.lightScale == 1);
     CHECK(!d.ao.active());
+    CHECK(d.ao.rays == 32);
     CHECK(d.bakeQuality == 2);
     CHECK(d.raysPerTexel == 0);
     w.keyvalues = {{"_light_scale", "2.5"}, {"_ao_radius", "1.5"}, {"_ao_power", "2"}, {"_ao_intensity", "7"}, {"_cc_exposure", "0.01"},
                    {"_cc_brightness", "0.1"}, {"_rays_per_texel", "512"}, {"_supersample", "40"}, {"_lightvol_grid", "0.1"}, {"_rays_per_probe", "64"},
-                   {"_bake_quality", "4"}, {"_ao_power_typo", "x"}};
+                   {"_bake_quality", "4"}, {"_ao_rays", "5000"}, {"_ao_power_typo", "x"}};
     std::vector<std::string> warnings;
     const LevelSettings s = levelSettingsOf(w, &warnings);
     CHECK(s.lightScale == 2.5);
     CHECK(s.ao.radius == 1.5);
     CHECK(s.ao.power == 2);
     CHECK(s.ao.intensity == 1);  // clamped to 0..1
+    CHECK(s.ao.rays == 1024);    // clamped
     CHECK(s.exposure == doctest::Approx(0.05));
     CHECK(s.brightness == doctest::Approx(0.1));
     CHECK(s.raysPerTexel == 512);
@@ -231,4 +233,61 @@ TEST_CASE("retexture detection (§22 P3): a change only in the newer UV fields (
     changed[0].lookHash ^= 0x9e3779b97f4a7c15ull;
     CHECK(!diffSurfaces(w.surfaces, changed).empty());
     CHECK(diffSurfaces(changed, changed).empty());
+}
+
+TEST_CASE("level settings: another AO ray count traces the occlusion again") {
+    World w(floorAndWall({{"_ao_radius", "1"}}));
+    LiveBaker b(cpuOnly());
+    b.setGeometry(w.layout, w.surfaces);
+    b.setLights(w.lights);
+    const Vec3 cam{0, 2, 0};
+    while (!b.converged()) b.step(&cam, 100000);
+    const auto nearWall = floorSamples(b, 0.25, 0.6);
+    REQUIRE(!nearWall.empty());
+    CHECK(b.aoEvaluator() == "cpu");
+    LightScene more = w.lights;
+    more.level.ao.rays = 128;
+    b.setLights(more);
+    for (size_t i : nearWall) CHECK(std::isnan(b.occlusion(i)));
+    CHECK(!b.converged());
+    while (!b.converged()) b.step(&cam, 100000);
+    for (size_t i : nearWall) CHECK(b.occlusion(i) > 0.05f);
+}
+
+TEST_CASE("level settings: ambient occlusion is ray traced on the GPU and matches the CPU") {
+    World w(floorAndWall({{"_ao_radius", "1.5"}, {"_ao_rays", "64"}}));
+    auto bake = [&](bool gpu, std::string& evaluator) {
+        LiveSettings s = cpuOnly();
+        s.useGpu = gpu;
+        s.gpuValidation = gpu;
+        LiveBaker b(s);
+        b.setGeometry(w.layout, w.surfaces);
+        b.setLights(w.lights);
+        const Vec3 cam{0, 2, 0};
+        int guard = 0;
+        while (!b.converged() && guard++ < 1000) b.step(&cam, 100000);
+        evaluator = b.aoEvaluator();
+        for (const auto& m : b.gpuValidation()) CHECK(m.rfind("[note]", 0) == 0);
+        std::vector<float> occ;
+        for (size_t i = 0; i < b.sampleCount(); ++i) occ.push_back(b.occlusion(i));
+        return occ;
+    };
+    std::string evCpu, evGpu;
+    const std::vector<float> cpu = bake(false, evCpu), gpu = bake(true, evGpu);
+    CHECK(evCpu == "cpu");
+    if (evGpu == "cpu" || evGpu.empty()) { MESSAGE("no GPU with ray query here: GPU ambient occlusion not compared"); return; }
+    REQUIRE(cpu.size() == gpu.size());
+    size_t occluded = 0, off = 0;
+    double sumDiff = 0;
+    for (size_t i = 0; i < cpu.size(); ++i) {
+        REQUIRE(!std::isnan(cpu[i]));
+        REQUIRE(!std::isnan(gpu[i]));
+        occluded += cpu[i] > 0.05f;
+        const double d = std::abs(double(cpu[i]) - gpu[i]);
+        sumDiff += d;
+        off += d > 0.02;  // the same rays in float instead of double: a grazing ray may hit or miss an edge
+    }
+    CHECK(occluded > 10);
+    CHECK(sumDiff / cpu.size() < 1e-3);
+    CHECK(off <= cpu.size() / 100);
 }

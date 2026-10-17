@@ -11,7 +11,7 @@ const field = (key: string) => LEVEL_FIELDS.find((f) => f.key === key)!
 
 describe('level settings model', () => {
   it('every key the Core reads has a field (core/lights.h levelSettingsOf)', () => {
-    expect(LEVEL_FIELDS.map((f) => f.key).sort()).toEqual(['_ao_intensity', '_ao_power', '_ao_radius', '_bake_quality', '_cc_brightness', '_cc_exposure', '_light_scale', '_lightvol_grid', '_rays_per_probe', '_rays_per_texel', '_supersample'])
+    expect(LEVEL_FIELDS.map((f) => f.key).sort()).toEqual(['_ao_intensity', '_ao_power', '_ao_radius', '_ao_rays', '_bake_quality', '_cc_brightness', '_cc_exposure', '_light_scale', '_lightvol_grid', '_rays_per_probe', '_rays_per_texel', '_supersample'])
   })
   it('typed values are clamped; empty or the default removes the key; whole numbers where needed', () => {
     expect(levelKeyFor(field('_light_scale'), '2.5')).toBe('2.5')
@@ -20,6 +20,8 @@ describe('level settings model', () => {
     expect(levelKeyFor(field('_ao_power'), '50')).toBe('10')          // clamped
     expect(levelKeyFor(field('_ao_intensity'), '3')).toBeNull()       // clamped to 1, which is the default
     expect(levelKeyFor(field('_supersample'), '3.7')).toBe('4')       // integer
+    expect(levelKeyFor(field('_ao_rays'), '32')).toBeNull()           // default 32
+    expect(levelKeyFor(field('_ao_rays'), '5000')).toBe('1024')      // clamped
     expect(levelKeyFor(field('_rays_per_texel'), '1')).toBe('1')      // no default: always stored
     expect(levelKeyFor(field('_bake_quality'), '2')).toBeNull()       // default 2
     expect(levelKeyFor(field('_cc_exposure'), 'abc')).toBeNull()

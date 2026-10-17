@@ -51,6 +51,7 @@ struct Light {
 //   _ao_radius       baked ambient occlusion: how far (m) rays look for nearby geometry; 0 = off (default 0)
 //   _ao_power        contrast of the occlusion (exponent on the unoccluded fraction)            (default 1)
 //   _ao_intensity    0..1: how much the occlusion darkens the light                            (default 1)
+//   _ao_rays         occlusion rays per texel (hardware ray traced when a GPU has ray queries)  (default 32)
 //   _cc_exposure     display multiplier of the Lit view (colour correction); 0 = lighting.json's exposure (default 0)
 //   _cc_brightness   display offset added after the exposure (linear)                           (default 0)
 //   _rays_per_texel  gather rays per lightmap texel over the whole live bake; 0 = lighting.json  (default 0)
@@ -60,8 +61,9 @@ struct Light {
 //   _bake_quality    multiplier of the ray counts for the final bake (M6 export); the live bake uses x1 (default 2)
 struct AoSettings {
     double radius = 0, power = 1, intensity = 1;
+    int rays = 32;
     bool active() const { return radius > 0 && intensity > 0; }
-    bool operator==(const AoSettings& o) const { return radius == o.radius && power == o.power && intensity == o.intensity; }
+    bool operator==(const AoSettings& o) const { return radius == o.radius && power == o.power && intensity == o.intensity && rays == o.rays; }
     bool operator!=(const AoSettings& o) const { return !(*this == o); }
 };
 struct LevelSettings {

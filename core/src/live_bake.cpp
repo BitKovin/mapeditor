@@ -106,15 +106,57 @@ float LiveBaker::aoFactor(size_t i) const {
     return static_cast<float>(1.0 - ao.intensity * (1.0 - open));
 }
 
-// Like q3map2's "dirt": kAoRays cosine-weighted rays over the hemisphere of the normal; a hit nearer than the radius counts by how near it is
-// (1 at the surface, 0 at the radius). Deterministic per sample (stratified directions, turned by a hash of the sample's id).
+// Hardware ray traced occlusion on the resident GPU session (shaders/lightmap_ao.comp): every chunk that has a sample without occlusion is traced
+// whole (one contiguous range), only the unknown samples take the result.
+bool LiveBaker::occlusionOnGpu(const std::vector<int>& chunkIds) {
+    if (!cfg_.useGpu || gpuDisabled_ || !prepareGpu()) return false;
+    std::vector<gpu::LiveSession::Job> jobs;
+    std::vector<int> traced;
+    for (int id : chunkIds) {
+        const LiveChunk& c = chunks_[static_cast<size_t>(id)];
+        bool unknown = false;
+        for (uint32_t s : c.samples) if (s < occ_.size() && std::isnan(occ_[s])) { unknown = true; break; }
+        if (!unknown) continue;
+        gpu::LiveSession::Job job;
+        job.first = chunkFirst_[static_cast<size_t>(id)];
+        job.count = static_cast<uint32_t>(c.samples.size());
+        jobs.push_back(job);
+        traced.push_back(id);
+    }
+    if (jobs.empty()) return true;
+    std::vector<float> occ;
+    if (!session_->occlusion(jobs, lights_.level.ao.radius, lights_.level.ao.rays, occ)) {
+        if (!session_->error().empty()) {  // the device failed (not just "this session cannot"): the light falls back to the CPU too
+            gpuError_ = session_->error();
+            gpuDisabled_ = true;
+            session_.reset();
+        }
+        return false;
+    }
+    size_t at = 0;
+    for (int id : traced)
+        for (uint32_t s : chunks_[static_cast<size_t>(id)].samples) {
+            if (s < occ_.size() && std::isnan(occ_[s])) occ_[s] = std::clamp(occ[at], 0.f, 1.f);
+            ++at;
+        }
+    aoEvaluator_ = session_->device();
+    return true;
+}
+
+// Like q3map2's "dirt": `_ao_rays` cosine-weighted rays over the hemisphere of the normal; a hit nearer than the radius counts by how near it is
+// (1 at the surface, 0 at the radius). Deterministic per sample (stratified directions, turned by a hash of the sample's id). Traced with hardware
+// ray queries on the GPU session when there is one, else here on the bvh (same directions, same weights).
 void LiveBaker::computeOcclusion(const std::vector<int>& chunkIds) {
     const double radius = lights_.level.ao.radius;
-    if (!(radius > 0) || !bvh_ || mesh_.empty()) return;
+    if (!(radius > 0) || mesh_.empty()) return;
+    if (occlusionOnGpu(chunkIds)) return;
+    if (!bvh_) return;
     std::vector<uint32_t> todo;
     for (int c : chunkIds)
         for (uint32_t s : chunks_[static_cast<size_t>(c)].samples) if (s < occ_.size() && std::isnan(occ_[s])) todo.push_back(s);
     if (todo.empty()) return;
+    aoEvaluator_ = "cpu";
+    const int rays = std::max(1, lights_.level.ao.rays);
     constexpr double kPi = 3.14159265358979323846, kGolden = 0.6180339887498949;
     parallelFor(todo.size(), 64, [&](size_t b, size_t e) {
         for (size_t t = b; t < e; ++t) {
@@ -126,16 +168,16 @@ void LiveBaker::computeOcclusion(const std::vector<int>& chunkIds) {
             uint32_t h = samples_.seedOf(i) * 2654435761u;
             h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15;
             const double turn = (h & 0xFFFFFF) / double(0x1000000);
-            const Vec3 origin = p + n * 1e-3;
+            const Vec3 origin = p + n * kAoBias;
             double occ = 0;
-            for (int k = 0; k < kAoRays; ++k) {
-                const double u1 = (k + 0.5) / kAoRays, u2 = std::fmod(k * kGolden + turn, 1.0);
+            for (int k = 0; k < rays; ++k) {
+                const double u1 = (k + 0.5) / rays, u2 = std::fmod(k * kGolden + turn, 1.0);
                 const double r = std::sqrt(u1), phi = 2 * kPi * u2;
                 const Vec3 dir = (tu * (r * std::cos(phi)) + tv * (r * std::sin(phi)) + n * std::sqrt(std::max(0.0, 1 - u1))).normalized();
                 const double d = bvh_->nearestHit(origin, dir, radius);
                 if (d >= 0 && d < radius) occ += 1.0 - d / radius;
             }
-            occ_[i] = static_cast<float>(occ / kAoRays);
+            occ_[i] = static_cast<float>(occ / rays);
         }
     });
 }
@@ -613,8 +655,9 @@ void LiveBaker::setLights(const LightScene& next) {
     bool global = (next.ambient - lights_.ambient).length() > 0;
     const AoSettings aoOld = lights_.level.ao, aoNew = next.level.ao;
     if (aoOld != aoNew) {
-        if (aoOld.radius != aoNew.radius) std::fill(occ_.begin(), occ_.end(), std::numeric_limits<float>::quiet_NaN());
-        if (aoNew.active() && aoOld.radius != aoNew.radius) for (auto& c : chunks_) c.passes = std::min(c.passes, std::max(0, cfg_.maxPasses - 1));
+        const bool retrace = aoOld.radius != aoNew.radius || aoOld.rays != aoNew.rays;
+        if (retrace) std::fill(occ_.begin(), occ_.end(), std::numeric_limits<float>::quiet_NaN());
+        if (aoNew.active() && retrace) for (auto& c : chunks_) c.passes = std::min(c.passes, std::max(0, cfg_.maxPasses - 1));
         markAllChunksDirty();  // power / intensity: only the shown values change
     }
     std::map<std::string, const Light*> before, after;
@@ -700,7 +743,8 @@ bool LiveBaker::prepareGpu() {
     if (session_) return true;
     if (!cfg_.useGpu || gpuDisabled_ || mesh_.empty() || chunks_.empty() || !haveLights_) return false;
     const bool gather = cfg_.bounces && mesh_.hasLightmap();
-    if (!gather && !gpu::needsRayTracing(lights_, &mesh_, bakeOptions())) return false;  // nothing to trace: the CPU does the plain light math
+    // nothing to trace (no bounces, no shadows, no ambient occlusion): the CPU does the plain light math
+    if (!gather && !gpu::needsRayTracing(lights_, &mesh_, bakeOptions()) && !lights_.level.ao.active()) return false;
     const auto tSession = std::chrono::steady_clock::now();
     // chunk by chunk, so every chunk is one contiguous range of the resident samples. Offsets first (prefix sums), then every chunk fills its own
     // range, on all cores: appending sample by sample cost more than the light on a big level.
