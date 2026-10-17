@@ -4,6 +4,7 @@
 #include "core/lighting_classes.h"
 #include "doctest.h"
 #include "test_util.h"
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <set>
@@ -143,6 +144,19 @@ TEST_CASE("bsp convex pieces: a box is one piece, an L brush splits into pieces 
     const auto untouched = subtractConvex(one[0], apart[0]);
     REQUIRE(untouched.size() == 1);
     CHECK(pieceVolume(untouched[0]) == doctest::Approx(27));
+}
+
+TEST_CASE("bsp convex pieces: a brush of solids glued back to back keeps all of its volume, whatever face comes first") {
+    // three boxes glued where they touch: the glued faces stay in the brush, back to back (facing opposite ways on one plane)
+    const Brush glued = gluedBrush(gluedBrush(Brush::makeBox("a", {3, 2, 0}, {4, 3, 1}), Brush::makeBox("b", {2, 1, 0}, {3, 3, 1})),
+                                   Brush::makeBox("c", {2, 0, 0}, {4, 1, 1}));
+    REQUIRE(glued.signedVolume() == doctest::Approx(5));
+    for (size_t r = 0; r < glued.faces.size(); ++r) {
+        Brush b = glued;
+        std::rotate(b.faces.begin(), b.faces.begin() + static_cast<std::ptrdiff_t>(r), b.faces.end());
+        INFO("first face ", r);
+        CHECK(totalVolume(convexPieces(b)) == doctest::Approx(5));
+    }
 }
 
 TEST_CASE("bsp compile: header, lumps, models, entities in Quake units and axes") {

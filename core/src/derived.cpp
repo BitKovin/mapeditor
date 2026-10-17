@@ -1,4 +1,5 @@
 #include "core/derived.h"
+#include "core/bsp_compile.h"
 #include "core/csg.h"
 #include "core/decal.h"
 #include "core/smoothing.h"
@@ -116,14 +117,40 @@ void buildTargets(const std::vector<Item>& items, std::vector<Target>& targets, 
 }  // namespace
 
 void SolidSet::add(const Brush& b, bool subtractive) {
-    Volume v;
-    v.subtractive = subtractive;
-    v.mn = {1e300, 1e300, 1e300};
-    v.mx = {-1e300, -1e300, -1e300};
-    for (const auto& p : b.vertices) {
+    auto grow = [](Volume& v, const Vec3& p) {
         v.mn = {std::min(v.mn.x, p.x), std::min(v.mn.y, p.y), std::min(v.mn.z, p.z)};
         v.mx = {std::max(v.mx.x, p.x), std::max(v.mx.y, p.y), std::max(v.mx.z, p.z)};
+    };
+    auto fresh = [&] {
+        Volume v;
+        v.subtractive = subtractive;
+        v.mn = {1e300, 1e300, 1e300};
+        v.mx = {-1e300, -1e300, -1e300};
+        return v;
+    };
+    // A volume is the intersection of its planes, which is the brush only when it is convex. A concave brush (allowed where the class does not
+    // require convex brushes, e.g. a mesh-edited hollow building) is added as its convex pieces: the intersection of all its face planes would
+    // miss most of its solid (texels buried in it would be baked, probes in it counted as open air).
+    bool convex = true;
+    for (const auto& f : b.faces) {
+        if (f.loop.size() < 3 || !convex) continue;
+        const Vec3 n = b.faceNormal(f);
+        if (n.length() < 0.5) continue;
+        const double d = n.dot(b.vertices[f.loop[0]]);
+        for (const Vec3& p : b.vertices) if (n.dot(p) - d > 1e-4) { convex = false; break; }
     }
+    if (!convex) {
+        const size_t before = volumes_.size();
+        for (const ConvexPiece& piece : convexPieces(b)) {
+            Volume v = fresh();
+            for (const auto& w : convexWindings(piece.sides)) for (const Vec3& p : w) grow(v, p);
+            for (const HalfSpace& h : piece.sides) v.planes.push_back({h.normal, h.dist});
+            if (v.planes.size() >= 4 && v.mn.x <= v.mx.x) volumes_.push_back(std::move(v));
+        }
+        if (volumes_.size() > before) return;  // else (no pieces: not a closed solid) the plane set below, as before
+    }
+    Volume v = fresh();
+    for (const auto& p : b.vertices) grow(v, p);
     for (const auto& f : b.faces) {
         if (f.loop.size() < 3) continue;
         const Vec3 n = b.faceNormal(f);

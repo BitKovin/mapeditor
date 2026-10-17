@@ -46,7 +46,9 @@ void splitPoly(const Poly& p, const Vec3& n, double d, std::vector<Poly>& front,
     }
     if (!f && !b) {
         if (p.n.dot(n) > 0) return;  // coplanar, same orientation: consumed by the splitter
-        return;                      // coplanar, opposite: a degenerate sliver inside one brush; dropped
+        // coplanar, opposite: faces meeting back to back (two solids glued inside one brush); it bounds the solid in front of the splitter
+        front.push_back(p);
+        return;
     }
     if (!b) { front.push_back(p); return; }
     if (!f) { back.push_back(p); return; }

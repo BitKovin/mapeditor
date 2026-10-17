@@ -60,6 +60,19 @@ inline Brush makePrism(const std::string& id, const std::vector<std::pair<double
     return b;
 }
 
+// One brush made of two closed solids, `b` appended to `a` (vertices, faces with ids + 100). Where they touch, both faces stay, back to back:
+// a concave brush as mesh editing leaves them (e.g. a hollow building of one brush).
+inline Brush gluedBrush(Brush a, const Brush& b) {
+    const uint32_t base = static_cast<uint32_t>(a.vertices.size());
+    a.vertices.insert(a.vertices.end(), b.vertices.begin(), b.vertices.end());
+    for (BrushFace f : b.faces) {
+        for (auto& i : f.loop) i += base;
+        f.id += 100;
+        a.faces.push_back(f);
+    }
+    return a;
+}
+
 inline Brush lPrism(const std::string& id) {
     return makePrism(id, {{0, 0}, {2, 0}, {2, 1}, {1, 1}, {1, 2}, {0, 2}}, 0, 1);
 }

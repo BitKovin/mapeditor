@@ -727,6 +727,31 @@ TEST_CASE("solids: texels under a pillar and inside a wall are skipped, everythi
     CHECK(st.texels == with.count());
 }
 
+TEST_CASE("solids: a concave brush is solid everywhere inside, and a wall's texels buried in it are skipped") {
+    // a concave func_detail (two glued boxes, back-to-back faces inside) against a wall: the wall face behind it is hidden, and it must not
+    // be baked (lit from inside the solid it would bleed light along the junction)
+    const Brush bld = gluedBrush(Brush::makeBox("a", {0, 0, 0}, {2, 3, 1}), Brush::makeBox("b", {2, 0, 0}, {4, 2, 1}));
+    Scene1 sc({ent("w", "worldspawn", {Brush::makeBox("wall", {-1, 0, 1}, {5, 4, 1.5})}), ent("d", "func_detail", {bld})});
+    const LightingClasses classes = LightingClasses::defaults();
+    const SolidSet solids = collectSolids(sc.doc, {}, [&](const std::string& c) { return classes.castsShadows(c); });
+    for (Vec3 p : {Vec3{1, 2.5, 0.5}, Vec3{3, 1.5, 0.5}, Vec3{1.99, 1, 0.5}, Vec3{2.01, 1, 0.5}}) CHECK(solids.inside(p));
+    for (Vec3 p : {Vec3{3, 2.5, 0.5}, Vec3{1, 3.5, 0.5}, Vec3{1, 1, -0.5}}) CHECK(!solids.inside(p));
+    // the wall's face towards the brush (z = 1, facing -z): buried where the brush touches it, visible above it
+    auto onWall = [](const TexelSamples& s, double x0, double x1, double y0, double y1) {
+        size_t n = 0;
+        for (size_t i = 0; i < s.count(); ++i)
+            if (s.nrm[i * 4 + 2] < -0.9f && std::fabs(s.pos[i * 4 + 2] - 1) < 1e-6f && s.pos[i * 4] > x0 && s.pos[i * 4] < x1 && s.pos[i * 4 + 1] > y0 && s.pos[i * 4 + 1] < y1) ++n;
+        return n;
+    };
+    const TexelSamples with = buildTexelSamples(sc.layout, sc.surfaces, &solids);
+    const TexelSamples without = buildTexelSamples(sc.layout, sc.surfaces);
+    CHECK(onWall(without, 0.1, 1.9, 0.1, 2.9) > 0);
+    CHECK(onWall(with, 0.1, 1.9, 0.1, 2.9) == 0);   // behind the tall part
+    CHECK(onWall(with, 2.1, 3.9, 0.1, 1.9) == 0);   // behind the low part
+    CHECK(onWall(with, 2.1, 3.9, 2.1, 3.9) == onWall(without, 2.1, 3.9, 2.1, 3.9));  // above the low part: visible
+    CHECK(onWall(with, 2.1, 3.9, 2.1, 3.9) > 0);
+}
+
 TEST_CASE("bake gpu: a sample subset keeps its random ids and sampleOffset advances the draws (CPU and GPU agree)") {
     std::vector<Entity> es{ent("w", "worldspawn", {Brush::makeBox("floor", {-8, -1, -8}, {8, 0, 8}), Brush::makeBox("pillar", {1, 0, 1}, {2, 3, 2})}),
                            light("ps", "light_point", {-3, 3, -2}, {{"brightness", "8"}, {"radius", "30"}, {"source_size", "0.8"}}),
