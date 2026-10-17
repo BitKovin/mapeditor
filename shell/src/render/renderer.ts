@@ -85,6 +85,12 @@ export interface Frame {
   selections?: { entityId: string; brushId?: string; instanceId?: string }[]
   /** The selected face, drawn as a translucent overlay. */
   highlight: { brush: Brush; faceId: number } | null
+  /** The face under the cursor while Alt is held (an Alt + drag resizes its brush). */
+  hoverFace?: { brush: Brush; faceId: number } | null
+  /** Handles drawn over everything (entity origin / angle handles): coloured lines. */
+  handles?: { color: [number, number, number]; lines: number[] }[]
+  /** Size of the selection (REQUIREMENTS §33 H7): text at world points, drawn over everything. */
+  sizeLabels?: { text: string; at: Vec3 }[]
   /** The level's sky (a skybox) drawn behind everything in perspective views (Auto sky, REQUIREMENTS §28 K10); absent = the plain background. */
   sky?: string
 }
@@ -913,6 +919,8 @@ export class Renderer {
     const vp = frame.camera.viewProj(w / h) as Float32Array
     const sel = frame.selection
     const lightingOnly = frame.settings.renderMode === 'lightingOnly', litView = frame.settings.renderMode === 'lit'
+    // Wireframe (REQUIREMENTS §36 W1): edges only, every edge visible through everything, no fills, no sky
+    const wire = frame.settings.renderMode === 'wireframe'
     const litMode = (lightingOnly || litView) && !!frame.lighting?.ready
     const texturedLit = litMode && litView && !!frame.world
     const nowSeconds = frame.time ?? performance.now() / 1000
@@ -935,7 +943,7 @@ export class Renderer {
     }
 
     // the level's sky behind everything (perspective views only: an orthographic view would show one colour)
-    if (frame.sky && !(frame.camera instanceof OrthoCamera)) {
+    if (frame.sky && !wire && !(frame.camera instanceof OrthoCamera)) {
       gl.useProgram(this.skyBgProg)
       if (this.bindSky(this.skyBgProg, frame.sky)) {
         const inv = mat4.invert(mat4.create(), vp)
@@ -966,7 +974,7 @@ export class Renderer {
     const entityLit: { g: GpuBrush; lights: NonNullable<ReturnType<LightvolStore['entity']>> }[] = []
     // sky faces (REQUIREMENTS §28 K10): never lit, not in the Core's lit mesh; drawn by direction after the other opaque faces
     const skyDraws: { vao: WebGLVertexArrayObject; grp: Group }[] = []
-    for (const { entity, instance } of frame.entities)
+    for (const { entity, instance } of wire ? [] : frame.entities)
       for (const b of entity.brushes ?? []) {
         const carved = b.op !== 'subtract' ? frame.carved?.get(carvedKey(entity.id, b.id, instance)) : undefined
         const g = carved ? this.uploadCarved(carved) : this.upload(b)
@@ -1144,7 +1152,7 @@ export class Renderer {
       gl.polygonOffset(1, 1); gl.depthMask(true)
     }
     // decals: derived surfaces laid just above what they project onto
-    if (frame.decals?.length && !litMode) {
+    if (frame.decals?.length && !litMode && !wire) {
       gl.depthMask(false); gl.polygonOffset(-2, -2)
       gl.uniform1f(gl.getUniformLocation(this.mesh, 'uAlphaTex'), 1)
       for (const m of frame.decals) {
@@ -1191,11 +1199,14 @@ export class Renderer {
         const g = carved ? this.uploadCarved(carved) : this.upload(b)
         const brushSel = inSelectedInstance || (instanceId === undefined && (frame.selections ? frame.selections.some((s) => s.instanceId === undefined && s.entityId === entity.id && (!s.brushId || s.brushId === b.id)) : isSel && (!sel!.brushId || sel!.brushId === b.id)))
         if (b.op === 'subtract' && !frame.settings.showSubtractive) continue
-        if (!brushSel && !frame.settings.showOutlines) continue
+        if (!brushSel && !frame.settings.showOutlines && !wire) continue
         if (brushSel) gl.uniform4f(lColor, 1, 0.62, 0.15, 1)
         else if (b.op === 'subtract') gl.uniform4f(lColor, 1, 0.4, 0.4, 0.9)
+        else if (wire) { const c = classOf(entity) === 'worldspawn' ? [0.78, 0.82, 0.88] : frame.entityColor?.(classOf(entity)) ?? DEFAULT_MARKER; gl.uniform4f(lColor, c[0], c[1], c[2], 0.95) }
         else gl.uniform4f(lColor, 0, 0, 0, 0.55)
+        if (wire) gl.disable(gl.DEPTH_TEST)
         gl.bindVertexArray(g.evao); gl.drawArrays(gl.LINES, 0, g.ecount)
+        if (wire) gl.enable(gl.DEPTH_TEST)
       }
       if (!isBrushEntity(entity) && classOf(entity) !== 'worldspawn') {
         const picked = inSelectedInstance || (instanceId === undefined && (frame.selections ? frame.selections.some((x) => x.instanceId === undefined && x.entityId === entity.id) : isSel))
@@ -1212,7 +1223,7 @@ export class Renderer {
     gl.bindVertexArray(null)
     // point entities: translucent box (two-sided, depth-tested, no depth write) + outline + class name
     gl.disable(gl.CULL_FACE); gl.depthMask(false)
-    for (const g of point.values()) if (g.fill.length) this.tris(vp, g.fill, [g.color[0], g.color[1], g.color[2], ENTITY_FILL_ALPHA])
+    if (!wire) for (const g of point.values()) if (g.fill.length) this.tris(vp, g.fill, [g.color[0], g.color[1], g.color[2], ENTITY_FILL_ALPHA])
     gl.depthMask(true)
     for (const g of point.values()) this.lines(vp, g.lines, [g.color[0], g.color[1], g.color[2], 1])
     gl.depthMask(false)
@@ -1221,27 +1232,39 @@ export class Renderer {
     this.lines(vp, origins, [0.3, 0.9, 0.95, 1])
 
     // selected face overlay and the box-draw preview
-    if (frame.highlight) {
-      const { brush, faceId } = frame.highlight
+    const faceOverlay = (hl: { brush: Brush; faceId: number }, fill: [number, number, number, number], line: [number, number, number, number], depthTested = false) => {
+      const { brush, faceId } = hl
       const f = brush.faces.find((x) => x.id === faceId)
-      if (f) {
-        const tri: number[] = [], edge: number[] = []
-        for (const [a, c, d] of triangulateFace(brush, f)) tri.push(...brush.vertices[a], ...brush.vertices[c], ...brush.vertices[d])
-        for (let i = 0; i < f.loop.length; i++) edge.push(...brush.vertices[f.loop[i]], ...brush.vertices[f.loop[(i + 1) % f.loop.length]])
-        gl.disable(gl.DEPTH_TEST)
-        this.tris(vp, tri, [0.15, 0.55, 1, 0.35])
-        this.lines(vp, edge, [0.35, 0.7, 1, 1])
-        gl.enable(gl.DEPTH_TEST)
+      if (!f) return
+      const tri: number[] = [], edge: number[] = []
+      for (const [a, c, d] of triangulateFace(brush, f)) tri.push(...brush.vertices[a], ...brush.vertices[c], ...brush.vertices[d])
+      for (let i = 0; i < f.loop.length; i++) edge.push(...brush.vertices[f.loop[i]], ...brush.vertices[f.loop[(i + 1) % f.loop.length]])
+      if (depthTested) {
+        // only where the face is seen (a big floor must not tint the walls in front of it): just above its own surface
+        gl.depthMask(false); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(-2, -2)
+        this.tris(vp, tri, fill)
+        gl.disable(gl.POLYGON_OFFSET_FILL); gl.depthMask(true)
+        this.lines(vp, edge, line)
+        return
       }
+      gl.disable(gl.DEPTH_TEST)
+      this.tris(vp, tri, fill)
+      this.lines(vp, edge, line)
+      gl.enable(gl.DEPTH_TEST)
     }
+    if (frame.highlight) faceOverlay(frame.highlight, [0.15, 0.55, 1, 0.35], [0.35, 0.7, 1, 1])
+    // the face an Alt + drag would grab (REQUIREMENTS §33 H8)
+    if (frame.hoverFace) faceOverlay(frame.hoverFace, [1, 0.6, 0.1, 0.35], [1, 0.75, 0.3, 1], true)
     gl.disable(gl.CULL_FACE) // overlays are two-sided
     if (frame.mesh) this.drawMesh(vp, frame)
-    if (frame.settings.showLightmapDensity) this.drawLightmapDensity(vp, frame)
-    if (frame.settings.showTexelHeat) this.drawTexelHeat(vp, frame)
+    if (frame.settings.showLightmapDensity && !wire) this.drawLightmapDensity(vp, frame)
+    if (frame.settings.showTexelHeat && !wire) this.drawTexelHeat(vp, frame)
     if (frame.settings.showLightvol) this.drawLightvolSamples(vp, frame)
     if (frame.annotations?.length) this.lines(vp, frame.annotations, [0.95, 0.8, 0.25, 1])
     for (const o of frame.overlays ?? []) this.lines(vp, o.lines, [o.color[0], o.color[1], o.color[2], 1])
     if (frame.preview?.length) { gl.disable(gl.DEPTH_TEST); this.lines(vp, frame.preview, [0.35, 0.8, 1, 1]); gl.enable(gl.DEPTH_TEST) }
+    if (frame.handles?.length) { gl.disable(gl.DEPTH_TEST); for (const o of frame.handles) this.lines(vp, o.lines, [o.color[0], o.color[1], o.color[2], 1]); gl.enable(gl.DEPTH_TEST) }
+    if (frame.sizeLabels?.length) { gl.disable(gl.DEPTH_TEST); gl.depthMask(false); this.drawLabels(vp, frame.sizeLabels, w, h, dpr); gl.depthMask(true); gl.enable(gl.DEPTH_TEST) }
     if (frame.ghost) this.drawGhost(vp, frame, frame.ghost)
 
     // translate gizmo, drawn over everything

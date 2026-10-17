@@ -151,6 +151,14 @@ Brush brushFromJson(const json& j) {
     }
     for (const auto& v : j.at("vertices")) b.vertices.push_back(vec3(v, "brush vertex"));
     for (const auto& f : j.at("faces")) b.faces.push_back(faceFromJson(f));
+    // smooth edges are a shading hint: anything malformed is skipped, never an error
+    if (j.contains("smooth") && j["smooth"].is_array())
+        for (const auto& e : j["smooth"]) {
+            if (!e.is_array() || e.size() != 2 || !e[0].is_number_integer() || !e[1].is_number_integer()) continue;
+            const int64_t fa = e[0].get<int64_t>(), fb = e[1].get<int64_t>();
+            if (fa < 0 || fb < 0 || fa > UINT32_MAX || fb > UINT32_MAX) continue;
+            b.smoothEdges.push_back({static_cast<uint32_t>(fa), static_cast<uint32_t>(fb)});
+        }
     return b;
 }
 

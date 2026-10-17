@@ -217,11 +217,16 @@ button.primary { background: var(--accent-bg); border-color: var(--accent); colo
 .tp-warn { color: var(--warn); } .tp-legend { border: 1px solid var(--line2); width: 200px; height: 12px; }
 .tp-ppm { display: grid; gap: 6px; }
 
-/* Surface Inspector */
-.surface .si-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; } .surface .si-label { width: 112px; flex: none; color: var(--dim); }
-.surface .si-row input[type=number] { width: 64px; } .surface .si-name { flex: 1; min-width: 0; }
-.surface .si-step { display: flex; align-items: center; gap: 4px; color: var(--dim); } .surface .si-step input { width: 52px; }
-.surface .si-mirror { width: 26px; padding: 0; }
+/* Surface Inspector: fits a narrow column (REQUIREMENTS §35 L3): cells shrink first, then a row wraps; nothing runs off the panel */
+.form.surface { grid-template-columns: minmax(0, 1fr); overflow-x: hidden; container: surface / inline-size; } .surface > * { min-width: 0; }
+.surface .si-row { display: flex; align-items: center; gap: 4px; margin: 2px 0; flex-wrap: wrap; min-width: 0; }
+.surface .si-label { flex: 0 1 108px; min-width: 64px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.surface .si-row > input[type=number] { flex: 1 1 52px; width: auto; min-width: 44px; max-width: 96px; } .surface .si-name { flex: 1 1 120px; min-width: 90px; }
+.surface .si-step { display: flex; align-items: center; gap: 3px; color: var(--dim); flex: 0 0 auto; } .surface .si-step input { width: 46px; }
+.surface .si-mirror { width: 24px; padding: 0; flex: none; }
+.surface .si-row .seg { padding: 0; flex: 0 1 auto; } .surface .btns input[type=number] { width: 62px; min-width: 0; }
+@container surface (max-width: 300px) { .surface .si-step > span { display: none; } .surface .si-label { flex-basis: 84px; min-width: 56px; } .surface .si-step input { width: 50px; } .surface .si-row > input[type=number] { min-width: 40px; } }
+.surface .texhead { min-width: 0; } .surface .texhead > div { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 .tp-hot { display: grid; gap: 4px; } .tp-hrow { padding: 2px 6px; border: 1px solid var(--line2); border-radius: 3px; cursor: pointer; } .tp-hrow.on { border-color: #ffd24a; }
 

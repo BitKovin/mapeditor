@@ -1,5 +1,6 @@
 #include "core/lighting_service.h"
 #include "core/relief_geometry.h"
+#include "core/smoothing.h"
 #include "core/protocol.h"
 #include "core/textures.h"
 #include <algorithm>
@@ -117,6 +118,8 @@ bool sameSurface(const LightSurface& a, const LightSurface& b) {
     if (a.instance != b.instance || a.entityId != b.entityId || a.classname != b.classname || a.brushId != b.brushId || a.brushInstance != b.brushInstance) return false;
     for (size_t i = 0; i < a.verts.size(); ++i) if (!eq(a.verts[i], b.verts[i])) return false;
     if ((a.relief ? a.relief->hash : 0) != (b.relief ? b.relief->hash : 0)) return false;  // a relief appeared, went, or changed shape
+    if ((a.shading ? a.shading->hash : 0) != (b.shading ? b.shading->hash : 0)) return false;  // smooth edges marked or cleared (REQUIREMENTS §33 H6)
+    if ((a.smoothing != nullptr) != (b.smoothing != nullptr)) return false;  // the lightmap charts follow smooth edges
     // The texture does not matter to the light of the face, but the bounce colour of the face comes from it (Lit view and albedo of the bounces) and
     // the projection decides which texel of it: a retexture must reach the baker as a change.
     const FaceProjection &p = a.projection, &q = b.projection;

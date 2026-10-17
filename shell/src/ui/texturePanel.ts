@@ -107,7 +107,6 @@ export class TexturePanel implements IContentRenderer {
     if (ro) lmInput.setAttribute('disabled', '')
     lmInput.addEventListener('change', () => { const v = Number(lmInput.value); if (v > 0) lmEdit('Lightmap density', () => v)() })
     lmInput.addEventListener('keydown', stop)
-    const soon = (label: string, why: string) => { const b = h('button', { title: why, disabled: '' }, label); return b }
 
     this.element.replaceChildren(h('div', { class: 'form surface' },
       h('div', { class: 'texhead' }, thumb, h('div', {}, h('div', { class: 'dim' }, who), density ? h('div', { class: 'dim', title: 'Texel density of the selected face against the texture\'s pixels per meter' }, density) : h('span'))),
@@ -163,8 +162,6 @@ export class TexturePanel implements IContentRenderer {
           surfaceEdit(this.store, 'Project from camera', (p, b, f) => { const r = projectCam(b, f, p, c); if (!r) refused++; return r ?? p })
           if (refused) this.store.setMessage(`${refused} face(s) are seen edge-on from here and were left unchanged`)
         }, proj.kind === 'cam' ? 'on' : '')),
-      h('div', { class: 'section' }, 'Patch'),
-      h('div', { class: 'btns' }, soon('Natural', 'Patches are not implemented yet')),
       h('div', { class: 'section' }, 'Lightmap texel density'),
       h('div', { class: 'row2' }, h('label', { class: 'numfield' }, h('span', {}, 'x'), lmInput)),
       h('div', { class: 'btns' }, btn('x2', 'Twice the lightmap texels per metre (four times the texels)', lmEdit('Lightmap density', (v) => v * 2)), btn('/2', 'Half the lightmap texels per metre', lmEdit('Lightmap density', (v) => v / 2)), btn('Reset', 'The level density (1)', lmEdit('Lightmap density', () => 1))),

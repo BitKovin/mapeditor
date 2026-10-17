@@ -21,10 +21,12 @@ export const MESH_TOOLS: ToolDef[] = [
   { id: 'grow', label: 'Grow', keys: '+', implemented: true, hint: 'Grow the selection by one ring' },
   { id: 'shrink', label: 'Shrink', keys: '-', implemented: true, hint: 'Shrink the selection by one ring' },
   { id: 'knife', label: 'Knife', keys: 'K', implemented: true, hint: 'Click points on edges or vertices (Ctrl = edge middle); Enter or right-click cuts, Esc cancels' },
-  { id: 'bridge', label: 'Bridge Edge Loops', keys: '', implemented: false, hint: 'Connect two edge loops' },
+  { id: 'bridge', label: 'Bridge Edge Loops', keys: '', implemented: true, hint: 'Face mode: remove two selected faces (or face groups) and join their outlines with quads (a tunnel). Edge mode: join two closed loops of open edges' },
   { id: 'mirror', label: 'Mirror', keys: 'Ctrl+M', implemented: true, hint: 'Then X, Y or Z: mirror the selection about its centre' },
   { id: 'proportional', label: 'Proportional editing', keys: 'O', implemented: true, hint: 'Toggle: nearby vertices follow G / R / S with a smooth falloff' },
   { id: 'connect', label: 'Connect vertices', keys: 'J', implemented: true, hint: 'Cut each face between the selected vertices it holds' },
+  { id: 'smooth', label: 'Mark smooth', keys: '', implemented: true, hint: 'The selected edges (face mode: the edges between the selected faces) shade smoothly: the light bake and the export blend the normals of the faces on both sides (REQUIREMENTS §33 H6)' },
+  { id: 'sharp', label: 'Clear smooth', keys: '', implemented: true, hint: 'The selected edges shade sharp again' },
   { id: 'subdivide', label: 'Subdivide', keys: '', implemented: true, hint: 'Edge mode: put new vertices on the selected edges and join them across faces (connect edges)' },
 ]
 
@@ -52,7 +54,7 @@ export const SHAPES: { id: string; label: string; implemented: boolean; keys?: s
   { id: 'wedge', label: 'Wedge', implemented: true },
   { id: 'arch', label: 'Arch', implemented: true },
   { id: 'stairs', label: 'Stairs', implemented: true },
-  { id: 'sphere', label: 'Sphere', implemented: false },
+  { id: 'sphere', label: 'Sphere', implemented: true },
 ]
 
 // Placeable point entities (Quake 3 classnames). Fallback only: when the game ships an entities .ent file (Core sends `entity_defs`) the Place tab uses that instead.

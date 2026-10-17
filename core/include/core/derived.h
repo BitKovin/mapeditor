@@ -9,6 +9,8 @@
 #include <vector>
 
 namespace core {
+struct BrushSmoothing;
+struct FaceShading;
 
 // The `derived_geometry` channel (DESIGN.md §5.6): everything Core computes from authored data that the Shell
 // draws but never stores. Two generators today, both pluggable in the same message:
@@ -59,6 +61,10 @@ struct LightSurface {
     // The displayed relief of this piece's face (side), when the Shell sent one (relief_geometry.h). It replaces the flat pieces of the face as occluder and
     // places the face's texel samples on the relief; the lightmap coordinates stay those of the flat piece. Shared by all pieces of the face.
     std::shared_ptr<const ReliefMesh> relief;
+    // Smooth edges of the owning brush (smoothing.h, REQUIREMENTS §33 H6): null when it has none. `shading` (inside `smoothing`) = this face's
+    // corner normals when the piece is the front of the face and lies on its plane; texel samples and exported vertices then take their normal from it.
+    std::shared_ptr<const BrushSmoothing> smoothing;
+    const FaceShading* shading = nullptr;
 };
 
 /// Albedo coordinates (texture repeats) of a point on the surface: the face's stored UV map when it has one, else the projection.

@@ -1,3 +1,4 @@
+import { openDialog } from './ui/dialog'
 import { createDockview, DockviewApi, DockviewGroupPanel, IDockviewPanel, themeDark } from 'dockview-core'
 import { CoreConnection } from './net/connection'
 import { msg } from './net/protocol'
@@ -310,7 +311,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   /** View menu: brings a panel to the front, or docks it again where it lives by default if it was closed. */
   const PANELS: [id: string, title: string, near: string, dir: 'within' | 'left' | 'right' | 'below'][] = [
     ['place', 'Place', 'viewport-1', 'left'], ['meshedit', 'Mesh Edit', 'place', 'within'], ['outliner', 'Outliner', 'viewport-1', 'right'],
-    ['inspector', 'Details', 'outliner', 'below'], ['texture', 'Texture', 'inspector', 'within'], ['level', 'Level', 'inspector', 'within'],
+    ['inspector', 'Details', 'outliner', 'below'], ['texture', 'Texture', 'place', 'below'], ['level', 'Level', 'inspector', 'within'],
     ['browser', 'Content Browser', 'viewport-1', 'below'], ['groups', 'Texture Groups', 'browser', 'within'], ['history', 'History', 'browser', 'within'],
   ]
   const showPanel = (id: string): void => {
@@ -360,6 +361,12 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
       { label: 'Frame all', shortcut: 'F', action: () => liveViewports()[0]?.frameAll() },
       '-',
       ...PANELS.map(([id, title]) => ({ label: title, title: `Show the ${title} panel (reopens it if it was closed)`, action: () => showPanel(id) })),
+      '-',
+      // layouts (REQUIREMENTS §35): kept between sessions; presets save one under a name
+      { label: 'Save layout preset…', title: 'Keep the current arrangement of the panels under a name', action: () => saveLayoutPreset() },
+      { label: 'Layout presets', disabled: !Object.keys(layoutPresets()).length, submenu: () => Object.keys(layoutPresets()).sort((x, y) => x.localeCompare(y)).map((n) => ({ label: n, title: `Arrange the panels as in the preset "${n}"`, action: () => { applyLayout(layoutPresets()[n] ?? null, `Layout: ${n}`) } })) },
+      { label: 'Delete layout preset', disabled: !Object.keys(layoutPresets()).length, submenu: () => Object.keys(layoutPresets()).sort((x, y) => x.localeCompare(y)).map((n) => ({ label: n, action: () => { const ps = layoutPresets(); delete ps[n]; writeJson(PRESETS_KEY, ps); store.setMessage(`Layout preset "${n}" deleted`) } })) },
+      { label: 'Reset layout', title: 'The standard arrangement of the panels', action: () => { resetLayout(); store.setMessage('Default layout') } },
     ] },
   ]))
 
@@ -432,29 +439,90 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     w2.addEventListener('pagehide', () => { w2.document.removeEventListener('keydown', onAppKey); popoutDocs.delete(w2.document) })
   }
 
-  // ---- layout: ((Place, Mesh Edit) | viewport) over (Content Browser, History), full width | Outliner over (Details, Texture, Level)
-  addViewport()
-  dock.addPanel({ id: 'browser', component: 'browser', title: 'Content Browser', position: { referencePanel: 'viewport-1', direction: 'below' } })
-  dock.addPanel({ id: 'place', component: 'place', title: 'Place', position: { referencePanel: 'viewport-1', direction: 'left' } })
-  dock.addPanel({ id: 'meshedit', component: 'meshedit', title: 'Mesh Edit', position: { referencePanel: 'place', direction: 'within' } })
-  dock.addPanel({ id: 'outliner', component: 'outliner', title: 'Outliner', position: { direction: 'right' } })
-  dock.addPanel({ id: 'inspector', component: 'inspector', title: 'Details', position: { referencePanel: 'outliner', direction: 'below' } })
-  dock.addPanel({ id: 'texture', component: 'texture', title: 'Texture', position: { referencePanel: 'inspector', direction: 'within' } })
-  dock.addPanel({ id: 'level', component: 'level', title: 'Level', position: { referencePanel: 'inspector', direction: 'within' } })
-  dock.addPanel({ id: 'groups', component: 'groups', title: 'Texture Groups', position: { referencePanel: 'browser', direction: 'within' } })
-  dock.addPanel({ id: 'history', component: 'history', title: 'History', position: { referencePanel: 'browser', direction: 'within' } })
-  dock.getPanel('place')?.api.setActive(); dock.getPanel('inspector')?.api.setActive(); dock.getPanel('browser')?.api.setActive()
+  // ---- layout (REQUIREMENTS §35): (Place, Mesh Edit) over Texture | viewport over (Content Browser, Texture Groups, History) | Outliner over (Details, Level).
+  // The arrangement is kept in this browser's / app's local storage and restored on the next start; named presets live next to it.
+  const LAYOUT_KEY = 'levelEditor.layout.v1', PRESETS_KEY = 'levelEditor.layoutPresets.v1'
+  function readJson<T>(key: string): T | null { try { const v = localStorage.getItem(key); return v ? (JSON.parse(v) as T) : null } catch { return null } }
+  function writeJson(key: string, value: unknown): void { try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* storage blocked: the layout just is not kept */ } }
+  type SavedLayout = { dock: ReturnType<DockviewApi['toJSON']>; reopen?: string[] }
+  const layoutPresets = (): Record<string, SavedLayout> => readJson<Record<string, SavedLayout>>(PRESETS_KEY) ?? {}
+  /** The current arrangement. Panels in their own OS windows are not kept as windows (a browser may block them on start): they reopen docked. */
+  function snapshot(): SavedLayout {
+    const j = dock.toJSON()
+    const reopen: string[] = []
+    for (const g of j.popoutGroups ?? []) for (const id of g.data?.views ?? []) reopen.push(id)
+    const { popoutGroups: _p, ...rest } = j
+    void _p
+    return { dock: rest as ReturnType<DockviewApi['toJSON']>, reopen }
+  }
+  function defaultLayout(): void {
+    viewportSeq = 0
+    addViewport()
+    dock.addPanel({ id: 'browser', component: 'browser', title: 'Content Browser', position: { referencePanel: 'viewport-1', direction: 'below' } })
+    dock.addPanel({ id: 'groups', component: 'groups', title: 'Texture Groups', position: { referencePanel: 'browser', direction: 'within' } })
+    dock.addPanel({ id: 'history', component: 'history', title: 'History', position: { referencePanel: 'browser', direction: 'within' } })
+    dock.addPanel({ id: 'place', component: 'place', title: 'Place', position: { direction: 'left' } })
+    dock.addPanel({ id: 'meshedit', component: 'meshedit', title: 'Mesh Edit', position: { referencePanel: 'place', direction: 'within' } })
+    dock.addPanel({ id: 'texture', component: 'texture', title: 'Texture', position: { referencePanel: 'place', direction: 'below' } })
+    dock.addPanel({ id: 'outliner', component: 'outliner', title: 'Outliner', position: { direction: 'right' } })
+    dock.addPanel({ id: 'inspector', component: 'inspector', title: 'Details', position: { referencePanel: 'outliner', direction: 'below' } })
+    dock.addPanel({ id: 'level', component: 'level', title: 'Level', position: { referencePanel: 'inspector', direction: 'within' } })
+    for (const id of ['place', 'texture', 'inspector', 'browser', 'viewport-1']) dock.getPanel(id)?.api.setActive()
+    // sizes only take effect once the layout has been measured
+    requestAnimationFrame(() => {
+      const H = body.clientHeight, W = body.clientWidth
+      dock.layout(W, H) // Dockview's own resize observer may not have run yet; sizes set before it would be rescaled away
+      const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(hi, Math.max(lo, v)))
+      dock.getPanel('place')?.api.setSize({ width: clamp(W * 0.16, 240, 360) })
+      dock.getPanel('outliner')?.api.setSize({ width: clamp(W * 0.21, 260, 440) })
+      dock.getPanel('place')?.api.setSize({ height: Math.round(H * 0.32) })
+      dock.getPanel('outliner')?.api.setSize({ height: Math.round(H * 0.32) })
+      dock.getPanel('browser')?.api.setSize({ height: Math.round(H * 0.33) })
+    })
+  }
+  /** Replaces the arrangement; false (and the arrangement unchanged or the default) when the saved one cannot be used. */
+  function applyLayout(saved: SavedLayout | null, message?: string): boolean {
+    if (!saved?.dock) return false
+    try {
+      dock.fromJSON(saved.dock)
+    } catch (e) {
+      console.warn('saved layout not usable', e)
+      resetLayout()
+      store.setMessage('The saved layout could not be used: back to the default')
+      return false
+    }
+    viewportSeq = Math.max(0, ...[...dock.panels].map((p) => /^viewport-(\d+)$/.exec(p.id)).filter((m) => m).map((m) => Number(m![1])))
+    for (const id of saved.reopen ?? []) { if (id.startsWith('viewport-')) { if (!dock.getPanel(id)) addViewport() } else if (PANELS.some((x) => x[0] === id)) showPanel(id) }
+    if (![...dock.panels].some((p) => p.api.component === 'viewport')) addViewport()
+    if (message) store.setMessage(message)
+    return true
+  }
+  function resetLayout(): void { dock.clear(); defaultLayout() }
+  function saveLayoutPreset(): void {
+    const d = openDialog('Save layout preset', { width: 360 })
+    const presets = layoutPresets()
+    const name = h('input', { type: 'text', placeholder: 'Name', value: '' }) as HTMLInputElement
+    const ok = h('button', { class: 'primary' }, 'Save'), cancel = h('button', {}, 'Cancel')
+    const commit = () => {
+      const n = name.value.trim()
+      if (!n) return void name.focus()
+      writeJson(PRESETS_KEY, { ...layoutPresets(), [n]: snapshot() })
+      store.setMessage(`Layout preset "${n}" saved${presets[n] ? ' (replaced)' : ''}`)
+      d.close()
+    }
+    ok.addEventListener('click', commit)
+    cancel.addEventListener('click', () => d.close())
+    name.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') commit() })
+    d.body.append(h('div', { class: 'modal-text' }, 'The panels and their sizes as they are now; View > Layout lists the presets. A name that exists is replaced.'), name, h('div', { class: 'modal-buttons' }, cancel, ok))
+    name.focus()
+  }
+  if (!applyLayout(readJson<SavedLayout>(LAYOUT_KEY))) defaultLayout()
+  // keep the arrangement: after every change (debounced) and when the window closes
+  let layoutTimer = 0
+  const keepLayout = () => { window.clearTimeout(layoutTimer); layoutTimer = window.setTimeout(() => writeJson(LAYOUT_KEY, snapshot()), 400) }
+  dock.onDidLayoutChange(keepLayout)
+  window.addEventListener('pagehide', () => writeJson(LAYOUT_KEY, snapshot()))
   store.showPanel = showPanel  // right-click > Properties
-  // sizes only take effect once the layout has been measured
-  requestAnimationFrame(() => {
-    const H = body.clientHeight, W = body.clientWidth
-    dock.layout(W, H) // Dockview's own resize observer may not have run yet; sizes set before it would be rescaled away
-    const clamp = (v: number, lo: number, hi: number) => Math.round(Math.min(hi, Math.max(lo, v)))
-    dock.getPanel('place')?.api.setSize({ width: clamp(W * 0.2, 190, 360) })
-    dock.getPanel('outliner')?.api.setSize({ width: clamp(W * 0.22, 210, 420) })
-    dock.getPanel('outliner')?.api.setSize({ height: Math.round(H * 0.34) })
-    dock.getPanel('browser')?.api.setSize({ height: Math.round(H * 0.27) })
-  })
 
   // closing the tab with unsaved work asks first (the browser shows its own generic prompt)
   window.addEventListener('beforeunload', (e) => { if (store.state.dirty) e.preventDefault() })

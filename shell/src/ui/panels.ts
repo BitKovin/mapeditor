@@ -330,7 +330,7 @@ export class InspectorPanel extends Panel {
 
   /** Details > Shape: the generator of a placed cylinder / wedge / arch / stairs, editable at any time (REQUIREMENTS §22 P1). */
   private shapeSection(root: HTMLElement, entityId: string, s: ShapeSpec, ro: boolean): void {
-    const names: Record<ParamShape, string> = { cylinder: 'Cylinder', wedge: 'Wedge', arch: 'Arch', stairs: 'Stairs' }
+    const names: Record<ParamShape, string> = { cylinder: 'Cylinder', wedge: 'Wedge', arch: 'Arch', stairs: 'Stairs', sphere: 'Sphere' }
     root.append(h('div', { class: 'section' }, `Shape: ${names[s.kind]}${s.parts > 1 ? ` (part ${s.part + 1} of ${s.parts})` : ''}`))
     const p = { ...defaultShapeParams(), ...s.params }
     const num = (label: string, value: number, min: number, max: number, step: number, apply: (v: number) => ShapePatch, int = false) => {
@@ -347,6 +347,17 @@ export class InspectorPanel extends Panel {
     }
     if (s.kind === 'cylinder') num('sides', p.sides, 3, 64, 1, (v) => ({ params: { sides: v } }), true)
     if (s.kind === 'stairs') num('steps', p.steps, 2, 64, 1, (v) => ({ params: { steps: v } }), true)
+    if (s.kind === 'sphere') {
+      num('segments', p.segments, 4, 32, 1, (v) => ({ params: { segments: v } }), true)
+      num('rings', p.rings, 2, 16, 1, (v) => ({ params: { rings: v } }), true)
+    }
+    if (s.kind === 'cylinder' || s.kind === 'sphere') {
+      const sm = h('input', { type: 'checkbox', title: 'The round edges are marked smooth (light bake and export shade it round)' }) as HTMLInputElement
+      sm.checked = p.smooth !== false
+      if (ro) sm.setAttribute('disabled', '')
+      sm.addEventListener('change', () => { if (!editShape(this.store, entityId, s.group, { params: { smooth: sm.checked } })) sm.checked = !sm.checked })
+      root.append(h('label', { class: 'field' }, h('span', {}, 'smooth'), sm))
+    }
     if (s.kind === 'arch') {
       num('segments', p.archSegments, 3, 64, 1, (v) => ({ params: { archSegments: v } }), true)
       num('wall thickness (m)', p.archThickness, 0.01, 100, 0.05, (v) => ({ params: { archThickness: v } }))

@@ -1,11 +1,14 @@
 #include "core/lightmap_uv.h"
+#include "core/smoothing.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <map>
 #include <optional>
+#include <queue>
 #include <set>
 #include <tuple>
 #include <unordered_map>
@@ -39,6 +42,7 @@ struct Face {
     std::string group;  // instance + entity: faces only merge inside one group
     std::vector<int> styles;  // non-base styles touching the face (LightmapSettings::faceStyles)
     double scale = 1;   // density multiplier
+    const BrushSmoothing* smooth = nullptr;  // smooth edges of the owning brush (a face joined by one is unfolded whatever the angle)
     Vec3 mn, mx;       // world bounds
     Vec3 u, v;         // root frame when this face is an island root
 };
@@ -231,6 +235,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
             f.out = probe;
             f.out.texture = s.texture;
             f.group = s.instance + "|" + s.entityId;
+            f.smooth = s.smoothing.get();
             const auto sc = cfg.densityScale.find(key);
             // the face's own scale (authored in the document) times the settings' override for this face key, if any
             f.scale = std::clamp(s.lightmapScale, kMinLightmapScale, kMaxLightmapScale) * ((sc != cfg.densityScale.end() && sc->second > 1e-6) ? sc->second : 1.0);
@@ -361,9 +366,24 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
     for (auto& list : adj)
         std::sort(list.begin(), list.end(), [&](const Adj& a, const Adj& b) { return faces[a.other].out.key() < faces[b.other].out.key(); });
 
-    std::set<std::pair<int, int>> adjacentFaces;  // faces that share an edge in 3D
+    std::set<std::pair<int, int>> adjacentFaces;  // faces that share an edge in 3D (or, on a smoothed brush, a corner)
     for (int i = 0; i < N; ++i)
         for (const Adj& a : adj[i]) adjacentFaces.insert({i, a.other});
+    // Faces of one smoothed brush that share a corner (REQUIREMENTS §34 L1): their light is the same at that corner (smooth normals), so in a chart they
+    // may touch there like edge neighbours instead of keeping the isolation gap (a sphere's diagonal quads and the triangles round a pole).
+    {
+        std::map<std::tuple<const BrushSmoothing*, long long, long long, long long>, std::vector<int>> corners;
+        for (int i = 0; i < N; ++i) {
+            if (!faces[i].smooth) continue;
+            std::set<std::tuple<long long, long long, long long>> mine;
+            for (const auto& piece : faces[i].pieces)
+                for (const auto& p : piece) mine.insert({std::llround(p.x / cfg.edgeEps), std::llround(p.y / cfg.edgeEps), std::llround(p.z / cfg.edgeEps)});
+            for (const auto& [x, y, z] : mine) corners[{faces[i].smooth, x, y, z}].push_back(i);
+        }
+        for (const auto& kv : corners)
+            for (int a : kv.second)
+                for (int b : kv.second) if (a != b) adjacentFaces.insert({a, b});
+    }
     // Faces of one island that are NOT joined by a shared edge must stay this many texels apart (and keep their own gutter), otherwise
     // bilinear filtering at the edge of one reads texels of the other: light leaks, dark / bright edges at corners.
     const double isolationGap = 2.0 * pad + 1.0;
@@ -417,17 +437,33 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
         };
         addMember(rootIdx, M3{}, Vec3{});
 
-        std::deque<size_t> queue{0};
+        // Best-first growth (REQUIREMENTS §34 L1): the next face to unfold is the one whose normal is closest to the root's. Coplanar neighbours come
+        // first exactly as before; a smooth round surface (faces joined by smooth edges at any angle) grows as a compact cap around the root instead of
+        // breadth-first rings, so unfolding runs into overlaps later and the surface needs fewer, larger charts (fewer seams in its light).
+        struct Cand { double dot; int face; size_t member; size_t adj; };
+        auto worse = [](const Cand& x, const Cand& y) { return x.dot != y.dot ? x.dot < y.dot : x.face != y.face ? x.face > y.face : x.member > y.member; };
+        std::priority_queue<Cand, std::vector<Cand>, decltype(worse)> queue(worse);
+        const Vec3 rootNormal = faces[rootIdx].out.normal;
+        auto offer = [&](size_t member) {
+            const auto& list = adj[isl.members[member].face];
+            for (size_t k = 0; k < list.size(); ++k)
+                if (assigned[list[k].other] < 0) queue.push({faces[list[k].other].out.normal.dot(rootNormal), list[k].other, member, k});
+        };
+        offer(0);
         while (!queue.empty()) {
-            const Member parent = isl.members[queue.front()];
-            queue.pop_front();
+            const Cand cand = queue.top();
+            queue.pop();
+            const Member parent = isl.members[cand.member];
             const Face& pf = faces[parent.face];
-            for (const Adj& a : adj[parent.face]) {
+            {
+                const Adj& a = adj[parent.face][cand.adj];
                 if (assigned[a.other] >= 0) continue;
                 const Face& cf = faces[a.other];
                 if (std::fabs(cf.scale - pf.scale) > 1e-9) continue;
                 if (cf.styles != pf.styles) continue;  // as few style layers per chart as possible: never merge faces that different styled lights touch
-                if (cf.out.normal.dot(pf.out.normal) < cosLimit) continue;
+                // faces joined by a smooth edge share one chart at any angle: their light is continuous across it (REQUIREMENTS §33 H6)
+                const bool smoothJoin = pf.smooth && pf.smooth == cf.smooth && pf.smooth->onSmoothEdge(a.p, a.q, cfg.edgeEps * 2);
+                if (!smoothJoin && cf.out.normal.dot(pf.out.normal) < cosLimit) continue;
                 // unfold: rotate the child about the shared edge into the parent's (already transformed) plane
                 const Vec3 np = parent.M.mul(pf.out.normal);
                 Vec3 ep = parent.M.mul((a.q - a.p).normalized());
@@ -464,7 +500,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
                     }
                 if (!ok) continue;
                 addMember(a.other, R, bT);
-                queue.push_back(isl.members.size() - 1);
+                offer(isl.members.size() - 1);
             }
         }
         islands.push_back(std::move(isl));

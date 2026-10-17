@@ -1,6 +1,7 @@
 #include "core/derived.h"
 #include "core/csg.h"
 #include "core/decal.h"
+#include "core/smoothing.h"
 #include <cstring>
 #include <map>
 
@@ -224,6 +225,7 @@ std::vector<LightSurface> collectSurfaces(const Document& doc, const std::vector
     json carved = json::array(), skipped = json::array();
     buildTargets(items, targets, carved, skipped);
     std::vector<LightSurface> out;
+    std::map<const Brush*, std::shared_ptr<const BrushSmoothing>> smoothingOf;
     for (const auto& t : targets) {
         for (const auto& p : t.pieces) {
             if (p.verts.size() < 3 || !p.brushPtr) continue;
@@ -258,6 +260,20 @@ std::vector<LightSurface> collectSurfaces(const Document& doc, const std::vector
             s.lightmapScale = face->lightmapScale;
             s.normal = n;
             s.verts = p.verts;
+            if (!p.brushPtr->smoothEdges.empty()) {
+                auto [sit, fresh] = smoothingOf.try_emplace(p.brushPtr, nullptr);
+                if (fresh) sit->second = brushSmoothing(*p.brushPtr);
+                s.smoothing = sit->second;
+                if (s.smoothing && s.side == FaceSide::Front) {
+                    const auto fit = s.smoothing->faces.find(face->id);
+                    if (fit != s.smoothing->faces.end()) {
+                        const Vec3 fn = p.brushPtr->faceNormal(*face), fo = p.brushPtr->vertices[face->loop[0]];
+                        bool onPlane = true;
+                        for (const Vec3& v : p.verts) if (std::fabs((v - fo).dot(fn)) > 1e-3) { onPlane = false; break; }
+                        if (onPlane) s.shading = &fit->second;
+                    }
+                }
+            }
             out.push_back(std::move(s));
         }
     }

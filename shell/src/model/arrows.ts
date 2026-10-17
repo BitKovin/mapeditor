@@ -64,8 +64,8 @@ export function boundsOf(e: Entity, boxOf: (classname: string) => Box): Box {
   return boundsOfBox(pointBox(e, boxOf))
 }
 
-/** Direction arrow of a point entity: from the centre of its (turned) box, out through the box, a little beyond it. */
-export function directionArrow(e: Entity, boxOf: (classname: string) => Box): number[] {
+/** Where the direction arrow of a point entity runs: from the centre of its (turned) box along `dir`, out through the box, a little beyond it. */
+export function directionSpan(e: Entity, boxOf: (classname: string) => Box): { from: Vec3; dir: Vec3; len: number } {
   const ob = pointBox(e, boxOf)
   const local: Box = { min: ob.min, max: ob.max }
   const lc = centreOf(local), c = toWorld(ob, lc)
@@ -73,8 +73,13 @@ export function directionArrow(e: Entity, boxOf: (classname: string) => Box): nu
   const span = rayBoxSpan(lc, [0, 0, 1], local)
   const dir = apply3(ob.rot, [0, 0, 1])
   const size = Math.max(ob.max[0] - ob.min[0], ob.max[1] - ob.min[1], ob.max[2] - ob.min[2])
-  const len = Math.max((span ? span.tout : 0) + 0.6 * size, 0.3)
-  return arrowLines(c, add(c, scale(dir, len)), Math.max(len * 0.25, 0.08))
+  return { from: c, dir, len: Math.max((span ? span.tout : 0) + 0.6 * size, 0.3) }
+}
+
+/** Direction arrow of a point entity (see directionSpan). */
+export function directionArrow(e: Entity, boxOf: (classname: string) => Box): number[] {
+  const { from, dir, len } = directionSpan(e, boxOf)
+  return arrowLines(from, add(from, scale(dir, len)), Math.max(len * 0.25, 0.08))
 }
 
 /** Link arrow between two entities: centre to centre, trimmed to the surfaces of both boxes (the head touches the target's box). */

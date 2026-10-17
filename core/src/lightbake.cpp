@@ -1,6 +1,7 @@
 #include "core/lightbake.h"
 #include "core/denoise.h"
 #include "core/relief_geometry.h"
+#include "core/smoothing.h"
 #include "core/parallel.h"
 #include "gpu_bake.h"
 #include <algorithm>
@@ -281,7 +282,7 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
     const int atlas = out.atlas;
 
     // 1. which surfaces take part, and their cache entries (missing ones are created empty and filled in parallel below)
-    struct Use { Entry* entry = nullptr; int page = 0; const ReliefMesh* relief = nullptr; };
+    struct Use { Entry* entry = nullptr; int page = 0; const ReliefMesh* relief = nullptr; const FaceShading* shading = nullptr; };
     std::vector<Use> uses(surfaces.size());
     struct Miss { Entry* entry; size_t surface; const LightmapFace* face; };
     std::vector<Miss> misses;
@@ -308,7 +309,7 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
             misses.push_back({slot.get(), i, f});
             it = entries_.find(h);
         }
-        uses[i] = {it->second.get(), page, s.relief.get()};
+        uses[i] = {it->second.get(), page, s.relief.get(), s.shading};
     }
     const size_t pageCount = static_cast<size_t>(std::max(0, layout.pageCount));
     {
@@ -332,7 +333,7 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
     out.nrm.reserve(expected * 4);
     out.sub.reserve(expected * 12);
     SolidSet::Probe probe;
-    auto claim = [&](int page, int x, int y, const Vec3& p, const Vec3& n, const float* sub, const ReliefMesh* relief) {
+    auto claim = [&](int page, int x, int y, const Vec3& p, const Vec3& n, const float* sub, const ReliefMesh* relief, const FaceShading* shading) {
         if (x < 0 || y < 0 || x >= atlas || y >= atlas) return false;
         int32_t& o = owner[static_cast<size_t>(page)][static_cast<size_t>(y) * atlas + x];
         if (o != -1) return false;  // already a sample (>= 0) or already known to be hidden (-2)
@@ -344,6 +345,8 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
         if (relief) {
             Vec3 dp, dn;
             if (displaceSample(*relief, p, n, sub, dp, dn, reliefSub)) { pp = dp; nn = dn; if (sub) useSub = reliefSub; }
+        } else if (shading) {
+            nn = shadingNormalAt(*shading, p, n);  // smooth edges (REQUIREMENTS §33 H6): the normal varies across the face
         }
         o = static_cast<int32_t>(out.texel.size());
         out.texel.push_back(static_cast<uint32_t>((static_cast<size_t>(page) * atlas + y) * atlas + x));
@@ -361,10 +364,10 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
             const Entry& e = *u.entry;
             bool any = false;
             for (const TexelCandidate& c : pass == 0 ? e.pass0 : e.pass1) {
-                if (claim(u.page, c.x, c.y, c.p, e.normal, c.sub, u.relief)) any = true;
+                if (claim(u.page, c.x, c.y, c.p, e.normal, c.sub, u.relief, u.shading)) any = true;
                 else if (owner[static_cast<size_t>(u.page)][static_cast<size_t>(c.y) * atlas + c.x] >= 0) any = true;
             }
-            if (pass == 0 && !any && e.hasTiny) claim(u.page, e.tinyX, e.tinyY, e.centroid, e.normal, nullptr, u.relief);
+            if (pass == 0 && !any && e.hasTiny) claim(u.page, e.tinyX, e.tinyY, e.centroid, e.normal, nullptr, u.relief, u.shading);
         }
     if (hiddenOut) *hiddenOut = hiddenCount;
     for (auto it = entries_.begin(); it != entries_.end();) it = it->second->used == generation_ ? std::next(it) : entries_.erase(it);

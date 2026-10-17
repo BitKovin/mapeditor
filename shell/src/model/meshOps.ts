@@ -649,6 +649,79 @@ export function fillHole(b: Brush, verts: number[]): OpResult {
   return { brush: f.brush, sel: f.sel }
 }
 
+// ---- bridge edge loops (REQUIREMENTS §36 W2) -------------------------------------------------------
+/**
+ * Joins two loops with a ring of quads (Blender's Bridge Edge Loops). Face mode: the selected faces are removed first and the outlines of the two
+ * holes they leave are bridged (a tunnel through a brush). Edge mode: two closed loops of open edges (holes) are bridged. The loops need the same
+ * number of corners; the pairing with the shortest total length wins; the quads walk each hole edge opposite to the face beside it (outward).
+ */
+export function bridgeLoops(b: Brush, sel: MeshSel, mode: 'vertex' | 'edge' | 'face'): OpResult {
+  let cur = b
+  let allowed: Set<string>  // undirected edge keys that may be bridged
+  let template: Face | undefined
+  if (mode === 'face') {
+    const ids = new Set(sel.faces)
+    if (ids.size < 2) return fail('Bridge: select two faces (or two groups of faces) to connect')
+    const removed = b.faces.filter((f) => ids.has(f.id))
+    template = removed[0]
+    allowed = new Set(removed.flatMap((f) => f.loop.map((v, i) => edgeKey(v, f.loop[(i + 1) % f.loop.length]))))
+    cur = { ...b, faces: b.faces.filter((f) => !ids.has(f.id)) }
+    if (!cur.faces.length) return fail('Bridge: that would remove every face')
+  } else {
+    allowed = new Set(sel.edges)
+    if (allowed.size < 6) return fail('Bridge: select two closed loops of open edges (delete faces first to open holes), or two faces in face mode')
+  }
+  const t = buildTopology(cur)
+  // the new faces walk every open hole edge opposite to its existing face: u -> v for an existing half-edge v -> u without a twin
+  const next = new Map<number, number>()
+  for (const key of t.half.keys()) {
+    const [a, c] = key.split('>').map(Number)
+    if (t.half.has(`${c}>${a}`) || !allowed.has(edgeKey(a, c))) continue
+    if (next.has(c)) return fail('Bridge: the loops touch each other (a vertex is on both)')
+    next.set(c, a)
+  }
+  const loops: number[][] = []
+  const seen = new Set<number>()
+  for (const start of next.keys()) {
+    if (seen.has(start)) continue
+    const loop: number[] = []
+    let v = start
+    for (let guard = 0; guard <= next.size; guard++) {
+      if (seen.has(v)) break
+      seen.add(v); loop.push(v)
+      const n = next.get(v)
+      if (n === undefined) return fail('Bridge: the selected edges do not form closed loops')
+      v = n
+    }
+    if (v !== start) return fail('Bridge: the selected edges do not form closed loops')
+    loops.push(loop)
+  }
+  if (loops.length !== 2) return fail(`Bridge: needs exactly two loops (found ${loops.length})`)
+  const [A, B] = loops
+  if (A.length !== B.length) return fail(`Bridge: the loops have ${A.length} and ${B.length} corners; they need the same number`)
+  const n = A.length, P = cur.vertices
+  const d = (x: number, y: number) => length(sub(P[x], P[y]))
+  // a_i pairs with b_(s - i): the quad over a_i -> a_(i+1) walks b_(s-i-1) -> b_(s-i) as B's own new edge
+  let best = 0, bestLen = Infinity
+  for (let s = 0; s < n; s++) {
+    let sum = 0
+    for (let i = 0; i < n; i++) sum += d(A[i], B[(((s - i) % n) + n) % n])
+    if (sum < bestLen - 1e-9) { bestLen = sum; best = s }
+  }
+  const bAt = (k: number) => B[(((k % n) + n) % n)]
+  let id = nextFaceId(b)
+  const created: number[] = []
+  const faces = [...cur.faces]
+  const tmpl = template ?? cur.faces[t.half.get(`${A[1]}>${A[0]}`) ?? 0]
+  for (let i = 0; i < n; i++) {
+    const loop = [A[i], A[(i + 1) % n], bAt(best - i - 1), bAt(best - i)]
+    faces.push(cloneFace(tmpl, id, loop))
+    created.push(id++)
+  }
+  const r = finish({ ...cur, faces }, selFromFaces({ ...cur, faces }, created), b)
+  return { brush: r.brush, sel: r.sel }
+}
+
 // ---- normals ------------------------------------------------------------------------------------
 export function flipFaces(b: Brush, faceIds: number[]): OpResult {
   const ids = new Set(faceIds)

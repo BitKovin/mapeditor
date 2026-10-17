@@ -3,6 +3,7 @@
 #include "core/csg.h"
 #include "core/parallel.h"
 #include "core/raytrace.h"
+#include "core/smoothing.h"
 #include "core/textures.h"
 #include <algorithm>
 #include <array>
@@ -244,6 +245,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         std::string texture, classname, instance, entityId, brushInstance, brushId;
         uint32_t faceId = 0;
         Vec3 normal;
+        const FaceShading* shading = nullptr;  // smooth edges: vertex normals vary across the face (REQUIREMENTS §33 H6)
         const std::vector<Vec3>* verts = nullptr;
         std::function<Vec2(size_t i, const Vec3& p)> st;
         double lift = 0;
@@ -329,7 +331,9 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                         dv.lightmap[k2][1] = float(uv.v + shift[static_cast<size_t>(k2)].v / atlas);
                     }
                 }
-                put3(dv.normal, toQuakeDir(s.triNrm[k]));
+                // a flat triangle of a smoothed face takes the smooth normal; a relief keeps its own
+                const bool flat = (s.triNrm[k] - s.normal).length() < 1e-6;
+                put3(dv.normal, toQuakeDir(s.shading && flat ? shadingNormalAt(*s.shading, p, s.normal) : s.triNrm[k]));
                 std::memset(dv.color, 255, sizeof(dv.color));
                 stageVerts.push_back(dv);
             };
@@ -365,7 +369,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     dv.lightmap[k][1] = float(uv.v + shift[static_cast<size_t>(k)].v / atlas);
                 }
             }
-            put3(dv.normal, toQuakeDir(s.normal));
+            put3(dv.normal, toQuakeDir(s.shading ? shadingNormalAt(*s.shading, p, s.normal) : s.normal));
             std::memset(dv.color, 255, sizeof(dv.color));
             stageVerts.push_back(dv);
         }
@@ -393,6 +397,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         p.texture = s.texture; p.classname = s.classname; p.instance = s.instance; p.entityId = s.entityId;
         p.brushInstance = s.brushInstance; p.brushId = s.brushId; p.faceId = s.faceId;
         p.normal = s.normal;
+        p.shading = s.shading;
         p.verts = &s.verts;
         // the texture as the editor lays it (texplan.h): the authored face's UV map; repeat modes, texture group layouts and reliefs as triangles
         const auto parent = in.parentFace ? in.parentFace(s.brushInstance, s.brushId, s.faceId) : std::pair<const Brush*, const BrushFace*>{nullptr, nullptr};
@@ -907,14 +912,20 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         const Entity& e = fe.entity;
         ents += "{\n";
         kv("classname", e.classname);
+        const bool turned = e.angles.x != 0 || e.angles.y != 0 || e.angles.z != 0;
+        const bool world = &fe == worldspawn;
+        // every keyvalue goes out (references are already resolved to names); the ones written from the entity's own fields below win
         std::vector<std::string> keys;
-        for (const auto& [k, v] : e.keyvalues) if (k != "classname" && k != "origin" && k != "model" && k != "angles" && k != "angle") keys.push_back(k);
+        for (const auto& [k, v] : e.keyvalues)
+            if (k != "classname" && k != "model" && (world || (k != "origin" && k != "angles" && !(k == "angle" && turned)))) keys.push_back(k);
         std::sort(keys.begin(), keys.end());
         for (const auto& k : keys) kv(k, e.keyvalues.at(k));
         if (model > 0) kv("model", "*" + std::to_string(model));
-        if (model < 0) {  // point entity: the engine's own space (metres, Y up; angles pitch yaw roll in degrees) = the editor's (REQUIREMENTS §26 F5)
+        // Point AND brush entities: origin and angles in the engine's own space (metres, Y up; pitch yaw roll in degrees) = the editor's (REQUIREMENTS
+        // §26 F5, §34 B1). A brush entity's model stays in world space; its origin is the pivot it turns about (a rotating door), its angles how it faces.
+        if (!world) {
             kv("origin", fmt(e.origin.x) + " " + fmt(e.origin.y) + " " + fmt(e.origin.z));
-            if (e.angles.x != 0 || e.angles.y != 0 || e.angles.z != 0) kv("angles", fmt(e.angles.x) + " " + fmt(e.angles.y) + " " + fmt(e.angles.z));
+            if (turned) kv("angles", fmt(e.angles.x) + " " + fmt(e.angles.y) + " " + fmt(e.angles.z));
         }
         if (&fe == worldspawn) {
             if (const auto g0 = in.lightvol.find(0); g0 != in.lightvol.end() && g0->second.count() > 0) {

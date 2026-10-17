@@ -10,13 +10,14 @@ import { alignBrush } from './surface'
 export type ParamShape = Exclude<ShapeId, 'box'>
 export interface ShapeSpec { group: string; kind: ParamShape; part: number; parts: number; frame: Frame; params: Partial<ShapeParams>; turn: Turn }
 
-const KINDS: ParamShape[] = ['cylinder', 'wedge', 'arch', 'stairs']
+const KINDS: ParamShape[] = ['cylinder', 'wedge', 'arch', 'stairs', 'sphere']
 const isVec = (x: unknown): x is Vec3 => Array.isArray(x) && x.length === 3 && x.every((n) => typeof n === 'number' && Number.isFinite(n))
 const isNum = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x)
 
 /** The parameters that matter for a kind (the rest of ShapeParams is not stored). */
 export function paramsFor(kind: ParamShape, p: ShapeParams): Partial<ShapeParams> {
-  return kind === 'cylinder' ? { sides: p.sides } : kind === 'stairs' ? { steps: p.steps } : kind === 'arch' ? { archSegments: p.archSegments, archThickness: p.archThickness } : {}
+  return kind === 'cylinder' ? { sides: p.sides, smooth: p.smooth } : kind === 'sphere' ? { segments: p.segments, rings: p.rings, smooth: p.smooth }
+    : kind === 'stairs' ? { steps: p.steps } : kind === 'arch' ? { archSegments: p.archSegments, archThickness: p.archThickness } : {}
 }
 
 /** The brush's shape record, or null when it has none (or a damaged one). */

@@ -56,6 +56,13 @@ export class PlacePanel implements IContentRenderer {
     const p = this.store.state.shapeParams, shape = this.store.state.shape
     const rows: HTMLElement[] = []
     if (shape === 'cylinder') rows.push(this.num('Sides', p.sides, 3, 64, 1, (v) => this.store.setShapeParams({ sides: Math.round(v) })))
+    if (shape === 'sphere') rows.push(this.num('Segments', p.segments, 4, 32, 1, (v) => this.store.setShapeParams({ segments: Math.round(v) })), this.num('Rings', p.rings, 2, 16, 1, (v) => this.store.setShapeParams({ rings: Math.round(v) })))
+    if (shape === 'cylinder' || shape === 'sphere') {
+      const sm = h('input', { type: 'checkbox', title: 'Mark the round edges smooth: the light bake and the export shade it round (REQUIREMENTS §33 H6)' }) as HTMLInputElement
+      sm.checked = p.smooth !== false
+      sm.addEventListener('change', () => this.store.setShapeParams({ smooth: sm.checked }))
+      rows.push(h('label', { class: 'field' }, h('span', {}, 'Smooth'), sm))
+    }
     if (shape === 'stairs') rows.push(this.num('Steps', p.steps, 2, 64, 1, (v) => this.store.setShapeParams({ steps: Math.round(v) })))
     if (shape === 'arch') rows.push(this.num('Segments', p.archSegments, 3, 64, 1, (v) => this.store.setShapeParams({ archSegments: Math.round(v) })), this.num('Wall thickness (m)', p.archThickness, 0.05, 20, 0.05, (v) => this.store.setShapeParams({ archThickness: v })))
     if (shape !== 'box') {

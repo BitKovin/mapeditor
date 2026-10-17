@@ -254,8 +254,12 @@ export function applyTexture(store: Store, texture: string): void {
   if (decals.length) store.edit('Decal texture', (d) => decals.reduce((doc, s) => mapEntity(doc, s.entityId, (e) => ({ ...e, keyvalues: { ...e.keyvalues, texture } })), d))
   const targets = faceTargets(store.state.doc, sels)
   if (!targets.length) return
-  store.edit('Apply texture', (d) => mapFaces(d, targets, (b, f) => {
-    if (f.texture === texture) return f
+  store.edit('Apply texture', (d) => mapFaces(d, targets, (b, face) => {
+    // a texture replaces a texture group / set: the layout would keep drawing over it (REQUIREMENTS §33 H3)
+    const { layout: _layout, ...plain } = face
+    void _layout
+    const f = plain as typeof face
+    if (f.texture === texture) return face.layout === undefined ? face : f
     // a face without any UVs gets the texture at its natural size from its bottom-left corner
     if (!f.projection && !f.uvs?.length && texEnv.info(texture)) {
       const p = bottomLeft(b, { ...f, texture }, defaultProjectionFor(texture))

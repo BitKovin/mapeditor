@@ -87,6 +87,9 @@ struct Brush {
     CarveScope carve;
     std::vector<Vec3> vertices;
     std::vector<BrushFace> faces;
+    // Edges marked smooth, named by the ids of the two faces that meet there (the Shell's `smooth` key: [[faceA, faceB], ...]; face ids survive
+    // the editing tools, vertex indices do not; REQUIREMENTS §33 H6). See smoothing.h.
+    std::vector<std::pair<uint32_t, uint32_t>> smoothEdges;
 
     // Axis-aligned box. Test/fixture helper -- the Shell has its own
     // primitive tools. UVs are left empty.

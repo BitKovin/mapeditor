@@ -452,6 +452,22 @@ Verified: Core 257 test cases pass (g++, no cmake: see /home/claude/build/Makefi
 - Tests: Core exporters (3) + bsp / sky / router / settings cases (39) pass; Shell 906 pass (new `tests/exportFormat.test.ts`); typecheck clean; menu checked in the browser.
 - **Open:** the OBJ carries the base light style's lightmap coordinates only (the other styles' pages are written but not referenced); no .mtl file.
 
+## Update 2026-10-17 (sixth): entity handles, sphere, smooth edges, sizes, Alt face drag (REQUIREMENTS §33)
+- Entity origin square / angle diamond (`model/entityHandles.ts`); sphere shape; shape preview while drawing; selection size labels (`model/sizeLabels.ts`); Alt hover + drag of any face.
+- Smooth edges: brush key `smooth: [[faceA, faceB], ...]` (face id pairs). Core `smoothing.h` gives the baker, the lightmap packer and the BSP export the corner normals. Only faces of one brush are smoothed together (an arch's parts are separate brushes).
+- Open: the Unlit view still draws flat shading (the smoothing shows in Lit / Lighting only and in the game); faint seams where a round surface needs several lightmap charts. (Brush entity `origin` / `angles` export: done in §34.)
+
 ## Update 2026-10-17 (fifth): settings in the game folder (REQUIREMENTS §32)
 - `<assets>/editor_settings.json` + `<assets>/lighting.json`; `settings.json` next to the Core keeps the game folder to open and the recent maps.
 
+
+## Update 2026-10-17 (seventh): export of brush entity origin / angles, smooth-aware lightmap charts (REQUIREMENTS §34)
+- Brush entities now get `origin` (world-space pivot) and `angles` in the entity lump; their model stays in world space. The engine's `MovebleBrush` still takes its pivot from the `rotationPointName` entity; using `origin` instead is an engine change not made yet.
+- Lightmap packer: best-first chart growth; corners of a smoothed brush may touch. A smooth sphere is one chart.
+
+## Update 2026-10-17 (eighth): default layout, kept layout, presets, Texture panel fit (REQUIREMENTS §35)
+- `app.ts` `defaultLayout / snapshot / applyLayout / saveLayoutPreset`; localStorage `levelEditor.layout.v1` (current, saved on every change) and `levelEditor.layoutPresets.v1`. View menu: Save layout preset…, Layout presets, Delete layout preset, Reset layout.
+- Texture panel CSS shrinks / wraps (container query below 300 px hides the "Step" words).
+
+## Update 2026-10-17 (ninth): the "(later)" features (REQUIREMENTS §36)
+- Wireframe render mode, Bridge Edge Loops (`meshOps.bridgeLoops`), the Texture panel's Patch section removed (patches dropped; a terrain editor is planned instead). No "(later)" entries are left in the UI.

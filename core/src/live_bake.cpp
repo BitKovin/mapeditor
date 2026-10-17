@@ -1,5 +1,6 @@
 #include "core/live_bake.h"
 #include "core/relief_geometry.h"
+#include "core/smoothing.h"
 #include <cstdlib>
 #include <unordered_map>
 #include "core/parallel.h"
@@ -1040,6 +1041,7 @@ std::vector<Aabb> diffSurfaces(const std::vector<LightSurface>& before, const st
             it.hash = mix(it.hash, static_cast<uint64_t>(q(s.projection.shiftV, 10000)));
             it.hash = mix(it.hash, static_cast<uint64_t>(q(s.projection.rotate, 10000)));
             it.hash = mix(it.hash, s.lookHash);  // UV kind / basis / shear / stored uvs / repetition / layout
+            if (s.shading) it.hash = mix(it.hash, s.shading->hash);  // smooth edges change the normals the face is lit with
             if (s.relief) {  // the relief changes the shadows around the face and what it shows to a bounce: its shape and extent count
                 it.hash = mix(it.hash, s.relief->hash);
                 it.box.add(s.relief->bmin);

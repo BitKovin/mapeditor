@@ -136,6 +136,14 @@ guaranteed-manifold, parallel, real-time-capable, C++/WASM) and
 input, unknown speed). Whichever is chosen must be able to report **which input face each
 output surface came from** (§5.6 depends on it) — verify that in the spike.
 
+### 5.1a Smooth edges (REQUIREMENTS §33 H6)
+A brush may carry `smooth: [[faceA, faceB], ...]`: the edges where those two faces meet shade smoothly. Face ids, not vertex indices, because the
+tools keep face ids (clipper, face drag, mesh tools all renumber vertices). Core `smoothing.cpp` turns the pairs into per-corner normals (at each vertex,
+the angle-weighted average of the faces joined to it through smooth edges) and interpolates them across a face with mean value coordinates. Users:
+the texel samples of the light bake (the normal a texel is lit with; the solid test still uses the flat normal), the lightmap packer (a smooth edge
+joins two faces into one chart at any angle, so their light is continuous), the rBSP vertex normals (and so the OBJ export). Smoothing never crosses
+brushes. Shapes: cylinder sides and the whole sphere are marked when their `smooth` parameter is on (the default).
+
 ### 5.2 Entities
 
 - **Point entities**: classname + keyvalues + transform, no brushes.
