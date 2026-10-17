@@ -423,3 +423,21 @@ The user's words: *"finish every (later) feature"*; on Patch > Natural: *"remove
 - ✅ **W1. Wireframe render mode** *(renderer `wire`: fills, sky, decals and density overlays skipped, every brush edge drawn without depth test in its entity colour, worldspawn light grey; browser-checked)* (viewport Render menu): every brush and entity drawn as its edges only, no filled faces (in its entity colour; subtractive brushes as dashed-colour edges when shown; selection highlighted), everything visible through everything; picking and the gizmo work as in Unlit.
 - ✅ **W2. Bridge Edge Loops** *(meshOps `bridgeLoops`, viewport `runTool('bridge')`, Mesh Edit panel, Mesh right-click menu; tests `tests/bridge.test.ts` (a tunnel through a box: closed solid, volume 8 - 2), browser: tunnel through a wall, which moved into func_detail as concave)* (Mesh mode, Mesh Edit panel and the Mesh right-click menu): connects two loops with a ring of quads, as Blender's Bridge Edge Loops. Face mode: the selection is two faces (or two connected groups of faces); they are removed and their outlines bridged (a tunnel through a brush, a hole between two sides). Edge mode: two closed loops of open (hole) edges are bridged. Both loops must have the same number of vertices; the pairing (start vertex and direction) is the one with the shortest total length; the new faces wind outward (opposite to the faces they meet); the result goes through the usual checks (planar faces split into triangles, convexity: a concave world brush moves into func_detail as for other mesh edits).
 - ✅ **W3. Patches removed.** The Texture panel's Patch section (Natural) is removed; patches are not planned (a terrain editor will come instead). §6 / §19 B1 mentions of Patch Natural are superseded.
+
+## 37. Batch of 2026-10-17 (tenth) - MCP for AI level prototyping (design only; `MCP_DESIGN.md`)
+The user's words: *"I'm thinking on implementing MCP for this level editor. It's main target is to allow model to prototype levels ... It
+should produce actual levels. Not just something too simple or just bunch of corridors or office spaces. Actual maps that are fun to explore
+and play for different genres."* Later in the same conversation: *"it should be efficient in credit usage, but still provide good results"*,
+*"don't target novices"*, *"generally it should properly reason and do level for almost any 3d genre"*, *"you are putting tedious work on
+designer"*, *"Mansion should serve as setting ... Just make parts that are not needed inaccessible"*.
+- ☐ **A1. MCP server** that prototypes playable levels (critical path, gates, encounters, end) for most 3D genres, used from Claude Desktop.
+- ☐ **A2. Audience**: level designers and artists (prototype and ideate); not novices.
+- ☐ **A3. Credit-efficient**: few high-level tools, heavy work server-side, small images only when useful.
+- ☐ **A4. No tedious work for the designer**: form quality comes from the tool (building types, typologies, real proportions), not from
+  per-project module kits.
+- ☐ **A5. Path through a setting**: only the route and a few pockets are playable; the rest of a building is closed backdrop; route spaces distinct.
+- ☐ **A6. Scale from the player**: player metrics and camera drive every size; big by extent with human-scale elements, never a uniform scale-up.
+- ☐ **A7. Verification**: reachability per lock state (no sequence breaks, no unreachable goals) before a level is called playable.
+- ☐ **A8. Iteration**: 2–3 variants first, then change only what the user asks.
+- ✅ **A9. Knowledge kept for the next chat**: `MCP_DESIGN.md` (design, lessons L1–L10, session log) and the project skill
+  `.claude/skills/level-blockout/` (how to prototype now, kit scripts, editor test hooks).

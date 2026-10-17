@@ -1303,6 +1303,15 @@ The convex requirement applies to **solids** (additive brushes in `worldspawn`/`
 `lighting_classes.json`: `{ "lightmapped": [classnames], "castShadows": [classnames] }` — Core loads and sends it; no classname is hard-coded. Decals own no lightmap area: their fragments sample the **lightmap UV space of the parent face**. Lit view = engine rendering of the new BSP: lightmaps as stored (EXR floats), lightvols ×2 compensation only, **no magic brightness constants**. Light entities (point, spot, directional, rect, sky …): brightness (no physical units), colour, attenuation radius, source radius/length, bounce power, cast shadows, style (0–7).
 
 
+### 18.8 MCP for AI level prototyping (design only, REQUIREMENTS §37)
+**`MCP_DESIGN.md` is the source of truth** (architecture, pipeline, tools, prior art, lessons). Decided so far: a Node/TypeScript MCP server
+that joins Core as one more WebSocket session and reuses `shell/src/model`; the model writes logic (route, gates, encounters) and never
+places geometry by improvised coordinates; space comes from tool-side building types and typologies sized by the player's metrics;
+levels are a path through a setting (most of a building is closed backdrop); every result is verified by a reachability check per lock
+state; the user judges taste. Needed here: labelled remote edits as one undo step (today a `document_sync` from another session resets
+the Shell's history), `baseRev` on `document_update`, player metrics in the game profile, a render request with overlays and entity labels
+off. Until it exists, levels are prototyped with the project skill `.claude/skills/level-blockout/`.
+
 ### Convex rule and auto func_detail (M3.5 item 4)
 - The convex rule applies to **solids** only. A subtractive brush (`op: "subtract"`) is never compiled as a solid, so it may be concave in any entity (Core `validateDocument`, Shell `Store.brushProblem`; CSG tests prove the exact removed volume for an L-shaped cutter).
 - **Auto-convert** (Shell setting "Concave → func_detail", default on): when a mesh edit - instant or a modal drag (G/R/S/E/I) or the gizmo - makes a brush in a convex-only entity concave but otherwise valid, the brush moves into a new `func_detail` entity instead of the edit being refused. One undo step; the selection (and the mesh selection) follow the brush when the drag ends. With the setting off the edit is refused as before.

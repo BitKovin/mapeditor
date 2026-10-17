@@ -471,3 +471,14 @@ Verified: Core 257 test cases pass (g++, no cmake: see /home/claude/build/Makefi
 
 ## Update 2026-10-17 (ninth): the "(later)" features (REQUIREMENTS §36)
 - Wireframe render mode, Bridge Edge Loops (`meshOps.bridgeLoops`), the Texture panel's Patch section removed (patches dropped; a terrain editor is planned instead). No "(later)" entries are left in the UI.
+
+## Update 2026-10-17 (tenth): MCP for AI level prototyping - design session (REQUIREMENTS §37)
+- **Nothing of the MCP is built.** The design, the prior art (incl. a hands-on look at Unreal 5.8's built-in MCP), the user's corrections
+  as rules L1–L10 and a session log are in `MCP_DESIGN.md`. Start the next chat by reading its §2 and §12.
+- **Prototyping kit**: the project skill `.claude/skills/level-blockout/` (SKILL.md + `scripts/`: `mapgen.py`, `mansion.py`, `mansion4.py`,
+  `reach.py`). It writes `.map.json` with Python, loads it through Core in the Shell (`?debug` hook `window.__editor`), takes shots and
+  verifies reachability per lock state. Test maps were generated into a scratch copy of the assets (not in the repo).
+- **Where it stopped**: a Roswaal-style mansion for the user's slasher (jump ~5.4 m, hover, dash, far camera). v4 (300 m manor, every room
+  open, gated path verified) was judged not fun (no clear path, every room the same) and its entrance hall absurd. **Next**: rebuild it
+  path-first - one route of ~10-12 distinct spaces through a closed chateau, a real imperial staircase, diegetic climbing - verify, let the
+  user judge; then decide where generator code lives and start MCP phase 1 (MCP_DESIGN.md §12).
