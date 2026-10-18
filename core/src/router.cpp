@@ -187,6 +187,7 @@ RouterOutput Router::onMessage(const std::string& text) {
         else if (type == proto::kWriteTexGroup) handleWriteTexGroup(req, out);
         else if (type == proto::kDeleteTexGroup) handleDeleteTexGroup(req, out);
         else if (type == proto::kReadPrefab) handleReadPrefab(req, out);
+        else if (type == proto::kWritePrefab) handleWritePrefab(req, out);
         else if (type == proto::kListDirectory) handleListDirectory(req, out);
         else if (type == proto::kBrowseFilesystem) handleBrowseFilesystem(req, out);
         else if (type == proto::kSetAssetsRoot) handleSetAssetsRoot(req, out);
@@ -355,6 +356,17 @@ void Router::handleReadPrefab(const json& req, RouterOutput& out) {
         out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"path", normalizeAssetPath(path)},
                                     {"doc", scene_.readPrefabJson(path)}}
                                    .dump());
+    } catch (const std::exception& e) {
+        out.toSender.push_back(failedResponse(req, e.what()));
+    }
+}
+
+void Router::handleWritePrefab(const json& req, RouterOutput& out) {
+    const std::string path = req.at("path").get<std::string>();
+    try {
+        const std::string saved = scene_.writePrefab(path, req.at("doc"));
+        out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"path", saved}}.dump());
+        pushLibraryIfChanged(out, false);  // the file may be one the open document already uses
     } catch (const std::exception& e) {
         out.toSender.push_back(failedResponse(req, e.what()));
     }

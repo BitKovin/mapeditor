@@ -22,6 +22,7 @@ inline constexpr const char* kReadTexGroup = "read_texgroup";      // { requestI
 inline constexpr const char* kWriteTexGroup = "write_texgroup";    // { requestId, path, group } -> response { path }   (creates or replaces <texGroupRoot>/<path>.texgroup.json)
 inline constexpr const char* kDeleteTexGroup = "delete_texgroup";  // { requestId, path }      -> response { path }
 inline constexpr const char* kReadPrefab = "read_prefab";          // { requestId, path }      -> response { path, doc }  (one prefab file, for previews; inside the assets root)
+inline constexpr const char* kWritePrefab = "write_prefab";        // { requestId, path, doc }  -> response { path }  (creates or replaces the prefab file <path>, which must end in .map.json; doc is validated like any prefab)
 inline constexpr const char* kListDirectory = "list_directory";    // { requestId, path? }     -> response { path, entries: [{name, dir}] }  (inside the assets root)
 inline constexpr const char* kBrowseFilesystem = "browse_filesystem";  // { requestId, path? } -> response { path, parent, dirs: [name], drives? }  (folders only; to pick the assets root)
 inline constexpr const char* kSetAssetsRoot = "set_assets_root";  // { requestId, path }      -> response, then profile + entity_defs + document_sync + prefab_library + settings to everyone

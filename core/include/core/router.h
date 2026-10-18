@@ -81,6 +81,7 @@ private:
     void handleWriteTexGroup(const nlohmann::json& req, RouterOutput& out);
     void handleDeleteTexGroup(const nlohmann::json& req, RouterOutput& out);
     void handleReadPrefab(const nlohmann::json& req, RouterOutput& out);
+    void handleWritePrefab(const nlohmann::json& req, RouterOutput& out);
     void handleListDirectory(const nlohmann::json& req, RouterOutput& out);
     void handleBrowseFilesystem(const nlohmann::json& req, RouterOutput& out);
     void handleSetAssetsRoot(const nlohmann::json& req, RouterOutput& out);

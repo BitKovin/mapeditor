@@ -3,7 +3,7 @@
 import { styleAnimates } from '../render/lightStyles'
 import type { IContentRenderer } from 'dockview-core'
 import { Brush, MapDocument, addBrush, classOf, findEntity, isBrushEntity, mapBrush, mapEntity, moveBrushToDetail, newId, originOf, showsCustomOrigin } from '../model/document'
-import { angleHandle, anglesToward, draggedOrigin, handleLines, hasAngleHandle } from '../model/entityHandles'
+import { angleHandle, anglesToward, handleLines, hasAngleHandle } from '../model/entityHandles'
 import { markSmooth, smoothEdgeKeys } from '../model/smooth'
 import { SizeLabel, boxSizeLabels, faceSizeLabels, withoutOverlaps } from '../model/sizeLabels'
 import { anglesForDirection } from '../model/decal'
@@ -24,6 +24,7 @@ import { Hit, pick } from '../render/picking'
 import { chainNames, pathOfHit, refKeysOf } from '../model/refs'
 import { Renderer } from '../render/renderer'
 import { CameraMode, isOrthoMode, FLY_SPEED_MAX, FLY_SPEED_MIN, WHEEL_SPEED_FACTOR, clampSpeed, GRID_SIZES, ROT_SNAPS, SCALE_SNAPS, rotSnapRad, scaleSnapStep, RENDER_MODES, RenderMode, ViewportSettings, defaultViewportSettings, isImplemented, snapStep } from '../render/viewportSettings'
+import { copySelection, cutSelection, pasteClipboard } from '../state/clipboard'
 import { TexKey, addDrawnBrush, addDrawnBrushes, copySurface, flowTexture, liftMaterial, duplicateSelection, gizmoPivot, selectedList, groupSelection, ungroupSelection, copyUv, pasteUv, hideSelection, unhideAll } from '../state/actions'
 import { addPointEntity, invertSelectionItems, selectAllItems, selectByVolume, clipSelection, nudgeTexture, deleteSelection, makeEntityFromSelection, moveSelectionToWorld, nudgeSelection, flipSelection, hollowSelection, mergeSelection, rotateSelection90, selectedBrushes, snapSelection, spawnInstance } from '../state/actions'
 import { Plane, planeFromPoints } from '../model/brushOps'
@@ -99,10 +100,9 @@ export class ViewportPanel implements IContentRenderer {
   private cameraSelect: HTMLSelectElement | null = null
   private drag:
     | { kind: 'orbit' | 'pan' | 'look'; x: number; y: number }
-    | { kind: 'gizmo'; axis: Axis; pivot: Vec3; startT: number; mesh: boolean; mode: 'move' | 'rotate' | 'scale'; extrude?: number[] }
+    | { kind: 'gizmo'; axis: Axis; pivot: Vec3; startT: number; mesh: boolean; mode: 'move' | 'rotate' | 'scale'; extrude?: number[]; origin?: string }
     | { kind: 'face'; entityId: string; brushId: string; faceId: number; pivot: Vec3; dir: Vec3; startT: number; extend?: { brushId: string } }
     | { kind: 'resize'; h: -1 | 0 | 1; v: -1 | 0 | 1; min: Vec3; max: Vec3; r: ScreenAxis; u: ScreenAxis; x0: number; y0: number }
-    | { kind: 'origin'; entityId: string; start: Vec3; grab: Vec3; n: Vec3 }
     | { kind: 'angle'; entityId: string; base: Vec3; n: Vec3; keepPitch: boolean }
     | null = null
   private hoverHandle: string | null = null
@@ -110,6 +110,8 @@ export class ViewportPanel implements IContentRenderer {
   private altFace: { entityId: string; brushId: string; faceId: number } | null = null
   /** The entity handle under the cursor (REQUIREMENTS §33 H1 / H2). */
   private hoverEntHandle: 'origin' | 'angle' | null = null
+  /** The entity whose origin was selected by clicking its origin square: the usual move gizmo sits on the origin and moves only the origin (not the brushes). */
+  private originSel: string | null = null
   private pointerInside = false
   private modal: Modal | null = null
   private boxSel: { x0: number; y0: number; x1: number; y1: number; toggle: boolean; base: MeshSel; moved: boolean } | null = null
@@ -140,7 +142,7 @@ export class ViewportPanel implements IContentRenderer {
   /** The last reason a modal edit was refused; it stays on the status bar after the modal ends. */
   private lastErr: string | null = null
 
-  constructor(private store: Store, private textures: TextureCache, private onPopout?: () => void, private previews?: PrefabPreviews) {
+  constructor(private store: Store, private textures: TextureCache, private onPopout?: () => void, private previews?: PrefabPreviews, private onTurnIntoPrefab?: () => void) {
     this.element.append(this.canvas, this.boxEl, this.buildHeader())
     const c = this.canvas
     c.tabIndex = 0
@@ -421,14 +423,23 @@ export class ViewportPanel implements IContentRenderer {
     const hs = this.entityHandles()
     if (!hs) return []
     const { right, up } = this.camera.basis
-    const active = this.drag?.kind === 'origin' ? 'origin' : this.drag?.kind === 'angle' ? 'angle' : this.hoverEntHandle
+    const active = this.originSelected() ? 'origin' : this.drag?.kind === 'angle' ? 'angle' : this.hoverEntHandle
     const out: { color: [number, number, number]; lines: number[] }[] = [
       { color: active === 'origin' ? [1, 1, 1] : [1, 0.85, 0.2], lines: handleLines(hs.origin, 5 * this.mppAt(hs.origin), right, up, 'origin') },
     ]
     if (hs.angle) out.push({ color: active === 'angle' ? [1, 1, 1] : [1, 0.45, 0.15], lines: [...handleLines(hs.angle.tip, 5 * this.mppAt(hs.angle.tip), right, up, 'angle'), ...(active === 'angle' ? [...hs.angle.base, ...hs.angle.tip] : [])] })
     return out
   }
-  /** The plane a handle drag runs on: the view plane (orthographic, or Shift in perspective), else the horizontal plane. */
+  /** Whether the selected entity's origin is the thing being edited (set by clicking the origin square; ends with any selection change, a click elsewhere or Esc). */
+  private originSelected(): boolean {
+    if (this.originSel === null) return false
+    if (this.entityHandles()?.entity.id === this.originSel) return true
+    this.originSel = null
+    return false
+  }
+  /** The gizmo in use: with the origin selected it is always the move gizmo, whatever mode the toolbar is in. */
+  private gizmoMode(): 'move' | 'rotate' | 'scale' { return this.originSelected() ? 'move' : this.settings.gizmo }
+  /** The plane the angle handle's drag runs on: the view plane (orthographic, or Shift in perspective), else the horizontal plane. */
   private handlePlane(shift: boolean): Vec3 {
     const cam = this.camera
     if (cam instanceof OrthoCamera) return cam.forward
@@ -437,27 +448,21 @@ export class ViewportPanel implements IContentRenderer {
   private startEntityHandleDrag(e: PointerEvent): boolean {
     const which = this.entityHandleHit(e), hs = this.entityHandles()
     if (!which || !hs) return false
-    const n = this.handlePlane(e.shiftKey)
     if (which === 'origin') {
-      const grab = rayPlaneHit(this.ray(e), hs.origin, n)
-      if (!grab || !this.store.beginDrag('Move origin')) return false
-      this.drag = { kind: 'origin', entityId: hs.entity.id, start: hs.origin, grab, n }
-    } else {
-      if (!hs.angle || !this.store.beginDrag('Turn entity')) return false
-      this.drag = { kind: 'angle', entityId: hs.entity.id, base: hs.angle.base, n, keepPitch: Math.abs(n[1]) > 0.9 }
+      // the square does not drag on a plane: clicking it selects the origin, and the usual move gizmo (axis arrows) moves it
+      this.originSel = hs.entity.id
+      this.hoverAxis = null
+      this.store.setMessage('Origin selected: drag an arrow to move it (Esc or a click elsewhere to finish)')
+      this.invalidate()
+      return true
     }
+    const n = this.handlePlane(e.shiftKey)
+    if (!hs.angle || !this.store.beginDrag('Turn entity')) return false
+    this.drag = { kind: 'angle', entityId: hs.entity.id, base: hs.angle.base, n, keepPitch: Math.abs(n[1]) > 0.9 }
     return true
   }
-  private entityHandleMove(e: PointerEvent, d: Extract<NonNullable<ViewportPanel['drag']>, { kind: 'origin' | 'angle' }>): void {
+  private entityHandleMove(e: PointerEvent, d: Extract<NonNullable<ViewportPanel['drag']>, { kind: 'angle' }>): void {
     const ray = this.ray(e)
-    if (d.kind === 'origin') {
-      const at = rayPlaneHit(ray, d.start, d.n)
-      if (!at || dot(sub(at, ray.origin), ray.dir) < 0) return
-      const o = draggedOrigin(d.start, d.grab, at, d.n, snapStep(this.settings))
-      this.store.dragUpdate((start) => mapEntity(start, d.entityId, (x) => ({ ...x, origin: o })))
-      this.store.setMessage(`Origin: ${o.map((v) => +v.toFixed(3)).join(' ')}`)
-      return
-    }
     const at = rayPlaneHit(ray, d.base, d.n)
     if (!at || dot(sub(at, ray.origin), ray.dir) < 0) return
     const snapDeg = (rotSnapRad(this.settings) * 180) / Math.PI
@@ -497,7 +502,7 @@ export class ViewportPanel implements IContentRenderer {
         ...st.prefabEntities.map((p) => ({ entity: p.entity, readonly: true, instanceId: p.instancePath[1], instance: instanceOf(p) })),
       ],
       gizmo: this.faceGizmo() && this.store.canEdit ? { pivot: this.faceGizmo()!.pivot, dir: this.faceGizmo()!.dir, length: gizmoLength(this.camera.distanceTo(this.faceGizmo()!.pivot)), active: this.drag?.kind === 'face' || this.hoverFace ? 0 : null }
-        : pivot && this.store.canEdit ? { pivot, length: gizmoLength(this.camera.distanceTo(pivot)), active: this.drag?.kind === 'gizmo' ? this.drag.axis : this.hoverAxis, mode: this.settings.gizmo } : null,
+        : pivot && this.store.canEdit ? { pivot, length: gizmoLength(this.camera.distanceTo(pivot)), active: this.drag?.kind === 'gizmo' ? this.drag.axis : this.hoverAxis, mode: this.gizmoMode() } : null,
       annotations: this.settings.showOrigins ? entityAnnotations([...visibleEntities(st.doc.entities, st.hidden), ...st.prefabEntities.map((p) => p.entity)]) : undefined,
       overlays: [...this.arrowOverlays(), ...this.lightOverlays(), ...this.decalSelectionOverlay()],
       handles: [...this.entityHandleOverlay(), ...this.smoothEdgeOverlay(mt?.brush)],
@@ -539,7 +544,7 @@ export class ViewportPanel implements IContentRenderer {
     const pivot = this.pivotNow()
     if (!pivot) return null
     const len = gizmoLength(this.camera.distanceTo(pivot))
-    const axis = this.settings.gizmo === 'rotate' ? hitRing(this.ray(e), pivot, len, len * 0.06) : hitAxis(this.ray(e), pivot, len * 1.15, len * 0.07)
+    const axis = this.gizmoMode() === 'rotate' ? hitRing(this.ray(e), pivot, len, len * 0.06) : hitAxis(this.ray(e), pivot, len * 1.15, len * 0.07)
     return axis === null ? null : { axis, pivot }
   }
 
@@ -768,6 +773,7 @@ export class ViewportPanel implements IContentRenderer {
     const rh = e.shiftKey || e.ctrlKey || e.metaKey ? null : this.handleHit(e)
     const ri = rh ? this.resizeInfo() : null
     if (rh && ri && this.store.beginDrag('Resize')) {
+      this.originSel = null
       const m = this.canvasPoint(e)
       this.drag = { kind: 'resize', h: rh.h, v: rh.v, min: ri.min, max: ri.max, r: ri.r, u: ri.u, x0: m.x, y0: m.y }
       return
@@ -787,18 +793,20 @@ export class ViewportPanel implements IContentRenderer {
         return
       }
     }
-    const gm = this.settings.gizmo
+    const gm = this.gizmoMode()
     // Shift + drag the move gizmo's arrow with faces selected in Mesh mode = extrude along it (Scythe, REQUIREMENTS §21 E6)
     const st0 = this.store.state
     const extrude = mesh && e.shiftKey && !(e.ctrlKey || e.metaKey) && gm === 'move' && st0.meshMode === 'face' && st0.meshSel.faces.length ? [...st0.meshSel.faces] : null
     const g = (e.shiftKey && !extrude) || e.ctrlKey || e.metaKey ? null : this.gizmoHit(e)
-    if (g && this.store.beginDrag(extrude ? 'Extrude' : `${gm === 'move' ? 'Move' : gm === 'rotate' ? 'Rotate' : 'Scale'}${mesh ? ' elements' : ''}`)) {
+    const originId = !mesh && this.originSelected() ? this.originSel : null // the gizmo then moves the origin alone
+    if (g && this.store.beginDrag(extrude ? 'Extrude' : originId ? 'Move origin' : `${gm === 'move' ? 'Move' : gm === 'rotate' ? 'Rotate' : 'Scale'}${mesh ? ' elements' : ''}`)) {
       this.startSel = this.store.state.meshSel; this.lastGood = null; this.detailId = null; this.converted = null; this.dragBrush = this.currentBrush()
       const startT = gm === 'rotate' ? ringAngle(this.ray(e), g.pivot, g.axis) ?? 0 : axisDistance(this.ray(e), g.pivot, g.axis) ?? 0
-      this.drag = { kind: 'gizmo', axis: g.axis, pivot: g.pivot, startT, mesh, mode: gm, ...(extrude ? { extrude } : {}) }
+      this.drag = { kind: 'gizmo', axis: g.axis, pivot: g.pivot, startT, mesh, mode: gm, ...(extrude ? { extrude } : {}), ...(originId ? { origin: originId } : {}) }
       return
     }
     if (mesh) return this.meshDown(e)
+    this.originSel = null // a click that grabs neither the origin nor its gizmo ends the origin editing
     if (this.loopArmed) this.loopArmed = false
     // carved brushes are hit where they really are; prefab content selects its INSTANCE (the content itself is read-only)
     const { hit, instanceId } = this.pickAny(this.ray(e))
@@ -1113,7 +1121,8 @@ export class ViewportPanel implements IContentRenderer {
     const consume = () => { e.preventDefault(); e.stopPropagation() }
     if (this.clipKey(e)) return void consume()
     if (st.editMode === 'object' && st.tool === 'select') {
-      // selection: Ctrl+A all, Ctrl+I invert, Alt+A or Esc none
+      // selection: Ctrl+A all, Ctrl+I invert, Alt+A or Esc none (Esc first leaves the origin editing, keeping the entity selected)
+      if (k === 'escape' && !mod && !e.shiftKey && this.originSel !== null) { consume(); this.originSel = null; this.store.setMessage(null); this.invalidate(); return }
       if (mod && !e.shiftKey && k === 'a') { consume(); selectAllItems(this.store); return }
       if (mod && !e.shiftKey && k === 'i') { consume(); invertSelectionItems(this.store); return }
       if ((k === 'escape' && !mod && !e.shiftKey && !st.pipette) || (e.altKey && k === 'a')) { if (selectedList(this.store).length) { consume(); this.store.select(null) } return }
@@ -1142,6 +1151,9 @@ export class ViewportPanel implements IContentRenderer {
       if (mod && k === 'g') { consume(); this.runBrushTool('snap'); return }
       if (!mod && (k === 'g' || k === 'r' || k === 's')) { if (this.startModal(k === 'g' ? 'grab' : k === 'r' ? 'rotate' : 'scale')) consume() }
       else if (mod && k === 'd') { consume(); if (duplicateSelection(this.store)) this.startModal('grab') }
+      else if (mod && !e.shiftKey && k === 'c') { consume(); void copySelection(this.store) }
+      else if (mod && !e.shiftKey && k === 'x') { consume(); void cutSelection(this.store) }
+      else if (mod && !e.shiftKey && k === 'v') { consume(); void pasteClipboard(this.store).then((ok) => { if (ok) this.startModal('grab') }) }
       return
     }
     if (st.editMode !== 'mesh') return
@@ -1335,7 +1347,7 @@ export class ViewportPanel implements IContentRenderer {
       return
     }
     if (d.kind === 'face') return this.faceDragMove(e, d)
-    if (d.kind === 'origin' || d.kind === 'angle') return this.entityHandleMove(e, d)
+    if (d.kind === 'angle') return this.entityHandleMove(e, d)
     if (d.kind === 'resize') {
       const cam = this.camera
       if (!(cam instanceof OrthoCamera)) return
@@ -1372,6 +1384,13 @@ export class ViewportPanel implements IContentRenderer {
       } else {
         const delta = dragDelta(this.ray(e), d.pivot, d.axis, d.startT, snapStep(this.settings))
         if (d.extrude) { const faces = d.extrude; this.applyMesh((b) => extrudeFaces(b, faces, 0, delta)); return }
+        if (d.origin) {
+          // the origin alone moves (a brush entity's brushes stay where they are)
+          const id = d.origin, o = add(d.pivot, delta)
+          this.store.dragUpdate((start) => mapEntity(start, id, (x) => ({ ...x, origin: o })))
+          this.store.setMessage(`Origin: ${o.map((v) => +v.toFixed(3)).join(' ')}`)
+          return
+        }
         map = translateBy(delta)
       }
       if (d.mesh) this.applyMesh((b, sel) => this.moveVerts(b, sel.verts, map))
@@ -1630,7 +1649,7 @@ export class ViewportPanel implements IContentRenderer {
   private onUp(e: PointerEvent): void {
     const rmbClick = e.button === 2 && (this.drag?.kind === 'look' || this.drag?.kind === 'orbit' || (this.drag?.kind === 'pan' && this.rmbPanning)) && this.rmbTravel < 4
     this.clipDrag = null
-    if (this.drag?.kind === 'resize' || this.drag?.kind === 'origin' || this.drag?.kind === 'angle') this.store.endDrag()
+    if (this.drag?.kind === 'resize' || this.drag?.kind === 'angle') this.store.endDrag()
     if (this.drag?.kind === 'gizmo' || this.drag?.kind === 'face') { this.store.endDrag(); if (this.drag.kind === 'gizmo' && this.drag.mesh) this.followConverted() }
     if (this.drag?.kind === 'face' && this.drag.extend) {
       // the new brush's end cap becomes the selected face: its handle carries on pushing the extension
@@ -1640,7 +1659,7 @@ export class ViewportPanel implements IContentRenderer {
     }
     if (this.boxSel) this.finishBoxSel()
     if (this.drag?.kind === 'look') this.stopFly()
-    if (this.drag && !['gizmo', 'face', 'resize', 'origin', 'angle'].includes(this.drag.kind)) this.unlockPointer()
+    if (this.drag && !['gizmo', 'face', 'resize', 'angle'].includes(this.drag.kind)) this.unlockPointer()
     this.drag = null
     if (e.button === 0 && this.drawing?.phase === 'rect') {
       const rect = this.currentRect(this.drawing)
@@ -1694,6 +1713,7 @@ export class ViewportPanel implements IContentRenderer {
       { label: 'Select touching', disabled: !brushes.length, run: () => { this.runBrushTool('seltouch') } },
       { sep: true, label: '' },
       { label: 'Group (func_group)', disabled: !can || !brushes.length, run: () => { groupSelection(this.store) } },
+      { label: 'Turn into prefab…', disabled: !can || !sel.length || !this.onTurnIntoPrefab, run: () => { this.onTurnIntoPrefab?.() } },
       { label: 'Ungroup', disabled: !can || !sel.some((s) => classOf(st.doc.entities.find((x) => x.id === s.entityId) ?? { id: '' }) === 'func_group'), run: () => { ungroupSelection(this.store) } },
       { sep: true, label: '' },
       { label: 'Copy UV', disabled: !(sel.length === 1 && sel[0].faceId !== undefined), run: () => { copyUv(this.store) } },
@@ -1703,6 +1723,9 @@ export class ViewportPanel implements IContentRenderer {
       { label: `Unhide all${st.hidden.length ? ` (${st.hidden.length})` : ''}`, disabled: !st.hidden.length, run: () => { unhideAll(this.store) } },
       { label: 'Properties', disabled: !sel.length, run: () => { this.store.showPanel('inspector') } },
       { sep: true, label: '' },
+      { label: 'Cut', disabled: !can || !sel.length, run: () => { void cutSelection(this.store) } },
+      { label: 'Copy', disabled: !sel.length, run: () => { void copySelection(this.store) } },
+      { label: 'Paste', disabled: !can, run: () => { void pasteClipboard(this.store) } },
       { label: 'Duplicate', disabled: !can || !sel.length, run: () => { duplicateSelection(this.store) } },
       { label: 'Delete', disabled: !can || !sel.length, run: () => { deleteSelection(this.store) } },
     ]

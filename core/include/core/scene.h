@@ -117,6 +117,11 @@ public:
     // document uses it) so the Shell can preview it before it is placed. Throws if it can't be loaded.
     nlohmann::json readPrefabJson(const std::string& path);
 
+    // Writes `doc` as the prefab file `path` (inside the assets root, must end in .map.json), atomically, replacing any file there.
+    // The document is validated first (shape, and no prefab cycle through itself); throws, writing nothing, when it is not valid.
+    // Returns the normalized path.
+    std::string writePrefab(const std::string& path, const nlohmann::json& docJson);
+
     // Cheap change detector for the prefab library: paths + mtimes of every
     // reachable prefab file. No file contents are read or serialized.
     std::string libraryFingerprint();

@@ -195,6 +195,8 @@ export const msg = {
   writeTexGroup: (requestId: number, path: string, group: unknown) => JSON.stringify({ type: 'write_texgroup', requestId, path, group }),
   deleteTexGroup: (requestId: number, path: string) => JSON.stringify({ type: 'delete_texgroup', requestId, path }),
   readPrefab: (requestId: number, path: string) => JSON.stringify({ type: 'read_prefab', requestId, path }),
+  /** Writes `doc` as the prefab file `path` (assets relative, ends in .map.json); Core answers { ok, path }. */
+  writePrefab: (requestId: number, path: string, doc: MapDocument) => JSON.stringify({ type: 'write_prefab', requestId, path, doc }),
   /** Live lighting (Core: lighting service). Any field may be left out; the camera lets the Core refine what you look at first. */
   lighting: (o: { enabled?: boolean; exposure?: number; camera?: [number, number, number] }) => JSON.stringify({ type: 'lighting', ...o }),
   /** BSP export of the map as it is now (REQUIREMENTS §25): `path` is an assets relative .bsp; bake false = geometry only. */

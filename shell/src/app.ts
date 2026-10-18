@@ -3,7 +3,9 @@ import { createDockview, DockviewApi, DockviewGroupPanel, IDockviewPanel, themeD
 import { CoreConnection } from './net/connection'
 import { msg } from './net/protocol'
 import { gizmoLength, ringBasis } from './render/gizmo'
-import { deleteSelection, pivotOf } from './state/actions'
+import { deleteSelection, pivotOf, selectedList } from './state/actions'
+import { copySelection, cutSelection, pasteClipboard } from './state/clipboard'
+import { extractPrefab, replaceWithInstance } from './state/prefabize'
 import { Store } from './state/store'
 import { base64ToBytes, TextureCache } from './state/textures'
 import { PrefabPreviews } from './state/prefabPreview'
@@ -122,7 +124,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
       switch (name) {
         case 'viewport': {
           // the popout button opens a real OS window (positioned popup), which can be dragged to another monitor
-          const v = new ViewportPanel(store, textures, () => { const p = dock.getPanel(id); if (p) popOut(p) }, previews)
+          const v = new ViewportPanel(store, textures, () => { const p = dock.getPanel(id); if (p) popOut(p) }, previews, () => void turnIntoPrefab())
           if (store.state.coreSettings) v.applyDefaults(viewportDefaults(editorPrefs(store.state.coreSettings.editor)))  // Settings > Editor
           viewports.add(v); return v
         }
@@ -223,6 +225,28 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     dock.addPanel({ id: `viewport-${n}`, component: 'viewport', title: `Viewport ${n}`, ...(ref ? { position: { referenceGroup: ref.group, direction: 'right' as const } } : { position: { referencePanel: 'place', direction: 'right' as const } }) })
   }
   const MAP_EXT = '.map.json'
+  /** Right-click > Turn into prefab: asks for a prefab file, writes the selection into it, and swaps the selection for one instance of it (one undo step). */
+  async function turnIntoPrefab(): Promise<void> {
+    if (!store.canEdit) { store.setMessage('Not connected to Core - cannot write a prefab'); return }
+    const sels = selectedList(store)
+    const ex = extractPrefab(store.state.doc, sels)
+    if (!ex) { store.setMessage('Turn into prefab: select brushes, entities or prefab instances first'); return }
+    const root = (store.state.profile?.prefabRoot ?? 'prefabs').replace(/\/$/, '')
+    let p = await nativePick(conn, store, { kind: 'save', title: 'Save prefab as', startDir: root, fileName: `prefab${MAP_EXT}`, filters: MAP_FILTERS, defaultExt: 'map.json', relative: true })
+    if (p === undefined) p = await chooseFile({ mode: 'save', title: 'Save prefab as', ext: MAP_EXT, startDir: root, startName: `prefab${MAP_EXT}`, list: listDir })
+    if (!p) return
+    const file = withExt(p, MAP_EXT)
+    try {
+      const r = await conn.request((id) => msg.writePrefab(id, file, ex.prefab))
+      if (!r.ok) { store.setMessage(r.error ?? 'Core could not write the prefab'); return }
+    } catch (e) { store.setMessage((e as Error).message); return }
+    previews.clear(); prefabIcons.clear()
+    let instanceId = ''
+    if (store.edit('Turn into prefab', (d) => { const r = replaceWithInstance(d, sels, file, ex.pivot); instanceId = r.instanceId; return r.doc })) {
+      store.select({ entityId: '', instanceId })
+      store.setMessage(`Prefab saved to ${file}`)
+    }
+  }
   const listDir = async (dir: string) => {
     const r = await conn.request((id) => msg.listDirectory(id, dir))
     if (!r.ok) throw new Error(r.error ?? 'cannot list folder')
@@ -342,6 +366,12 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
       { label: 'Undo', shortcut: 'Ctrl+Z', action: () => store.undo() },
       { label: 'Redo', shortcut: 'Ctrl+Y', action: () => store.redo() },
       '-',
+      { label: 'Cut', shortcut: 'Ctrl+X', title: 'Copy the selection to the system clipboard (as JSON) and delete it', action: () => void cutSelection(store) },
+      { label: 'Copy', shortcut: 'Ctrl+C', title: 'Copy the selection to the system clipboard as JSON', action: () => void copySelection(store) },
+      { label: 'Paste', shortcut: 'Ctrl+V', title: 'Paste items copied from this or another editor window', action: () => void pasteClipboard(store) },
+      '-',
+      { label: 'Turn into prefab…', title: 'Save the selection as a prefab file and replace it with one instance of it', action: () => void turnIntoPrefab() },
+      '-',
       { label: 'Delete', shortcut: 'Del', title: 'Delete the selection', action: () => deleteSelection(store) },
       '-',
       { label: 'UV lock', checked: store.state.uvLock, title: 'On = textures stay on the faces when you move, rotate or scale brushes', action: () => store.setUvLock(!store.state.uvLock) },
@@ -419,6 +449,9 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     else if (mod && k === 'y') { e.preventDefault(); store.redo() }
     else if (mod && k === 's') { e.preventDefault(); void (e.shiftKey ? saveAs() : save()) }
     else if (mod && k === 'o') { e.preventDefault(); void open() }
+    else if (mod && !e.shiftKey && k === 'c') { e.preventDefault(); void copySelection(store) }
+    else if (mod && !e.shiftKey && k === 'x') { e.preventDefault(); void cutSelection(store) }
+    else if (mod && !e.shiftKey && k === 'v') { e.preventDefault(); void pasteClipboard(store) }
     else if (mod && k === ',') { e.preventDefault(); openSettings(store, conn) }
     else if (k === 'f5' && !mod) { e.preventDefault(); void playMap() }
     else if (mod) return

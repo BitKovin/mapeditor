@@ -249,6 +249,40 @@ TEST_CASE("router: onTick reloads the profile and definitions when they change o
     CHECK(scene.profile().textureRoot == "textures");
 }
 
+TEST_CASE("router: write_prefab creates a prefab file, validated and sandboxed, that read_prefab then returns") {
+    TempDir d;
+    Scene scene(d.path);
+    Router router(scene);
+    const json doc = {{"schemaVersion", "0.2"}, {"entities", json::array({json{{"id", "e1"}, {"classname", "info_player_start"}, {"origin", json::array({1, 2, 3})}}})}, {"prefabInstances", json::array()}};
+    json r = json::parse(router.onMessage(json{{"type", "write_prefab"}, {"requestId", 5}, {"path", "./prefabs/new/crate.map.json"}, {"doc", doc}}.dump()).toSender.at(0));
+    CHECK(r["ok"] == true);
+    CHECK(r["requestId"] == 5);
+    CHECK(r["path"] == "prefabs/new/crate.map.json");
+    r = json::parse(router.onMessage(R"({"type":"read_prefab","requestId":6,"path":"prefabs/new/crate.map.json"})").toSender.at(0));
+    CHECK(r["ok"] == true);
+    CHECK(r["doc"]["entities"][0]["origin"][2] == 3);
+    // overwriting replaces the content (no stale cache)
+    json doc2 = doc;
+    doc2["entities"][0]["origin"] = json::array({9, 9, 9});
+    CHECK(json::parse(router.onMessage(json{{"type", "write_prefab"}, {"requestId", 7}, {"path", "prefabs/new/crate.map.json"}, {"doc", doc2}}.dump()).toSender.at(0))["ok"] == true);
+    r = json::parse(router.onMessage(R"({"type":"read_prefab","requestId":8,"path":"prefabs/new/crate.map.json"})").toSender.at(0));
+    CHECK(r["doc"]["entities"][0]["origin"][0] == 9);
+    // refused: outside the root, wrong extension, not a document, not valid, a prefab that contains itself
+    const json selfRef = {{"schemaVersion", "0.2"}, {"entities", json::array()}, {"prefabInstances", json::array({json{{"id", "p1"}, {"file", "prefabs/loop.map.json"}}})}};
+    for (const auto& bad : {json{{"path", "../x.map.json"}, {"doc", doc}}, json{{"path", "/tmp/x.map.json"}, {"doc", doc}}, json{{"path", "prefabs/x.json"}, {"doc", doc}},
+                            json{{"path", "prefabs/x.map.json"}, {"doc", 5}}, json{{"path", "prefabs/x.map.json"}, {"doc", json::object()}},
+                            json{{"path", "prefabs/loop.map.json"}, {"doc", selfRef}}}) {
+        json m = bad;
+        m["type"] = "write_prefab";
+        m["requestId"] = 9;
+        r = json::parse(router.onMessage(m.dump()).toSender.at(0));
+        CHECK(r["ok"] == false);
+        CHECK(r["requestId"] == 9);
+    }
+    CHECK_FALSE(fs::exists(d.path / "prefabs" / "x.map.json"));
+    CHECK_FALSE(fs::exists(d.path / "prefabs" / "loop.map.json"));
+}
+
 TEST_CASE("router: read_prefab returns one prefab file, sandboxed, even when the document does not use it") {
     TempDir d;
     touch(d, "prefabs/box.map.json", R"({"schemaVersion":"0.2","entities":[{"id":"e1","classname":"info_player_start","origin":[1,2,3]}],"prefabInstances":[]})");

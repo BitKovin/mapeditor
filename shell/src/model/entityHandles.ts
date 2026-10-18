@@ -3,7 +3,7 @@
 import type { Entity } from './document'
 import { classOf, isBrushEntity } from './document'
 import type { Box } from './entityBox'
-import { Vec3, add, length, scale, snap, sub } from './math'
+import { Vec3, add, length, scale } from './math'
 import { directionSpan } from './arrows'
 
 /** Whether a selected entity gets the angle handle: point entities that draw a direction arrow (not decals, not worldspawn). */
@@ -32,12 +32,6 @@ export function anglesToward(cur: Vec3 | undefined, dir: Vec3, keepPitch: boolea
   let pitch = keepPitch ? a[0] : Math.asin(Math.max(-1, Math.min(1, -d[1]))) * DEG
   if (snapDeg > 0) { yaw = Math.round(yaw / snapDeg) * snapDeg; if (!keepPitch) pitch = Math.round(pitch / snapDeg) * snapDeg }
   return [tidy(pitch), tidy(yaw), a[2]]
-}
-
-/** The new origin for a drag from `grab` to `at` (both on the drag plane, normal `n`): snapped on the axes the plane spans. */
-export function draggedOrigin(start: Vec3, grab: Vec3, at: Vec3, n: Vec3, step: number): Vec3 {
-  const p = add(start, sub(at, grab))
-  return [0, 1, 2].map((i) => (Math.abs(n[i]) > 0.9 ? start[i] : snap(p[i], step))) as Vec3
 }
 
 /** Square (origin handle) or diamond (angle handle) of half size `half` facing the camera (`right` / `up`), plus a cross for the origin. */

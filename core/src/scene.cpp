@@ -346,6 +346,37 @@ json Scene::prefabLibraryJson() {
     return json{{"type", "prefab_library"}, {"prefabs", prefabs}};
 }
 
+std::string Scene::writePrefab(const std::string& path, const json& docJson) {
+    const std::string key = normalizeAssetPath(path);
+    const std::string ext = ".map.json";
+    if (key.size() <= ext.size() || key.compare(key.size() - ext.size(), ext.size(), ext) != 0)
+        throw std::runtime_error("a prefab file name must end in " + ext + ": " + key);
+    if (!docJson.is_object()) throw std::runtime_error("the prefab is not a document");
+    const fs::path full = resolveSandboxed(key);
+
+    Document typed;
+    try {
+        typed = documentFromJson(docJson);
+    } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("malformed prefab: ") + e.what());
+    }
+    validateCandidate(typed, key);  // also catches a prefab that (indirectly) contains itself
+
+    fs::create_directories(full.parent_path());
+    fs::path tmp = full;
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) throw std::runtime_error("could not write " + key);
+        out << docJson.dump(2) << "\n";
+        out.flush();
+        if (!out) throw std::runtime_error("write failed for " + key);
+    }
+    fs::rename(tmp, full);  // atomic replace
+    prefabCache_.erase(key);  // never serve an older version of this file, even when the timestamps are too close to tell
+    return key;
+}
+
 nlohmann::json Scene::readPrefabJson(const std::string& path) {
     return loadPrefab(normalizeAssetPath(path)).raw;
 }

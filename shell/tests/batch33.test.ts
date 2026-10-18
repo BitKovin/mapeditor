@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { findEntity } from '../src/model/document'
 import { makeBox, validateBrush } from '../src/model/geometry'
-import { anglesToward, angleHandle, draggedOrigin, hasAngleHandle } from '../src/model/entityHandles'
+import { anglesToward, angleHandle, hasAngleHandle } from '../src/model/entityHandles'
 import { attachShape, regenerateShape, shapeOf } from '../src/model/parametric'
 import { buildShape, defaultShapeParams, frameOf, shapePreviewLines } from '../src/model/shapes'
 import { markSmooth, smoothEdgeKeys, smoothPairs } from '../src/model/smooth'
@@ -37,9 +37,6 @@ describe('entity handles (H1 / H2)', () => {
     expect(hasAngleHandle(e)).toBe(true)
     expect(hasAngleHandle({ id: 'd', classname: 'decal' })).toBe(false)
     expect(hasAngleHandle({ id: 'b', classname: 'func_door', brushes: [makeBox('b', [0, 0, 0], [1, 1, 1])] })).toBe(false)
-  })
-  it('the origin drag snaps the axes of the drag plane and keeps the third', () => {
-    expect(draggedOrigin([0.3, 1.1, 0], [0.3, 1.1, 0], [2.2, 1.1, -0.9], [0, 1, 0], 0.5)).toEqual([2, 1.1, -1])
   })
 })
 
