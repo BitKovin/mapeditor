@@ -140,13 +140,20 @@ export class LightmapStore {
       if (!page || t.x + t.w > this.atlas || t.y + t.h > this.atlas) continue
       const px = decodeHalves(t.rgba)
       if (px.length !== t.w * t.h * 4) continue
-      for (let y = 0; y < t.h; y++)
-        for (let x = 0; x < t.w; x++) {
-          const s = (y * t.w + x) * 4
-          if (px[s + 3] === 0) continue // alpha 0: nothing was baked here, keep what we have
-          const d = ((t.y + y) * this.atlas + t.x + x) * 4
-          page[d] = px[s]; page[d + 1] = px[s + 1]; page[d + 2] = px[s + 2]; page[d + 3] = HALF_ONE
+      // a texel is two 32-bit words (r|g, b|a): copied as such, with the alpha of every baked texel set to 1 (page and px are aligned, see decodeHalves)
+      const src = new Uint32Array(px.buffer, px.byteOffset, px.length >> 1)
+      const dst = new Uint32Array(page.buffer, page.byteOffset, page.length >> 1)
+      const one = HALF_ONE << 16
+      for (let y = 0; y < t.h; y++) {
+        let s = y * t.w * 2
+        let d = ((t.y + y) * this.atlas + t.x) * 2
+        for (let x = 0; x < t.w; x++, s += 2, d += 2) {
+          const bAlpha = src[s + 1]
+          if (bAlpha >>> 16 === 0) continue // alpha 0: nothing was baked here, keep what we have
+          dst[d] = src[s]
+          dst[d + 1] = ((bAlpha & 0xffff) | one) >>> 0
         }
+      }
       this.log.push({ seq: ++this.seq, rect: { page: t.page, x: t.x, y: t.y, w: t.w, h: t.h, style } })
       applied++
     }

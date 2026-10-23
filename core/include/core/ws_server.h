@@ -42,7 +42,8 @@ public:
     void post(std::function<void()> fn);
 
     void sendTo(uint64_t sessionId, const std::string& text);
-    void broadcast(const std::string& text);
+    // `done` (optional) is released when every client has been sent this message (or has gone): a null shared_ptr with a deleter makes a completion callback.
+    void broadcast(const std::string& text, std::shared_ptr<void> done = nullptr);
     void broadcastExcept(uint64_t exceptSessionId, const std::string& text);
 
 private:

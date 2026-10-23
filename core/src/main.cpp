@@ -117,11 +117,13 @@ int main(int argc, char** argv) {
     serverPtr = &server;
     server.setTick(std::chrono::seconds(1), [&] { dispatch(0, router.onTick()); });  // only toAll is used by onTick
     // Live lighting runs on its own thread: it never waits for the socket thread and the socket thread never waits for it. The bake thread hands its
-    // messages over with post(); the delivered() call tells it the batch was handled (it holds tiles back while the Shell is behind).
+    // messages over with post(); delivered() tells it the batch left for every Shell (it holds tiles back while a Shell is behind). That is when the
+    // frames were written to the sockets, not when they were queued: a batch is hundreds of kB, and a Shell that reads slower than the bake produces
+    // would otherwise fall minutes behind (every edit waiting for the ones before it).
     router.lighting().startWorker([&server, &router](std::vector<std::string>&& messages) {
         server.post([&server, &router, batch = std::move(messages)] {
-            for (const auto& m : batch) server.broadcast(m);
-            router.lighting().delivered();
+            const std::shared_ptr<void> written(nullptr, [&router](void*) { router.lighting().delivered(); });
+            for (const auto& m : batch) server.broadcast(m, written);
         });
     });
     server.run();

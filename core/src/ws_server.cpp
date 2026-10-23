@@ -82,9 +82,10 @@ public:
     }
 
     // Queues behind any write in flight; safe to call from inside a handler.
-    void send(const std::string& text) {
+    // `done` (optional) is released once the frame was written or the session is gone: its deleter tells the sender that this client took the message.
+    void send(const std::string& text, std::shared_ptr<void> done = nullptr) {
         const bool idle = writeQueue_.empty();
-        writeQueue_.push_back(text);
+        writeQueue_.push_back({text, std::move(done)});
         if (idle) doWrite();
     }
 
@@ -145,7 +146,7 @@ private:
 
     void doWrite() {
         ws_.text(true);
-        ws_.async_write(asio::buffer(writeQueue_.front()),
+        ws_.async_write(asio::buffer(writeQueue_.front().text),
                          [self = shared_from_this()](beast::error_code ec, std::size_t) { self->onWrite(ec); });
     }
 
@@ -169,7 +170,8 @@ private:
     beast::flat_buffer readBuffer_;
     uint64_t id_;
     WsServer::Impl& server_;
-    std::deque<std::string> writeQueue_;
+    struct Outgoing { std::string text; std::shared_ptr<void> done; };
+    std::deque<Outgoing> writeQueue_;
 };
 
 void WsServer::Impl::doAccept() {
@@ -254,8 +256,8 @@ void WsServer::sendTo(uint64_t sessionId, const std::string& text) {
     if (it != impl_->sessions.end()) it->second->send(text);
 }
 
-void WsServer::broadcast(const std::string& text) {
-    for (auto& [id, session] : impl_->sessions) session->send(text);
+void WsServer::broadcast(const std::string& text, std::shared_ptr<void> done) {
+    for (auto& [id, session] : impl_->sessions) session->send(text, done);
 }
 
 void WsServer::broadcastExcept(uint64_t exceptSessionId, const std::string& text) {
