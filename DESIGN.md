@@ -433,7 +433,7 @@ and 16x the pixels for OIDN), not a default.
 - **Scheduling.** `step(camera, texelBudget)` refines stale chunks first, then the least refined, ties by distance to the camera. A
   global edit (directional / sky / ambient) makes everything stale, but the camera's neighbourhood is processed first.
 - **Invalidation.** Lights are diffed by (instance, id). A point / spot / rect edit makes stale the chunks inside the old and new
-  influence box (position +- radius); chunks within `bounceRange + indirectRadius` of it only fall back to `indirectRefreshPasses` (bounce refresh).
+  influence box (position +- radius); chunks within `indirectRadius` (40 m) of it only fall back to `indirectRefreshPasses` (bounce refresh).
   Every invalidated chunk (stale or bounce-refresh) immediately zeroes its bounce source `S` (CPU atlas and resident GPU atlas) and replaces its
   indirect estimate on its next pass instead of averaging into it: the estimate feeds on itself, so old light left in `S` or `I` would circulate
   between the surfaces that still hold it. The displayed value stays the old one until the new pass lands (no flicker).
@@ -488,7 +488,7 @@ and 16x the pixels for OIDN), not a default.
   `gpuMaxStepScale` (32) times `gpuTexelsPerStep` (262144); `tickBudgetMs` (120) lets one synchronous service tick run several steps back to back (with a bake thread steps follow each other without ticks). Supersampling
   and the fine GI grid multiply the GPU work per texel without more CPU work, which is what keeps the GPU busy while the CPU only accumulates results.
 - **Config.** `lighting.json` next to `settings.json` (written with the defaults on first start): `texelsPerMeter, atlasSize, padding, mergeAngleDeg,
-  exposure, directSupersample, giScale, areaSamplesPerPass, skySamplesPerPass, giSamplesPerPass, maxPasses, chunkTexels, bounces, albedo, bounceRange,
+  exposure, directSupersample, giScale, areaSamplesPerPass, skySamplesPerPass, giSamplesPerPass, maxPasses, chunkTexels, bounces, albedo,
   indirectWindow, denoise, denoiseQuality (0 fast, 1 balanced, 2 high), useGpu, gpuTexelsPerStep, gpuTargetStepMs, gpuMaxStepScale, texelsPerStep,
   tickBudgetMs, flushIntervalMs, firstSendFraction, maxHoldSeconds`. Unknown keys are ignored, values are clamped; read once at start-up.
 - **Backends.** This first version evaluates chunks with the CPU reference; the GPU back end needs a persistent context (device,

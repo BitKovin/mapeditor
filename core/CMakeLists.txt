@@ -187,3 +187,10 @@ if(OIDN_BIN_DIRS)
   file(COPY ${OIDN_DLLS} DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
   message(STATUS "OpenImageDenoise: ${OIDN_BIN_DIR}")
 endif()
+
+# Throughput benchmark of the final bake on a real map and the real GPU (see bench/bench_bake.cpp). Not part of `all`:
+#   cmake --build <dir> --target bench_bake
+add_executable(bench_bake EXCLUDE_FROM_ALL bench/bench_bake.cpp)
+target_include_directories(bench_bake PRIVATE tests src)
+target_link_libraries(bench_bake PRIVATE core_lib)
+core_warnings(bench_bake)

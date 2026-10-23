@@ -629,11 +629,11 @@ void LiveBaker::markAllStale() {
     }
 }
 
-// `direct`: chunks inside go fully stale. Chunks within a gather range (+ `indirectRadius`) of it can only see different bounce light: they drop
+// `direct`: chunks inside go fully stale. Chunks within `indirectRadius` of it can only see different bounce light: they drop
 // to indirectRefreshPasses. Both kinds lose their bounce source at once and replace (not average) their indirect estimate on the next pass,
 // otherwise the old light keeps circulating between the surfaces that still hold it. `indirectRadius` 0 = no bounce refresh at all.
 void LiveBaker::markStale(const Aabb& direct, bool directToo, double indirectRadius) {
-    const Aabb wide = direct.expanded(indirectRadius > 0 ? indirectRadius + cfg_.bounceRange : 0.0);
+    const Aabb wide = direct.expanded(indirectRadius > 0 ? indirectRadius : 0.0);
     for (auto& c : chunks_) {
         if (directToo && c.bounds.intersects(direct)) {
             c.passes = 0;
@@ -808,7 +808,6 @@ bool LiveBaker::prepareGpu() {
     sc.giSamples = cfg_.giSamplesPerPass;
     sc.superSamples = cfg_.directSupersample;
     sc.albedo = std::min(cfg_.albedo, kMaxLiveAlbedo);
-    sc.bounceRange = cfg_.bounceRange;
     sc.gather = gather;
     sc.validation = cfg_.gpuValidation;
     std::string error;
@@ -848,8 +847,48 @@ bool LiveBaker::refineOnGpu(const std::vector<int>& ids, int perPass) {
         }
         jobs.push_back(job);
     }
-    std::vector<float> d, db, ind;
-    if (!session_->run(jobs, d, db, sessionGather_ ? &ind : nullptr)) {
+    // The step runs in parts: while the GPU works on the next part, the results of a finished one are merged here (on all cores: the chunks own
+    // disjoint samples, grid entries and atlas texels), exactly like the CPU path does (running mean, moving average). Every part still gathers from the
+    // bounce source as the previous step left it, so the GPU copy of the atlas is written only once the whole step is done.
+    const bool fine = sessionGather_ && fineGi();
+    using Indirect = gpu::LiveSession::Indirect;
+    const Indirect indirect = !sessionGather_ ? Indirect::None : fine ? Indirect::PerEntry : Indirect::PerSample;
+    size_t texels = 0;
+    for (const auto& j : jobs) texels += j.count + j.giCount;
+    const size_t parts = std::clamp<size_t>(texels / 65536, 1, 4);  // a part keeps the GPU busy for a while; too many cost submissions
+    const auto merge = [&](size_t firstJob, size_t count, const std::vector<gpu::LiveSession::JobResult>& results) {
+        parallelFor(count, 16, [&](size_t nb, size_t ne) {
+            for (size_t q = nb; q < ne; ++q) {
+                LiveChunk& c = chunks_[static_cast<size_t>(ids[firstJob + q])];
+                const float* d = results[q].d;
+                const float* db = results[q].db;
+                const float* ind = results[q].ind;
+                size_t gridAt = 0;
+                const int p = c.passes;
+                const float k = p == 0 ? 1.f : 1.f / static_cast<float>(p + 1);  // running mean: new samples join the estimate
+                const float kk = (p == 0 || c.resetIndirect) ? 1.f : 1.f / static_cast<float>(std::min(p + 1, std::max(1, cfg_.indirectWindow)));  // moving average
+                for (size_t j = 0; j < c.samples.size(); ++j) {
+                    const size_t s = c.samples[j], t = static_cast<size_t>(samples_.texel[s]) * 4;
+                    for (size_t ch = 0; ch < 3; ++ch) {
+                        float& D = direct_[s * 4 + ch];
+                        float& B = db_[s * 4 + ch];
+                        D += (d[j * 4 + ch] - D) * k;
+                        B += (db[j * 4 + ch] - B) * k;
+                        if (sessionGather_ && !fine) {
+                            float& I = indirect_[s * 4 + ch];
+                            I += (ind[j * 4 + ch] - I) * kk;
+                        }
+                    }
+                    if (fine) accumulateFine(s, ind, gridAt, kk);
+                    for (size_t ch = 0; ch < 3; ++ch) atlasS_[t + ch] = db_[s * 4 + ch] + indirect_[s * 4 + ch];
+                    atlasS_[t + 3] = 1.f;
+                }
+                c.passes = p + 1;
+                c.resetIndirect = false;
+            }
+        });
+    };
+    if (!session_->runParts(jobs, indirect, parts, merge)) {
         gpuError_ = session_->error();
         gpuDisabled_ = true;
         session_.reset();
@@ -860,34 +899,13 @@ bool LiveBaker::refineOnGpu(const std::vector<int>& ids, int perPass) {
     const double gpuSeconds = session_->lastGpuSeconds();
     stats_.gpuSeconds += gpuSeconds;
     float* atlasGpu = session_->atlas();
-    const bool fine = sessionGather_ && fineGi();
-    size_t first = 0, gridAt = 0;
-    for (int id : ids) {
-        LiveChunk& c = chunks_[static_cast<size_t>(id)];
-        const int p = c.passes;
-        const float k = p == 0 ? 1.f : 1.f / static_cast<float>(p + 1);  // running mean: new samples join the estimate
-        const float kk = (p == 0 || c.resetIndirect) ? 1.f : 1.f / static_cast<float>(std::min(p + 1, std::max(1, cfg_.indirectWindow)));  // moving average
-        for (size_t j = 0; j < c.samples.size(); ++j) {
-            const size_t s = c.samples[j], t = static_cast<size_t>(samples_.texel[s]) * 4;
-            for (size_t ch = 0; ch < 3; ++ch) {
-                float& D = direct_[s * 4 + ch];
-                float& B = db_[s * 4 + ch];
-                D += (d[(first + j) * 4 + ch] - D) * k;
-                B += (db[(first + j) * 4 + ch] - B) * k;
-                if (sessionGather_ && !fine) {
-                    float& I = indirect_[s * 4 + ch];
-                    I += (ind[(first + j) * 4 + ch] - I) * kk;
-                }
+    parallelFor(ids.size(), 16, [&](size_t nb, size_t ne) {
+        for (size_t q = nb; q < ne; ++q)
+            for (uint32_t s : chunks_[static_cast<size_t>(ids[q])].samples) {
+                const size_t t = static_cast<size_t>(samples_.texel[s]) * 4;
+                for (size_t ch = 0; ch < 4; ++ch) atlasGpu[t + ch] = atlasS_[t + ch];  // write only: never read the (write-combined) GPU copy
             }
-            if (fine) accumulateFine(s, ind.data(), gridAt, kk);
-            for (size_t ch = 0; ch < 3; ++ch) atlasS_[t + ch] = db_[s * 4 + ch] + indirect_[s * 4 + ch];
-            atlasS_[t + 3] = 1.f;
-            for (size_t ch = 0; ch < 4; ++ch) atlasGpu[t + ch] = atlasS_[t + ch];  // write only: never read the (write-combined) GPU copy
-        }
-        first += c.samples.size();
-        c.passes = p + 1;
-        c.resetIndirect = false;
-    }
+    });
     // keep a step near gpuTargetStepMs: long enough to fill the GPU, short enough that the editor stays responsive (and far from a driver timeout)
     const double target = std::clamp(cfg_.gpuTargetStepMs, 5.0, 400.0) / 1000.0;
     const size_t lo = std::max<size_t>(1024, cfg_.gpuTexelsPerStep / 4), hi = cfg_.gpuTexelsPerStep * static_cast<size_t>(std::max(1, cfg_.gpuMaxStepScale));
@@ -963,7 +981,7 @@ void LiveBaker::refineBatch(const std::vector<int>& ids) {
             const bool fine = fineGi();
             const TexelSamples sub = fine ? giSamplesOf(c) : samplesOf(c);  // on the fine grid the gather runs over the grid entries
             const std::vector<float> g = gatherCpu(sub, mesh_, *bvh_, atlasS_, std::min(cfg_.albedo, kMaxLiveAlbedo), cfg_.giSamplesPerPass,
-                                                   static_cast<uint32_t>(p) * static_cast<uint32_t>(perPass), cfg_.bounceRange, samples_.atlas);
+                                                   static_cast<uint32_t>(p) * static_cast<uint32_t>(perPass), kShadowFar, samples_.atlas);
             const float kk = (p == 0 || c.resetIndirect) ? 1.f : 1.f / static_cast<float>(std::min(p + 1, std::max(1, cfg_.indirectWindow)));  // moving average
             if (fine) {
                 size_t cursor = 0;

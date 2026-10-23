@@ -23,7 +23,6 @@ struct LightvolSettings {
     int giSamples = 32;        // cosine-weighted gather rays per normal and bounce source lookup
     bool bounces = true;       // add the indirect light gathered from the baker's bounce source
     double albedo = 0.7;
-    double bounceRange = 20;
     double bounceDirectionWeight = 0.25;  // how much bounce light counts towards the probe direction next to direct light (fitProbeDirectFirst)
     bool useGpu = true;        // direct light on the Vulkan ray query path when available
     LightingClasses classes = LightingClasses::defaults();

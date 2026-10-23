@@ -43,6 +43,9 @@ public:
         double tickBudgetSeconds = 0.12;
         // Changed tiles are sent at most this often (ms) while refinement runs; the last ones always go out when it stops.
         double flushIntervalMs = 25;
+        // Render and encode lightmap tiles for clients. The export bakes without any client to send them to (it reads the bakers' pages at the end):
+        // there, re-rendering every refined chunk after every step cost more than the light itself.
+        bool tiles = true;
         // Point / spot lights whose `source_size` is 0 are razor sharp shadow casters (and every texel step shows as a stair). The live view treats them as
         // spheres of this radius (m) instead, and directional lights with 0 as a sun of this angular diameter (degrees). 0 = use the entities as authored.
         // The map's own non-zero source sizes are never changed.

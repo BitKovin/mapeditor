@@ -162,6 +162,7 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
             for (const auto& e : doc.entities) if (e.classname == "worldspawn") level = levelSettingsOf(e);
             LightingService::Options opt = req.lighting;
             opt.qualityScale = level.bakeQuality > 0 ? level.bakeQuality : 2.0;
+            opt.tiles = false;  // no client: the pages are read from the bakers when it converged
             svc = std::make_unique<LightingService>(scene, opt);
             svc->setEnabled(true);
             const auto b0 = std::chrono::steady_clock::now();

@@ -346,7 +346,7 @@ void bakeProbesCpu(LightvolGrid& grid, const std::vector<char>& solid, std::vect
     const std::vector<float> direct = evaluateDirectCpu(s, *src.lights, o.shadows ? src.bvh : nullptr, o);
     std::vector<float> indirect;
     const bool gather = canGather(src, cfg);
-    if (gather) indirect = gatherCpu(s, *src.mesh, *src.bvh, *src.atlasS, cfg.albedo, cfg.giSamples, 0, cfg.bounceRange);
+    if (gather) indirect = gatherCpu(s, *src.mesh, *src.bvh, *src.atlasS, cfg.albedo, cfg.giSamples, 0);
     for (size_t j = 0; j < ids.size(); ++j) fitFrom(grid, ids[j], normals, direct.data(), gather ? indirect.data() : nullptr, j * K, cfg.bounceDirectionWeight);
 }
 
@@ -393,7 +393,6 @@ struct ProbeBaker::Impl {
         sc.giSamples = cfg.giSamples;
         sc.superSamples = 1;
         sc.albedo = std::min(cfg.albedo, kMaxLiveAlbedo);
-        sc.bounceRange = cfg.bounceRange;
         sc.gather = gather;
         static const std::vector<float> none;
         std::string error;

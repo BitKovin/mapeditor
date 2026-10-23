@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cfloat>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
@@ -50,6 +51,8 @@ struct State {
     void* lib = nullptr;
     Api api;
     OIDNDevice device = nullptr;
+    OIDNBuffer buffer = nullptr;  // the image buffer, kept for the next filter (allocating it took longer than filtering on a GPU device)
+    size_t bufferBytes = 0;
     bool deviceIsCpu = false;
     Info info;
 };
@@ -150,6 +153,7 @@ std::string deviceError(State& s, OIDNDevice dev) {
 
 // Creates the shared device. `cpu`: force the CPU device (the fallback when the automatically chosen one fails).
 bool makeDevice(State& s, bool cpu, std::string& error) {
+    if (s.buffer) { s.api.releaseBuffer(s.buffer); s.buffer = nullptr; s.bufferBytes = 0; }  // it belongs to the device
     if (s.device) { s.api.releaseDevice(s.device); s.device = nullptr; }
     s.device = s.api.newDevice(cpu ? OIDN_DEVICE_TYPE_CPU : OIDN_DEVICE_TYPE_DEFAULT);
     if (!s.device) {
@@ -186,8 +190,14 @@ void probeLocked(State& s) {
 // Runs the RTLightmap filter on one image on `s.device`. Returns an error message, empty on success.
 std::string runFilter(State& s, std::vector<float>& rgb, int w, int h, Quality quality) {
     const size_t bytes = static_cast<size_t>(w) * static_cast<size_t>(h) * 3 * sizeof(float);
-    OIDNBuffer buf = s.api.newBuffer(s.device, bytes);
-    if (!buf) return "OIDN buffer allocation failed: " + deviceError(s, s.device);
+    if (!s.buffer || s.bufferBytes < bytes) {
+        if (s.buffer) s.api.releaseBuffer(s.buffer);
+        s.bufferBytes = 0;
+        s.buffer = s.api.newBuffer(s.device, bytes);
+        if (!s.buffer) return "OIDN buffer allocation failed: " + deviceError(s, s.device);
+        s.bufferBytes = bytes;
+    }
+    OIDNBuffer buf = s.buffer;
     OIDNFilter filter = s.api.newFilter(s.device, "RTLightmap");
     std::string err;
     if (!filter) {
@@ -208,7 +218,6 @@ std::string runFilter(State& s, std::vector<float>& rgb, int w, int h, Quality q
         if (err.empty()) s.api.readBuffer(buf, 0, bytes, rgb.data());
         s.api.releaseFilter(filter);
     }
-    s.api.releaseBuffer(buf);
     return err;
 }
 
@@ -232,7 +241,8 @@ Result filterRGB(std::vector<float>& rgb, int width, int height, Quality quality
     probeLocked(s);
     if (!s.info.available) { r.error = s.info.error; return r; }
     const auto t0 = std::chrono::steady_clock::now();
-    for (float& v : rgb) if (!std::isfinite(v) || v < 0.f) v = 0.f;  // the network is trained on HDR values in [0, inf)
+    const auto sanitize = [&rgb] { for (float& v : rgb) v = v >= 0.f && v <= FLT_MAX ? v : 0.f; };  // NaN, inf and negatives become 0 (a compare that vectorises)
+    sanitize();  // the network is trained on HDR values in [0, inf)
     const std::vector<float> original = rgb;
     std::string err = runFilter(s, rgb, width, height, quality);
     if (!err.empty() && !s.deviceIsCpu) {  // an automatically chosen (GPU) device failed at run time: retry once on the CPU
@@ -243,7 +253,7 @@ Result filterRGB(std::vector<float>& rgb, int width, int height, Quality quality
         }
     }
     if (!err.empty()) { rgb = original; r.error = err; return r; }
-    for (float& v : rgb) if (!std::isfinite(v) || v < 0.f) v = 0.f;
+    sanitize();
     r.ok = true;
     r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     return r;
@@ -272,33 +282,50 @@ Result denoiseSamples(const TexelSamples& samples, std::vector<float>& values4, 
             for (size_t c = 0; c < 3; ++c) img[t * 3 + c] = values4[static_cast<size_t>(i) * 4 + c];
             have[t] = 1;
         }
-        // grow the baked texels into the empty space: nearest-first, ring by ring
-        std::vector<uint8_t> filled = have;
-        for (int ring = 0; ring < fillRadius; ++ring) {
-            const std::vector<uint8_t> before = filled;
-            bool any = false;
-            for (size_t y = 0; y < atlas; ++y)
-                for (size_t x = 0; x < atlas; ++x) {
-                    const size_t idx = y * atlas + x;
-                    if (before[idx]) continue;
-                    float acc[3] = {0, 0, 0};
-                    int n = 0;
-                    for (int dy = -1; dy <= 1; ++dy)
-                        for (int dx = -1; dx <= 1; ++dx) {
-                            if (!dx && !dy) continue;
-                            const long nx = static_cast<long>(x) + dx, ny = static_cast<long>(y) + dy;
-                            if (nx < 0 || ny < 0 || nx >= static_cast<long>(atlas) || ny >= static_cast<long>(atlas)) continue;
-                            const size_t j = static_cast<size_t>(ny) * atlas + static_cast<size_t>(nx);
-                            if (!before[j]) continue;
-                            for (size_t c = 0; c < 3; ++c) acc[c] += img[j * 3 + c];
-                            ++n;
-                        }
-                    if (!n) continue;
-                    for (size_t c = 0; c < 3; ++c) img[idx * 3 + c] = acc[c] / static_cast<float>(n);
-                    filled[idx] = 1;
-                    any = true;
-                }
-            if (!any) break;
+        // grow the baked texels into the empty space: nearest-first, ring by ring. Only the frontier is visited (the pixels next to what the previous
+        // ring filled), not the whole page per ring: the page is mostly empty and the scans cost more than the filter.
+        // state: 0 = baked, r + 1 = filled by ring r, kEmpty = nothing yet. A ring averages the neighbours filled before it.
+        constexpr uint8_t kEmpty = 0xFF;
+        std::vector<uint8_t> state(perPage, kEmpty), queued(perPage, 0);
+        std::vector<uint32_t> front, next;
+        for (size_t t = 0; t < perPage; ++t) if (have[t]) { state[t] = 0; front.push_back(static_cast<uint32_t>(t)); }
+        for (int ring = 0; ring < fillRadius && !front.empty(); ++ring) {
+            const uint8_t mark = static_cast<uint8_t>(ring + 1);
+            std::vector<uint32_t> cand;
+            for (uint32_t f : front) {
+                const long fx = static_cast<long>(f % atlas), fy = static_cast<long>(f / atlas);
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const long nx = fx + dx, ny = fy + dy;
+                        if (nx < 0 || ny < 0 || nx >= static_cast<long>(atlas) || ny >= static_cast<long>(atlas)) continue;
+                        const size_t j = static_cast<size_t>(ny) * atlas + static_cast<size_t>(nx);
+                        if (state[j] != kEmpty || queued[j] == mark) continue;
+                        queued[j] = mark;
+                        cand.push_back(static_cast<uint32_t>(j));
+                    }
+            }
+            std::sort(cand.begin(), cand.end());  // row order, like a scan of the page
+            next.clear();
+            for (uint32_t idx : cand) {
+                const long x = static_cast<long>(idx % atlas), y = static_cast<long>(idx / atlas);
+                float acc[3] = {0, 0, 0};
+                int n = 0;
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (!dx && !dy) continue;
+                        const long nx = x + dx, ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= static_cast<long>(atlas) || ny >= static_cast<long>(atlas)) continue;
+                        const size_t j = static_cast<size_t>(ny) * atlas + static_cast<size_t>(nx);
+                        if (state[j] >= mark) continue;  // empty, or filled by this ring
+                        for (size_t c = 0; c < 3; ++c) acc[c] += img[j * 3 + c];
+                        ++n;
+                    }
+                if (!n) continue;
+                for (size_t c = 0; c < 3; ++c) img[idx * 3 + c] = acc[c] / static_cast<float>(n);
+                state[idx] = mark;
+                next.push_back(idx);
+            }
+            front.swap(next);
         }
         const Result r = filterRGB(img, samples.atlas, samples.atlas, quality);
         if (!r.ok) { total.error = r.error; return total; }

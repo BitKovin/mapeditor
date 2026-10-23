@@ -1,4 +1,5 @@
 #include "core/lighting_service.h"
+#include "core/parallel.h"
 #include "core/relief_geometry.h"
 #include "core/smoothing.h"
 #include "core/protocol.h"
@@ -21,7 +22,7 @@ json optionsToJson(const LightingService::Options& o) {
                 {"directSupersample", o.live.directSupersample}, {"giScale", o.live.giScale},
                 {"areaSamplesPerPass", o.live.areaSamplesPerPass}, {"skySamplesPerPass", o.live.skySamplesPerPass}, {"giSamplesPerPass", o.live.giSamplesPerPass},
                 {"maxPasses", o.live.maxPasses}, {"chunkTexels", o.live.chunkTexels}, {"bounces", o.live.bounces}, {"albedo", o.live.albedo},
-                {"bounceRange", o.live.bounceRange}, {"indirectWindow", o.live.indirectWindow},
+                {"indirectWindow", o.live.indirectWindow},
                 {"denoise", o.live.denoiseIndirect}, {"denoiseQuality", o.live.denoiseQuality},
                 {"useGpu", o.live.useGpu}, {"useTextures", o.live.useTextures}, {"gpuTexelsPerStep", o.live.gpuTexelsPerStep}, {"gpuTargetStepMs", o.live.gpuTargetStepMs},
                 {"gpuMaxStepScale", o.live.gpuMaxStepScale}, {"texelsPerStep", o.texelsPerStep}, {"tickBudgetMs", o.tickBudgetSeconds * 1000.0}, {"flushIntervalMs", o.flushIntervalMs},
@@ -61,7 +62,6 @@ LightingService::Options LightingService::loadOptions(const std::filesystem::pat
         integer("chunkTexels", o.live.chunkTexels, 4, 128);
         flag("bounces", o.live.bounces);
         num("albedo", o.live.albedo, 0.0, 1.0);
-        num("bounceRange", o.live.bounceRange, 1.0, 10000.0);
         integer("indirectWindow", o.live.indirectWindow, 1, 1024);
         flag("denoise", o.live.denoiseIndirect);
         integer("denoiseQuality", o.live.denoiseQuality, 0, 2);
@@ -340,34 +340,53 @@ size_t LightingService::tilesFor(int style, LiveBaker& baker, const std::vector<
         inMsg = 0;
         bytes = 0;
     };
-    for (int c : chunks) {
-        const LiveBaker::Rect r = baker.chunkRect(c);
-        if (r.w <= 0 || r.h <= 0) continue;
-        const std::vector<uint16_t> px = baker.renderTile(r);
-        bool changed = false;
-        {
-            std::lock_guard<std::mutex> lock(mirror_.m);
+    // Rendering and encoding run on all cores (every refined chunk is re-sent after every step: on a big level that was the most expensive part of a
+    // step); the comparison with the mirror stays in chunk order, because neighbouring tiles overlap in their padding.
+    const size_t nc = chunks.size();
+    std::vector<LiveBaker::Rect> rects(nc);
+    std::vector<std::vector<uint16_t>> pixels(nc);
+    parallelFor(nc, 16, [&](size_t b, size_t e) {
+        for (size_t i = b; i < e; ++i) {
+            rects[i] = baker.chunkRect(chunks[i]);
+            if (rects[i].w > 0 && rects[i].h > 0) pixels[i] = baker.renderTile(rects[i]);
+        }
+    });
+    std::vector<char> changed(nc, 0);
+    {
+        std::lock_guard<std::mutex> lock(mirror_.m);
+        for (size_t i = 0; i < nc; ++i) {
+            const LiveBaker::Rect& r = rects[i];
+            if (r.w <= 0 || r.h <= 0) continue;
             if (!mirror_.valid || mirror_.atlas != atlas || r.page < 0 || r.page >= mirror_.pageCount) continue;
             std::vector<std::vector<uint16_t>>& pages = mirror_.pages[style];  // a layer appears with its first tile, like in the Shell
             if (pages.empty()) pages.assign(static_cast<size_t>(mirror_.pageCount), std::vector<uint16_t>(static_cast<size_t>(atlas) * atlas * 4, 0));
             std::vector<uint16_t>& page = pages[static_cast<size_t>(r.page)];
+            const std::vector<uint16_t>& px = pixels[i];
             for (int y = 0; y < r.h; ++y)
                 for (int x = 0; x < r.w; ++x) {
                     const uint16_t* s = &px[(static_cast<size_t>(y) * r.w + x) * 4];
                     if (s[3] == 0) continue;  // nothing was baked here: the Shell keeps what it has
                     uint16_t* d = &page[(static_cast<size_t>(r.y + y) * atlas + r.x + x) * 4];
                     if (d[0] != s[0] || d[1] != s[1] || d[2] != s[2] || d[3] != kHalfOne) {
-                        changed = true;
+                        changed[i] = 1;
                         d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = kHalfOne;
                     }
                 }
         }
-        if (!changed) continue;
+    }
+    std::vector<std::string> encoded(nc);
+    parallelFor(nc, 16, [&](size_t b, size_t e) {
+        for (size_t i = b; i < e; ++i)
+            if (changed[i]) appendTile(encoded[i], true, rects[i].page, rects[i].x, rects[i].y, rects[i].w, rects[i].h, pixels[i]);
+    });
+    for (size_t i = 0; i < nc; ++i) {
+        if (!changed[i]) continue;
         if (!inMsg) open();
-        appendTile(msg, inMsg == 0, r.page, r.x, r.y, r.w, r.h, px);
+        else msg += ',';
+        msg += encoded[i];
         ++inMsg;
         ++sent;
-        bytes += px.size() * 2;
+        bytes += pixels[i].size() * 2;
         if (bytes > 200000) close();
     }
     close();
@@ -377,6 +396,10 @@ size_t LightingService::tilesFor(int style, LiveBaker& baker, const std::vector<
 
 size_t LightingService::flushDirty(std::vector<std::string>& out) {
     size_t sent = 0;
+    if (!opt_.tiles) {  // nobody to send to
+        for (auto& [style, b] : bakers()) b->takeDirtyChunks();
+        return 0;
+    }
     for (auto& [style, b] : bakers()) if (b->hasDirtyChunks()) sent += tilesFor(style, *b, b->takeDirtyChunks(), out);
     return sent;
 }
@@ -427,7 +450,6 @@ LightvolSettings LightingService::volSettings() const {
     LightvolSettings c = opt_.lightvol;
     c.bounces = opt_.live.bounces;
     c.albedo = std::min(opt_.live.albedo, kMaxLiveAlbedo);
-    c.bounceRange = opt_.live.bounceRange;
     c.useGpu = opt_.live.useGpu;
     c.classes = prevClasses_;  // of the snapshot the bakers work on (the Scene belongs to the other thread)
     return c;

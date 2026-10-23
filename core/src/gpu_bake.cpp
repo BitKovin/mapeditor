@@ -53,7 +53,8 @@ namespace {
     X(vkCmdBindDescriptorSets) X(vkCmdPushConstants) X(vkCmdDispatch) X(vkCmdPipelineBarrier) X(vkQueueSubmit)                 \
     X(vkCreateFence) X(vkDestroyFence) X(vkWaitForFences) X(vkDeviceWaitIdle) X(vkResetFences) X(vkResetCommandBuffer)                    \
     X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements) X(vkBindImageMemory) X(vkCreateImageView) X(vkDestroyImageView)    \
-    X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage)
+    X(vkCreateSampler) X(vkDestroySampler) X(vkCmdCopyBufferToImage) X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool)    \
+    X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults)
 // only valid on a device created with the ray query extensions
 #define RT_FNS(X)                                                                                                          \
     X(vkGetBufferDeviceAddress) X(vkCreateAccelerationStructureKHR) X(vkDestroyAccelerationStructureKHR)                       \
@@ -312,6 +313,7 @@ struct Context {
     uint64_t scratchAlign = 1, maxPrimitives = 0;
     bool useRT = false;
     uint32_t maxSampledImages = 1;
+    uint32_t timestampBits = 0;  // valid bits of the chosen queue's timestamps (0: it cannot write them)
     std::shared_ptr<GpuTextures> textures;                         // the last uploaded texture array (sessions that use it keep it alive)
     std::vector<std::shared_ptr<const AlbedoImage>> textureKey;    // its images, to recognise the same set again
     std::unique_ptr<DirectPipe> direct;
@@ -408,7 +410,7 @@ void makeContext(Context& c, bool useRT, bool wantValidation) {
     std::vector<VkPhysicalDevice> pds(pc);
     f.vkEnumeratePhysicalDevices(instance, &pc, pds.data());
     int chosen = -1, chosenScore = -1;
-    uint32_t chosenQueue = 0;
+    uint32_t chosenQueue = 0, chosenTimestampBits = 0;
     bool anyCompute = false;
     const char* forced = std::getenv("MAPEDITOR_VK_DEVICE");
     for (uint32_t i = 0; i < pc; ++i) {
@@ -426,7 +428,7 @@ void makeContext(Context& c, bool useRT, bool wantValidation) {
         int score = pr.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : pr.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 :
                     pr.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU ? 1 : 0;
         if (forced && static_cast<uint32_t>(std::atoi(forced)) == i) score = 100;
-        if (score > chosenScore) { chosenScore = score; chosen = static_cast<int>(i); chosenQueue = static_cast<uint32_t>(q); }
+        if (score > chosenScore) { chosenScore = score; chosen = static_cast<int>(i); chosenQueue = static_cast<uint32_t>(q); chosenTimestampBits = qs[static_cast<size_t>(q)].timestampValidBits; }
     }
     if (chosen < 0) fail(anyCompute ? "no Vulkan device supports hardware ray queries (VK_KHR_ray_query + acceleration structures)"
                                     : "no Vulkan device with a compute queue");
@@ -489,6 +491,7 @@ void makeContext(Context& c, bool useRT, bool wantValidation) {
     c.bufPool.device = device;
     c.queue = queue;
     c.chosenQueue = chosenQueue;
+    c.timestampBits = chosenTimestampBits;
     c.props = props;
     c.mem = mem;
     c.scratchAlign = scratchAlign;
@@ -1402,6 +1405,10 @@ public:
     VkDescriptorSet dset = VK_NULL_HANDLE, gset = VK_NULL_HANDLE, aset = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
+    static constexpr size_t kMaxParts = 8;  // submissions a runParts() step is split into at most
+    VkCommandBuffer partCmd[kMaxParts] = {};
+    VkFence partFence[kMaxParts] = {};
+    VkQueryPool queries = VK_NULL_HANDLE;   // start / end timestamps of a runParts() step (none when the queue cannot write them)
 
     ~VkLive() override {
         if (ctx && ctx->device && ctx->f.vkDeviceWaitIdle) ctx->f.vkDeviceWaitIdle(ctx->device);
@@ -1501,6 +1508,22 @@ public:
         check(f.vkCreateFence(device, &fi, nullptr, &fence), "vkCreateFence");
         const VkFence fenceCopy = fence;
         cleanup.add([&f, device, fenceCopy] { f.vkDestroyFence(device, fenceCopy, nullptr); });
+        // the parts of a runParts() step: one command buffer and fence each, and two timestamps for the step's GPU time
+        cbi.commandBufferCount = static_cast<uint32_t>(kMaxParts);
+        check(f.vkAllocateCommandBuffers(device, &cbi, partCmd), "vkAllocateCommandBuffers(parts)");
+        for (VkFence& pf : partFence) {
+            check(f.vkCreateFence(device, &fi, nullptr, &pf), "vkCreateFence(parts)");
+            const VkFence copy = pf;
+            cleanup.add([&f, device, copy] { f.vkDestroyFence(device, copy, nullptr); });
+        }
+        if (c.timestampBits > 0 && c.props.limits.timestampPeriod > 0.f) {
+            VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            qi.queryCount = 2;
+            check(f.vkCreateQueryPool(device, &qi, nullptr, &queries), "vkCreateQueryPool");
+            const VkQueryPool copy = queries;
+            cleanup.add([&f, device, copy] { f.vkDestroyQueryPool(device, copy, nullptr); });
+        }
 
         // ---- acceleration structures: one BLAS of every occluder triangle, one TLAS with one identity instance (built once) ----
         const VkBufferUsageFlags kBuildInput = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
@@ -1766,19 +1789,21 @@ public:
         }
     }
 
-    void runImpl(const std::vector<Job>& jobs, std::vector<float>& d, std::vector<float>& db, std::vector<float>* ind) {
-        Fns& f = ctx->f;
-        size_t total = 0;
+    // Totals of the jobs (base samples, grid entries); throws on a job outside the resident samples.
+    std::pair<size_t, size_t> checkJobs(const std::vector<Job>& jobs) const {
+        size_t total = 0, giTotal = 0;
         for (const Job& j : jobs) {
             if (static_cast<size_t>(j.first) + j.count > n) fail("job outside the resident samples");
+            if (m && j.giCount && (static_cast<size_t>(j.giFirst) + j.giCount > n + m || j.giFirst < n)) fail("job outside the resident grid entries");
             total += j.count;
+            giTotal += j.giCount;
         }
-        d.assign(total * 4, 0.f);
-        db.assign(total * 4, 0.f);
-        size_t giTotal = 0;
-        if (m) for (const Job& j : jobs) giTotal += j.giCount;
-        if (ind) ind->assign((m ? giTotal : total) * 4, 0.f);
-        if (!total) return;
+        return {total, m ? giTotal : 0};
+    }
+
+    // Records the direct light and (with cfg.gather) one gather pass of the jobs into `cb`, then the barrier that makes the results visible to the host.
+    void recordJobs(VkCommandBuffer cb, const std::vector<Job>& jobs) {
+        Fns& f = ctx->f;
         // adjacent ranges with the same draw offset become one dispatch (no barriers between dispatches: they overlap on the GPU)
         std::vector<Job> order = jobs;
         std::sort(order.begin(), order.end(), [](const Job& a, const Job& b) { return a.first < b.first; });
@@ -1795,7 +1820,6 @@ public:
             std::sort(og.begin(), og.end(), [](const Job& a, const Job& b) { return a.giFirst < b.giFirst; });
             for (const Job& j : og) {
                 if (!j.giCount) continue;
-                if (static_cast<size_t>(j.giFirst) + j.giCount > n + m || j.giFirst < n) fail("job outside the resident grid entries");
                 if (!mergedGi.empty() && mergedGi.back().giFirst + mergedGi.back().giCount == j.giFirst && mergedGi.back().offset == j.offset) mergedGi.back().giCount += j.giCount;
                 else mergedGi.push_back(j);
             }
@@ -1803,10 +1827,6 @@ public:
         const DirectPipe& dp = ctx->directPipe();
         const GatherPipe& gp = ctx->gatherPipe();
         const uint32_t maxGroups = std::max<uint32_t>(1, std::min<uint32_t>(ctx->props.limits.maxComputeWorkGroupCount[0], 65535));
-        check(f.vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer");
-        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        check(f.vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
         PushConstants push{};
         push.lightCount = lightCount;
         push.areaSamples = static_cast<uint32_t>(std::max(1, cfg.areaSamples));
@@ -1816,27 +1836,26 @@ public:
         std::memcpy(push.ambient, ambient, sizeof(ambient));
         push.gi = 2u | 4u | (transparent ? 8u : 0u);  // ray traced shadows, write the bounce-weighted direct light only; transparency
         push.superSamples = superSamples;
-        f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dp.pipe);
-        f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dp.pl, 0, 1, &dset, 0, nullptr);
+        f.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, dp.pipe);
+        f.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, dp.pl, 0, 1, &dset, 0, nullptr);
         for (const Job& j : merged) {
             push.sampleOffset = j.offset;
             for (uint64_t base = j.first; base < static_cast<uint64_t>(j.first) + j.count; base += static_cast<uint64_t>(maxGroups) * 64) {
                 push.base = static_cast<uint32_t>(base);
                 push.count = j.first + j.count;
                 const uint64_t groups = std::min<uint64_t>(maxGroups, (push.count - base + 63) / 64);
-                f.vkCmdPushConstants(cmd, dp.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-                f.vkCmdDispatch(cmd, static_cast<uint32_t>(groups), 1, 1);
+                f.vkCmdPushConstants(cb, dp.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+                f.vkCmdDispatch(cb, static_cast<uint32_t>(groups), 1, 1);
             }
         }
         if (cfg.gather) {
-            f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gp.pipe);
-            f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gp.pl, 0, 1, &gset, 0, nullptr);
+            f.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, gp.pipe);
+            f.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, gp.pl, 0, 1, &gset, 0, nullptr);
             GatherPush g{};
             g.giSamples = static_cast<uint32_t>(std::max(1, cfg.giSamples));
-            g.atlas = atlasSize;
             g.albedo = static_cast<float>(cfg.albedo);
             g.bias = static_cast<float>(kShadowBias);
-            g.farDistance = static_cast<float>(cfg.bounceRange);
+            g.farDistance = static_cast<float>(kShadowFar);
             g.sAtlas = atlasSize;
             // fine grid: gather over the grid entries (fine atlas for the directions, the bounce source is not written); else over the samples
             g.atlas = m ? static_cast<uint32_t>(cfg.giAtlas) : atlasSize;
@@ -1848,15 +1867,29 @@ public:
                     g.base = static_cast<uint32_t>(base);
                     g.count = first + cnt;
                     const uint64_t groups = std::min<uint64_t>(maxGroups, (g.count - base + 63) / 64);
-                    f.vkCmdPushConstants(cmd, gp.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(g), &g);
-                    f.vkCmdDispatch(cmd, static_cast<uint32_t>(groups), 1, 1);
+                    f.vkCmdPushConstants(cb, gp.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(g), &g);
+                    f.vkCmdDispatch(cb, static_cast<uint32_t>(groups), 1, 1);
                 }
             }
         }
         VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};  // shader writes -> host reads
         mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-        f.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+        f.vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+    }
+
+    void runImpl(const std::vector<Job>& jobs, std::vector<float>& d, std::vector<float>& db, std::vector<float>* ind) {
+        Fns& f = ctx->f;
+        const auto [total, giTotal] = checkJobs(jobs);
+        d.assign(total * 4, 0.f);
+        db.assign(total * 4, 0.f);
+        if (ind) ind->assign((m ? giTotal : total) * 4, 0.f);
+        if (!total) return;
+        check(f.vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer");
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(f.vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
+        recordJobs(cmd, jobs);
         check(f.vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
         submitAndWait();
         size_t at = 0, gat = 0;
@@ -1870,6 +1903,91 @@ public:
                 gat += j.giCount;
             }
             at += j.count;
+        }
+    }
+
+    bool runParts(const std::vector<Job>& jobs, Indirect indirect, size_t maxParts, const PartDone& done) override {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        try {
+            runPartsImpl(jobs, indirect, maxParts, done);
+            val = ctx->collector.messages;
+            return true;
+        } catch (const std::exception& e) {
+            err = e.what();
+            g_contexts.erase(key());
+            return false;
+        }
+    }
+
+    // One submission per part, each with its own fence: while the caller merges part k, the GPU works on the parts behind it. The parts are
+    // independent (disjoint result ranges; every gather reads the bounce source as it was before the call), so no barriers separate them.
+    void runPartsImpl(const std::vector<Job>& jobs, Indirect indirect, size_t maxParts, const PartDone& done) {
+        Fns& f = ctx->f;
+        const VkDevice device = ctx->device;
+        const auto [total, giTotal] = checkJobs(jobs);
+        gpuSec = 0;
+        if (!total) return;
+        // contiguous groups of jobs with about the same work (base samples + grid entries)
+        const size_t parts = std::clamp<size_t>(maxParts, 1, std::min(kMaxParts, jobs.size()));
+        const size_t per = (total + giTotal + parts - 1) / parts;
+        std::vector<size_t> cut{0};
+        size_t acc = 0;
+        for (size_t i = 0; i + 1 < jobs.size() && cut.size() < parts; ++i) {
+            acc += jobs[i].count + jobs[i].giCount;
+            if (acc >= per * cut.size()) cut.push_back(i + 1);
+        }
+        cut.push_back(jobs.size());
+        const size_t np = cut.size() - 1;
+        const bool timed = queries != VK_NULL_HANDLE;
+        const auto t0 = std::chrono::steady_clock::now();
+        // every submitted part is waited for before this returns, also when a later one fails or the caller's merge throws (the buffers are reused)
+        size_t submitted = 0, waited = 0;
+        struct Drain {
+            Fns& f; VkDevice device; VkFence* fences; size_t& submitted; size_t& waited;
+            ~Drain() { for (size_t k = waited; k < submitted; ++k) f.vkWaitForFences(device, 1, &fences[k], VK_TRUE, UINT64_MAX); }
+        } drain{f, device, partFence, submitted, waited};
+        for (size_t k = 0; k < np; ++k) {
+            const std::vector<Job> part(jobs.begin() + static_cast<std::ptrdiff_t>(cut[k]), jobs.begin() + static_cast<std::ptrdiff_t>(cut[k + 1]));
+            VkCommandBuffer cb = partCmd[k];
+            check(f.vkResetCommandBuffer(cb, 0), "vkResetCommandBuffer");
+            VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            check(f.vkBeginCommandBuffer(cb, &bi), "vkBeginCommandBuffer");
+            if (timed && k == 0) {
+                f.vkCmdResetQueryPool(cb, queries, 0, 2);
+                f.vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 0);
+            }
+            recordJobs(cb, part);
+            if (timed && k + 1 == np) f.vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 1);
+            check(f.vkEndCommandBuffer(cb), "vkEndCommandBuffer");
+            check(f.vkResetFences(device, 1, &partFence[k]), "vkResetFences");
+            VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            si.commandBufferCount = 1;
+            si.pCommandBuffers = &cb;
+            check(f.vkQueueSubmit(ctx->queue, 1, &si, partFence[k]), "vkQueueSubmit");
+            ++submitted;
+        }
+        std::vector<JobResult> r;
+        for (size_t k = 0; k < np; ++k) {
+            check(f.vkWaitForFences(device, 1, &partFence[k], VK_TRUE, UINT64_MAX), "vkWaitForFences");
+            waited = k + 1;
+            if (k + 1 == np) gpuSec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();  // (also holds the merges before it)
+            r.assign(cut[k + 1] - cut[k], JobResult{});
+            for (size_t i = cut[k]; i < cut[k + 1]; ++i) {
+                const Job& j = jobs[i];
+                JobResult& x = r[i - cut[k]];
+                x.d = static_cast<const float*>(bOut.mapped) + static_cast<size_t>(j.first) * 4;
+                x.db = static_cast<const float*>(bDb.mapped) + static_cast<size_t>(j.first) * 4;
+                if (indirect == Indirect::PerSample) x.ind = static_cast<const float*>(bInd.mapped) + static_cast<size_t>(j.first) * 4;
+                else if (indirect == Indirect::PerEntry) x.ind = static_cast<const float*>(bInd.mapped) + static_cast<size_t>(j.giFirst) * 4;
+            }
+            done(cut[k], cut[k + 1] - cut[k], r);
+        }
+        // the GPU's own time for the step: from the first part's start to the last part's end
+        uint64_t ts[2] = {0, 0};
+        if (timed && f.vkGetQueryPoolResults(device, queries, 0, 2, sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) {
+            const uint64_t mask = ctx->timestampBits >= 64 ? ~0ull : ((1ull << ctx->timestampBits) - 1);
+            gpuSec = static_cast<double>((ts[1] - ts[0]) & mask) * static_cast<double>(ctx->props.limits.timestampPeriod) * 1e-9;
         }
     }
 };

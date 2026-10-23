@@ -1053,7 +1053,7 @@ export class Renderer {
       gl.uniform1f(gl.getUniformLocation(P, 'uBrightness'), frame.lighting!.brightness)
       gl.uniform1f(gl.getUniformLocation(P, 'uAlphaTex'), 0)
       const uHas = gl.getUniformLocation(P, 'uHasTex'), uCol = gl.getUniformLocation(P, 'uColor'), uN = gl.getUniformLocation(P, 'uN')
-      const uAmb = gl.getUniformLocation(P, 'uAmb'), uDc = gl.getUniformLocation(P, 'uDc'), uDir = gl.getUniformLocation(P, 'uDir')
+      const uAmb = gl.getUniformLocation(P, 'uAmb'), uDc = gl.getUniformLocation(P, 'uDc'), uDir = gl.getUniformLocation(P, 'uDir'), uTp = gl.getUniformLocation(P, 'uTransp')
       const amb = new Float32Array(24), dc = new Float32Array(24)
       const lm = frame.lighting!
       gl.activeTexture(gl.TEXTURE0)
@@ -1070,11 +1070,26 @@ export class Renderer {
           if (isSkyTexture(grp.texture)) continue
           const [r, gg, bl] = lightingOnly ? [1, 1, 1] : textureColor(grp.texture)
           const tex = lightingOnly ? null : this.texture(grp.texture)
-          if (tex) gl.bindTexture(gl.TEXTURE_2D, tex)
-          gl.uniform1f(uHas, tex ? 1 : 0); gl.uniform3f(uCol, r, gg, bl)
-          gl.drawArrays(gl.TRIANGLES, grp.first, grp.count)
+          const tp = lightingOnly ? [0, 0, 0] : drawTransparency(this.textures.info(grp.texture)) // as the lightmapped faces: Lighting-only draws no texture
+          const one = () => {
+            if (tex) gl.bindTexture(gl.TEXTURE_2D, tex)
+            gl.uniform1f(uHas, tex ? 1 : 0); gl.uniform3f(uCol, r, gg, bl)
+            gl.uniform3f(uTp, tp[0], tp[1], tp[2])
+            gl.drawArrays(gl.TRIANGLES, grp.first, grp.count)
+          }
+          if (tp[0] === 2) {
+            const vao = g.vao, a = amb.slice(), d = dc.slice(), dir = lights[0].dir
+            translucent.push(() => {
+              gl.useProgram(P); gl.activeTexture(gl.TEXTURE0); gl.bindVertexArray(vao)
+              gl.uniform1i(uN, n); gl.uniform3fv(uAmb, a); gl.uniform3fv(uDc, d); gl.uniform3fv(uDir, dir)
+              one(); gl.uniform3f(uTp, 0, 0, 0)
+            })
+            continue
+          }
+          one()
         }
       }
+      gl.uniform3f(uTp, 0, 0, 0)
       gl.useProgram(this.mesh)
     }
     if (skyDraws.length) {

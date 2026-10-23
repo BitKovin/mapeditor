@@ -1,5 +1,6 @@
 #pragma once
 #include "core/lightbake.h"
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -44,7 +45,6 @@ struct LiveSessionConfig {
     int areaSamples = 8, skySamples = 16, giSamples = 16;  // new rays per texel and pass (the first two per sub-texel position)
     int superSamples = 8;      // sub-texel positions the direct light is evaluated at (BakeOptions::superSamples); needs TexelSamples::sub
     double albedo = 1.0;
-    double bounceRange = kShadowFar;  // m: gather ray length and window of the bounce light
     // Fine GI grid: the resident TexelSamples holds the base samples [0, count - giEntries) followed by `giEntries` grid entries (position, normal and
     // texel in the fine atlas of size giAtlas); the gather then runs over the entries named by Job::giFirst / giCount instead of the base samples.
     size_t giEntries = 0;
@@ -67,6 +67,30 @@ public:
     // atlas as it was after the previous step. All outputs: 4 floats per sample, ranges back to back in `jobs` order; `ind` holds one value per
     // grid entry (giCount per job) when config.giEntries > 0.
     virtual bool run(const std::vector<Job>& jobs, std::vector<float>& d, std::vector<float>& db, std::vector<float>* ind) = 0;
+    // The same work as run(), in up to `maxParts` submissions that the GPU works through one after the other: `done(first, count, results)` is called on
+    // this thread for jobs [first, first + count) as soon as their part is finished, while the GPU goes on with the next parts. results[k] points at the
+    // first value of job first + k (valid during the call only): d and db 4 floats per sample, ind (the gather, null with Indirect::None) 4 floats per
+    // sample or per grid entry. Every part reads the bounce source atlas() as it was when runParts() was called: write it only after it returned.
+    // The default runs everything with run() and calls `done` once.
+    enum class Indirect { None, PerSample, PerEntry };
+    struct JobResult { const float* d = nullptr; const float* db = nullptr; const float* ind = nullptr; };
+    using PartDone = std::function<void(size_t first, size_t count, const std::vector<JobResult>& results)>;
+    virtual bool runParts(const std::vector<Job>& jobs, Indirect indirect, size_t maxParts, const PartDone& done) {
+        (void)maxParts;
+        std::vector<float> d, db, ind;
+        if (!run(jobs, d, db, indirect != Indirect::None ? &ind : nullptr)) return false;
+        std::vector<JobResult> r(jobs.size());
+        size_t at = 0, gat = 0;
+        for (size_t k = 0; k < jobs.size(); ++k) {
+            r[k].d = d.data() + at * 4;
+            r[k].db = db.data() + at * 4;
+            if (indirect != Indirect::None) r[k].ind = ind.data() + (indirect == Indirect::PerEntry ? gat : at) * 4;
+            at += jobs[k].count;
+            gat += jobs[k].giCount;
+        }
+        if (!jobs.empty()) done(0, jobs.size(), r);
+        return true;
+    }
     // Baked ambient occlusion (shaders/lightmap_ao.comp, ray queries) of the ranges: `rays` rays per sample that look `radius` far, a hit weighs
     // (1 - d / radius)^falloff; one occluded fraction 0..1 per sample, ranges back to back in `jobs` order (Job::offset and the grid ranges are unused). The same directions and weights
     // as LiveBaker's CPU occlusion. False when it failed (`error()`) or this session cannot do it: then the caller traces on the CPU.
@@ -79,7 +103,7 @@ public:
     virtual const std::string& error() const = 0;
     virtual const std::string& device() const = 0;
     virtual const std::vector<std::string>& validation() const = 0;
-    virtual double lastGpuSeconds() const = 0;  // submit to completion of the last run()
+    virtual double lastGpuSeconds() const = 0;  // submit to completion of the last run(); of the last runParts(), the GPU's own time when it can measure it
 };
 
 // Null (with `error` set) when there is no ray query device, no occluders, or a limit is exceeded. `atlasInit` (pages * atlas * atlas * 4

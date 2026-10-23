@@ -664,6 +664,17 @@ struct ThreadedRig : Rig {
         }
         return false;
     }
+    // ... and the denoised indirect light of every page went out too (or the denoiser is not available): nothing is left to send.
+    static bool settledAfterMesh(const std::vector<json>& v, size_t fromIndex = 0) {
+        bool mesh = false;
+        for (size_t i = fromIndex; i < v.size(); ++i) {
+            if (v[i]["type"] == "lit_mesh") mesh = true;
+            if (mesh && v[i]["type"] == "lighting_status" && v[i]["converged"] == true &&
+                (v[i].value("denoisedPages", 0) >= v[i].value("pages", 0) || !v[i].value("denoiseError", std::string()).empty()))
+                return true;
+        }
+        return false;
+    }
 };
 json crateDoc(double x) {
     // a wide floor and a light that reaches only part of it: moving the crate leaves most chunks alone
@@ -735,7 +746,8 @@ TEST_CASE("lighting service (thread): edits in quick succession end in the state
         rig.router.onMessage(json{{"type", "document_update"}, {"doc", crateDoc(5 + 0.2 * i)}}.dump());
         std::this_thread::sleep_for(std::chrono::milliseconds(8));
     }
-    REQUIRE(rig.waitFor([&](auto& v) { return ThreadedRig::convergedAfterMesh(v, seen); }));
+    // settled, not only converged: the denoised page is sent after convergence, and the late client below gets the mirror, which has it at once
+    REQUIRE(rig.waitFor([&](auto& v) { return ThreadedRig::settledAfterMesh(v, seen); }));
     // the mesh the Shell ends up with is the one of the last document
     TempDir d2;
     d2.write("maps/a.map.json", crateDoc(5 + 0.2 * 11));

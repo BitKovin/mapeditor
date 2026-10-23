@@ -62,10 +62,8 @@ struct LiveSettings {
     // Reflectance of every surface for bounces. The live estimate feeds on itself (every pass gathers the previous passes' light), so it must
     // lose energy on each bounce or stale light circulates forever: values above kMaxLiveAlbedo are clamped.
     double albedo = 0.7;
-    // m: gather rays are this long and fade out with the light's window; also how far an edit is assumed to change bounce light.
-    double bounceRange = 20;
     int indirectWindow = 8;         // the indirect estimate is an exponential moving average over about this many passes
-    double indirectRadius = 20;     // m: extra margin around an edit in which bounce light is refreshed (on top of bounceRange)
+    double indirectRadius = 40;     // m: margin around an edit in which bounce light is refreshed
     int indirectRefreshPasses = 4;  // chunks only indirectly affected fall back to at most this many passes
     // Texels per step when the GPU session runs (the caller's budget is for the CPU path). 0 = use the caller's budget. The baker adapts
     // it between a quarter of and eight times this value so a step takes about 10 to 30 ms: big enough to fill the GPU, short enough for the editor.

@@ -239,8 +239,7 @@ TEST_CASE("live: bounce light is refreshed around a change without making those 
     LiveSettings cfg = smallChunks();
     cfg.bounces = true;
     cfg.giSamplesPerPass = 8;
-    cfg.indirectRadius = 3;
-    cfg.bounceRange = 3;  // bounce reach = bounceRange + indirectRadius
+    cfg.indirectRadius = 6;
     cfg.indirectRefreshPasses = 2;
     World w(corridor({pointLight("a", {-14, 3, 0}, 10, 4)}));
     // add a ceiling so there is something to bounce off
@@ -393,14 +392,14 @@ TEST_CASE("live: diffSurfaces reports a retexture or a texture projection change
     CHECK(kept > 0);
 }
 
-TEST_CASE("live: bounce light does not reach beyond bounceRange") {
-    auto bake = [](bool bounces, double range) {
+TEST_CASE("live: bounce light reaches as far as the light's radius lights surfaces, not a fixed range") {
+    auto bake = [](bool bounces) {
         LiveSettings cfg = smallChunks();
         cfg.bounces = bounces;
-        cfg.bounceRange = range;
         cfg.giSamplesPerPass = 8;
-        World w(corridor({pointLight("a", {0, 3, 0}, 10, 30)}));
-        w.entities[0].brushes.push_back(Brush::makeBox("ceil", {-20, 4, -2}, {20, 5, 2}));
+        // the ceiling is 30 m above the floor: lit only because the radius (60 m) reaches it
+        World w(corridor({pointLight("a", {0, 3, 0}, 10, 60)}));
+        w.entities[0].brushes.push_back(Brush::makeBox("ceil", {-20, 30, -2}, {20, 31, 2}));
         w.rebuild();
         LiveBaker b(cfg);
         b.setGeometry(w.layout, w.surfaces);
@@ -410,16 +409,13 @@ TEST_CASE("live: bounce light does not reach beyond bounceRange") {
         for (size_t i = 0; i < b.sampleCount(); ++i) sum += b.value(i).x;
         return sum;
     };
-    const double direct = bake(false, 20), shortRange = bake(true, 0.5), longRange = bake(true, 20);
-    CHECK(shortRange == doctest::Approx(direct).epsilon(1e-4));  // nothing within 0.5 m of any texel to bounce off, except the floor / ceiling slabs' own edges
-    CHECK(longRange > direct * 1.01);
+    CHECK(bake(true) > bake(false) * 1.01);
 }
 
 TEST_CASE("live: dragging a light fast leaves no old bounce light behind") {
     LiveSettings cfg = smallChunks();
     cfg.bounces = true;
     cfg.giSamplesPerPass = 8;
-    cfg.bounceRange = 8;
     auto build = [&](double x, double brightness) {
         World w(corridor({pointLight("a", {x, 3, 0}, brightness, 6)}));
         w.entities[0].brushes.push_back(Brush::makeBox("ceil", {-20, 4, -2}, {20, 5, 2}));

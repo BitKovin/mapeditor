@@ -1,6 +1,6 @@
 #version 460
 // One diffuse bounce, one invocation per lightmap texel (REQUIREMENTS §18 step 5, DESIGN §6.5).
-//   I(p) = mean over cosine-weighted rays of  albedo * window(hit distance, farDistance = bounce range) * S(hit)       S = bounce-weighted direct light + previous indirect
+//   I(p) = mean over cosine-weighted rays of  albedo * window(hit distance, farDistance = kShadowFar) * S(hit)       S = bounce-weighted direct light + previous indirect
 // The hit is looked up in the lightmap atlas (bilinear, invalid texels weigh 0) through the hit triangle's lightmap coordinates.
 // Albedo: with flag bit 1 the hit surface's colour is its texture at the hit point (the face's albedo uv, interpolated like the lightmap coordinates).
 // The textures are ONE array of sampled images ("bindless": binding 11) indexed with the id stored in the triangle's record (binding 9); the level of detail is
