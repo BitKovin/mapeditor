@@ -454,7 +454,10 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
         grid.reserve(oldSamples.count());
         for (size_t o = 0; o < oldSamples.count(); ++o)
             grid[hashCell(cellOf(oldSamples.pos[o * 4]), cellOf(oldSamples.pos[o * 4 + 1]), cellOf(oldSamples.pos[o * 4 + 2]))].push_back(static_cast<uint32_t>(o));
-        for (size_t i = 0; i < n; ++i) {
+        // The texels are independent (each reads the old data and the grid, and writes only its own entry), so they run on all cores. Switching to another
+        // map leaves most texels without any old neighbour: each of them walks every empty cell up to the last ring, which took seconds on one core.
+        parallelFor(n, 256, [&](size_t rangeBegin, size_t rangeEnd) {
+        for (size_t i = rangeBegin; i < rangeEnd; ++i) {
             if (inherited[i] >= 0) continue;
             const double px = samples_.pos[i * 4], py = samples_.pos[i * 4 + 1], pz = samples_.pos[i * 4 + 2];
             const double nx = samples_.nrm[i * 4], ny = samples_.nrm[i * 4 + 1], nz = samples_.nrm[i * 4 + 2];
@@ -464,9 +467,10 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
             int found = -1;  // ring in which the first candidate turned up: one more ring is searched (a closer one may sit in the next shell)
             for (int ring = 0; ring <= kMaxRing && (found < 0 || ring <= found + 1); ++ring) {
                 for (int64_t dx = -ring; dx <= ring; ++dx)
-                    for (int64_t dy = -ring; dy <= ring; ++dy)
-                        for (int64_t dz = -ring; dz <= ring; ++dz) {
-                            if (std::max({std::llabs(dx), std::llabs(dy), std::llabs(dz)}) != ring) continue;
+                    for (int64_t dy = -ring; dy <= ring; ++dy) {
+                        const bool face = std::llabs(dx) == ring || std::llabs(dy) == ring;  // inside the shell only the two outer z layers belong to it
+                        const int64_t dzStep = face || ring == 0 ? 1 : 2 * ring;
+                        for (int64_t dz = -ring; dz <= ring; dz += dzStep) {
                             const auto it = grid.find(hashCell(cx + dx, cy + dy, cz + dz));
                             if (it == grid.end()) continue;
                             for (uint32_t o : it->second) {
@@ -478,6 +482,7 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
                                 if (d2 < best) { best = d2; bestOld = static_cast<int64_t>(o); if (found < 0) found = ring; }
                             }
                         }
+                    }
             }
             if (bestOld < 0) bestOld = bestAny;
             if (bestOld < 0) continue;
@@ -487,6 +492,7 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
                 indirect_[i * 4 + c] = oldI[static_cast<size_t>(bestOld) * 4 + c];
             }
         }
+        });
     }
 
     // the fine GI grid: its entries start from the (inherited) value of their texel
