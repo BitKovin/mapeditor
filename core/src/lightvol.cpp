@@ -272,7 +272,7 @@ LightvolGrid buildLightvolGrid(const std::vector<LightSurface>& surfaces, const 
     };
     int nx = 0, ny = 0, nz = 0;
     dims(cell, nx, ny, nz);
-    while (static_cast<long long>(nx) * ny * nz > settings.maxProbes) { cell *= 1.25; dims(cell, nx, ny, nz); }
+    while (settings.maxProbes > 0 && static_cast<long long>(nx) * ny * nz > settings.maxProbes) { cell *= 1.25; dims(cell, nx, ny, nz); }
     g.cell = cell;
     g.nx = nx; g.ny = ny; g.nz = nz;
     g.origin = b.mn - Vec3{cell, cell, cell};

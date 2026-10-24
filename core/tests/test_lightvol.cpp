@@ -192,6 +192,11 @@ TEST_CASE("lightvol grid: covers the surfaces, respects maxProbes, finds solid p
     const LightvolGrid coarse = buildLightvolGrid(surfaces, nullptr, s);
     CHECK(coarse.count() <= 200);
     CHECK(coarse.cell > 1);
+    s.maxProbes = 0;  // 0 = no limit
+    s.gridSize = 0.25;
+    const LightvolGrid fine = buildLightvolGrid(surfaces, nullptr, s);
+    CHECK(fine.cell == doctest::Approx(0.25));
+    CHECK(fine.count() > 200);
 
     const SolidSet solids = collectSolids(doc, {}, [](const std::string& c) { return c == "worldspawn"; });
     const std::vector<char> solid = solidProbes(g, &solids);

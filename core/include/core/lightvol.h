@@ -16,7 +16,7 @@ namespace core {
 
 struct LightvolSettings {
     double gridSize = 1.0;     // m per cell
-    int maxProbes = 65536;     // the cell grows until the grid fits (the GPU keeps probes x normals samples resident)
+    int maxProbes = 0;         // 0 = no limit; otherwise the cell grows until the grid fits
     int normals = 32;          // normals V(n) is evaluated at per probe (Fibonacci sphere)
     int areaSamples = 16;      // shadow rays per normal for lights with a size
     int skySamples = 32;       // sky rays per normal

@@ -79,7 +79,7 @@ LightingService::Options LightingService::loadOptions(const std::filesystem::pat
         num("maxHoldSeconds", o.maxHoldSeconds, 0.0, 60.0);
         flag("lightvol", o.lightvolEnabled);
         num("lightvolGridSize", o.lightvol.gridSize, 0.25, 64.0);
-        integer("lightvolMaxProbes", o.lightvol.maxProbes, 64, 4000000);
+        integer("lightvolMaxProbes", o.lightvol.maxProbes, 0, 2000000000);
         integer("lightvolNormals", o.lightvol.normals, 6, 256);
         integer("lightvolGiSamples", o.lightvol.giSamples, 1, 1024);
         { double v = static_cast<double>(o.lightvolProbesPerStep); num("lightvolProbesPerStep", v, 1, 100000); o.lightvolProbesPerStep = static_cast<size_t>(v); }

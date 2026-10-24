@@ -524,8 +524,8 @@ lat / lng bytes (`lat = acos(y) / pi * 255`, `lng = (atan2(z, x) + pi) / (2 pi) 
 decided in M6; this layout is the transport format and applies the x2 range compensation the engine requires. **Values above 2 saturate: that is the format** (a probe next to a
 very bright light cannot exceed 2; its direction is kept). No other constant is applied.
 
-**Grid.** Axis aligned, origin at the minimum of all surface bounds minus one cell, `gridSize` m (default 1) per cell, at most `maxProbes` (65536, the GPU keeps
-probes x normals samples resident; the cell grows until it fits). A probe inside a light-blocking solid (`SolidSet`) is invalid; lookups interpolate trilinearly over
+**Grid.** Axis aligned, origin at the minimum of all surface bounds minus one cell, `gridSize` m (default 1) per cell, at most `maxProbes` when that is above 0 (default 0 = no limit; the cell
+grows until it fits). A probe inside a light-blocking solid (`SolidSet`) is invalid; lookups interpolate trilinearly over
 valid corners only and use the nearest valid probe when none of the 8 is valid. The rBSP light grid has no validity flag and the engine interpolates its 8 corners blindly, so the
 export fills every invalid probe from its valid neighbours, ring by ring outwards (`fillInvalidProbes`): an in-wall probe never darkens or turns the light near a wall.
 
