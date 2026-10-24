@@ -352,7 +352,7 @@ headers (`core/src/shaders/*.spv.h`); `python3 tools/compile_shaders.py` regener
 (inside the window) stores `B`. Bounces follow from the same convention: `V_indirect(x) = mean over cosine-weighted rays of albedo(y) * V(y)`.
 
 **Light entities** (`light_point`, `light_spot`, `light_directional`, `light_rect`, `light_sky`; keyvalues): `color` ("r g b", 0..1, default
-white), `brightness` (default 1), `radius` (attenuation radius, m), `bounce` (bounce power, default 1), `cast_shadows` (0/1, default 1),
+white), `brightness` (default 1; negative = a dark light, below), `radius` (attenuation radius, m), `bounce` (bounce power, default 1), `cast_shadows` (0/1, default 1),
 `style` (0..), `source_size` (m for point/spot sphere radius, degrees for directional angular diameter), spot: `inner_angle`, `outer_angle`
 (degrees, full cone half-angles), rect: `width`, `height` (m). Direction = `R * (0,0,1)` with `R = Ry(yaw) Rx(pitch) Rz(roll)`, the same
 forward axis as the Shell's direction arrows. Entities inside prefab instances are resolved like every other entity.
@@ -394,6 +394,30 @@ shadow caster without a lightmap absorbs. Rays towards the sky are not gathered 
 a texel are the same in every bounce (sampler slot 100000): still unbiased because inner gathers happen at other texels, and the result is
 monotonic in the bounce count. Limits: only surfaces in the acceleration structure (shadow-casting classes) are visible to gather rays; the
 two atlas buffers must fit `maxStorageBufferRange` (else CPU fallback); no light styles per bounce yet.
+
+**Dark lights (negative `brightness`, REQUIREMENTS §40).** A light whose `brightness` is negative takes light away, like a negative `light` in Quake 3 (the `.ent` range is -1000..1000).
+Same formulas and shadows as a positive light, the sign rides on `brightness`; what changes is where the sign may survive:
+- **Everything is summed signed.** `V = ambient + sum of the lights` per texel (`evalLight`, the shader's `shade`), so a dark light subtracts its irradiance from the other lights of its
+  style layer and from the ambient. Shadow rays are traced for a light whose value is *not 0* (CPU `v != 0`, shader `!= 0.0`; it used to be `> 0`, which would have left a dark light
+  unshadowed): a dark light is blocked by the same occluders as a bright one. `_light_scale` multiplies the sign too.
+- **Bounces are linear in the signed light.** `Db` carries the dark light times its `bounce` (negative), the gather averages `albedo * S` of what it hits, so near a dark light the indirect
+  light is negative and subtracts too; `bounce 0` makes a dark light direct-only. The bounce source `S`, the indirect `I` and `Db` are never clamped, so the light of `A` and a dark `B` is
+  exactly the light of `A` minus the light of `B` (test `bounce cpu: dark lights are linear ...`); the live baker's moving average works the same way.
+- **The only clamp is the finished texel.** `max(0, direct + indirect)` per channel, after the ambient occlusion factor (which is >= 0): `bakeLightmaps` before the pages are assembled
+  and `LiveBaker::shownValue` (so `renderTile`, `snapshot`, the tiles sent to the Shell, the mirror and the EXR / OBJ / rBSP pages). A lightmap therefore never holds light below 0, and the
+  RGBA16F transport and the EXR writer never see a negative number (`floatToHalf` also maps negatives to 0, kept as a guard). The raw evaluators (`evaluateDirectCpu`,
+  `evaluateGiCpu`, `LiveBaker::value`) stay signed on purpose: the passes blend raw values and the tests check them.
+- **Denoiser.** OIDN only knows values in [0, inf) (`filterRGB` zeroes the rest), so `denoiseSamples` filters the positive part and the negative part of the indirect light as two images and
+  subtracts them again when any value is negative; levels without dark lights take the old single-image path at no cost.
+- **Light volumes.** A probe fits the finished light: `V(n)` (and the direct-only copy that decides the direction) is clamped at 0 per normal before the sphere moments, so a probe agrees with
+  the lightmaps next to it and `ambient`, `directed` stay >= 0 (the x2 byte range has no negative values).
+- **Light styles.** Every style layer is its own bake, clamped on its own (§6.8), and the Shell adds the layers. A dark light therefore darkens only lights of ITS style (and the ambient when
+  it is style 0); it cannot darken a light of another style, and a dark light of a style with no positive light just makes an all-black layer. Use style 0 for a dark light that should
+  darken the static lighting. The style analysis ranks a light by `|brightness|`.
+- **Change detection.** `sameLight` (live baker) and `sameLightLists` (light volumes) compare the signed brightness with `==`, so flipping the sign re-bakes the light's reach like any
+  other brightness edit.
+- **Shell.** `lightParams` no longer clamps `brightness`; the Details editor takes the `.ent` range (-1000..1000); a dark light's gizmo is drawn violet and crossed (see §6.9). The Lit and
+  Lighting-only views need nothing: they only ever receive clamped light.
 
 **Lighting classes and buried texels.** Which entities block light and which receive baked light is data in the game profile (see
 REQUIREMENTS §18 step 1b); entities that do not receive baked light are to be lit from light volumes. Brushes of the same entity overlap
@@ -563,6 +587,8 @@ probes have the same slots (one probe per style layer; the entity sums them). Th
 Patterns: the engine's built-in table (styles 0..11), overridable per game in `game_profile.json` `lighting.lightStyles` { "12": "mmmaaa" } (letters a..z only, ids 1..63);
 the Core sends the table to the Shell (`light_styles`), the Shell has no table of its own.
 
+**Dark lights (negative brightness, §6.5) and layers:** each layer is clamped at 0 on its own, so a dark light only darkens the lights of its own style.
+
 **Layers are independent bakes (linearity).** Light transport is linear, so layer `s` is exactly the bake of the lights with style `s` alone, GI bounces included: it gets its own
 `LiveBaker` (own bounce source, own refinement, own GPU session) over the charts that carry the style, with the layout filtered by `layoutForStyle` (same page and rectangle as in the
 full layout, so every layer's tiles address the same pixels). `LightingService` keeps the base layer as `baker_` and one more baker per style that has lights reaching some chart.
@@ -602,6 +628,10 @@ Classic Quake 3 classes (no defaults) keep the plain key / value list. The panel
 
 **Spawn.** Place > Lights lists the five lights; a click or drag spawns the entity with no keyvalues (the defaults apply). Lights with a direction (spot, sun, rect) start pointing straight down
 (pitch 90: forward = R * (0,0,1) = -Y), like a lamp on a ceiling (`defaultLightAngles`, used by every spawn path).
+
+**Dark lights.** `brightness` has the range -1000..1000 in the `.ent` (the Details editor and the baker accept it as it is; the Core test checks the minimum is not clamped). A negative value is a
+dark light that subtracts light (DESIGN §6.5). Its gizmo gets a cross (the four body diagonals of a small cube) over the normal icon and a violet-leaning colour (`isDarkLight`,
+`lightGizmoColor`), so it cannot be mistaken for a normal light of the same colour.
 
 **Preview gizmos (`model/lights.ts`, View > Light gizmos).** Pure line geometry in the light's colour (lifted so black lights stay readable), drawn as coloured overlays for the document's and
 prefab content's lights. Every light shows an icon with its real shape: point = diamond; spot = cone along the arrow (outer circle and spokes, inner circle) up to 1.2 m; directional = ring of
@@ -1114,10 +1144,10 @@ Core refuse the whole file), so an import either opens or fails with a reason.
 - **Lights** (Quake 3 / q3map2 meaning; documented approximations): `light` + `_sun 1` -> `light_directional` looking from the light to its `target` entity (brightness = light / 255);
   `light` with a `target` -> `light_spot` (outer angle = atan(radius / distance), inner 80 %); `light` -> `light_point`. Reach = `light / fade` units (spawnflags 1, linear) or
   sqrt(light * 7500) (default falloff), radius = reach / 32 m; brightness is chosen so the editor's irradiance equals the Quake value at half the reach. `_color` -> `color`, `style`
-  kept, `_deviance` -> `source_size`. A negative `light` has no equivalent (0, warning). The game's own `light_point` (`light_color`, `intensity`, `radius`) is renamed
+  kept, `_deviance` -> `source_size`. A negative `light` stays negative: a dark light (§6.5) whose reach and strength come from the absolute value (the sample maps have -8000 and -1500). The game's own `light_point` (`light_color`, `intensity`, `radius`) is renamed
   (`color`, `brightness`, `radius`, same numbers: its radius is already metres). Other keys (`fogLight`, `transformPoint`, ...) are the game's and pass through unchanged.
 - **Not converted:** keys that hold Quake-unit lengths for the game (`targetLocation`, `radius` of non-light entities, ...) are passed as written; `patchDef3`'s explicit subdivision
-  numbers (tessellation is adaptive); negative lights; `terrainDef`.
+  numbers (tessellation is adaptive); `terrainDef`.
 
 ## 13. Explicitly Deferred / Not Yet Decided
 

@@ -197,14 +197,21 @@ public:
     // The same in three steps, so that the filter (hundreds of ms) can run on another thread while this object keeps being used on its own one:
     // begin copies what the filter needs and marks the page "in flight", run is a pure function of the job, finish stores the result unless the page
     // was refined or the geometry replaced in between (then it is dropped and the page is pending again).
+    // A job is a set of tiles of one page: the whole page when most of it changed, else one window around every group of changed chunks (the filter costs
+    // by pixels, and moving one light touches a few chunks on every page). Each tile is an image of its own: `ps.texel` are positions in it, `idx` the
+    // sample (or grid entry) each value belongs to, `owner` its chunk.
+    struct DenoiseTile {
+        TexelSamples ps;
+        std::vector<uint32_t> idx;
+        std::vector<int> owner;
+        std::vector<float> vals;
+    };
     struct DenoiseJob {
         int page = -1;
         bool fine = false;
         uint64_t geometry = 0;
-        TexelSamples ps;
-        std::vector<uint32_t> idx;
-        std::vector<int> ids;
-        std::vector<float> vals;
+        std::vector<int> stale;   // the chunks this job replaces the denoised copy of (the tiles hold more of them as context)
+        std::vector<DenoiseTile> tiles;
     };
     bool beginDenoise(DenoiseJob& job);
     static denoise::Result runDenoise(DenoiseJob& job, int quality);
@@ -239,7 +246,7 @@ private:
     void forgetOcclusion(const Aabb& box);                  // occlusion of the samples in `box` is unknown again; their chunks refine once more
     std::vector<float> atlasS_;                   // bounce source S = Db + I per atlas texel (rgb) + validity (a)
     GiSamples gi_;                                // the fine GI grid (scale 1 = none: the gather runs on the samples themselves)
-    std::vector<float> indirectHi_, indirectHiDn_;  // indirect light per grid entry (moving average) and its denoised copy (valid where pageState_ is 1)
+    std::vector<float> indirectHi_, indirectHiDn_;  // indirect light per grid entry (moving average) and its denoised copy (valid where chunkDn_ is 1)
     std::vector<uint32_t> giFirst_;               // first resident grid entry of each chunk (GPU layout: base samples, then the grid entries chunk by chunk)
     bool fineGi() const { return gi_.scale > 1 && gi_.count() > 0; }
     TexelSamples giSamplesOf(const LiveChunk& chunk) const;   // the chunk's grid entries as a sample set (atlas = fine atlas)
@@ -248,8 +255,13 @@ private:
     // Moving average of one sample's grid entries towards `values` (one value per entry, read from `cursor` on, which advances), then indirect_[sample]
     // = their mean.
     void accumulateFine(size_t sample, const float* values, size_t& cursor, float k);
-    std::vector<float> indirectDn_;               // denoised indirect light, 4 floats per sample (valid where pageState_ is 1)
-    std::vector<char> pageState_;                 // per page: 0 = raw indirect shown (needs a denoise once converged), 1 = denoised, 2 = denoise failed (retry after it refines), 3 = a denoise of it is in flight
+    std::vector<float> indirectDn_;               // denoised indirect light, 4 floats per sample (valid where chunkDn_ is 1)
+    // per chunk: 0 = raw indirect shown (needs a denoise once its page converged), 1 = the denoised copy is valid, 2 = a denoise of it is in flight,
+    // 3 = the denoise failed (retried after the chunk refines)
+    std::vector<char> chunkDn_;
+    std::vector<int32_t> chunkOf_;                // chunk of every sample
+    std::vector<int32_t> chunkAt_;                // (page * tilesPerRow + ty) * tilesPerRow + tx -> chunk, -1 = none
+    size_t chunkTilesPerRow_ = 0;
     std::string denoiseError_;
     double denoiseSeconds_ = 0;
     bool denoiseUnavailable_ = false;
