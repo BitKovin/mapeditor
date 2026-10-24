@@ -47,17 +47,19 @@ describe('store: live lighting', () => {
 
   it('keeps the lit mesh and pages from Core messages and drops them when lighting is switched off', () => {
     const { store } = rig()
-    let notified = 0
+    let notified = 0, tilesSeen = 0
     store.subscribe(() => notified++)
+    store.subscribeTiles(() => tilesSeen++)
     store.onMessage(mesh(2))
     expect(store.lightmap.ready).toBe(true)
     store.onMessage({ type: 'lightmap_tiles', rev: 1, atlas: 8, tiles: [{ page: 0, x: 0, y: 0, w: 1, h: 1, rgba: b64(new Uint8Array(new Uint16Array([0x3c00, 0x4000, 0x4200, 0x3c00]).buffer)) }] })
     expect(store.lightmap.dirtySince(0).rects.length).toBe(0)  // another revision: ignored
     store.onMessage({ type: 'lightmap_tiles', rev: 2, atlas: 8, tiles: [{ page: 0, x: 0, y: 0, w: 1, h: 1, rgba: b64(new Uint8Array(new Uint16Array([0x3c00, 0x4000, 0x4200, 0x3c00]).buffer)) }] })
     expect(store.lightmap.pages[0][0]).toBe(0x3c00)
+    expect(tilesSeen).toBe(1)  // the tiles of another revision changed nothing
     store.onMessage({ type: 'lighting_status', enabled: false, rev: 2, chunks: 0, stale: 0, minPasses: 0, maxPasses: 4, converged: false, texels: 0, pages: 0 })
     expect(store.lightmap.ready).toBe(false)
-    expect(notified).toBeGreaterThan(2)
+    expect(notified).toBe(2)   // the mesh and the status; tiles go to the views only
   })
 })
 

@@ -187,7 +187,8 @@ export class ViewportPanel implements IContentRenderer {
       this.element.append(h('div', { class: 'gl-error' }, `Viewport unavailable: ${(e as Error).message}`))
       return
     }
-    this.unsubs.push(this.store.subscribe(() => { this.checkTool(); this.updateLightStatus(); this.invalidate() }), this.textures.onChange(() => this.invalidate()))
+    this.unsubs.push(this.store.subscribe(() => { this.checkTool(); this.updateLightStatus(); this.invalidate() }), this.textures.onChange(() => this.invalidate()),
+      this.store.subscribeTiles(() => this.tilesArrived()))
     this.bindDocument()
     this.invalidate()
   }
@@ -236,7 +237,20 @@ export class ViewportPanel implements IContentRenderer {
   /** Refreshes the lighting progress label in the header (set up by buildHeader). */
   private updateLightStatus: () => void = () => {}
 
-  dispose(): void { if (this.styleTimer) { (this.element.ownerDocument.defaultView ?? window).clearTimeout(this.styleTimer); this.styleTimer = 0 } this.store.setLightingWanted(this, false); this.disposed = true; this.unsubs.forEach((u) => u()); this.unbindDoc?.(); this.renderer?.dispose(); this.stopFly(); if (this.raf) this.rafWin.cancelAnimationFrame(this.raf) }
+  dispose(): void { if (this.tileTimer) { (this.element.ownerDocument.defaultView ?? window).clearTimeout(this.tileTimer); this.tileTimer = 0 } if (this.styleTimer) { (this.element.ownerDocument.defaultView ?? window).clearTimeout(this.styleTimer); this.styleTimer = 0 } this.store.setLightingWanted(this, false); this.disposed = true; this.unsubs.forEach((u) => u()); this.unbindDoc?.(); this.renderer?.dispose(); this.stopFly(); if (this.raf) this.rafWin.cancelAnimationFrame(this.raf) }
+
+  private tileTimer = 0
+  private lastFrameAt = 0
+  /**
+   * Light arrives as a stream of tiles (hundreds per second on a big level). A frame per message kept the main thread busy drawing, which slowed the
+   * very stream it was drawing (a third of the speed with the view on): the view follows it at ~15 frames per second at most.
+   */
+  private tilesArrived(): void {
+    if (this.tileTimer || this.disposed) return
+    const win = this.element.ownerDocument.defaultView ?? window
+    const wait = Math.max(0, 66 - (win.performance.now() - this.lastFrameAt))
+    this.tileTimer = win.setTimeout(() => { this.tileTimer = 0; this.invalidate() }, wait)
+  }
 
   invalidate(): void {
     if (this.raf) {
@@ -247,6 +261,7 @@ export class ViewportPanel implements IContentRenderer {
     this.rafWin = win
     this.raf = win.requestAnimationFrame(() => {
       this.raf = 0
+      this.lastFrameAt = win.performance.now()
       this.stepFly(win.performance.now()) // flying is integrated per rendered frame with the real frame time: no fixed tick, no jitter
       this.render()
       if (this.flyKeys.size) this.invalidate()

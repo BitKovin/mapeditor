@@ -180,6 +180,15 @@ export class Store {
     this.s = { ...this.s, ...patch }
     this.listeners.forEach((f) => f())
   }
+  private tileListeners = new Set<() => void>()
+  /**
+   * Lightmap tiles arrive by the hundred per second while the Core bakes. Nothing in the state changes with them, so they do not go through `subscribe`
+   * (every panel would run for each one): only the views that draw them are told, and they redraw at their own pace.
+   */
+  subscribeTiles(fn: () => void): () => void {
+    this.tileListeners.add(fn)
+    return () => void this.tileListeners.delete(fn)
+  }
 
   get canEdit(): boolean { return this.s.status === 'connected' && this.s.synced }
   private guard(): boolean {
@@ -455,7 +464,7 @@ export class Store {
       case 'light_styles': this.lightmap.applyStyles(m); this.set({}); return
       case 'lightvol': if (this.lightvol.applyGrid(m)) this.set({}); return
       case 'entity_light': this.lightvol.applyEntities(m); this.set({}); return
-      case 'lightmap_tiles': if (this.lightmap.applyTiles(m)) this.set({}); return
+      case 'lightmap_tiles': if (this.lightmap.applyTiles(m)) this.tileListeners.forEach((f) => f()); return
       case 'lighting_status': this.lightmap.applyStatus(m); if (!m.enabled) this.lightvol.clear(); this.set({}); return
       case 'export_progress': this.set({ exporting: { stage: m.stage, fraction: m.fraction }, message: progressMessage(m) }); return
       case 'export_result': this.set({ exporting: null, message: resultMessage(m), lastExport: { ok: m.ok, cancelled: m.cancelled, bsp: m.bsp, error: m.error } }); return
