@@ -407,6 +407,19 @@ size_t LightingService::flushDirty(std::vector<std::string>& out) {
 
 // ---- light volumes ---------------------------------------------------------------------------------------------------------------
 
+bool LightingService::sameLightLists(const std::vector<Light>& a, const std::vector<Light>& b) {
+    if (a.size() != b.size()) return false;
+    auto eq = [](const Vec3& x, const Vec3& y) { return x.x == y.x && x.y == y.y && x.z == y.z; };
+    for (size_t i = 0; i < a.size(); ++i) {
+        const Light &x = a[i], &y = b[i];
+        if (x.id != y.id || x.instance != y.instance || x.type != y.type || !eq(x.position, y.position) || !eq(x.forward, y.forward) || !eq(x.right, y.right) ||
+            !eq(x.up, y.up) || x.brightness != y.brightness || x.radius != y.radius || x.castShadows != y.castShadows || x.style != y.style ||
+            x.sourceSize != y.sourceSize || x.innerAngle != y.innerAngle || x.outerAngle != y.outerAngle || x.width != y.width || x.height != y.height)
+            return false;
+    }
+    return true;
+}
+
 AlbedoLoader LightingService::albedoLoader() {
     if (!opt_.live.useTextures) return {};
     const GameProfile& pr = scene_.profile();
@@ -614,9 +627,14 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
         // a light edit can change the layout too. Without styled lights a lights-only edit keeps the geometry (and with it the layout, the samples,
         // the chunks) as it is.
         const bool styled = lightStyles(in.lights).size() > 1;
+        // Only the lights of another style than 0 enter the style analysis: while those (and the surfaces) stay as they are, moving the sun or a plain
+        // light cannot change a chart, so the layout and the texel samples stay too (this used to rebuild everything on any light edit of a styled level).
+        std::vector<Light> styledLights;
+        for (const Light& l : in.lights.lights) if (l.style != 0) styledLights.push_back(l);
+        const bool styledSame = styled == prevStyled_ && sameLightLists(styledLights, prevStyledLights_);
         // a texture whose properties changed (transparency) is part of the occluders even when no face changed: rebuild, and re-bake around its faces
         const bool texturesTouched = !in.changedTextures.empty() && std::any_of(in.surfaces.begin(), in.surfaces.end(), [&](const LightSurface& s) { return in.changedTextures.count(s.texture) > 0; });
-        const bool geometrySame = built_ && in.classes == prevClasses_ && solidsFp == prevSolids_ && sameSurfaces(prevSurfaces_, in.surfaces) && !styled && !prevStyled_ && !texturesTouched;
+        const bool geometrySame = built_ && in.classes == prevClasses_ && solidsFp == prevSolids_ && sameSurfaces(prevSurfaces_, in.surfaces) && styledSame && !texturesTouched;
         const size_t chunksBefore = totalChunks();
         const int pagesBefore = baker_.layout().pageCount;
         const bool hadSurfaces = !prevSurfaces_.empty();
@@ -687,6 +705,7 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
             prevSolidSet_ = in.solids;
         }
         prevStyled_ = styled;
+        prevStyledLights_ = std::move(styledLights);
         const auto l0 = Clock::now();
         baker_.setLights(lightsOfStyle(in.lights, 0));
         for (auto& l : layers_) l.baker->setLights(lightsOfStyle(in.lights, l.style));
