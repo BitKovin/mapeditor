@@ -149,10 +149,22 @@ const Scene::CachedPrefab& Scene::loadPrefab(const std::string& key) {
     return slot;
 }
 
-void Scene::validateCandidate(const Document& candidate, const std::string& rootPath) {
+void Scene::validateCandidate(const Document& candidate, const std::string& rootPath, ResolvedCache* seed) {
     if (auto err = validateDocument(candidate)) throw std::runtime_error(*err);
-    auto loader = [this](const std::string& p) -> const Document& { return loadPrefab(normalizeAssetPath(p)).typed; };
-    resolvePrefabs(candidate, loader, ResolveOptions{}, rootPath);
+    std::set<std::string> used;
+    auto loader = [this, &used](const std::string& p) -> const Document& {
+        const std::string key = normalizeAssetPath(p);
+        const CachedPrefab& c = loadPrefab(key);
+        used.insert(key);
+        return c.typed;
+    };
+    std::vector<ResolvedEntity> all = resolvePrefabs(candidate, loader, ResolveOptions{}, rootPath);
+    if (!seed) return;
+    *seed = ResolvedCache{};
+    for (auto& r : all) if (r.instancePath.size() > 1) seed->entities.push_back(std::move(r));
+    for (const std::string& key : used) seed->deps.push_back({key, prefabCache_.at(key).mtime});
+    seed->path = rootPath;
+    seed->valid = true;
 }
 
 void Scene::openDocument(const std::string& path) {
@@ -165,13 +177,16 @@ void Scene::openDocument(const std::string& path) {
     } catch (const std::exception& e) {
         throw std::runtime_error("'" + key + "' is malformed: " + e.what());
     }
-    validateCandidate(typed, key);
+    ResolvedCache seed;
+    validateCandidate(typed, key, &seed);
 
     docJson_ = std::move(raw);
     doc_ = std::move(typed);
     currentPath_ = key;
     dirty_ = false;
     ++rev_;
+    seed.rev = rev_;
+    resolved_ = std::move(seed);
 }
 
 std::string Scene::saveDocument(const std::string& path) {
@@ -205,8 +220,9 @@ Scene::UpdateResult Scene::applyUpdate(const json& docJson) {
         r.error = std::string("malformed document: ") + e.what();
         return r;
     }
+    ResolvedCache seed;
     try {
-        validateCandidate(typed, currentPath_);
+        validateCandidate(typed, currentPath_, &seed);
     } catch (const std::exception& e) {
         r.error = e.what();
         return r;
@@ -216,35 +232,52 @@ Scene::UpdateResult Scene::applyUpdate(const json& docJson) {
     dirty_ = true;
     r.ok = true;
     r.rev = ++rev_;
+    seed.rev = rev_;
+    resolved_ = std::move(seed);
     return r;
 }
 
-namespace {
 // Flattened prefab content; a broken prefab (cycle, missing file) just contributes nothing here -- the
 // Shell already reports those problems.
-std::vector<ResolvedEntity> resolveForDerived(Scene& scene, const Document& doc, const std::string& path,
-                                              const std::function<const Document&(const std::string&)>& loader) {
-    (void)scene;
-    if (doc.prefabInstances.empty()) return {};
-    try {
-        std::vector<ResolvedEntity> all = resolvePrefabs(doc, loader, ResolveOptions{}, path), inside;
-        // the flattened list also repeats the document's own entities (instance path = just the root); those are derived directly
-        for (auto& r : all) if (r.instancePath.size() > 1) inside.push_back(std::move(r));
-        return inside;
-    } catch (const std::exception&) {
-        return {};
+const std::vector<ResolvedEntity>& Scene::resolvedInside() {
+    if (resolved_.valid && resolved_.rev == rev_ && resolved_.path == currentPath_) {
+        bool same = true;
+        std::error_code ec;
+        for (const auto& [key, mtime] : resolved_.deps) {
+            const auto now = fs::last_write_time(resolveSandboxed(key), ec);
+            if (ec || now != mtime) { same = false; break; }
+        }
+        if (same) return resolved_.entities;
     }
+    resolved_ = ResolvedCache{};
+    resolved_.rev = rev_;
+    resolved_.path = currentPath_;
+    if (doc_.prefabInstances.empty()) { resolved_.valid = true; return resolved_.entities; }
+    std::set<std::string> used;
+    auto loader = [this, &used](const std::string& p) -> const Document& {
+        const std::string key = normalizeAssetPath(p);
+        const CachedPrefab& c = loadPrefab(key);
+        used.insert(key);
+        return c.typed;
+    };
+    try {
+        std::vector<ResolvedEntity> all = resolvePrefabs(doc_, loader, ResolveOptions{}, currentPath_);
+        // the flattened list also repeats the document's own entities (instance path = just the root); those are derived directly
+        for (auto& r : all) if (r.instancePath.size() > 1) resolved_.entities.push_back(std::move(r));
+        for (const std::string& key : used) resolved_.deps.push_back({key, prefabCache_.at(key).mtime});
+        resolved_.valid = true;
+    } catch (const std::exception&) {
+        resolved_.entities.clear();  // not cached: the next call tries again
+    }
+    return resolved_.entities;
 }
-}  // namespace
 
 json Scene::derivedGeometryJson() {
-    auto loader = [this](const std::string& p) -> const Document& { return loadPrefab(normalizeAssetPath(p)).typed; };
-    return deriveGeometry(doc_, resolveForDerived(*this, doc_, currentPath_, loader), rev_);
+    return deriveGeometry(doc_, resolvedInside(), rev_);
 }
 
 std::vector<LightSurface> Scene::lightSurfaces(bool withSky) {
-    auto loader = [this](const std::string& p) -> const Document& { return loadPrefab(normalizeAssetPath(p)).typed; };
-    std::vector<LightSurface> surfaces = collectSurfaces(doc_, resolveForDerived(*this, doc_, currentPath_, loader));
+    std::vector<LightSurface> surfaces = collectSurfaces(doc_, resolvedInside());
     if (!withSky) {
         const BspContentRules rules = BspContentRules::fromJson(profile_.bsp);
         surfaces.erase(std::remove_if(surfaces.begin(), surfaces.end(), [&](const LightSurface& s) { return rules.isSky(s.texture); }), surfaces.end());
@@ -255,14 +288,12 @@ std::vector<LightSurface> Scene::lightSurfaces(bool withSky) {
 }
 
 std::shared_ptr<SolidSet> Scene::lightSolids() {
-    auto loader = [this](const std::string& p) -> const Document& { return loadPrefab(normalizeAssetPath(p)).typed; };
     const LightingClasses classes = lightingClasses();
-    return std::make_shared<SolidSet>(collectSolids(doc_, resolveForDerived(*this, doc_, currentPath_, loader), [&](const std::string& c) { return classes.castsShadows(c); }));
+    return std::make_shared<SolidSet>(collectSolids(doc_, resolvedInside(), [&](const std::string& c) { return classes.castsShadows(c); }));
 }
 
 LightScene Scene::lightScene() {
-    auto loader = [this](const std::string& p) -> const Document& { return loadPrefab(normalizeAssetPath(p)).typed; };
-    LightScene scene = collectLights(doc_, resolveForDerived(*this, doc_, currentPath_, loader));
+    LightScene scene = collectLights(doc_, resolvedInside());
     if (std::none_of(scene.lights.begin(), scene.lights.end(), [](const Light& l) { return l.type == LightType::Sky; })) return scene;
     const auto w = std::find_if(doc_.entities.begin(), doc_.entities.end(), [](const Entity& e) { return e.classname == "worldspawn"; });
     if (w == doc_.entities.end()) return scene;
@@ -312,8 +343,7 @@ LightmapLayout Scene::lightmapLayout(const LightmapSettings& settings) {
 }
 
 bool Scene::hasDerivedGeometry() {
-    auto loader = [this](const std::string& p) -> const Document& { return loadPrefab(normalizeAssetPath(p)).typed; };
-    return hasDerivedWork(doc_, resolveForDerived(*this, doc_, currentPath_, loader));
+    return hasDerivedWork(doc_, resolvedInside());
 }
 
 json Scene::documentSyncJson() const {

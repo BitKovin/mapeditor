@@ -137,8 +137,22 @@ private:
     std::filesystem::path resolveSandboxed(const std::string& normalizedRelPath) const;
     void resetToEmptyDocument();
     const CachedPrefab& loadPrefab(const std::string& normalizedPath);
-    void validateCandidate(const Document& candidate, const std::string& rootPath);
+    struct ResolvedCache;
+    // Throws when the candidate is not valid. `seed`: receives the flattened prefab content the check had to make anyway (see resolvedInside).
+    void validateCandidate(const Document& candidate, const std::string& rootPath, ResolvedCache* seed = nullptr);
     void collectReachable(const Document& doc, std::set<std::string>& out);
+
+    // The prefab content of the open document, flattened (instances only). Every derived product (derived geometry, light surfaces, solids, lights) starts
+    // from it and flattening the 1000+ instances of a big map takes ~70 ms, so it is made once per revision and kept while the prefab files it came from
+    // are unchanged.
+    const std::vector<ResolvedEntity>& resolvedInside();
+    struct ResolvedCache {
+        bool valid = false;
+        uint64_t rev = 0;
+        std::string path;
+        std::vector<std::pair<std::string, std::filesystem::file_time_type>> deps;  // prefab files it was made from, with their times
+        std::vector<ResolvedEntity> entities;
+    } resolved_;
 
     std::filesystem::path assetsRoot_;
     nlohmann::json docJson_;  // canonical copy: exactly what the Shell sent
