@@ -100,6 +100,14 @@ public:
     }
     // The resident bounce source S: pages * atlas * atlas texels of (rgb, valid). Write only (it may be write-combined memory).
     virtual float* atlas() = 0;
+    // The resident samples themselves (write only, host visible device memory; null when the session cannot give them out): sampleCount() entries of
+    // position xyz + the random id (as the bits of w), normal xyz + 0, and the texel index. A caller whose sample set is too big to keep resident (the light
+    // volume's probes: tens of millions of samples) rewrites them batch by batch and runs a Job over the part it filled, so the acceleration structure,
+    // textures and atlas are built once. Only between runs.
+    virtual float* samplePositions() { return nullptr; }
+    virtual float* sampleNormals() { return nullptr; }
+    virtual uint32_t* sampleTexels() { return nullptr; }
+    virtual size_t sampleCount() const { return 0; }
     virtual const std::string& error() const = 0;
     virtual const std::string& device() const = 0;
     virtual const std::vector<std::string>& validation() const = 0;

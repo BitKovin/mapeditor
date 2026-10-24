@@ -10,8 +10,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <set>
 #include <tuple>
 
@@ -472,15 +474,17 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
     };
     const bool sameAtlas = oldSamples.atlas == samples_.atlas && oldSamples.pageCount == samples_.pageCount;
     std::vector<char> taken(oldSamples.count(), 0);
-    for (size_t i = 0; i < n; ++i) {
-        if (!sameAtlas) break;
-        const uint32_t t = samples_.texel[i];
-        if (t >= oldAt.size() || oldAt[t] < 0) continue;
-        const size_t o = static_cast<size_t>(oldAt[t]);
-        if (taken[o] || !same(i, o)) continue;
-        taken[o] = 1;
-        from[i] = static_cast<int32_t>(o);
-    }
+    if (sameAtlas)  // every texel slot holds one sample, so no two new texels look at the same old one here: the texels run on all cores
+        parallelFor(n, 16384, [&](size_t rangeBegin, size_t rangeEnd) {
+            for (size_t i = rangeBegin; i < rangeEnd; ++i) {
+                const uint32_t t = samples_.texel[i];
+                if (t >= oldAt.size() || oldAt[t] < 0) continue;
+                const size_t o = static_cast<size_t>(oldAt[t]);
+                if (!same(i, o)) continue;
+                taken[o] = 1;
+                from[i] = static_cast<int32_t>(o);
+            }
+        });
     std::vector<size_t> missing;
     for (size_t i = 0; i < n; ++i) if (from[i] < 0) missing.push_back(i);
     if (!missing.empty() && oldSamples.count()) {
@@ -494,34 +498,58 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
         }
     }
     const size_t perPage = static_cast<size_t>(samples_.atlas) * samples_.atlas;
-    for (size_t i = 0; i < n; ++i) {
-        const int32_t o = from[i];
-        if (o < 0) fresh[i] = 1;
-        else {
-            for (size_t c = 0; c < 4; ++c) {
-                direct_[i * 4 + c] = oldD[static_cast<size_t>(o) * 4 + c];
-                db_[i * 4 + c] = oldDb[static_cast<size_t>(o) * 4 + c];
-                indirect_[i * 4 + c] = oldI[static_cast<size_t>(o) * 4 + c];
+    parallelFor(n, 16384, [&](size_t rangeBegin, size_t rangeEnd) {
+        for (size_t i = rangeBegin; i < rangeEnd; ++i) {
+            const int32_t o = from[i];
+            if (o < 0) fresh[i] = 1;
+            else {
+                for (size_t c = 0; c < 4; ++c) {
+                    direct_[i * 4 + c] = oldD[static_cast<size_t>(o) * 4 + c];
+                    db_[i * 4 + c] = oldDb[static_cast<size_t>(o) * 4 + c];
+                    indirect_[i * 4 + c] = oldI[static_cast<size_t>(o) * 4 + c];
+                }
+                inherited[i] = oldPasses[static_cast<size_t>(o)];
+                if (static_cast<size_t>(o) < oldOcc.size()) occ_[i] = oldOcc[static_cast<size_t>(o)];
+                if (oldUnsent[static_cast<size_t>(o)]) fresh[i] = 1;
             }
-            inherited[i] = oldPasses[static_cast<size_t>(o)];
-            if (static_cast<size_t>(o) < oldOcc.size()) occ_[i] = oldOcc[static_cast<size_t>(o)];
-            if (oldUnsent[static_cast<size_t>(o)]) fresh[i] = 1;
         }
-    }
+    });
     gt.inherit += since(t1);
 
     // Extrapolation: a texel the edit created (a new face, a moved wall, a freshly carved opening) has no old value of its own. Showing black until it is
     // baked makes every edit flash dark, so it starts from the light of the nearest old texel that faced about the same way (the same surface a moment
     // ago, or the one next to it). It stays stale (inherited = -1): the first pass replaces the guess. A rough guess beats black.
-    if (oldSamples.count() > 0) {
+    t1 = Clock::now();
+    if (oldSamples.count() > 0 && std::any_of(inherited.begin(), inherited.end(), [](int p) { return p < 0; })) {
         constexpr double kCell = 0.5;   // m
         constexpr int kMaxRing = 12;    // cells: 6 m
         auto cellOf = [&](double v) { return static_cast<int64_t>(std::floor(v / kCell)); };
         auto hashCell = [](int64_t x, int64_t y, int64_t z) { return (x * 73856093) ^ (y * 19349663) ^ (z * 83492791); };
+        // Only the old texels a search can reach are indexed: after a small edit a handful of texels need a guess, and hashing all 12 million old ones
+        // took a second. A search reaches kMaxRing + 1 cells (6.5 m), so the old texels within the coarse blocks around the needy ones are enough.
+        constexpr double kBlock = 8.0;  // m, more than the reach of a search
+        auto blockOf = [&](double v) { return static_cast<int64_t>(std::floor(v / kBlock)); };
+        std::unordered_set<int64_t> wanted;
+        for (size_t i = 0; i < n; ++i) {
+            if (inherited[i] >= 0) continue;
+            const int64_t bx = blockOf(samples_.pos[i * 4]), by = blockOf(samples_.pos[i * 4 + 1]), bz = blockOf(samples_.pos[i * 4 + 2]);
+            for (int64_t dx = -1; dx <= 1; ++dx)
+                for (int64_t dy = -1; dy <= 1; ++dy)
+                    for (int64_t dz = -1; dz <= 1; ++dz) wanted.insert(hashCell(bx + dx, by + dy, bz + dz));
+        }
+        std::vector<uint32_t> reachable;
+        std::mutex reachableMutex;
+        parallelFor(oldSamples.count(), 65536, [&](size_t rangeBegin, size_t rangeEnd) {
+            std::vector<uint32_t> mine;
+            for (size_t o = rangeBegin; o < rangeEnd; ++o)
+                if (wanted.count(hashCell(blockOf(oldSamples.pos[o * 4]), blockOf(oldSamples.pos[o * 4 + 1]), blockOf(oldSamples.pos[o * 4 + 2])))) mine.push_back(static_cast<uint32_t>(o));
+            std::lock_guard<std::mutex> lock(reachableMutex);
+            reachable.insert(reachable.end(), mine.begin(), mine.end());
+        });
+        std::sort(reachable.begin(), reachable.end());  // the cells list their texels in old order, like before
         std::unordered_map<int64_t, std::vector<uint32_t>> grid;
-        grid.reserve(oldSamples.count());
-        for (size_t o = 0; o < oldSamples.count(); ++o)
-            grid[hashCell(cellOf(oldSamples.pos[o * 4]), cellOf(oldSamples.pos[o * 4 + 1]), cellOf(oldSamples.pos[o * 4 + 2]))].push_back(static_cast<uint32_t>(o));
+        for (uint32_t o : reachable)
+            grid[hashCell(cellOf(oldSamples.pos[o * 4]), cellOf(oldSamples.pos[o * 4 + 1]), cellOf(oldSamples.pos[o * 4 + 2]))].push_back(o);
         // The texels are independent (each reads the old data and the grid, and writes only its own entry), so they run on all cores. Switching to another
         // map leaves most texels without any old neighbour: each of them walks every empty cell up to the last ring, which took seconds on one core.
         parallelFor(n, 256, [&](size_t rangeBegin, size_t rangeEnd) {
@@ -562,6 +590,7 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
         }
         });
     }
+    gt.extrapolate = since(t1);
 
     // the fine GI grid: its entries start from the (inherited) value of their texel
     t1 = Clock::now();

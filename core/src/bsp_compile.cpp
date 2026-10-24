@@ -840,38 +840,45 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     // ---- light grid ---------------------------------------------------------------------------------------------------------------------------
     std::vector<rbsp::GridPoint> palette;
     std::vector<uint8_t> lightArray;
-    // the grid has no validity flag and the engine interpolates the 8 corners as they are: in-wall probes take their neighbours' light
-    std::map<int, LightvolGrid> lightvol = in.lightvol;
-    for (auto& [st, grid] : lightvol) fillInvalidProbes(grid);
-    if (const auto g0 = lightvol.find(0); g0 != lightvol.end() && g0->second.count() > 0) {
-        const LightvolGrid& g = g0->second;
-        rbsp::LightGridHeader hdr{};
-        put3(hdr.origin, toQuake(g.origin + Vec3{0, 0, (g.nz - 1) * g.cell}));
-        hdr.cellSize[0] = hdr.cellSize[1] = hdr.cellSize[2] = float(g.cell * rbsp::kUnitsPerMeter);
-        hdr.dims[0] = g.nx; hdr.dims[1] = g.nz; hdr.dims[2] = g.ny;  // Quake x, y, z = editor x, -z, y
-        lightArray.resize(sizeof(hdr) + g.count() * 2);
-        std::memcpy(lightArray.data(), &hdr, sizeof(hdr));
-        std::map<std::string, uint16_t> seen;
-        bool overflow = false;
-        for (int ez = 0; ez < g.nz; ++ez)
-            for (int ey = 0; ey < g.ny; ++ey)
-                for (int ex = 0; ex < g.nx; ++ex) {
-                    const size_t ei = g.index(ex, ey, ez);
+    {
+        // the grid has no validity flag and the engine interpolates the 8 corners as they are: in-wall probes take their neighbours' light
+        std::map<int, LightvolGrid> lightvol = in.lightvol;
+        for (auto& [st, grid] : lightvol) fillInvalidProbes(grid);
+        if (const auto g0 = lightvol.find(0); g0 != lightvol.end() && g0->second.count() > 0) {
+            const LightvolGrid& g = g0->second;
+            rbsp::LightGridHeader hdr{};
+            put3(hdr.origin, toQuake(g.origin + Vec3{0, 0, (g.nz - 1) * g.cell}));
+            hdr.cellSize[0] = hdr.cellSize[1] = hdr.cellSize[2] = float(g.cell * rbsp::kUnitsPerMeter);
+            hdr.dims[0] = g.nx; hdr.dims[1] = g.nz; hdr.dims[2] = g.ny;  // Quake x, y, z = editor x, -z, y
+            const size_t total = g.count();
+            const int gnx = g.nx, gny = g.ny, gnz = g.nz;  // (g is gone once the probes are freed)
+            lightArray.resize(sizeof(hdr) + total * 2);
+            std::memcpy(lightArray.data(), &hdr, sizeof(hdr));
+            std::vector<std::pair<int, const LightvolGrid*>> others;  // the style layers that share the geometry
+            for (const auto& [st, grid] : lightvol)
+                if (st != 0 && grid.count() == total) others.push_back({st, &grid});
+
+            // 1. the point of every grid cell (a big level has tens of millions: on all cores)
+            std::vector<rbsp::GridPoint> points(total);
+            parallelFor(total, 4096, [&](size_t first, size_t last) {
+                struct Ranked { double lum; int style; const Probe* probe; };
+                std::vector<Ranked> rank;
+                std::vector<std::pair<int, const Probe*>> slots;
+                for (size_t ei = first; ei < last; ++ei) {
                     rbsp::GridPoint gp{};
                     std::memset(gp.styles, rbsp::kNoStyle, sizeof(gp.styles));
                     gp.styles[0] = 0;
                     // slots: style 0, then the brightest other styles
-                    std::vector<std::pair<double, int>> rank;
-                    for (const auto& [st, grid] : lightvol) {
-                        if (st == 0 || grid.count() != g.count()) continue;
-                        const Probe& p = grid.probes[ei];
+                    rank.clear();
+                    for (const auto& [st, grid] : others) {
+                        const Probe& p = grid->probes[ei];
                         if (!p.valid) continue;
                         const double lum = p.ambient.x + p.ambient.y + p.ambient.z + p.directed.x + p.directed.y + p.directed.z;
-                        if (lum > 1e-6) rank.push_back({lum, st});
+                        if (lum > 1e-6) rank.push_back({lum, st, &p});
                     }
-                    std::sort(rank.begin(), rank.end(), [](auto& a, auto& b) { return a.first > b.first; });
-                    std::vector<std::pair<int, const Probe*>> slots = {{0, &g.probes[ei]}};
-                    for (const auto& [lum, st] : rank) if (slots.size() < rbsp::kStyles) slots.push_back({st, &lightvol.at(st).probes[ei]});
+                    std::sort(rank.begin(), rank.end(), [](const Ranked& a, const Ranked& b) { return a.lum > b.lum; });
+                    slots.assign(1, {0, &g.probes[ei]});
+                    for (const Ranked& r : rank) if (slots.size() < rbsp::kStyles) slots.push_back({r.style, r.probe});
                     Vec3 dir, dirW;
                     for (size_t k = 0; k < slots.size(); ++k) {
                         const Probe& p = *slots[k].second;
@@ -889,18 +896,73 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     if (lng < 0) lng += 1;
                     gp.latLong[0] = static_cast<uint8_t>(std::clamp(std::lround(lat), 0L, 255L));
                     gp.latLong[1] = static_cast<uint8_t>(std::lround(lng * 256.0) & 255);
-                    const std::string key(reinterpret_cast<const char*>(&gp), sizeof(gp));
-                    auto it = seen.find(key);
-                    uint16_t idx;
-                    if (it != seen.end()) idx = it->second;
-                    else if (palette.size() < 65536) { idx = static_cast<uint16_t>(palette.size()); seen[key] = idx; palette.push_back(gp); }
-                    else { idx = 0; overflow = true; }
-                    const size_t qi = (static_cast<size_t>(ey) * g.nz + (g.nz - 1 - ez)) * g.nx + ex;  // z * (nx * ny) + y * nx + x in Quake axes
-                    std::memcpy(lightArray.data() + sizeof(hdr) + qi * 2, &idx, 2);
+                    points[ei] = gp;
                 }
-        if (overflow) res.warnings.push_back("light grid: more than 65536 different points, the rest use the first");
-        res.stats.gridPoints = g.count();
-        res.stats.palette = palette.size();
+            });
+            lightvol.clear();  // (the probes of a big level are gigabytes)
+
+            // 2. the palette: one entry per distinct point, at most 65536 (a point is a uint16 index). A grid of millions of probes has more distinct points
+            // than that, so the light and its direction are rounded to fewer and fewer bits until they fit (the least rounding that does).
+            struct PointHash {
+                size_t operator()(const rbsp::GridPoint& p) const {
+                    uint64_t h = 1469598103934665603ull;
+                    const unsigned char* c = reinterpret_cast<const unsigned char*>(&p);
+                    for (size_t i = 0; i < sizeof p; ++i) h = (h ^ c[i]) * 1099511628211ull;
+                    return static_cast<size_t>(h);
+                }
+            };
+            struct PointEqual {
+                bool operator()(const rbsp::GridPoint& a, const rbsp::GridPoint& b) const { return std::memcmp(&a, &b, sizeof a) == 0; }
+            };
+            auto rounded = [](rbsp::GridPoint gp, int drop) {
+                if (drop == 0) return gp;
+                auto q = [drop](uint8_t v) { return static_cast<uint8_t>(std::min(255, ((static_cast<int>(v) + (1 << (drop - 1))) >> drop) << drop)); };
+                for (int k = 0; k < rbsp::kStyles; ++k)
+                    for (int c = 0; c < 3; ++c) { gp.ambient[k][c] = q(gp.ambient[k][c]); gp.directed[k][c] = q(gp.directed[k][c]); }
+                gp.latLong[0] = q(gp.latLong[0]);
+                gp.latLong[1] = q(gp.latLong[1]);
+                return gp;
+            };
+            std::vector<uint16_t> index(total, 0);
+            bool overflow = false;
+            int usedDrop = 0;
+            constexpr int kMaxDrop = 7;
+            for (int drop = 0; drop <= kMaxDrop; ++drop) {
+                std::unordered_map<rbsp::GridPoint, uint16_t, PointHash, PointEqual> seen;
+                seen.reserve(70000);
+                std::vector<rbsp::GridPoint> pal;
+                bool fits = true;
+                for (size_t ei = 0; ei < total; ++ei) {
+                    const rbsp::GridPoint gp = rounded(points[ei], drop);
+                    const auto it = seen.find(gp);
+                    if (it != seen.end()) { index[ei] = it->second; continue; }
+                    if (pal.size() >= 65536) {
+                        fits = false;
+                        if (drop < kMaxDrop) break;  // a coarser rounding next
+                        overflow = true;             // nothing fits any more: the rest use the first
+                        index[ei] = 0;
+                        continue;
+                    }
+                    index[ei] = static_cast<uint16_t>(pal.size());
+                    seen.emplace(gp, index[ei]);
+                    pal.push_back(gp);
+                }
+                if (fits || drop == kMaxDrop) { palette = std::move(pal); usedDrop = drop; break; }
+            }
+            if (usedDrop > 0) res.warnings.push_back("light grid: more than 65536 different points, the light and its direction are rounded to " + std::to_string(8 - usedDrop) + " bits to fit the palette");
+            if (overflow) res.warnings.push_back("light grid: more than 65536 different points, the rest use the first");
+
+            // 3. the cell indexes in the file's order (Quake axes)
+            for (int ez = 0; ez < gnz; ++ez)
+                for (int ey = 0; ey < gny; ++ey)
+                    for (int ex = 0; ex < gnx; ++ex) {
+                        const size_t qi = (static_cast<size_t>(ey) * gnz + (gnz - 1 - ez)) * gnx + ex;  // z * (nx * ny) + y * nx + x in Quake axes
+                        const size_t ei = (static_cast<size_t>(ez) * gny + ey) * gnx + ex;               // the grid's own order: x fastest, then y, then z
+                        std::memcpy(lightArray.data() + sizeof(hdr) + qi * 2, &index[ei], 2);
+                    }
+            res.stats.gridPoints = total;
+            res.stats.palette = palette.size();
+        }
     }
 
     // ---- entities -----------------------------------------------------------------------------------------------------------------------------

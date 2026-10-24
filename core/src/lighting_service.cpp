@@ -514,10 +514,28 @@ std::string LightingService::lightvolGridMessage() const {
     const auto base = vols_.find(0);
     if (base == vols_.end() || base->second.count() == 0) return {};
     const LightvolGrid& g = base->second;
+    // The Shell draws the grid as an overlay and decodes every probe (40 bytes each): a grid of millions of probes goes out with every s-th probe along
+    // each axis. The light of the entities is sampled from the full grid here, and the export carries all of it.
+    constexpr size_t kPreviewProbes = size_t(1) << 20;
+    int stride = 1;
+    auto strided = [&](int n) { return static_cast<size_t>((n + stride - 1) / stride); };
+    while (strided(g.nx) * strided(g.ny) * strided(g.nz) > kPreviewProbes) ++stride;
+    auto pack = [&](const LightvolGrid& src) {
+        if (stride == 1) return base64Encode(src.packed());
+        LightvolGrid sub;
+        sub.nx = static_cast<int>(strided(src.nx)); sub.ny = static_cast<int>(strided(src.ny)); sub.nz = static_cast<int>(strided(src.nz));
+        sub.probes.reserve(static_cast<size_t>(sub.nx) * sub.ny * sub.nz);
+        for (int z = 0; z < src.nz; z += stride)
+            for (int y = 0; y < src.ny; y += stride)
+                for (int x = 0; x < src.nx; x += stride) sub.probes.push_back(src.probes[src.index(x, y, z)]);
+        return base64Encode(sub.packed());
+    };
     json layers = json::array();
-    for (const auto& [style, other] : vols_) if (style != 0) layers.push_back(json{{"s", style}, {"probes", base64Encode(other.packed())}});
-    return json{{"type", proto::kLightvol}, {"rev", volRev_}, {"origin", {g.origin.x, g.origin.y, g.origin.z}}, {"cell", g.cell},
-                {"dims", {g.nx, g.ny, g.nz}}, {"probes", base64Encode(g.packed())}, {"layers", layers}}.dump();
+    for (const auto& [style, other] : vols_) if (style != 0) layers.push_back(json{{"s", style}, {"probes", pack(other)}});
+    const std::string baseProbes = pack(g);
+    const int nx = stride == 1 ? g.nx : static_cast<int>(strided(g.nx)), ny = stride == 1 ? g.ny : static_cast<int>(strided(g.ny)), nz = stride == 1 ? g.nz : static_cast<int>(strided(g.nz));
+    return json{{"type", proto::kLightvol}, {"rev", volRev_}, {"origin", {g.origin.x, g.origin.y, g.origin.z}}, {"cell", g.cell * stride},
+                {"dims", {nx, ny, nz}}, {"probes", baseProbes}, {"layers", layers}}.dump();
 }
 
 std::string LightingService::entityLightMessage() const {
@@ -589,11 +607,18 @@ bool LightingService::workLightvol(double budgetSeconds, Clock::time_point t0, c
     if (volStale_ && !volRunning_) {
         volBase_ = buildLightvolGrid(prevSurfaces_, prevSolidSet_.get(), cfg);
         volSolid_ = solidProbes(volBase_, prevSolidSet_.get());
+        if (log_ && volBase_.count() > 0) {
+            char line[200];
+            std::snprintf(line, sizeof line, "lighting: light volume grid %dx%dx%d = %zu probes (cell %.2f m, lightvolGridSize / lightvolMaxProbes)", volBase_.nx, volBase_.ny, volBase_.nz,
+                          volBase_.count(), volBase_.cell);
+            log_(line);
+        }
         volsWork_.clear();
         volQueue_.clear();
         for (int st : styles()) volQueue_.push_back(st);  // every layer has its own probes
         volQueuePos_ = 0;
         startLayer(volQueue_[0]);
+        if (log_ && probes_) log_("lighting: light volume evaluator " + probes_->device() + (probes_->gpuError().empty() ? "" : ", GPU unavailable: " + probes_->gpuError()));
         volRunning_ = true;
         volStale_ = false;
     }
@@ -970,7 +995,13 @@ std::vector<std::string> LightingService::tick(double budgetSeconds) {
         if (statusDue_.exchange(false)) out.push_back(statusMessage());
         return out;
     }
-    if (dirty_.exchange(false)) applyInputs(captureInputs(), emit);
+    if (dirty_.exchange(false)) {
+        const auto c0 = Clock::now();
+        Inputs in = captureInputs();
+        const double captureMs = msBetween(c0, Clock::now());
+        applyInputs(std::move(in), emit);
+        timings_.capture = captureMs;
+    }
     work(budgetSeconds, emit, nullptr);
     return out;
 }

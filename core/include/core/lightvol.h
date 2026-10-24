@@ -25,6 +25,7 @@ struct LightvolSettings {
     double albedo = 0.7;
     double bounceDirectionWeight = 0.25;  // how much bounce light counts towards the probe direction next to direct light (fitProbeDirectFirst)
     bool useGpu = true;        // direct light on the Vulkan ray query path when available
+    size_t gpuBatchProbes = 0; // probes the GPU session holds at once (0 = as many as fit a memory budget; tests make it small to cross batches)
     LightingClasses classes = LightingClasses::defaults();
 };
 

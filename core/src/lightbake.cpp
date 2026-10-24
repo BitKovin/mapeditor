@@ -324,52 +324,112 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
     }
     const auto t1 = Clock::now();
 
-    // 2. assembly: first claim wins, texels buried in a solid are dropped
-    size_t hiddenCount = 0;
-    std::vector<std::vector<int32_t>> owner(pageCount, std::vector<int32_t>(static_cast<size_t>(atlas) * atlas, -1));
-    size_t expected = 0;
-    for (const Use& u : uses) if (u.entry) expected += u.entry->pass0.size();
-    out.texel.reserve(expected);
-    out.pos.reserve(expected * 4);
-    out.nrm.reserve(expected * 4);
-    out.sub.reserve(expected * 12);
-    SolidSet::Probe probe;
-    auto claim = [&](int page, int x, int y, const Vec3& p, const Vec3& n, const float* sub, const ReliefMesh* relief, const FaceShading* shading) {
-        if (x < 0 || y < 0 || x >= atlas || y >= atlas) return false;
-        int32_t& o = owner[static_cast<size_t>(page)][static_cast<size_t>(y) * atlas + x];
-        if (o != -1) return false;  // already a sample (>= 0) or already known to be hidden (-2)
-        if (solids && solids->inside(p + n * 0.02, probe)) { o = -2; ++hiddenCount; return false; }  // buried in a solid: invisible, counted once
-        // A relief moves the sample onto the displayed surface (after the solid test above: a pit lies inside the brush, the texel does not)
-        Vec3 pp = p, nn = n;
-        float reliefSub[12];
-        const float* useSub = sub;
-        if (relief) {
-            Vec3 dp, dn;
-            if (displaceSample(*relief, p, n, sub, dp, dn, reliefSub)) { pp = dp; nn = dn; if (sub) useSub = reliefSub; }
-        } else if (shading) {
-            nn = shadingNormalAt(*shading, p, n);  // smooth edges (REQUIREMENTS §33 H6): the normal varies across the face
+    // 2. assembly: first claim wins, texels buried in a solid are dropped. The samples come out in the order a serial walk would claim them (pass 0 over
+    // every piece in order, then pass 1), whatever the way they are worked out here, in three steps:
+    //  a) which candidates win: a texel slot is on one page, and a claim only depends on the earlier claims of its page, so the pages run on all cores
+    //  b) where every winner lands in the output: a prefix sum over the pieces, in the serial order
+    //  c) the winners' data (relief / smooth shading applied) written to those places, the pieces on all cores
+    // (the serial walk spent 1+ s on a level of 12 million texels, most of it in the solid test of every candidate)
+    const size_t pageN = pageCount;
+    std::vector<std::vector<int8_t>> owner(pageN, std::vector<int8_t>(static_cast<size_t>(atlas) * atlas, 0));  // 0 free, 1 a sample, 2 buried in a solid
+    std::vector<std::vector<size_t>> usesOfPage(pageN);
+    std::vector<size_t> firstOf[2];  // per piece: index of its first candidate in won[pass]
+    for (int pass = 0; pass < 2; ++pass) {
+        firstOf[pass].assign(uses.size() + 1, 0);
+        for (size_t i = 0; i < uses.size(); ++i)
+            firstOf[pass][i + 1] = firstOf[pass][i] + (uses[i].entry ? (pass == 0 ? uses[i].entry->pass0 : uses[i].entry->pass1).size() : 0);
+    }
+    std::vector<char> won[2] = {std::vector<char>(firstOf[0].back(), 0), std::vector<char>(firstOf[1].back(), 0)};
+    std::vector<uint32_t> wonCount[2] = {std::vector<uint32_t>(uses.size(), 0), std::vector<uint32_t>(uses.size(), 0)};
+    std::vector<char> tinyWon(uses.size(), 0);
+    for (size_t i = 0; i < uses.size(); ++i)
+        if (uses[i].entry && uses[i].page >= 0 && static_cast<size_t>(uses[i].page) < pageN) usesOfPage[static_cast<size_t>(uses[i].page)].push_back(i);
+    std::vector<size_t> hiddenOfPage(pageN, 0);
+    parallelFor(pageN, 1, [&](size_t pageBegin, size_t pageEnd) {
+        SolidSet::Probe probe;
+        for (size_t pg = pageBegin; pg < pageEnd; ++pg) {
+            std::vector<int8_t>& own = owner[pg];
+            size_t hidden = 0;
+            // Claims one slot; true when the candidate became a sample, `taken` when the slot already was one
+            auto claim = [&](int x, int y, const Vec3& p, const Vec3& n, bool& taken) {
+                taken = false;
+                if (x < 0 || y < 0 || x >= atlas || y >= atlas) return false;
+                int8_t& o = own[static_cast<size_t>(y) * atlas + x];
+                if (o == 1) { taken = true; return false; }
+                if (o != 0) return false;  // known to be hidden
+                if (solids && solids->inside(p + n * 0.02, probe)) { o = 2; ++hidden; return false; }  // buried in a solid: invisible, counted once
+                o = 1;
+                return true;
+            };
+            // Pass 0 bakes every texel whose centre lies inside a fragment. Pass 1 (conservative rasterisation) bakes the texels that only partly overlap a
+            // fragment, at the nearest point inside it (see generate()). Centre-inside texels always win over conservative ones.
+            for (int pass = 0; pass < 2; ++pass)
+                for (size_t ui : usesOfPage[pg]) {
+                    const Entry& e = *uses[ui].entry;
+                    const std::vector<TexelCandidate>& list = pass == 0 ? e.pass0 : e.pass1;
+                    bool any = false;
+                    uint32_t count = 0;
+                    for (size_t k = 0; k < list.size(); ++k) {
+                        bool taken = false;
+                        if (claim(list[k].x, list[k].y, list[k].p, e.normal, taken)) { won[pass][firstOf[pass][ui] + k] = 1; ++count; any = true; }
+                        else if (taken) any = true;
+                    }
+                    wonCount[pass][ui] = count;
+                    if (pass == 0 && !any && e.hasTiny) {
+                        bool taken = false;
+                        if (claim(e.tinyX, e.tinyY, e.centroid, e.normal, taken)) tinyWon[ui] = 1;
+                    }
+                }
+            hiddenOfPage[pg] = hidden;
         }
-        o = static_cast<int32_t>(out.texel.size());
-        out.texel.push_back(static_cast<uint32_t>((static_cast<size_t>(page) * atlas + y) * atlas + x));
-        out.pos.push_back(static_cast<float>(pp.x)); out.pos.push_back(static_cast<float>(pp.y)); out.pos.push_back(static_cast<float>(pp.z)); out.pos.push_back(1.f);
-        out.nrm.push_back(static_cast<float>(nn.x)); out.nrm.push_back(static_cast<float>(nn.y)); out.nrm.push_back(static_cast<float>(nn.z)); out.nrm.push_back(0.f);
-        if (useSub) out.sub.insert(out.sub.end(), useSub, useSub + 12);
-        else out.sub.insert(out.sub.end(), 12, 0.f);
-        return true;
-    };
-    // Pass 0 bakes every texel whose centre lies inside a fragment. Pass 1 (conservative rasterisation) bakes the texels that only partly overlap a
-    // fragment, at the nearest point inside it (see generate()). Centre-inside texels always win over conservative ones.
-    for (int pass = 0; pass < 2; ++pass)
-        for (const Use& u : uses) {
+    });
+    size_t hiddenCount = 0;
+    for (size_t h : hiddenOfPage) hiddenCount += h;
+
+    std::vector<size_t> firstSample[2];  // per piece: index in the output of its first winner of that pass
+    firstSample[0].assign(uses.size(), 0);
+    firstSample[1].assign(uses.size(), 0);
+    size_t total = 0;
+    for (size_t i = 0; i < uses.size(); ++i) { firstSample[0][i] = total; total += wonCount[0][i] + (tinyWon[i] ? 1 : 0); }
+    for (size_t i = 0; i < uses.size(); ++i) { firstSample[1][i] = total; total += wonCount[1][i]; }
+    out.texel.resize(total);
+    out.pos.resize(total * 4);
+    out.nrm.resize(total * 4);
+    out.sub.resize(total * 12);
+    parallelFor(uses.size(), 64, [&](size_t useBegin, size_t useEnd) {
+        for (size_t ui = useBegin; ui < useEnd; ++ui) {
+            const Use& u = uses[ui];
             if (!u.entry) continue;
             const Entry& e = *u.entry;
-            bool any = false;
-            for (const TexelCandidate& c : pass == 0 ? e.pass0 : e.pass1) {
-                if (claim(u.page, c.x, c.y, c.p, e.normal, c.sub, u.relief, u.shading)) any = true;
-                else if (owner[static_cast<size_t>(u.page)][static_cast<size_t>(c.y) * atlas + c.x] >= 0) any = true;
+            // A relief moves the sample onto the displayed surface (after the solid test: a pit lies inside the brush, the texel does not)
+            auto write = [&](size_t at, int x, int y, const Vec3& p, const float* sub) {
+                Vec3 pp = p, nn = e.normal;
+                float reliefSub[12];
+                const float* useSub = sub;
+                if (u.relief) {
+                    Vec3 dp, dn;
+                    if (displaceSample(*u.relief, p, e.normal, sub, dp, dn, reliefSub)) { pp = dp; nn = dn; if (sub) useSub = reliefSub; }
+                } else if (u.shading) {
+                    nn = shadingNormalAt(*u.shading, p, e.normal);  // smooth edges (REQUIREMENTS §33 H6): the normal varies across the face
+                }
+                out.texel[at] = static_cast<uint32_t>((static_cast<size_t>(u.page) * atlas + y) * atlas + x);
+                float* P = &out.pos[at * 4];
+                float* N = &out.nrm[at * 4];
+                P[0] = static_cast<float>(pp.x); P[1] = static_cast<float>(pp.y); P[2] = static_cast<float>(pp.z); P[3] = 1.f;
+                N[0] = static_cast<float>(nn.x); N[1] = static_cast<float>(nn.y); N[2] = static_cast<float>(nn.z); N[3] = 0.f;
+                float* S = &out.sub[at * 12];
+                if (useSub) std::copy(useSub, useSub + 12, S);
+                else std::fill(S, S + 12, 0.f);
+            };
+            for (int pass = 0; pass < 2; ++pass) {
+                const std::vector<TexelCandidate>& list = pass == 0 ? e.pass0 : e.pass1;
+                size_t at = firstSample[pass][ui];
+                for (size_t k = 0; k < list.size(); ++k)
+                    if (won[pass][firstOf[pass][ui] + k]) write(at++, list[k].x, list[k].y, list[k].p, list[k].sub);
+                if (pass == 0 && tinyWon[ui]) write(at, e.tinyX, e.tinyY, e.centroid, nullptr);
             }
-            if (pass == 0 && !any && e.hasTiny) claim(u.page, e.tinyX, e.tinyY, e.centroid, e.normal, nullptr, u.relief, u.shading);
         }
+    });
     if (hiddenOut) *hiddenOut = hiddenCount;
     for (auto it = entries_.begin(); it != entries_.end();) it = it->second->used == generation_ ? std::next(it) : entries_.erase(it);
     const auto t2 = Clock::now();

@@ -1,5 +1,7 @@
 #include "core/lightvol.h"
+#include "core/parallel.h"
 #include "gpu_bake.h"
+#include <cstring>
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -284,7 +286,11 @@ LightvolGrid buildLightvolGrid(const std::vector<LightSurface>& surfaces, const 
 std::vector<char> solidProbes(const LightvolGrid& grid, const SolidSet* solids) {
     std::vector<char> out(grid.count(), 0);
     if (!solids) return out;
-    for (size_t i = 0; i < grid.count(); ++i) out[i] = solids->inside(grid.position(i)) ? 1 : 0;
+    // (a level has tens of millions of probes: on all cores; neighbouring probes share a lookup cell, so each range keeps its own probe cache)
+    parallelFor(grid.count(), 65536, [&](size_t b, size_t e) {
+        SolidSet::Probe probe;
+        for (size_t i = b; i < e; ++i) out[i] = solids->inside(grid.position(i), probe) ? 1 : 0;
+    });
     return out;
 }
 
@@ -358,11 +364,17 @@ struct ProbeBaker::Impl {
     LightvolSource src;
     LightvolSettings cfg;
     std::vector<Vec3> normals;
-    std::vector<size_t> ids;  // valid (non solid) probes in grid order = the resident sample order / K
+    std::vector<size_t> ids;  // valid (non solid) probes in grid order = the sample order / K
     size_t next = 0;
     std::unique_ptr<gpu::LiveSession> session;
     bool gather = false;
     std::string device = "cpu", gpuError;
+    // The session keeps the samples of `cap` probes resident (about a hundred bytes a sample: positions, normals, three result buffers). A level can have tens of
+    // millions of probes, so they go through the session in batches: [loadedFirst, loadedLast) are the positions in `ids` it holds now.
+    size_t cap = 0, loadedFirst = 0, loadedLast = 0;
+    size_t texelMod = 1;
+    static constexpr size_t kBatchBudgetBytes = size_t(1536) << 20, kBytesPerSample = 104, kMinBatch = 16384;
+    static constexpr size_t kGpuStepProbes = 32768;  // a GPU step is one submission: never smaller than this
 
     void makeSession() {
         if (!cfg.useGpu || ids.empty() || !src.lights || !src.mesh || src.mesh->empty()) return;
@@ -370,25 +382,8 @@ struct ProbeBaker::Impl {
         const BakeOptions o = probeOptions(src, cfg);
         if (!gather && !gpu::needsRayTracing(*src.lights, src.mesh, o)) return;  // nothing to trace: the CPU does the plain light math
         const size_t K = normals.size();
-        TexelSamples resident;
-        resident.atlas = gather ? src.atlasSize : 1;
-        resident.pageCount = gather ? src.pages : 1;
-        const size_t atlasTexels = static_cast<size_t>(resident.atlas) * resident.atlas * resident.pageCount;
-        resident.pos.reserve(ids.size() * K * 4);
-        resident.nrm.reserve(ids.size() * K * 4);
-        resident.texel.reserve(ids.size() * K);
-        resident.seed.reserve(ids.size() * K);
-        uint32_t id = 0;
-        for (size_t i : ids) {
-            const Vec3 p = grid.position(i);
-            for (const Vec3& n : normals) {
-                resident.pos.insert(resident.pos.end(), {static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z), 1.f});
-                resident.nrm.insert(resident.nrm.end(), {static_cast<float>(n.x), static_cast<float>(n.y), static_cast<float>(n.z), 0.f});
-                // the texel only seeds the gather's direction lattice (the session never writes the resident atlas for them): any index inside the atlas
-                resident.texel.push_back(static_cast<uint32_t>(id % atlasTexels));
-                resident.seed.push_back(id++);
-            }
-        }
+        const size_t atlasTexels = gather ? static_cast<size_t>(src.atlasSize) * src.atlasSize * src.pages : 1;
+        texelMod = std::max<size_t>(1, atlasTexels);
         gpu::LiveSessionConfig sc;
         sc.areaSamples = cfg.areaSamples;
         sc.skySamples = cfg.skySamples;
@@ -397,25 +392,83 @@ struct ProbeBaker::Impl {
         sc.albedo = std::min(cfg.albedo, kMaxLiveAlbedo);
         sc.gather = gather;
         static const std::vector<float> none;
-        std::string error;
-        session = gpu::createLiveSession(resident, *src.mesh, *src.lights, sc, gather ? *src.atlasS : none, error);
-        if (!session) { gpuError = error; return; }
-        device = session->device();
+        size_t want = std::min(ids.size(), cfg.gpuBatchProbes > 0 ? cfg.gpuBatchProbes : std::max(kMinBatch, kBatchBudgetBytes / (kBytesPerSample * K)));
+        for (;;) {
+            // the session is sized by this set; the batches overwrite it (loadBatch)
+            TexelSamples resident;
+            resident.atlas = gather ? src.atlasSize : 1;
+            resident.pageCount = gather ? src.pages : 1;
+            resident.pos.assign(want * K * 4, 0.f);
+            resident.nrm.assign(want * K * 4, 0.f);
+            resident.texel.assign(want * K, 0u);
+            std::string error;
+            session = gpu::createLiveSession(resident, *src.mesh, *src.lights, sc, gather ? *src.atlasS : none, error);
+            if (session && session->samplePositions() && session->sampleNormals() && session->sampleTexels()) {
+                cap = want;
+                device = session->device();
+                gpuError.clear();
+                return;
+            }
+            if (session) error = "this session cannot be refilled";
+            session.reset();
+            gpuError = error;
+            // out of device memory (or a buffer over the device's limit): a smaller batch may fit; anything else will not get better
+            const bool memory = error.find("vkAllocateMemory") != std::string::npos || error.find("vkCreateBuffer") != std::string::npos ||
+                                error.find("maxStorageBufferRange") != std::string::npos;
+            if (!memory || want <= kMinBatch) return;
+            want = std::max(kMinBatch, want / 2);
+        }
     }
 
-    // One GPU submission for the probes in grid range [first, last); false = the GPU failed (the caller finishes on the CPU).
-    bool stepGpu(size_t first, size_t last) {
+    // Writes the samples of probes ids[a, b) into the session (b - a <= cap): the probe's position with the random id of the sample in w, the normals.
+    void loadBatch(size_t a, size_t b) {
+        const size_t K = normals.size();
+        float* P = session->samplePositions();
+        float* N = session->sampleNormals();
+        uint32_t* T = session->sampleTexels();
+        parallelFor(b - a, 128, [&](size_t j0, size_t j1) {
+            for (size_t j = j0; j < j1; ++j) {
+                const size_t p = a + j;
+                const Vec3 pos = grid.position(ids[p]);
+                for (size_t k = 0; k < K; ++k) {
+                    const size_t smp = j * K + k;
+                    const uint32_t id = static_cast<uint32_t>(p * K + k);  // the id the whole grid would have had resident
+                    P[smp * 4 + 0] = static_cast<float>(pos.x);
+                    P[smp * 4 + 1] = static_cast<float>(pos.y);
+                    P[smp * 4 + 2] = static_cast<float>(pos.z);
+                    std::memcpy(&P[smp * 4 + 3], &id, sizeof(id));
+                    N[smp * 4 + 0] = static_cast<float>(normals[k].x);
+                    N[smp * 4 + 1] = static_cast<float>(normals[k].y);
+                    N[smp * 4 + 2] = static_cast<float>(normals[k].z);
+                    N[smp * 4 + 3] = 0.f;
+                    T[smp] = static_cast<uint32_t>(id % texelMod);  // only seeds the gather's direction lattice
+                }
+            }
+        });
+        loadedFirst = a;
+        loadedLast = b;
+    }
+
+    // One GPU submission for the probes in grid range [first, last); false = the GPU failed (the caller finishes on the CPU). The step ends early (`last` is
+    // lowered to where it stopped) when the next probes are not in the session: they come with the next step.
+    bool stepGpu(size_t first, size_t& last) {
         const size_t K = normals.size();
         const size_t a = static_cast<size_t>(std::lower_bound(ids.begin(), ids.end(), first) - ids.begin());
-        const size_t b = static_cast<size_t>(std::lower_bound(ids.begin(), ids.end(), last) - ids.begin());
-        if (b > a) {
-            gpu::LiveSession::Job job;
-            job.first = static_cast<uint32_t>(a * K);
-            job.count = static_cast<uint32_t>((b - a) * K);
-            std::vector<float> d, db, ind;
-            if (!session->run({job}, d, db, gather ? &ind : nullptr)) { gpuError = session->error(); return false; }
-            for (size_t j = a; j < b; ++j) fitFrom(grid, ids[j], normals, d.data(), gather ? ind.data() : nullptr, (j - a) * K, cfg.bounceDirectionWeight);
+        size_t b = static_cast<size_t>(std::lower_bound(ids.begin(), ids.end(), last) - ids.begin());
+        if (b <= a) return true;
+        if (a < loadedFirst || a >= loadedLast) loadBatch(a, std::min(a + cap, ids.size()));
+        if (b > loadedLast) {
+            b = loadedLast;
+            last = ids[b];
         }
+        gpu::LiveSession::Job job;
+        job.first = static_cast<uint32_t>((a - loadedFirst) * K);
+        job.count = static_cast<uint32_t>((b - a) * K);
+        std::vector<float> d, db, ind;
+        if (!session->run({job}, d, db, gather ? &ind : nullptr)) { gpuError = session->error(); return false; }
+        parallelFor(b - a, 64, [&](size_t j0, size_t j1) {
+            for (size_t j = j0; j < j1; ++j) fitFrom(grid, ids[a + j], normals, d.data(), gather ? ind.data() : nullptr, j * K, cfg.bounceDirectionWeight);
+        });
         return true;
     }
 };
@@ -444,8 +497,9 @@ LightvolGrid ProbeBaker::take() { return std::move(d_->grid); }
 size_t ProbeBaker::step(size_t probes) {
     Impl& s = *d_;
     if (s.next >= s.grid.count()) return 0;
-    const size_t n = std::max<size_t>(1, s.session ? std::max<size_t>(probes, 4096) : probes);
-    const size_t first = s.next, last = std::min(s.grid.count(), first + n);
+    const size_t n = std::max<size_t>(1, s.session ? std::max<size_t>(probes, Impl::kGpuStepProbes) : probes);
+    const size_t first = s.next;
+    size_t last = std::min(s.grid.count(), first + n);
     for (size_t i = first; i < last; ++i) { s.grid.probes[i] = Probe{}; s.baked[i] = 1; }
     if (s.session && !s.stepGpu(first, last)) {  // device lost / out of memory: finish on the CPU
         s.session.reset();

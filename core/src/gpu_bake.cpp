@@ -1712,6 +1712,10 @@ public:
         return setLightsImpl(L);  // the GPU is idle between steps (run() waits for its fence)
     }
     float* atlas() override { return static_cast<float*>(bAtlas.mapped); }
+    float* samplePositions() override { return static_cast<float*>(bPos.mapped); }
+    float* sampleNormals() override { return static_cast<float*>(bNrm.mapped); }
+    uint32_t* sampleTexels() override { return static_cast<uint32_t*>(bIdx.mapped); }
+    size_t sampleCount() const override { return n; }
     const std::string& error() const override { return err; }
     const std::string& device() const override { return dev; }
     const std::vector<std::string>& validation() const override { return val; }

@@ -459,6 +459,50 @@ TEST_CASE("lightvol ProbeBaker: ray traced shadows and GI on the GPU session agr
     }
 }
 
+TEST_CASE("lightvol ProbeBaker: a GPU session that holds a few probes at a time (batches) bakes exactly what one that holds them all does") {
+    Room room({ent("w", "worldspawn", {Brush::makeBox("floor", {-8, -1, -8}, {8, 0, 8}), Brush::makeBox("roof", {-1, 3, -1}, {1, 3.5, 1})}), directional({90, 0, 0}, 1.0)});
+    for (Light& l : room.lights.lights) l.castShadows = true;
+    LightmapSettings ls;
+    ls.texelsPerMeter = 1;
+    const LightmapLayout layout = buildLightmapLayout(room.surfaces, LightingClasses::defaults(), ls);
+    room.mesh = buildOccluders(room.surfaces, LightingClasses::defaults(), &layout);
+    room.bvh = std::make_unique<TriangleBvh>(room.mesh);
+    const size_t texels = static_cast<size_t>(layout.pageCount) * layout.settings.atlasSize * layout.settings.atlasSize;
+    std::vector<float> atlas(texels * 4, 1.f);
+    LightvolSource src = room.source();
+    src.atlasS = &atlas;
+    src.atlasSize = layout.settings.atlasSize;
+    src.pages = layout.pageCount;
+    LightvolSettings cfg;
+    cfg.gridSize = 1;
+    cfg.areaSamples = 8;
+    cfg.giSamples = 16;
+    cfg.useGpu = true;
+    bool gpu = false;
+    const LightvolGrid whole = bakeAll(room, src, cfg, nullptr, &gpu);
+    cfg.gpuBatchProbes = 37;  // a step of the GPU path (32768 probes) is cut at every batch end
+    bool gpuBatched = false;
+    const LightvolGrid batched = bakeAll(room, src, cfg, nullptr, &gpuBatched, 1000);
+    CHECK(gpuBatched == gpu);
+    REQUIRE(whole.count() == batched.count());
+    REQUIRE(whole.count() > 300);
+    size_t valid = 0;
+    for (size_t i = 0; i < whole.count(); ++i) {
+        const Probe &a = whole.probes[i], &b = batched.probes[i];
+        CHECK(a.valid == b.valid);
+        if (!a.valid) continue;
+        ++valid;
+        CHECK(a.ambient.x == b.ambient.x);
+        CHECK(a.ambient.y == b.ambient.y);
+        CHECK(a.ambient.z == b.ambient.z);
+        CHECK(a.directed.x == b.directed.x);
+        CHECK(a.dir.x == b.dir.x);
+        CHECK(a.dir.y == b.dir.y);
+        CHECK(a.dir.z == b.dir.z);
+    }
+    CHECK(valid > 100);
+}
+
 TEST_CASE("lightvol ProbeBaker: steps advance by the asked amount, finished grid is complete, no lights = black but valid probes") {
     Room room({ent("w", "worldspawn", {Brush::makeBox("floor", {-3, -1, -3}, {3, 0, 3})})});
     LightvolSettings cfg;

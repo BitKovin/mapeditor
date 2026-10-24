@@ -62,6 +62,7 @@ json roomsDoc(int rooms) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // progress lines show up while the run is going, also when redirected to a file
     if (argc < 3) {
         std::cerr << "usage: bench_bake <assetsRoot> <map.map.json> [--quality Q] [--lighting lighting.json] [--no-lightvol] [--dump file.bin]\n";
         return 2;
@@ -214,7 +215,7 @@ int main(int argc, char** argv) {
         const bool lmBefore = svc.busy() || ticks == 0;
         size_t tickBytes = 0;
         for (const auto& m : svc.tick(0.25)) if (m.size() > 1000) { tileBytes += m.size(); ++tileMsgs; tickBytes += m.size(); }
-        if (std::getenv("BENCH_TICKS")) std::printf("tick %d: %.1f MB, base layer minPasses %d, stale %zu\n", ticks, tickBytes / 1e6, svc.baker().minPasses(), svc.baker().staleChunks());
+        if (std::getenv("BENCH_TICKS")) std::printf("tick %d: %.1f MB, base layer minPasses %d, stale %zu, light volume %.2f%%\n", ticks, tickBytes / 1e6, svc.baker().minPasses(), svc.baker().staleChunks(), 100.0 * svc.lightvolProgress());
         const double dt = std::chrono::duration<double>(Clock::now() - a).count();
         (lmBefore ? lmSeconds : volSeconds) += dt;
         ++ticks;
@@ -259,6 +260,13 @@ int main(int argc, char** argv) {
             {"prefab instance moved 1 m", [](json& d, int k) {
                  for (auto& p : d["prefabInstances"]) if (p["id"] == "i_village_a") p["origin"][0] = p["origin"][0].get<double>() + 1.0 * k;
              }},
+            {"one worldspawn brush moved 0.5 m", [](json& d, int k) {  // the middle brush of the world entity
+                 for (auto& e : d["entities"])
+                     if (e["classname"] == "worldspawn" && !e["brushes"].empty()) {
+                         auto& b = e["brushes"][e["brushes"].size() / 2];
+                         for (auto& v : b["vertices"]) v[0] = v[0].get<double>() + 0.5 * k;
+                     }
+             }},
             {"one detail entity moved 0.5 m", [](json& d, int k) {  // the func_detail with most brushes
                  json* best = nullptr;
                  for (auto& e : d["entities"]) if (e["classname"] == "func_detail" && (!best || e["brushes"].size() > (*best)["brushes"].size())) best = &e;
@@ -269,8 +277,10 @@ int main(int argc, char** argv) {
                      for (auto& b : e["brushes"]) for (auto& v : b["vertices"]) v[0] = v[0].get<double>() + 0.5 * k;
              }},
         };
+        const char* only = std::getenv("BENCH_EDIT_ONLY");  // a part of an edit's name: run just those
         for (const Edit& ed : list)
             for (int k = 1; k <= 2; ++k) {
+                if (only && std::string(ed.name).find(only) == std::string::npos) continue;
                 json doc = base;
                 ed.apply(doc, k);
                 { std::ofstream out(editFile); out << doc.dump(); }
@@ -294,9 +304,9 @@ int main(int argc, char** argv) {
                 const LiveBaker::GeometryTimings& gt = svc.baker().geometryTimings();
                 std::printf("edit %-26s #%d: open doc %.0f ms | first tiles %.0f ms | converged+volume %.0f ms | (first tick %.0f ms) stale chunks %zu\n", ed.name, k, openMs, firstMs, finalMs,
                             captureMs, svc.baker().staleChunks());
-                std::printf("      rebuild ms: layout %.0f diff %.0f geometry %.0f (inherit %.0f samples %.0f occluders %.0f bvh %.0f gi %.0f chunks %.0f atlas %.0f stale %.0f) | session %.0f steps %.0f tiles %.0f denoise %.0f | snapshot-relative firstTiles %.0f converged %.0f\n",
-                            t.layout, t.diff, t.geometry, gt.inherit * 1e3, gt.samples * 1e3, gt.occluders * 1e3, gt.bvh * 1e3, gt.gi * 1e3, gt.chunks * 1e3, gt.atlas * 1e3, gt.stale * 1e3, t.session, t.steps, t.tiles, t.denoise,
-                            t.firstTiles, t.converged);
+                std::printf("      rebuild ms: capture %.0f layout %.0f diff %.0f geometry %.0f (inherit %.0f samples %.0f [generate %.0f assemble %.0f] occluders %.0f bvh %.0f extrapolate %.0f gi %.0f chunks %.0f atlas %.0f stale %.0f) | session %.0f steps %.0f tiles %.0f denoise %.0f | snapshot-relative firstTiles %.0f converged %.0f\n",
+                            t.capture, t.layout, t.diff, t.geometry, gt.inherit * 1e3, gt.samples * 1e3, gt.samplesGenerate * 1e3, gt.samplesAssemble * 1e3, gt.occluders * 1e3, gt.bvh * 1e3, gt.extrapolate * 1e3, gt.gi * 1e3, gt.chunks * 1e3, gt.atlas * 1e3, gt.stale * 1e3,
+                            t.session, t.steps, t.tiles, t.denoise, t.firstTiles, t.converged);
             }
         std::filesystem::remove(editFile);
     }

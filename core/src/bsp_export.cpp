@@ -176,7 +176,7 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                     if (const LiveBaker* b = svc->layerBaker(st); b && b->chunkCount() > 0)
                         f = std::min(f, double(b->minPasses()) / std::max(1, b->settings().maxPasses));
                 const bool lmBusy = svc->busy(), volBusy = svc->lightvolPending();
-                report(lmBusy ? "baking lightmaps" : "baking light volume", (lmBusy ? 0.6 * f : 0.6 + 0.2 * (svc->lightvolReady() ? 1.0 : 0.5)) * 0.8);
+                report(lmBusy ? "baking lightmaps" : "baking light volume", (lmBusy ? 0.6 * f : 0.6 + 0.2 * svc->lightvolProgress()) * 0.8);
                 if (!lmBusy && !volBusy) { if (++idle > 1) break; } else idle = 0;
                 if (req.maxBakeSeconds > 0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - b0).count() > req.maxBakeSeconds) {
                     r.warnings.push_back("the bake was stopped after " + std::to_string(static_cast<int>(req.maxBakeSeconds)) + " s before it converged");
@@ -195,11 +195,12 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
             for (int st : svc->styles())
                 if (svc->lightvol(st).count() > 0) in.lightvol[st] = svc->lightvol(st);
             if (!svc->lightvolReady()) in.lightvol.clear();
+            svc.reset();  // everything the compile needs was copied out: the bakers hold gigabytes on a big level
         }
         if (stop()) { r.cancelled = true; r.error = "cancelled"; return false; }
 
-        prepared.lightvol = in.lightvol;
         BspOutput o = compileBsp(in, [&](const std::string& stage, double f) { report(stage, (req.bake ? 0.8 : 0.0) + f * (req.bake ? 0.18 : 0.98)); });
+        prepared.lightvol = std::move(in.lightvol);
         for (const auto& w : o.warnings) r.warnings.push_back(w);
         r.stats = o.stats;
 

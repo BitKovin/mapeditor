@@ -131,7 +131,7 @@ public:
     // Time accounting since construction: wall time inside step(), of which `gpuSeconds` was spent waiting for the GPU.
     struct Stats { double stepSeconds = 0, gpuSeconds = 0; size_t steps = 0, texels = 0; };
     // Where the last setGeometry() spent its time (seconds), for latency diagnosis.
-    struct GeometryTimings { double inherit = 0, samples = 0, samplesGenerate = 0, samplesAssemble = 0, occluders = 0, bvh = 0, gi = 0, chunks = 0, atlas = 0, stale = 0, total = 0; };
+    struct GeometryTimings { double inherit = 0, samples = 0, samplesGenerate = 0, samplesAssemble = 0, occluders = 0, bvh = 0, extrapolate = 0, gi = 0, chunks = 0, atlas = 0, stale = 0, total = 0; };
     const GeometryTimings& geometryTimings() const { return geomTimings_; }
     // Where the last prepareGpu() session creation spent its time (seconds), 0 when no session was created.
     double lastSessionSeconds() const { return lastSessionSeconds_; }

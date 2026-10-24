@@ -130,11 +130,20 @@ public:
     bool lightvolReady() const { return volDone_; }
     // The light volume still has work or messages pending (synchronous mode and tests; not part of busy(), which only covers the lightmap).
     bool lightvolPending() const { return enabled_ && volPending(); }
+    // How much of the light volume of the current run is baked, 0..1 (all style layers; synchronous mode only, the bake thread owns the probes otherwise).
+    // 0 until the probes start (they wait for the lightmap to settle).
+    double lightvolProgress() const {
+        if (volDone_ && !volStale_ && !volRunning_) return 1.0;
+        if (!volRunning_ || volQueue_.empty()) return 0.0;
+        const double layer = probes_ && probes_->total() > 0 ? static_cast<double>(probes_->baked()) / static_cast<double>(probes_->total()) : 0.0;
+        return (static_cast<double>(volQueuePos_) + layer) / static_cast<double>(volQueue_.size());
+    }
     const LightvolGrid& lightvol(int style = 0) const { static const LightvolGrid none; const auto it = vols_.find(style); return it == vols_.end() ? none : it->second; }
     const std::string& lightvolDevice() const { return volDevice_; }
 
     // Where the time of the last edit went, in milliseconds (also part of statusJson()).
     struct Timings {
+        double capture = 0;                                                    // taking the snapshot from the Scene (synchronous mode only)
         double surfaces = 0, layout = 0, diff = 0, geometry = 0, lights = 0;  // applying a snapshot
         double session = 0;                                                    // GPU session creation (inside the first step after a rebuild)
         double steps = 0, tiles = 0, denoise = 0;                              // accumulated since the last snapshot
