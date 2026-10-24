@@ -76,6 +76,7 @@ int surfaceAt(uint tri, vec2 bc, out vec3 transmit) {
     uint px = alphaWords[alphaWords[h] + uint(y * w + x)];
     float a = float(px >> 24) / 255.0;
     if (mode == 1u) return a < uintBitsToFloat(alphaWords[h + 4u]) ? -1 : 0;
+    if ((px >> 24) < 16u) return -1;  // translucent: a clear texel is no surface, whatever rgb is stored under it
     vec3 c = vec3(srgbChannel(px & 255u), srgbChannel((px >> 8) & 255u), srgbChannel((px >> 16) & 255u));
     transmit = mix(vec3(1.0), c, uintBitsToFloat(alphaWords[h + 6u])) * (1.0 - uintBitsToFloat(alphaWords[h + 5u]) * a);
     return 1;

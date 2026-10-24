@@ -26,20 +26,22 @@ layout(push_constant) uniform PC {
 const float PI = 3.14159265358979323846;
 const float GOLDEN = 0.6180339887498949;
 
-// True when the ray passes triangle `tri` at barycentrics `bc`: a hole of a cutout texture. Everything else (solid, translucent) occludes,
-// like TriangleBvh::nearestHit (surface() >= 0).
+// True when the ray passes triangle `tri` at barycentrics `bc`: a hole of a cutout texture, or a clear texel (alpha < 16) of a translucent one.
+// Everything else (solid, translucent) occludes, like TriangleBvh::nearestHit (surface() >= 0).
 bool isHole(uint tri, vec2 bc) {
     vec4 a0 = albedoMeta[tri * 3u], a1 = albedoMeta[tri * 3u + 1u];
     int id = int(floor(a1.z + 0.5));
     if (id < 0) return false;
     uint h = uint(id) * 8u;
-    if (alphaWords[h + 3u] != 1u) return false;
+    uint mode = alphaWords[h + 3u];
+    if (mode == 0u) return false;
     float w0 = 1.0 - bc.x - bc.y;
     vec2 uv = w0 * a0.xy + bc.x * a0.zw + bc.y * a1.xy;
     int w = int(alphaWords[h + 1u]), hh = int(alphaWords[h + 2u]);
     int x = min(w - 1, int(fract(uv.x) * float(w))), y = min(hh - 1, int(fract(uv.y) * float(hh)));
     uint px = alphaWords[alphaWords[h] + uint(y * w + x)];
-    return float(px >> 24) / 255.0 < uintBitsToFloat(alphaWords[h + 4u]);
+    if (mode == 1u) return float(px >> 24) / 255.0 < uintBitsToFloat(alphaWords[h + 4u]);
+    return (px >> 24) < 16u;
 }
 
 // Distance to the nearest occluding surface along o + t * d within the radius, or -1.

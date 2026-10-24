@@ -165,6 +165,7 @@ int surfaceAt(const float* rec, const std::vector<uint32_t>& words, double b1, d
     std::memcpy(&opacity, &h[5], 4);
     std::memcpy(&tint, &h[6], 4);
     if (h[3] == 1u) return a < cutoff ? -1 : 0;
+    if ((px >> 24) < 16u) return -1;  // translucent: a clear texel (classifyAlpha's "clear") is no surface, whatever rgb is stored under it
     const Vec3 colour{srgbToLinear(static_cast<uint8_t>(px & 255u)), srgbToLinear(static_cast<uint8_t>((px >> 8) & 255u)), srgbToLinear(static_cast<uint8_t>((px >> 16) & 255u))};
     const double k = 1.0 - static_cast<double>(opacity) * a;
     transmit = Vec3{1 + (colour.x - 1) * tint, 1 + (colour.y - 1) * tint, 1 + (colour.z - 1) * tint} * k;

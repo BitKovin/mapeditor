@@ -277,6 +277,24 @@ TEST_CASE("transparency (CPU tracer): half transparent coloured glass from its a
     CHECK(red > 5);
 }
 
+TEST_CASE("transparency (CPU tracer): clear texels of a translucent texture pass white light, whatever rgb is stored under them") {
+    PaneScene s;
+    // a decal: black text at alpha 0.6 on a fully clear ground whose rgb is black (the usual export of a painted-over layer); symmetric like grate()
+    const auto decal = image(4, 1, [](int x, int) { return x == 0 || x == 3 ? std::array<uint8_t, 4>{0, 0, 0, 0} : std::array<uint8_t, 4>{0, 0, 0, 153}; }, R"({"transparency":{"mode":"translucent"}})");
+    REQUIRE(decal->transparency.mode == TransparencyMode::Translucent);
+    const OccluderMesh m = s.mesh(loaderOf({{"pane", decal}}));
+    const TriangleBvh bvh(m);
+    int clear = 0, text = 0;
+    for (int i = 0; i < 40; ++i) {
+        const Vec3 o{-1.95 + i * 0.1, 0.01, 0.7};
+        const Vec3 T = bvh.transmittance(o, {0, 1, 0}, 100);
+        if (T.x == 1.0 && T.y == 1.0 && T.z == 1.0) { ++clear; CHECK(!bvh.occluded(o, {0, 1, 0}, 100)); CHECK(bvh.closestHit(o, {0, 1, 0}, 100).t < 0); }
+        else { ++text; CHECK(T.x < 1e-6); }  // black glass lets nothing through
+    }
+    CHECK(clear > 5);
+    CHECK(text > 5);
+}
+
 TEST_CASE("albedo UVs from the face's stored uvs (§24 C3): bounce colour and transparency sample where the editor shows the texture") {
     Brush b = Brush::makeBox("b", {0, 0, 0}, {2, 1, 1});
     BrushFace* top = nullptr;
