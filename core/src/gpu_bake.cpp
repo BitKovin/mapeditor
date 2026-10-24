@@ -1,3 +1,4 @@
+#include "core/parallel.h"
 #include "gpu_bake.h"
 #include <core_shaders/lightmap_ao.spv.h>
 #include <core_shaders/lightmap_direct.spv.h>
@@ -1468,24 +1469,29 @@ public:
         else std::memset(bSub.mapped, 0, 16);
         float* dp = static_cast<float*>(bPos.mapped);
         float* dn = static_cast<float*>(bNrm.mapped);
-        for (size_t i = 0; i < n; ++i) {
-            dp[i * 4 + 0] = S.pos[i * 4 + 0];
-            dp[i * 4 + 1] = S.pos[i * 4 + 1];
-            dp[i * 4 + 2] = S.pos[i * 4 + 2];
-            const uint32_t id = S.seedOf(i);  // the random-number id travels in the bits of w (as in evaluateDirect)
-            std::memcpy(&dp[i * 4 + 3], &id, sizeof(id));
-            dn[i * 4 + 0] = S.nrm[i * 4 + 0];
-            dn[i * 4 + 1] = S.nrm[i * 4 + 1];
-            dn[i * 4 + 2] = S.nrm[i * 4 + 2];
-            dn[i * 4 + 3] = 0.f;  // pass offsets are push constants here, never per sample
-        }
+        // (tens of millions of entries on a big level: on all cores)
+        parallelFor(n, 8192, [&](size_t b0, size_t e0) {
+            for (size_t i = b0; i < e0; ++i) {
+                dp[i * 4 + 0] = S.pos[i * 4 + 0];
+                dp[i * 4 + 1] = S.pos[i * 4 + 1];
+                dp[i * 4 + 2] = S.pos[i * 4 + 2];
+                const uint32_t id = S.seedOf(i);  // the random-number id travels in the bits of w (as in evaluateDirect)
+                std::memcpy(&dp[i * 4 + 3], &id, sizeof(id));
+                dn[i * 4 + 0] = S.nrm[i * 4 + 0];
+                dn[i * 4 + 1] = S.nrm[i * 4 + 1];
+                dn[i * 4 + 2] = S.nrm[i * 4 + 2];
+                dn[i * 4 + 3] = 0.f;  // pass offsets are push constants here, never per sample
+            }
+        });
         // grid entries: position, normal and the texel of the fine atlas (the gather's direction lattice); their w stays 0
-        for (size_t e = 0; e < m; ++e) {
-            const size_t i = n + e;
-            for (size_t c = 0; c < 3; ++c) { dp[i * 4 + c] = S.pos[i * 4 + c]; dn[i * 4 + c] = S.nrm[i * 4 + c]; }
-            dp[i * 4 + 3] = 0.f;
-            dn[i * 4 + 3] = 0.f;
-        }
+        parallelFor(m, 8192, [&](size_t b0, size_t e0) {
+            for (size_t e = b0; e < e0; ++e) {
+                const size_t i = n + e;
+                for (size_t c = 0; c < 3; ++c) { dp[i * 4 + c] = S.pos[i * 4 + c]; dn[i * 4 + c] = S.nrm[i * 4 + c]; }
+                dp[i * 4 + 3] = 0.f;
+                dn[i * 4 + 3] = 0.f;
+            }
+        });
         std::memcpy(bIdx.mapped, S.texel.data(), (n + m) * 4);
         if (atlasInit.size() == atlasTexels * 4) std::memcpy(bAtlas.mapped, atlasInit.data(), atlasTexels * 16);
         else std::memset(bAtlas.mapped, 0, atlasTexels * 16);

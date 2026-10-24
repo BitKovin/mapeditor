@@ -88,7 +88,13 @@ public:
     bool inside(const Vec3& p, Probe& probe, double margin = 0.0) const;
     size_t volumeCount() const { return volumes_.size(); }
     uint64_t fingerprint() const;  // hash of every volume (box, planes, kind): equal sets give equal values
-    void add(const Brush& b, bool subtractive);
+    // The volumes of a brush stay the same until the brush changes, and finding them is expensive for a concave brush (its convex pieces): a Cache keeps
+    // them from one build to the next, keyed by the brush's shape (a level of 2000 brushes took 13 s to collect on every edit).
+    struct Cache;
+    static std::shared_ptr<Cache> makeCache();
+    void add(const Brush& b, bool subtractive, Cache* cache = nullptr);
+    // add() for many brushes: the ones the cache does not know are worked out on all cores.
+    void addAll(const std::vector<std::pair<const Brush*, bool>>& brushes, Cache* cache = nullptr);
     void finish();  // builds the lookup grid; call after the last add()
 
 private:
@@ -103,8 +109,10 @@ private:
     bool contains(const Volume& v, const Vec3& p, double margin) const;
 };
 
-/// Volumes of the brushes of classes accepted by `blocks` (a classname predicate, normally LightingClasses::castsShadows).
-SolidSet collectSolids(const Document& doc, const std::vector<ResolvedEntity>& prefabs, const std::function<bool(const std::string&)>& blocks);
+/// Volumes of the brushes of classes accepted by `blocks` (a classname predicate, normally LightingClasses::castsShadows). `cache`: see SolidSet::Cache;
+/// brushes it has not been asked for in this build are dropped from it.
+SolidSet collectSolids(const Document& doc, const std::vector<ResolvedEntity>& prefabs, const std::function<bool(const std::string&)>& blocks,
+                       SolidSet::Cache* cache = nullptr);
 
 /// One decal fragment, typed (the same clipping as deriveGeometry's `decals`): lies on an authored face (its parent, owned by `entityId` of
 /// `instance`; the face of `brushId` of `brushInstance`), texture coordinates from the projector.

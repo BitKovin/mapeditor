@@ -154,6 +154,8 @@ private:
         std::vector<ResolvedEntity> entities;
     } resolved_;
 
+    std::shared_ptr<SolidSet::Cache> solidCache_;  // the volumes of the brushes between two lightSolids() (see SolidSet::Cache)
+
     std::filesystem::path assetsRoot_;
     nlohmann::json docJson_;  // canonical copy: exactly what the Shell sent
     Document doc_;            // typed read-only view of docJson_

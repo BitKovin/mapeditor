@@ -109,7 +109,15 @@ int main(int argc, char** argv) {
         { std::ifstream in(root / map); in >> d; }
         for (int k = 0; k < 3; ++k) {
             for (auto& p : d["prefabInstances"]) if (p["id"] == "i_village_a") p["origin"][0] = p["origin"][0].get<double>() + 1.0;
-            auto ms = [](Clock::time_point a) { return std::chrono::duration<double, std::milli>(Clock::now() - a).count(); };
+            if (d["prefabInstances"].empty()) {  // a map of brushes only: move the brushes of the biggest detail entity (BENCH_EDITPATH_ENTITY, default the first func_detail)
+                const char* want = std::getenv("BENCH_EDITPATH_ENTITY");
+                for (auto& e : d["entities"])
+                    if (want ? e["id"] == want : e["classname"] == "func_detail") {
+                        for (auto& b : e["brushes"]) for (auto& v : b["vertices"]) v[0] = v[0].get<double>() + 0.1;
+                        break;
+                    }
+            }
+            auto ms =[](Clock::time_point a) { return std::chrono::duration<double, std::milli>(Clock::now() - a).count(); };
             auto a = Clock::now();
             const std::string wire = json{{"type", "document_update"}, {"doc", d}}.dump();
             const double serial = ms(a); a = Clock::now();
@@ -251,7 +259,12 @@ int main(int argc, char** argv) {
             {"prefab instance moved 1 m", [](json& d, int k) {
                  for (auto& p : d["prefabInstances"]) if (p["id"] == "i_village_a") p["origin"][0] = p["origin"][0].get<double>() + 1.0 * k;
              }},
-            {"detail brush moved 0.5 m", [](json& d, int k) {
+            {"one detail entity moved 0.5 m", [](json& d, int k) {  // the func_detail with most brushes
+                 json* best = nullptr;
+                 for (auto& e : d["entities"]) if (e["classname"] == "func_detail" && (!best || e["brushes"].size() > (*best)["brushes"].size())) best = &e;
+                 if (best) for (auto& b : (*best)["brushes"]) for (auto& v : b["vertices"]) v[0] = v[0].get<double>() + 0.5 * k;
+             }},
+            {"all detail entities moved 0.5 m", [](json& d, int k) {
                  for (auto& e : d["entities"]) if (e["classname"] == "func_detail")
                      for (auto& b : e["brushes"]) for (auto& v : b["vertices"]) v[0] = v[0].get<double>() + 0.5 * k;
              }},

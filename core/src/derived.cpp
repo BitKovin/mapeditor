@@ -1,8 +1,10 @@
+#include "core/parallel.h"
 #include "core/derived.h"
 #include "core/bsp_compile.h"
 #include "core/csg.h"
 #include "core/decal.h"
 #include "core/smoothing.h"
+#include <unordered_set>
 #include <cstring>
 #include <map>
 
@@ -116,7 +118,63 @@ void buildTargets(const std::vector<Item>& items, std::vector<Target>& targets, 
 }
 }  // namespace
 
-void SolidSet::add(const Brush& b, bool subtractive) {
+struct SolidSet::Cache {
+    std::unordered_map<uint64_t, std::vector<Volume>> volumes;  // brush shape -> its volumes
+    std::unordered_set<uint64_t> used;                          // asked for since the last sweep
+    void sweep() {
+        for (auto it = volumes.begin(); it != volumes.end();) it = used.count(it->first) ? std::next(it) : volumes.erase(it);
+        used.clear();
+    }
+};
+
+std::shared_ptr<SolidSet::Cache> SolidSet::makeCache() { return std::make_shared<Cache>(); }
+
+namespace {
+uint64_t brushShapeHash(const Brush& b, bool subtractive) {
+    uint64_t h = subtractive ? 1469598103934665603ull : 7809847782465536322ull;
+    auto mix = [&](const void* p, size_t n) { const unsigned char* c = static_cast<const unsigned char*>(p); for (size_t i = 0; i < n; ++i) h = (h ^ c[i]) * 1099511628211ull; };
+    for (const Vec3& v : b.vertices) { const double d[3] = {v.x, v.y, v.z}; mix(d, sizeof d); }
+    for (const auto& f : b.faces) { for (uint32_t i : f.loop) mix(&i, sizeof i); const uint32_t sep = 0xFFFFFFFFu; mix(&sep, sizeof sep); }
+    return h;
+}
+}  // namespace
+
+void SolidSet::addAll(const std::vector<std::pair<const Brush*, bool>>& list, Cache* cache) {
+    std::vector<uint64_t> keys(list.size());
+    std::vector<std::vector<Volume>> per(list.size());
+    std::vector<char> have(list.size(), 0);
+    for (size_t i = 0; i < list.size(); ++i) {
+        keys[i] = brushShapeHash(*list[i].first, list[i].second);
+        if (!cache) continue;
+        cache->used.insert(keys[i]);
+        const auto it = cache->volumes.find(keys[i]);
+        if (it != cache->volumes.end()) { per[i] = it->second; have[i] = 1; }
+    }
+    parallelFor(list.size(), 1, [&](size_t b0, size_t e0) {
+        for (size_t i = b0; i < e0; ++i) {
+            if (have[i]) continue;
+            SolidSet one;
+            one.add(*list[i].first, list[i].second, nullptr);
+            per[i] = std::move(one.volumes_);
+        }
+    });
+    for (size_t i = 0; i < list.size(); ++i) {
+        if (cache && !have[i]) cache->volumes[keys[i]] = per[i];
+        volumes_.insert(volumes_.end(), per[i].begin(), per[i].end());
+    }
+}
+
+void SolidSet::add(const Brush& b, bool subtractive, Cache* cache) {
+    if (cache) {
+        const uint64_t key = brushShapeHash(b, subtractive);
+        cache->used.insert(key);
+        const auto hit = cache->volumes.find(key);
+        if (hit != cache->volumes.end()) { volumes_.insert(volumes_.end(), hit->second.begin(), hit->second.end()); return; }
+        const size_t before = volumes_.size();
+        add(b, subtractive, nullptr);
+        cache->volumes[key] = std::vector<Volume>(volumes_.begin() + static_cast<std::ptrdiff_t>(before), volumes_.end());
+        return;
+    }
     auto grow = [](Volume& v, const Vec3& p) {
         v.mn = {std::min(v.mn.x, p.x), std::min(v.mn.y, p.y), std::min(v.mn.z, p.z)};
         v.mx = {std::max(v.mx.x, p.x), std::max(v.mx.y, p.y), std::max(v.mx.z, p.z)};
@@ -230,13 +288,17 @@ uint64_t SolidSet::fingerprint() const {
     return h;
 }
 
-SolidSet collectSolids(const Document& doc, const std::vector<ResolvedEntity>& prefabs, const std::function<bool(const std::string&)>& blocks) {
+SolidSet collectSolids(const Document& doc, const std::vector<ResolvedEntity>& prefabs, const std::function<bool(const std::string&)>& blocks,
+                       SolidSet::Cache* cache) {
     SolidSet set;
+    std::vector<std::pair<const Brush*, bool>> list;
     for (const auto& it : allEntities(doc, prefabs)) {
         if (!blocks(it.entity->classname)) continue;
-        for (const auto& b : it.entity->brushes) set.add(b, b.op == BrushOp::Subtract);
+        for (const auto& b : it.entity->brushes) list.push_back({&b, b.op == BrushOp::Subtract});
     }
+    set.addAll(list, cache);
     set.finish();
+    if (cache) cache->sweep();
     return set;
 }
 
