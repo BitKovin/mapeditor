@@ -16,7 +16,7 @@ namespace core {
 // caster. Style 0 is the base layer every chart has and is not listed.
 //
 // When more styles touch a face than the slots allow (kMaxStylesPerSurface including the base), the ones with the smallest influence are discarded:
-// influence = mean over the face's sample points of the unshadowed irradiance estimate brightness * luminance(colour) * window(d / radius) * cos / d^2.
+// influence = mean over the face's sample points of the unshadowed irradiance estimate |brightness| * luminance(colour) * window(d / radius) * cos / d^2.
 struct StyleAnalysis {
     std::map<std::string, std::vector<int>> faceStyles;  // LightmapFace::key() -> kept non-base styles, ascending (faces without any are absent)
     std::map<std::string, std::vector<int>> discarded;   // same key -> styles that did not fit

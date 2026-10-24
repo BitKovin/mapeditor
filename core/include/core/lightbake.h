@@ -183,6 +183,9 @@ constexpr double kBounceNearDistance = 1.0; // m: the bounce source of a point /
 constexpr double kShadowFar = 10000.0;      // m: length of rays towards infinitely distant lights (directional, sky)
 constexpr double kAoBias = 1e-3;            // m: baked ambient occlusion rays start this far above the surface (CPU and shaders/lightmap_ao.comp)
 
+// The finished light of a texel: dark lights (negative brightness) make the evaluators' sums signed, but a lightmap never stores light below 0.
+inline Vec3 clampLight(const Vec3& v) { return {v.x > 0 ? v.x : 0, v.y > 0 ? v.y : 0, v.z > 0 ? v.z : 0}; }
+
 // Spreads sample values into pages, then fills the gutter (`padding` texels) by dilation.
 LightmapPages assemblePages(const LightmapLayout& layout, const TexelSamples& samples, const std::vector<float>& values4);
 

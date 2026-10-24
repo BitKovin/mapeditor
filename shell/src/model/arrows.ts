@@ -7,7 +7,7 @@
 //    arrowhead at the target. References are resolved exactly like the picker stores them: a scope-relative
 //    path of ids (`refs`), plus the older plain-name form (`keyvalues.target` = a targetname).
 import type { Entity } from './document'
-import { classOf, isBrushEntity } from './document'
+import { classOf, isBrushEntity, refPaths } from './document'
 import type { Box } from './entityBox'
 import type { ResolvedEntity } from './expand'
 import { Vec3, add, cross, normalize, scale, sub } from './math'
@@ -102,28 +102,30 @@ export function resolveLinks(items: readonly Placed[], refKeys: (classname: stri
   const byPath = new Map<string, Placed>()
   for (const p of items) byPath.set(pathOfPlaced(p), p)
   const nameOf = resolvedName ?? ((p: Placed) => p.entity.keyvalues?.targetname ?? '')
-  let byName: Map<string, Placed> | null = null
-  const nameIndex = (): Map<string, Placed> => {
-    if (!byName) { byName = new Map(); for (const p of items) { const n = nameOf(p); if (n && !byName.has(n)) byName.set(n, p) } }
+  let byName: Map<string, Placed[]> | null = null
+  const nameIndex = (): Map<string, Placed[]> => {
+    if (!byName) { byName = new Map(); for (const p of items) { const n = nameOf(p); if (n) byName.set(n, [...(byName.get(n) ?? []), p]) } }
     return byName
   }
   const out: Link[] = []
   for (const from of items) {
     const e = from.entity
     for (const key of refKeys(classOf(e))) {
-      let to: Placed | undefined
-      const ref = e.refs?.[key]
-      if (ref !== undefined) {
+      const refs = refPaths(e.refs?.[key])
+      if (refs.length) {
         const scope = Math.min(from.refScopes?.[key] ?? from.ids.length, from.ids.length)
-        to = byPath.get([...from.ids.slice(0, scope), ref].join('/'))
+        for (const ref of refs) {
+          const to = byPath.get([...from.ids.slice(0, scope), ref].join('/'))
+          if (to && to !== from) out.push({ from, key, to })
+        }
       } else {
         const name = e.keyvalues?.[key]
         if (name) {
-          // a plain name: a sibling in the same scope first (prefab-local names), then a global resolved name
-          to = items.find((q) => q.ids.length === from.ids.length && q.ids.every((x, i) => x === from.ids[i]) && q.entity.keyvalues?.targetname === name) ?? nameIndex().get(name)
+          // a plain name reaches EVERY entity with that name: those of the same scope first (prefab-local names), else the ones with that global resolved name
+          const sameScope = items.filter((q) => q.ids.length === from.ids.length && q.ids.every((x, i) => x === from.ids[i]) && q.entity.keyvalues?.targetname === name)
+          for (const to of sameScope.length ? sameScope : nameIndex().get(name) ?? []) if (to !== from) out.push({ from, key, to })
         }
       }
-      if (to && to !== from) out.push({ from, key, to })
     }
   }
   return out

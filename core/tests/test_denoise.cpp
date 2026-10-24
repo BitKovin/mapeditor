@@ -235,3 +235,34 @@ TEST_CASE("gather noise is not correlated between neighbouring texels (no streak
     CHECK(std::fabs(sxy[0] / std::sqrt(sa[0] * sb[0])) < 0.15);
     CHECK(std::fabs(sxy[1] / std::sqrt(sa[1] * sb[1])) < 0.15);
 }
+
+TEST_CASE("denoise: signed indirect light (dark lights) keeps its sign and is smoothed (skipped when the library is missing)") {
+    const denoise::Info info = denoise::probe();
+    if (!info.available) { MESSAGE("OpenImageDenoise not available, skipped: " << info.error); return; }
+    Room room(closedRoom());
+    const size_t n = room.samples.count();
+    std::vector<float> clean(n * 4, 0.f);
+    for (size_t i = 0; i < n; ++i) {
+        const float x = room.samples.pos[i * 4], sign = x < 0 ? 1.f : -1.f;  // positive light on one half of the room, negative on the other
+        for (size_t c = 0; c < 3; ++c) clean[i * 4 + c] = sign * (0.4f + 0.05f * static_cast<float>(c) + 0.02f * std::fabs(x));
+    }
+    std::vector<float> noisy = clean;
+    uint32_t s = 4242;
+    for (size_t i = 0; i < n; ++i)
+        for (size_t c = 0; c < 3; ++c) { s = s * 1664525u + 1013904223u; noisy[i * 4 + c] *= 0.5f + static_cast<float>(s >> 8) / 16777216.f; }
+    std::vector<float> out = noisy;
+    const denoise::Result r = denoise::denoiseSamples(room.samples, out, denoise::Quality::Fast);
+    REQUIRE_MESSAGE(r.ok, r.error);
+    const double before = rms(noisy, clean), after = rms(out, clean);
+    MESSAGE("rms error noisy " << before << " -> denoised " << after);
+    CHECK(after < before * 0.8);
+    size_t flipped = 0;
+    for (size_t i = 0; i < n; ++i) if ((out[i * 4] > 0) != (clean[i * 4] > 0)) ++flipped;
+    CHECK(flipped < n / 100);  // negative light stays negative, positive stays positive
+    // nothing negative: the plain path, bit for bit what denoising a non-negative image gave before
+    std::vector<float> positive(n * 4, 0.f);
+    for (size_t i = 0; i < n * 4; ++i) positive[i] = std::fabs(noisy[i]);
+    std::vector<float> a = positive;
+    REQUIRE(denoise::denoiseSamples(room.samples, a, denoise::Quality::Fast).ok);
+    CHECK(rms(a, positive) > 0.0);  // it filtered something
+}

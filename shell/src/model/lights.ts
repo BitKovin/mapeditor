@@ -23,6 +23,7 @@ export const isModernLight = (classname: string | undefined): boolean => !!class
 export interface LightParams {
   kind: LightKind
   color: [number, number, number]
+  /** Any sign: a negative brightness is a dark light that subtracts light (core/lights.h). */
   brightness: number
   radius: number
   bounce: number
@@ -60,11 +61,21 @@ export function lightParams(e: Entity, def?: EntityClassDef): LightParams | null
   if (inner >= outer) inner = outer * 0.5
   return {
     kind, color,
-    brightness: Math.max(0, n('brightness')), radius: Math.max(1e-3, n('radius')), bounce: Math.max(0, n('bounce')),
+    brightness: n('brightness'), radius: Math.max(1e-3, n('radius')), bounce: Math.max(0, n('bounce')),
     castShadows: n('cast_shadows') !== 0, style: Math.min(63, Math.max(0, Math.trunc(n('style')))), sourceSize: Math.max(0, n('source_size')),
     innerAngle: inner, outerAngle: outer, width: Math.max(1e-3, n('width')), height: Math.max(1e-3, n('height')),
   }
 }
+
+/** A light with a negative brightness takes light away instead of adding it (Quake 3's negative `light`). */
+export const isDarkLight = (p: Pick<LightParams, 'brightness'>): boolean => p.brightness < 0
+
+/** Gizmo colour: the light's own colour lifted so black lights stay readable; a dark light is pulled towards violet so it never looks like a normal one. */
+export function lightGizmoColor(p: LightParams): [number, number, number] {
+  const c = p.color.map((v) => 0.25 + 0.75 * Math.min(1, Math.max(0, v)))
+  return (isDarkLight(p) ? c.map((v, i) => 0.45 * v + 0.55 * DARK_TINT[i]) : c) as [number, number, number]
+}
+const DARK_TINT: Vec3 = [0.6, 0.35, 1]
 
 /** Lights with a direction start pointing straight down (forward = R*(0,0,1); pitch 90 turns it to -Y), like a lamp placed on the ceiling. */
 export const defaultLightAngles = (classname: string | undefined): Vec3 | undefined =>
@@ -194,6 +205,10 @@ export function lightGizmo(e: Entity, p: LightParams, selected: boolean): number
       seg(out, add(o, [0, s, 0]), add(o, [0, s * 0.1, 0]))
       break
     }
+  }
+  if (isDarkLight(p)) { // a dark light: the four body diagonals of a small cube through the icon, a cross over it
+    const s = ICON * 0.7
+    for (const [x, y, z] of [[1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1]] as const) seg(out, add(o, [x * s, y * s, z * s]), add(o, [-x * s, -y * s, -z * s]))
   }
   return out
 }

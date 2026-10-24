@@ -21,13 +21,24 @@ using Guid = std::string;
 // Core has never heard of (visgroups, UV projection params, selection sets...).
 // Core therefore keeps the raw JSON as the canonical copy and never rebuilds
 // it from these structs -- see Scene. Anything not modeled here survives.
+// The target(s) of one reference key: scope-relative paths. Stored as one string (the common case) or an array of strings. Several targets are
+// the entities that are meant to share one name (Quake's `target`: every entity with that name is triggered); flattenForCompile writes that name.
+struct RefTargets {
+    std::vector<std::string> paths;
+    RefTargets() = default;
+    RefTargets(std::string path) : paths{std::move(path)} {}
+    RefTargets(const char* path) : paths{path} {}
+    explicit RefTargets(std::vector<std::string> list) : paths(std::move(list)) {}
+    bool operator==(const std::string& one) const { return paths.size() == 1 && paths[0] == one; }
+};
+
 struct Entity {
     Guid id;
     std::string classname = "point_entity";
     std::unordered_map<std::string, std::string> keyvalues;
-    // Reference keys (target, killtarget, ...) -> scope-relative path "entityId" or "childInstanceId/entityId"
+    // Reference keys (target, killtarget, ...) -> scope-relative path(s) "entityId" or "childInstanceId/entityId"
     // (DESIGN.md 18.1). Resolved to names at compile time; never typed by the user.
-    std::unordered_map<std::string, std::string> refs;
+    std::unordered_map<std::string, RefTargets> refs;
 
     // Point entities: where they are. Brush entities: an independent pivot,
     // not baked into brush coordinates (DESIGN.md §5.2). Meters, Y-up.
@@ -46,7 +57,7 @@ struct Entity {
 // Differences an instance stores against its prefab file for ONE entity (DESIGN.md 18.1a).
 struct EntityOverride {
     std::unordered_map<std::string, std::string> keyvalues;
-    std::unordered_map<std::string, std::string> refs;
+    std::unordered_map<std::string, RefTargets> refs;
     std::optional<Vec3> origin, angles, scale;
     bool deleted = false;
 };

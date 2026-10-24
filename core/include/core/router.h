@@ -73,6 +73,7 @@ private:
     void handleUpdate(const nlohmann::json& req, RouterOutput& out);
     void handleOpen(const nlohmann::json& req, RouterOutput& out);
     void handleSave(const nlohmann::json& req, RouterOutput& out);
+    void handleImportMap(const nlohmann::json& req, RouterOutput& out);
     void handleListTextures(const nlohmann::json& req, RouterOutput& out);
     void handleReadTexture(const nlohmann::json& req, RouterOutput& out);
     void handleWriteTextureProps(const nlohmann::json& req, RouterOutput& out);

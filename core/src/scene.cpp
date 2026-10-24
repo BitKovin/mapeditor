@@ -289,7 +289,8 @@ std::vector<LightSurface> Scene::lightSurfaces(bool withSky) {
 
 std::shared_ptr<SolidSet> Scene::lightSolids() {
     const LightingClasses classes = lightingClasses();
-    return std::make_shared<SolidSet>(collectSolids(doc_, resolvedInside(), [&](const std::string& c) { return classes.castsShadows(c); }));
+    if (!solidCache_) solidCache_ = SolidSet::makeCache();
+    return std::make_shared<SolidSet>(collectSolids(doc_, resolvedInside(), [&](const std::string& c) { return classes.castsShadows(c); }, solidCache_.get()));
 }
 
 LightScene Scene::lightScene() {

@@ -13,7 +13,7 @@ import { PrefabIcons, clearEntityIcons } from './render/icons'
 import { ContentBrowserPanel } from './ui/contentBrowser'
 import { confirmDialog } from './ui/dialog'
 import { chooseFile, joinPath, parentDir } from './ui/fileDialog'
-import { MAP_FILTERS, nativePick } from './ui/nativeDialog'
+import { MAP_FILTERS, QUAKE_MAP_FILTERS, nativePick } from './ui/nativeDialog'
 import { formatFilters, withFormatExt } from './state/exportFormat'
 import { editorPrefs, viewportDefaults } from './state/editorPrefs'
 import { openSettings } from './ui/settingsDialog'
@@ -23,6 +23,7 @@ import { isOutsideWindow } from './ui/windowGeometry'
 import { HistoryPanel, InspectorPanel, OutlinerPanel } from './ui/panels'
 import { LevelSettingsPanel } from './ui/levelSettingsPanel'
 import { MeshEditPanel, PlacePanel } from './ui/placePanel'
+import { TerrainPanel } from './ui/terrainPanel'
 import { TexturePanel } from './ui/texturePanel'
 import { openTextureProperties } from './ui/texturePropsWindow'
 import { openReliefEditor } from './ui/reliefEditor'
@@ -129,6 +130,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
           viewports.add(v); return v
         }
         case 'place': return new PlacePanel(store, targetPoint, listDir, { prefabIcons, previews })
+        case 'terrain': return new TerrainPanel(store, targetPoint)
         case 'meshedit': return new MeshEditPanel(store, (id) => (liveViewports()[0]?.runTool(id) ?? false))
         case 'outliner': return new OutlinerPanel(store)
         case 'inspector': return new InspectorPanel(store)
@@ -325,6 +327,30 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     try { await conn.whenIdle(); const r = await conn.request((id) => msg.openDocument(id, p)); if (!r.ok) store.setMessage(r.error ?? 'Open failed') }
     catch (e) { store.setMessage((e as Error).message) }
   }
+  /** File > Import Quake map: Core converts the .map to <name>.map.json beside it (map_import.h) and opens the result. */
+  async function importMap(): Promise<void> {
+    if (!store.canEdit) { store.setMessage('Not connected to Core - cannot import'); return }
+    if (!(await okToDiscard())) return
+    let p = await nativePick(conn, store, { kind: 'open', title: 'Import Quake map', startDir: mapDir(), filters: QUAKE_MAP_FILTERS, relative: true })
+    if (p === undefined) p = await chooseFile({ mode: 'open', title: 'Import Quake map', ext: '.map', startDir: mapDir(), list: listDir })
+    if (p) await importPath(p, false)
+  }
+  async function importPath(p: string, overwrite: boolean): Promise<void> {
+    try {
+      await conn.whenIdle()
+      store.setMessage(`Importing ${p}…`)
+      const r = await conn.request((id) => msg.importMap(id, p, overwrite))
+      if (!r.ok && r.exists) {
+        if (await confirmDialog('Replace file', `${r.path} already exists. Import ${p} again and replace it?`, 'Replace')) await importPath(p, true)
+        else store.setMessage(null)
+        return
+      }
+      if (!r.ok) { store.setMessage(r.error ?? 'Import failed'); return }
+      const s = r.stats, w = r.warnings ?? []
+      if (w.length) console.warn(`Import of ${p}:\n${w.join('\n')}`)
+      store.setMessage(`Imported ${p}${s ? `: ${s.brushes} brushes, ${s.patches} patches, ${s.lights} lights, ${s.entities} entities` : ''}${s?.skipped ? `, ${s.skipped} skipped` : ''}${w.length ? `; ${w.length} notes in the browser console` : ''}`)
+    } catch (e) { store.setMessage((e as Error).message) }
+  }
   async function openRecent(p: string): Promise<void> { if (p !== store.state.path && await okToDiscard()) await openPath(p) }
 
   // ---- menu bar: every action lives here (with its shortcut); the toolbar below keeps the frequent ones -------------
@@ -334,7 +360,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   const exportLabel = () => store.state.exporting ? `Cancel export (${Math.round(store.state.exporting.fraction * 100)}%)` : `Export ${store.state.exportFormat.name}…`
   /** View menu: brings a panel to the front, or docks it again where it lives by default if it was closed. */
   const PANELS: [id: string, title: string, near: string, dir: 'within' | 'left' | 'right' | 'below'][] = [
-    ['place', 'Place', 'viewport-1', 'left'], ['meshedit', 'Mesh Edit', 'place', 'within'], ['outliner', 'Outliner', 'viewport-1', 'right'],
+    ['place', 'Place', 'viewport-1', 'left'], ['meshedit', 'Mesh Edit', 'place', 'within'], ['terrain', 'Terrain', 'place', 'within'], ['outliner', 'Outliner', 'viewport-1', 'right'],
     ['inspector', 'Details', 'outliner', 'below'], ['texture', 'Texture', 'place', 'below'], ['level', 'Level', 'inspector', 'within'],
     ['browser', 'Content Browser', 'viewport-1', 'below'], ['groups', 'Texture Groups', 'browser', 'within'], ['history', 'History', 'browser', 'within'],
   ]
@@ -352,6 +378,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
         ...(store.state.coreSettings?.recentMaps ?? []).map((p, i) => ({ label: `${i + 1}  ${p}`, checked: p === store.state.path, action: () => void openRecent(p) })),
         '-', { label: 'Clear Recent', action: () => void conn.request((id) => msg.setSettings(id, { clearRecent: true })).catch(() => undefined) },
       ] },
+      { label: 'Import Quake Map…', title: 'Convert a Quake 3 .map (brushes, curved patches, entities, lights) from the game folder to a map of this editor and open it', action: () => void importMap() },
       '-',
       { label: 'Save', shortcut: 'Ctrl+S', action: () => void save() },
       { label: 'Save As…', shortcut: 'Ctrl+Shift+S', title: 'Save under a new name', action: () => void saveAs() },
@@ -380,6 +407,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
       { label: 'Select', shortcut: 'Q', checked: store.state.tool === 'select', action: () => store.setTool('select') },
       { label: 'Shape', shortcut: 'B', checked: store.state.tool === 'box', title: 'Draw a shape: drag, release, move, click. Pick the shape in the Place panel', action: () => store.setTool('box') },
       { label: 'Decal', checked: store.state.tool === 'decal', title: 'Click a surface to place a decal projector', action: () => store.setTool('decal') },
+      { label: 'Terrain', shortcut: 'T', checked: store.state.tool === 'terrain', title: 'Sculpt a terrain: drag to raise, lower, smooth, flatten or paint. Make one in the Terrain panel', action: () => store.setTool('terrain') },
       '-',
       { label: 'Brush mode', shortcut: 'Tab', checked: store.state.editMode === 'object', action: () => store.setEditMode('object') },
       { label: 'Mesh mode', shortcut: 'Tab', checked: store.state.editMode === 'mesh', action: () => store.setEditMode('mesh') },
@@ -403,14 +431,14 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   // ---- toolbar: only the frequent actions, grouped; everything is also in the menus --------------------------------
   const btn = (label: string, title: string, fn: () => void, cls = '') => { const b = h('button', { title, class: cls }, label); b.addEventListener('click', fn); return b }
   const group = (...kids: HTMLElement[]) => h('div', { class: 'tb-group' }, ...kids)
-  const toolBtns = { select: btn('Select', 'Select tool (Q)', () => store.setTool('select'), 'tool'), box: btn('Shape', 'Draw a shape: drag, release, move, click (B). Pick the shape in the Place panel', () => store.setTool('box'), 'tool'), decal: btn('Decal', 'Click a surface to place a decal projector', () => store.setTool('decal'), 'tool') }
+  const toolBtns = { select: btn('Select', 'Select tool (Q)', () => store.setTool('select'), 'tool'), box: btn('Shape', 'Draw a shape: drag, release, move, click (B). Pick the shape in the Place panel', () => store.setTool('box'), 'tool'), decal: btn('Decal', 'Click a surface to place a decal projector', () => store.setTool('decal'), 'tool'), terrain: btn('Terrain', 'Sculpt a terrain: drag on it (T). Brush and new terrains in the Terrain panel', () => store.setTool('terrain'), 'tool') }
   const exportBtn = btn('', 'Cancel the export', () => void exportMap(), 'tb-export')
   const uvLockBtn = btn('UV lock', 'UV lock (global): on = textures stay on the faces when you move, rotate or scale brushes', () => store.setUvLock(!store.state.uvLock), 'tool')
   const modeBtns = { object: btn('Brush', 'Brush mode: NetRadiant-style object editing (Tab toggles Brush / Mesh)', () => store.setEditMode('object'), 'tool'), mesh: btn('Mesh', 'Mesh mode: Blender-style vertex / edge / face editing of the selected brush (Tab)', () => store.setEditMode('mesh'), 'tool') }
   const tools = h('div', { class: 'toolbar' },
     group(btn('Save', 'Save (Ctrl+S)', () => void save()), btn('Undo', 'Undo (Ctrl+Z)', () => store.undo()), btn('Redo', 'Redo (Ctrl+Y)', () => store.redo())),
     group(btn('▶ Play', 'Play map (F5): export the map as BSP and start the game with it (Settings > Run game)', () => void playMap(), 'tb-play')),
-    h('span', { class: 'tb-label' }, 'Tool'), group(toolBtns.select, toolBtns.box, toolBtns.decal),
+    h('span', { class: 'tb-label' }, 'Tool'), group(toolBtns.select, toolBtns.box, toolBtns.decal, toolBtns.terrain),
     h('span', { class: 'tb-label' }, 'Mode'), group(modeBtns.object, modeBtns.mesh),
     group(uvLockBtn), group(btn('Delete', 'Delete selection (Del)', () => deleteSelection(store))),
     group(btn('+ Viewport', `Add a viewport (max ${MAX_VIEWPORTS}); drag a tab out of the browser window, or use the ⧉ button of a group, to move it to another monitor`, addViewport)),
@@ -422,6 +450,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   const HINTS: Record<string, string> = {
     select: 'LMB select (Shift = add) · drag arrows to move · G/R/S move/rotate/scale · Ctrl+D duplicate · RMB+drag look, +WASD/QE fly, +wheel speed · MMB pan · wheel dolly · F frame · Tab mesh mode · Del delete',
     decal: 'Decal: click a surface to place a projector (size in the Place tab → Decals)',
+    terrain: 'Terrain: drag on a terrain to sculpt (Shift = raise/lower swapped) · [ ] brush size · tool, strength, falloff and new terrains in the Terrain panel · Esc cancels the stroke · Ctrl+Z undoes a whole stroke',
     box: 'Box: drag on a surface, release, move for height, click · Shift = 1:1:1 · Esc cancel · grid snap in the viewport header',
   }
   store.subscribe(() => {
@@ -433,7 +462,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     root.ownerDocument.title = `${s.dirty ? '• ' : ''}${s.path || 'untitled'} - Level Editor`
     hint$.textContent = s.editMode === 'mesh' ? 'Mesh: 1/2/3 vertex/edge/face · click / Shift-click / drag-box · Alt-click or double-click loop · Ctrl+Alt ring · Ctrl-click path · G R S · E extrude · I inset · Ctrl+B bevel · Ctrl+R loop cut · K knife · O proportional · J connect · Ctrl+M mirror · M merge · X dissolve · F fill · Tab back to Brush mode' : (HINTS[s.tool] ?? '')
     msg$.textContent = s.message ?? ''; msg$.title = s.message ?? ''
-    for (const k of ['select', 'box', 'decal'] as const) toolBtns[k].classList.toggle('on', s.tool === k)
+    for (const k of ['select', 'box', 'decal', 'terrain'] as const) toolBtns[k].classList.toggle('on', s.tool === k)
     for (const k of ['object', 'mesh'] as const) modeBtns[k].classList.toggle('on', s.editMode === k)
     uvLockBtn.classList.toggle('on', s.uvLock)
     exportBtn.textContent = exportLabel(); exportBtn.hidden = !s.exporting
@@ -460,6 +489,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     else if (k === 'q' && e.shiftKey) { e.preventDefault(); toggleFastTextureTool({ store, textures }) }
     else if (k === 'q') store.setTool('select')
     else if (k === 'b') store.setTool('box')
+    else if (k === 't') store.setTool('terrain')
     else if (k === 'f') liveViewports()[0]?.frameAll()
   }
   root.ownerDocument.addEventListener('keydown', onAppKey)
@@ -496,6 +526,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     dock.addPanel({ id: 'history', component: 'history', title: 'History', position: { referencePanel: 'browser', direction: 'within' } })
     dock.addPanel({ id: 'place', component: 'place', title: 'Place', position: { direction: 'left' } })
     dock.addPanel({ id: 'meshedit', component: 'meshedit', title: 'Mesh Edit', position: { referencePanel: 'place', direction: 'within' } })
+    dock.addPanel({ id: 'terrain', component: 'terrain', title: 'Terrain', position: { referencePanel: 'place', direction: 'within' } })
     dock.addPanel({ id: 'texture', component: 'texture', title: 'Texture', position: { referencePanel: 'place', direction: 'below' } })
     dock.addPanel({ id: 'outliner', component: 'outliner', title: 'Outliner', position: { direction: 'right' } })
     dock.addPanel({ id: 'inspector', component: 'inspector', title: 'Details', position: { referencePanel: 'outliner', direction: 'below' } })

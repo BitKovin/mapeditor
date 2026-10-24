@@ -1,10 +1,11 @@
 import { fieldKind, propertyField, propertyKeys } from './properties'
 import type { IContentRenderer } from 'dockview-core'
-import { Entity, PrefabInstance, classOf, instanceNames, isBrushEntity, originOf, showsCustomOrigin } from '../model/document'
+import { Entity, PrefabInstance, RefValue, classOf, refPaths, instanceNames, isBrushEntity, originOf, showsCustomOrigin } from '../model/document'
 import { refKeysOf, refTargets, RefTarget } from '../model/refs'
-import { parseScaleVec, setEntityAngle, setEntityScale, setEntityRef, setOverrideRef, renameInstance, revertOverride, setBrushOp, setCarve, setClassname, setInstanceVec, setKeyvalue, setOrigin, setOverrideField, setOverrideKeyvalue, editShape, convertShape } from '../state/actions'
+import { parseScaleVec, setEntityAngle, setEntityScale, setEntityRef, setOverrideRef, shareTargetName, renameInstance, revertOverride, setBrushOp, setCarve, setClassname, setInstanceVec, setKeyvalue, setOrigin, setOverrideField, setOverrideKeyvalue, editShape, convertShape } from '../state/actions'
 import { ParamShape, ShapePatch, ShapeSpec, shapeOf } from '../model/parametric'
 import { Turn, defaultShapeParams } from '../model/shapes'
+import { specOf as terrainSpecOf } from '../model/terrain'
 import type { EntityClassDef } from '../net/protocol'
 import type { Store } from '../state/store'
 import { wholeEntityIfSole } from '../state/store'
@@ -33,6 +34,14 @@ export class OutlinerPanel extends Panel {
       const row = h('div', { class: `row${isSel ? ' sel' : ''}` }, `${e.classname ?? 'point_entity'}`, h('span', { class: 'dim' }, ` ${e.id}`))
       row.addEventListener('click', () => this.store.select({ entityId: e.id }))
       root.append(row)
+      // a terrain is hundreds of tile brushes: one row for all of them (REQUIREMENTS §39)
+      const spec = terrainSpecOf(e)
+      if (spec) {
+        const tr = h('div', { class: 'row child' }, `terrain ${spec.cols} x ${spec.rows}`, h('span', { class: 'dim' }, ` ${e.brushes?.length ?? 0} tiles`))
+        tr.addEventListener('click', () => this.store.select({ entityId: e.id }))
+        root.append(tr)
+        continue
+      }
       for (const b of e.brushes ?? []) {
         const bsel = st.selection?.entityId === e.id && st.selection.brushId === b.id
         const br = h('div', { class: `row child${bsel ? ' sel' : ''}` }, `${b.op === 'subtract' ? '− ' : '+ '}brush`, h('span', { class: 'dim' }, ` ${b.id}`))
@@ -68,7 +77,9 @@ export class InspectorPanel extends Panel {
     const inst = sel?.instanceId !== undefined ? st.doc.prefabInstances.find((p) => p.id === sel.instanceId) : undefined
     const e = sel && sel.instanceId === undefined ? st.doc.entities.find((x) => x.id === sel.entityId) : undefined
     const contents = inst ? st.prefabEntities.filter((r) => r.instancePath[1] === inst.id).map((r) => [r.instancePath, r.sourceEntityId, r.entity.classname, r.entity.keyvalues, r.entity.refs]) : null
-    const sig = JSON.stringify([inst, contents, this.openPath, e, sel?.brushId, this.store.canEdit, st.entityDefs.length, st.entityDefs.find((c) => c.name === e?.classname)?.name])
+    // a terrain entity holds hundreds of brushes: do not serialize them on every edit of a stroke
+    const eSig = e && e.terrain !== undefined ? { ...e, brushes: e.brushes?.length } : e
+    const sig = JSON.stringify([inst, contents, this.openPath, eSig, sel?.brushId, this.store.canEdit, st.entityDefs.length, st.entityDefs.find((c) => c.name === e?.classname)?.name])
     if (sig === this.sig) return
     // Don't rebuild while the user is typing in one of our inputs (they'd lose focus mid-edit).
     // Leave `sig` stale so the panel refreshes as soon as focus leaves.
@@ -83,23 +94,42 @@ export class InspectorPanel extends Panel {
     this.element.replaceChildren(this.build(e, sel!.brushId ?? (isBrushEntity(e) && classOf(e) !== 'worldspawn' && e.brushes?.length === 1 ? e.brushes[0].id : undefined)))
   }
 
-  /** One reference field: a grouped list of every entity (document first, then prefab content by instance), a pipette and a clear button. */
-  private refRow(key: string, current: string | undefined, exclude: string | null, ro: boolean, set: (path: string | null) => void, note = '', label = key): HTMLElement {
+  /** A reference: one picker per target, plus an empty one to add another (entities that share a name are triggered together). `set(null)` clears / reverts. */
+  private refRow(key: string, current: RefValue | undefined, exclude: string | null, ro: boolean, set: (target: RefValue | null) => void, note = '', label = key): HTMLElement {
     const st = this.store.state
     const targets = refTargets(st.doc, st.prefabEntities, st.library)
-    const sel = h('select', {}, h('option', { value: '' }, '— none —'))
-    const groups = new Map<string, RefTarget[]>()
-    for (const t of targets) if (t.path !== exclude) groups.set(t.group, [...(groups.get(t.group) ?? []), t])
-    for (const [g, list] of groups) sel.append(h('optgroup', { label: g || 'This map' }, ...list.map((t) => h('option', { value: t.path }, t.label))))
-    if (current && !targets.some((t) => t.path === current)) sel.append(h('option', { value: current }, `⚠ ${current} (missing)`))
-    sel.value = current ?? ''
-    const pip = h('button', { title: 'Pick an entity in the viewport' }, '⌖')
-    const clr = h('button', { title: 'Clear / revert' }, '×')
-    if (ro) for (const x of [sel, pip, clr]) x.setAttribute('disabled', '')
-    sel.addEventListener('change', () => set(sel.value || null))
-    pip.addEventListener('click', () => this.store.setPipette((p) => { if (p) set(p) }))
-    clr.addEventListener('click', () => set(null))
-    return h('label', { class: 'field kv ref', title: [label !== key ? key : '', note].filter(Boolean).join('\n') }, h('span', {}, label), sel, h('span', { class: 'refbtns' }, pip, clr))
+    const paths = refPaths(current)
+    const apply = (list: string[]) => set(list.length ? (list.length === 1 ? list[0] : list) : null)
+    const picker = (value: string, noneLabel: string, change: (v: string) => void): HTMLSelectElement => {
+      const sel = h('select', {}, h('option', { value: '' }, noneLabel))
+      const groups = new Map<string, RefTarget[]>()
+      for (const t of targets) if (t.path !== exclude) groups.set(t.group, [...(groups.get(t.group) ?? []), t])
+      for (const [g, list] of groups) sel.append(h('optgroup', { label: g || 'This map' }, ...list.map((t) => h('option', { value: t.path }, t.label))))
+      if (value && !targets.some((t) => t.path === value)) sel.append(h('option', { value }, `⚠ ${value} (missing)`))
+      sel.value = value
+      if (ro) sel.setAttribute('disabled', '')
+      sel.addEventListener('change', () => change(sel.value))
+      return sel
+    }
+    const rows: HTMLElement[] = paths.map((p, i) => {
+      const clr = h('button', { title: paths.length > 1 ? 'Remove this target' : 'Clear / revert' }, '×')
+      if (ro) clr.setAttribute('disabled', '')
+      clr.addEventListener('click', () => apply(paths.filter((_, j) => j !== i)))
+      return h('div', { class: 'refrow' }, picker(p, '— none —', (v) => apply(v ? paths.map((x, j) => (j === i ? v : x)) : paths.filter((_, j) => j !== i))), clr)
+    })
+    const pip = h('button', { title: paths.length ? 'Pick another target in the viewport' : 'Pick an entity in the viewport' }, '⌖')
+    if (ro) pip.setAttribute('disabled', '')
+    pip.addEventListener('click', () => this.store.setPipette((p) => { if (p) apply([...paths, p]) }))
+    rows.push(h('div', { class: 'refrow' }, picker('', paths.length ? '+ add a target' : '— none —', (v) => { if (v) apply([...paths, v]) }), pip))
+    // one key holds one name: targets with different names cannot all be reached (Core writes the first one's name)
+    const names = [...new Set(paths.map((p) => targets.find((t) => t.path === p)?.resolvedName ?? '').filter(Boolean))]
+    if (paths.length > 1 && names.length > 1) {
+      const share = h('button', { title: 'Give every target of this document the name of the first' }, 'Share first name')
+      if (ro || paths.some((p) => p.includes('/'))) share.setAttribute('disabled', '')
+      share.addEventListener('click', () => shareTargetName(this.store, paths))
+      rows.push(h('div', { class: 'refwarn' }, `The targets have different names (${names.join(', ')}): only the first is written. `, share))
+    }
+    return h('label', { class: `field kv ref${rows.length > 1 ? ' multi' : ''}`, title: [label !== key ? key : '', note].filter(Boolean).join('\n') }, h('span', {}, label), h('div', { class: 'refmulti' }, ...rows))
   }
 
   /** Entity (inside the open instance) whose keyvalues are being edited; a path relative to the instance. */
@@ -180,7 +210,7 @@ export class InspectorPanel extends Panel {
     for (const k of refs) {
       const over = ov?.refs?.[k]
       // the prefab file's own ref is relative to the entity's own scope; show it in root terms so it matches the list
-      const fileRef = eff.refs?.[k] !== undefined && over === undefined ? `${own}/${eff.refs[k]}` : undefined
+      const fileRef = eff.refs?.[k] !== undefined && over === undefined ? refPaths(eff.refs[k]).map((r) => `${own}/${r}`) : undefined
       box.append(this.refRow(k, over ?? fileRef, null, ro, (p) => setOverrideRef(this.store, inst.id, path, k, p), over !== undefined ? 'Overridden in this instance' : 'From the prefab file'))
     }
     const nk = h('input', { placeholder: 'new key' }), nv = h('input', { placeholder: 'value' }), add = h('button', {}, 'Add')

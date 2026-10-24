@@ -181,6 +181,7 @@ button.primary { background: var(--accent-bg); border-color: var(--accent); colo
 .row.prefab { cursor: pointer; }
 .row-split { display: flex; gap: 6px; } .row-split .filter { flex: 1; }
 .field.kv.ref { grid-template-columns: 92px 1fr auto; } .refbtns { display: flex; gap: 2px; }
+.field.kv.ref.multi { align-items: start; } .refmulti { display: flex; flex-direction: column; gap: 3px; min-width: 0; } .refmulti .refrow { display: flex; gap: 2px; } .refmulti .refrow select { flex: 1; min-width: 0; } .refmulti .refwarn { font-size: 11px; opacity: .85; }
 .toolrow .key { margin-left: auto; opacity: .55; font-size: 11px; }
 .ctx-menu { position: fixed; z-index: 10000; min-width: 170px; background: var(--bg2); border: 1px solid var(--line2); border-radius: var(--radius-lg); padding: var(--sp-2); box-shadow: var(--shadow); font-size: var(--fs); }
 .ctx-item { position: relative; display: flex; justify-content: space-between; gap: 16px; padding: var(--sp-2) 10px; border-radius: var(--radius); cursor: default; white-space: nowrap; }

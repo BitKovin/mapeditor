@@ -205,6 +205,18 @@ TEST_CASE("legacy flat string overrides still load as keyvalue overrides") {
     CHECK_FALSE(o.origin.has_value());
 }
 
+TEST_CASE("refs: a key may hold one path or an array of paths") {
+    json ent = {{"id", "e1"}, {"classname", "button"}, {"refs", {{"target", json::array({"a", "grp/b"})}, {"killtarget", "c"}}}};
+    const Entity e = documentFromJson({{"schemaVersion", "0.2"}, {"entities", json::array({ent})}, {"prefabInstances", json::array()}}).entities[0];
+    CHECK(e.refs.at("target").paths == std::vector<std::string>{"a", "grp/b"});
+    CHECK(e.refs.at("killtarget") == "c");
+    ent["refs"]["target"] = json::array();
+    CHECK_THROWS(documentFromJson({{"schemaVersion", "0.2"}, {"entities", json::array({ent})}, {"prefabInstances", json::array()}}));
+    ent["refs"]["target"] = json::array({"a", "x|y"});
+    const Document d = documentFromJson({{"schemaVersion", "0.2"}, {"entities", json::array({ent})}, {"prefabInstances", json::array()}});
+    CHECK(validateDocument(d).has_value());  // every path of the array is checked
+}
+
 TEST_CASE("malformed override / refs / name are rejected") {
     json inst = instanceJson("pi", "prefabs/door.map.json");
     SUBCASE("override that is not an object") {

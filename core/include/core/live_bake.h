@@ -162,10 +162,11 @@ public:
     // Chunks whose pixels changed since the last call (refined, denoised, or holding texels that are new / moved / still unsent from before a rebuild):
     // exactly the tiles a client has to be sent. Cleared by the call.
     std::vector<int> takeDirtyChunks();
-    // Like takeDirtyChunks(), but a chunk that only gained refinement passes since its last send waits until it gained half again (1, 2, 3, 5, 8, 12, ...
-    // and always the last pass): re-sending every chunk after every pass sent each tile ~maxPasses times for a picture that barely changes. A chunk
-    // left out stays dirty. noteSent() records what the client holds.
-    std::vector<int> takeDueChunks();
+    // Like takeDirtyChunks(), but only what is worth sending now. A chunk that only gained refinement passes since its last send waits until it tripled its
+    // passes (1, 3, 9, 27, ...), and only when it is within `nearRadius` of `camera` (null = all chunks are near): further away the first and the final
+    // version are enough. The final raw version is not sent when the denoised one follows. Re-sending every chunk after every pass sent each tile ~10
+    // times (5 GB for a big level) for a picture that barely changes. A chunk left out stays dirty. noteSent() records what the client holds.
+    std::vector<int> takeDueChunks(const Vec3* camera = nullptr, double nearRadius = 0);
     void noteSent(const std::vector<int>& ids);
     bool hasDirtyChunks() const;
     void markAllChunksDirty();   // e.g. the exposure changed
@@ -176,10 +177,10 @@ public:
     // a rectangle of a page, row by row. Texels without a sample get the average of their baked neighbours (gutter); where there are none the pixel is
     // all zero (alpha 0 = nothing here, alpha 1.0 = a value). Values beyond the half range (65504) saturate there.
     std::vector<uint16_t> renderTile(const Rect& r) const;
-    // Current value of one sample (direct + indirect, both raw).
+    // Current value of one sample (direct + indirect, both raw: signed when the level has dark lights).
     Vec3 value(size_t sample) const;
     // What is displayed: like value(), but with the denoised indirect light where its page has been denoised (renderTile and snapshot use this),
-    // times the baked ambient occlusion factor (aoFactor).
+    // times the baked ambient occlusion factor (aoFactor), clamped at 0 (dark lights make the raw sums signed).
     Vec3 shownValue(size_t sample) const;
     // Baked ambient occlusion (level settings `_ao_*`, REQUIREMENTS §22 P2): the factor the sample's light is multiplied by (1 = open, or AO off,
     // or not computed yet), and the raw occluded fraction (NaN = not computed). Occlusion depends on geometry, the radius and the ray count only: it
@@ -197,14 +198,21 @@ public:
     // The same in three steps, so that the filter (hundreds of ms) can run on another thread while this object keeps being used on its own one:
     // begin copies what the filter needs and marks the page "in flight", run is a pure function of the job, finish stores the result unless the page
     // was refined or the geometry replaced in between (then it is dropped and the page is pending again).
+    // A job is a set of tiles of one page: the whole page when most of it changed, else one window around every group of changed chunks (the filter costs
+    // by pixels, and moving one light touches a few chunks on every page). Each tile is an image of its own: `ps.texel` are positions in it, `idx` the
+    // sample (or grid entry) each value belongs to, `owner` its chunk.
+    struct DenoiseTile {
+        TexelSamples ps;
+        std::vector<uint32_t> idx;
+        std::vector<int> owner;
+        std::vector<float> vals;
+    };
     struct DenoiseJob {
         int page = -1;
         bool fine = false;
         uint64_t geometry = 0;
-        TexelSamples ps;
-        std::vector<uint32_t> idx;
-        std::vector<int> ids;
-        std::vector<float> vals;
+        std::vector<int> stale;   // the chunks this job replaces the denoised copy of (the tiles hold more of them as context)
+        std::vector<DenoiseTile> tiles;
     };
     bool beginDenoise(DenoiseJob& job);
     static denoise::Result runDenoise(DenoiseJob& job, int quality);
@@ -239,7 +247,7 @@ private:
     void forgetOcclusion(const Aabb& box);                  // occlusion of the samples in `box` is unknown again; their chunks refine once more
     std::vector<float> atlasS_;                   // bounce source S = Db + I per atlas texel (rgb) + validity (a)
     GiSamples gi_;                                // the fine GI grid (scale 1 = none: the gather runs on the samples themselves)
-    std::vector<float> indirectHi_, indirectHiDn_;  // indirect light per grid entry (moving average) and its denoised copy (valid where pageState_ is 1)
+    std::vector<float> indirectHi_, indirectHiDn_;  // indirect light per grid entry (moving average) and its denoised copy (valid where chunkDn_ is 1)
     std::vector<uint32_t> giFirst_;               // first resident grid entry of each chunk (GPU layout: base samples, then the grid entries chunk by chunk)
     bool fineGi() const { return gi_.scale > 1 && gi_.count() > 0; }
     TexelSamples giSamplesOf(const LiveChunk& chunk) const;   // the chunk's grid entries as a sample set (atlas = fine atlas)
@@ -248,8 +256,13 @@ private:
     // Moving average of one sample's grid entries towards `values` (one value per entry, read from `cursor` on, which advances), then indirect_[sample]
     // = their mean.
     void accumulateFine(size_t sample, const float* values, size_t& cursor, float k);
-    std::vector<float> indirectDn_;               // denoised indirect light, 4 floats per sample (valid where pageState_ is 1)
-    std::vector<char> pageState_;                 // per page: 0 = raw indirect shown (needs a denoise once converged), 1 = denoised, 2 = denoise failed (retry after it refines), 3 = a denoise of it is in flight
+    std::vector<float> indirectDn_;               // denoised indirect light, 4 floats per sample (valid where chunkDn_ is 1)
+    // per chunk: 0 = raw indirect shown (needs a denoise once its page converged), 1 = the denoised copy is valid, 2 = a denoise of it is in flight,
+    // 3 = the denoise failed (retried after the chunk refines)
+    std::vector<char> chunkDn_;
+    std::vector<int32_t> chunkOf_;                // chunk of every sample
+    std::vector<int32_t> chunkAt_;                // (page * tilesPerRow + ty) * tilesPerRow + tx -> chunk, -1 = none
+    size_t chunkTilesPerRow_ = 0;
     std::string denoiseError_;
     double denoiseSeconds_ = 0;
     bool denoiseUnavailable_ = false;

@@ -14,6 +14,7 @@ import { averageNormal, centroid, cleanSel, edgeKey, growSel, invertSel, shrinkS
 import { MAX_BEVEL_SEGMENTS, OpResult, bevelEdges, bridgeLoops, deleteFaces, dissolveEdges, dissolveFaces, dissolveVerts, edgeRing, extrudeFaces, fillHole, flipFaces, insetFaces, isError, loopCut, mergeVerts, mirrorVerts, proportionalVerts, recalcNormals, transformVerts } from '../model/meshOps'
 import { buildShape, frameOf, shapePreviewLines } from '../model/shapes'
 import { attachShape, shapeMembers } from '../model/parametric'
+import { Heightfield, TerrainStroke, circleOnTerrain, rayTerrain, specOf as terrainSpecOf, terrainOf, tileOf } from '../model/terrain'
 import { clashes, depthAxis, hitClipPoint, rayPlaneHit, snapPoint } from '../tools/clipperPoints'
 import { handles2D, pixelsToMetres, resizeMap, screenAxis, Handle2D, ScreenAxis } from '../model/resize2d'
 import { mirrors, rotateAbout, scaleAbout, transformSelections, translateBy } from '../model/transform'
@@ -30,7 +31,7 @@ import { addPointEntity, invertSelectionItems, selectAllItems, selectByVolume, c
 import { Plane, planeFromPoints } from '../model/brushOps'
 import { decalBoundsLines, entityAnnotations } from '../model/annotations'
 import { entityArrows, placedEntities } from '../model/arrows'
-import { isModernLight, lightGizmo, lightParams } from '../model/lights'
+import { isModernLight, lightGizmo, lightGizmoColor, lightParams } from '../model/lights'
 import { showMenu, MenuItem } from './contextMenu'
 import { DragItem, dragItem, isDragTransfer, itemFromTransfer, onDragItemChange } from './dragTypes'
 import type { Box } from '../model/entityBox'
@@ -104,6 +105,7 @@ export class ViewportPanel implements IContentRenderer {
     | { kind: 'face'; entityId: string; brushId: string; faceId: number; pivot: Vec3; dir: Vec3; startT: number; extend?: { brushId: string } }
     | { kind: 'resize'; h: -1 | 0 | 1; v: -1 | 0 | 1; min: Vec3; max: Vec3; r: ScreenAxis; u: ScreenAxis; x0: number; y0: number }
     | { kind: 'angle'; entityId: string; base: Vec3; n: Vec3; keepPitch: boolean }
+    | { kind: 'terrain' }
     | null = null
   private hoverHandle: string | null = null
   /** While Alt is held over this view (Brush mode): the face an Alt + drag would grab (REQUIREMENTS §33 H8). */
@@ -185,7 +187,8 @@ export class ViewportPanel implements IContentRenderer {
       this.element.append(h('div', { class: 'gl-error' }, `Viewport unavailable: ${(e as Error).message}`))
       return
     }
-    this.unsubs.push(this.store.subscribe(() => { this.checkTool(); this.updateLightStatus(); this.invalidate() }), this.textures.onChange(() => this.invalidate()))
+    this.unsubs.push(this.store.subscribe(() => { this.checkTool(); this.updateLightStatus(); this.invalidate() }), this.textures.onChange(() => this.invalidate()),
+      this.store.subscribeTiles(() => this.tilesArrived()))
     this.bindDocument()
     this.invalidate()
   }
@@ -234,7 +237,20 @@ export class ViewportPanel implements IContentRenderer {
   /** Refreshes the lighting progress label in the header (set up by buildHeader). */
   private updateLightStatus: () => void = () => {}
 
-  dispose(): void { if (this.styleTimer) { (this.element.ownerDocument.defaultView ?? window).clearTimeout(this.styleTimer); this.styleTimer = 0 } this.store.setLightingWanted(this, false); this.disposed = true; this.unsubs.forEach((u) => u()); this.unbindDoc?.(); this.renderer?.dispose(); this.stopFly(); if (this.raf) this.rafWin.cancelAnimationFrame(this.raf) }
+  dispose(): void { if (this.tileTimer) { (this.element.ownerDocument.defaultView ?? window).clearTimeout(this.tileTimer); this.tileTimer = 0 } if (this.styleTimer) { (this.element.ownerDocument.defaultView ?? window).clearTimeout(this.styleTimer); this.styleTimer = 0 } this.store.setLightingWanted(this, false); this.disposed = true; this.unsubs.forEach((u) => u()); this.unbindDoc?.(); this.renderer?.dispose(); this.stopFly(); if (this.raf) this.rafWin.cancelAnimationFrame(this.raf) }
+
+  private tileTimer = 0
+  private lastFrameAt = 0
+  /**
+   * Light arrives as a stream of tiles (hundreds per second on a big level). A frame per message kept the main thread busy drawing, which slowed the
+   * very stream it was drawing (a third of the speed with the view on): the view follows it at ~15 frames per second at most.
+   */
+  private tilesArrived(): void {
+    if (this.tileTimer || this.disposed) return
+    const win = this.element.ownerDocument.defaultView ?? window
+    const wait = Math.max(0, 66 - (win.performance.now() - this.lastFrameAt))
+    this.tileTimer = win.setTimeout(() => { this.tileTimer = 0; this.invalidate() }, wait)
+  }
 
   invalidate(): void {
     if (this.raf) {
@@ -245,6 +261,7 @@ export class ViewportPanel implements IContentRenderer {
     this.rafWin = win
     this.raf = win.requestAnimationFrame(() => {
       this.raf = 0
+      this.lastFrameAt = win.performance.now()
       this.stepFly(win.performance.now()) // flying is integrated per rendered frame with the real frame time: no fixed tick, no jitter
       this.render()
       if (this.flyKeys.size) this.invalidate()
@@ -507,7 +524,7 @@ export class ViewportPanel implements IContentRenderer {
       overlays: [...this.arrowOverlays(), ...this.lightOverlays(), ...this.decalSelectionOverlay()],
       handles: [...this.entityHandleOverlay(), ...this.smoothEdgeOverlay(mt?.brush)],
       sizeLabels: this.sizeLabels(),
-      preview: [...(preview ?? []), ...(this.loopPreview ?? []), ...this.knifeOverlay(), ...this.clipOverlay(), ...this.resizeOverlay()],
+      preview: [...(preview ?? []), ...(this.loopPreview ?? []), ...this.knifeOverlay(), ...this.clipOverlay(), ...this.resizeOverlay(), ...this.terrainCursor()],
       highlight: selBrush && sel!.faceId !== undefined ? { brush: selBrush, faceId: sel!.faceId } : null,
       hoverFace: this.altFace && !this.drag ? (() => { const a = this.altFace!, b = findEntity(st.doc, a.entityId)?.brushes?.find((x) => x.id === a.brushId); return b ? { brush: b, faceId: a.faceId } : null })() : null,
       sky: viewportSky(st.doc),
@@ -617,6 +634,7 @@ export class ViewportPanel implements IContentRenderer {
       if (this.clip) this.clipClick(e) // an armed clipper owns the LMB whatever tool is active
       else if (this.store.state.tool === 'box') this.boxDown(e)
       else if (this.store.state.tool === 'decal') this.decalDown(e)
+      else if (this.store.state.tool === 'terrain') this.terrainDown(e)
       else this.selectDown(e)
     }
     this.invalidate()
@@ -816,8 +834,12 @@ export class ViewportPanel implements IContentRenderer {
     if (sel && (e.ctrlKey || e.metaKey)) this.store.toggleSelect(sel)
     else if (sel?.brushId !== undefined && sel.faceId === undefined && instanceId === undefined) {
       // a click on any part of a placed shape selects the whole shape (REQUIREMENTS §22 P1)
-      const parts = shapeMembers(this.store.state.doc.entities.find((x) => x.id === sel.entityId), sel.brushId)
-      if (parts.length > 1) this.store.selectMany(parts.map((brushId) => ({ entityId: sel.entityId, brushId })))
+      const owner = this.store.state.doc.entities.find((x) => x.id === sel.entityId)
+      const parts = shapeMembers(owner, sel.brushId)
+      // a click on a tile of a terrain selects the whole terrain (REQUIREMENTS §39), so moving or deleting it takes every tile
+      const tile = owner?.brushes?.find((b) => b.id === sel.brushId)
+      if (owner && tile && tileOf(tile) && terrainSpecOf(owner)) this.store.select({ entityId: sel.entityId })
+      else if (parts.length > 1) this.store.selectMany(parts.map((brushId) => ({ entityId: sel.entityId, brushId })))
       else this.store.select(sel)
     } else this.store.select(sel)
   }
@@ -1120,6 +1142,15 @@ export class ViewportPanel implements IContentRenderer {
     const st = this.store.state, k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey
     const consume = () => { e.preventDefault(); e.stopPropagation() }
     if (this.clipKey(e)) return void consume()
+    if (st.tool === 'terrain' && !mod) {
+      if (k === 'escape' && this.terrainRun) { consume(); this.terrainCancel(); return }
+      if (k === '[' || k === ']') { // brush size, as in most sculpting tools
+        consume()
+        const b = st.terrain.brush
+        this.store.setTerrain({ brush: { radius: Math.min(200, Math.max(0.25, +(b.radius * (k === ']' ? 1.25 : 0.8)).toFixed(2))) } })
+        return
+      }
+    }
     if (st.editMode === 'object' && st.tool === 'select') {
       // selection: Ctrl+A all, Ctrl+I invert, Alt+A or Esc none (Esc first leaves the origin editing, keeping the entity selected)
       if (k === 'escape' && !mod && !e.shiftKey && this.originSel !== null) { consume(); this.originSel = null; this.store.setMessage(null); this.invalidate(); return }
@@ -1303,6 +1334,98 @@ export class ViewportPanel implements IContentRenderer {
     addPointEntity(this.store, 'decal', hit.point, { texture: this.store.state.activeTexture, width: String(width), height: String(height), depth: String(depth) }, angles)
   }
 
+  // ---- Terrain tool (REQUIREMENTS §39) ------------------------------------------------------------------------------
+  /** Where the brush is: the terrain under the cursor and the point on its surface. */
+  private terrainAim: { entityId: string; hf: Heightfield; point: Vec3 } | null = null
+  private terrainRun: { stroke: TerrainStroke; timer: number; sent: number; moved: number; gap: number } | null = null
+
+  private terrainUnder(ray: Ray): { entity: Entity; hf: Heightfield; point: Vec3 } | null {
+    const st = this.store.state
+    let best: { entity: Entity; hf: Heightfield; point: Vec3; t: number } | null = null
+    for (const en of visibleEntities(st.doc.entities, st.hidden)) {
+      if (en.terrain === undefined) continue
+      const hf = terrainOf(en)
+      const r = hf ? rayTerrain(hf, ray.origin, ray.dir) : null
+      if (hf && r && (!best || r.t < best.t)) best = { entity: en, hf, point: r.point, t: r.t }
+    }
+    return best
+  }
+  private updateTerrainAim(): void {
+    const u = this.lastRay ? this.terrainUnder(this.lastRay) : null
+    this.terrainAim = u ? { entityId: u.entity.id, hf: u.hf, point: u.point } : null
+    this.invalidate()
+  }
+  /** The brush circle (outer radius, and the inner one where the strength starts to fall off) laid on the ground. */
+  private terrainCursor(): number[] {
+    if (this.store.state.tool !== 'terrain') return []
+    const aim = this.terrainAim, run = this.terrainRun
+    if (!aim) return []
+    const hf = run ? run.stroke.heights : aim.hf, b = this.store.state.terrain.brush
+    const lines = circleOnTerrain(hf, aim.point[0], aim.point[2], b.radius)
+    if (b.falloff > 0.05) lines.push(...circleOnTerrain(hf, aim.point[0], aim.point[2], Math.max(b.radius * (1 - b.falloff), 0.01), 48))
+    return lines
+  }
+  private terrainDown(e: PointerEvent): void {
+    if (!this.store.canEdit) return this.store.setMessage('Not connected to Core - editing is disabled')
+    const under = this.terrainUnder(this.ray(e))
+    if (!under) return this.store.setMessage('Terrain tool: click on a terrain (make one in the Terrain panel)')
+    const t = this.store.state.terrain
+    const stroke = new TerrainStroke(under.entity, under.hf, t.tool, t.brush, { invert: e.shiftKey, flattenHeight: t.flattenHeight, texture: this.store.state.activeTexture })
+    // sculpting does not need the selection, and a selected terrain makes every panel list its hundred thousand faces on each update
+    if (this.store.state.multi.some((x) => x.entityId === under.entity.id) || this.store.state.selection?.entityId === under.entity.id) this.store.select(null)
+    if (!this.store.beginDrag(`Terrain: ${t.tool}`)) return
+    this.drag = { kind: 'terrain' }
+    const win = this.element.ownerDocument.defaultView ?? window
+    // holding still keeps working (an airbrush), a little slower than the mouse
+    this.terrainRun = { stroke, timer: win.setInterval(() => this.terrainTick(), 120), sent: 0, moved: win.performance.now(), gap: 250 }
+    this.terrainAim = { entityId: under.entity.id, hf: under.hf, point: under.point }
+    this.terrainApply(() => stroke.moveTo(under.point[0], under.point[2]))
+  }
+  private terrainMove(e: PointerEvent): void {
+    const run = this.terrainRun
+    if (!run) return
+    const ray = this.ray(e), r = rayTerrain(run.stroke.heights, ray.origin, ray.dir)
+    if (!r) return
+    run.stroke.invert = e.shiftKey
+    this.terrainAim = { entityId: run.stroke.entityId, hf: run.stroke.heights, point: r.point }
+    run.moved = (this.element.ownerDocument.defaultView ?? window).performance.now()
+    this.terrainApply(() => run.stroke.moveTo(r.point[0], r.point[2]))
+  }
+  private terrainTick(): void {
+    const run = this.terrainRun, now = (this.element.ownerDocument.defaultView ?? window).performance.now()
+    if (!run || now - run.moved < 120) return
+    this.terrainApply(() => run.stroke.repeat())
+  }
+  /** Runs a stamp and shows the result at once; Core gets it at most every 250 ms during the stroke (more on a big terrain: 6 x what sending took), and the final one when the button is released. */
+  private terrainApply(act: () => void): void {
+    const run = this.terrainRun
+    if (!run) return
+    act()
+    this.store.dragUpdate((start) => run.stroke.document(start), false)
+    const now = (this.element.ownerDocument.defaultView ?? window).performance.now()
+    if (now - run.sent > run.gap) {
+      run.sent = now
+      this.store.submitCurrent()
+      run.gap = Math.max(250, 6 * ((this.element.ownerDocument.defaultView ?? window).performance.now() - now))
+    }
+    this.invalidate()
+  }
+  private terrainEnd(): void {
+    const run = this.terrainRun
+    if (run) (this.element.ownerDocument.defaultView ?? window).clearInterval(run.timer)
+    this.terrainRun = null
+    this.store.endDrag()
+  }
+  private terrainCancel(): void {
+    const run = this.terrainRun
+    if (!run) return
+    ;(this.element.ownerDocument.defaultView ?? window).clearInterval(run.timer)
+    this.terrainRun = null
+    this.drag = null
+    this.store.cancelDrag()
+    this.invalidate()
+  }
+
   private snap(p: Vec3, plane: DrawPlane): Vec3 { return snapToPlane(p, plane, snapStep(this.settings)) }
 
   private boxDown(e: PointerEvent): void {
@@ -1336,6 +1459,7 @@ export class ViewportPanel implements IContentRenderer {
       if (this.knife) return this.updateKnifeHover(e)
       if (this.loopArmed) return this.updateLoopPreview()
       if (this.drawing) return this.refreshDrawing()
+      if (this.store.state.tool === 'terrain') return this.updateTerrainAim()
       this.setAltFace(e.altKey ? this.altFaceAt(this.ray(e)) : null)
       const eh = this.entityHandleHit(e)
       if (eh !== this.hoverEntHandle) { this.hoverEntHandle = eh; this.canvas.style.cursor = eh ? 'move' : this.store.state.tool === 'select' ? 'default' : 'crosshair'; this.invalidate() }
@@ -1346,6 +1470,7 @@ export class ViewportPanel implements IContentRenderer {
       if (a !== this.hoverAxis || hf !== this.hoverFace) { this.hoverAxis = a; this.hoverFace = hf; this.invalidate() }
       return
     }
+    if (d.kind === 'terrain') return this.terrainMove(e)
     if (d.kind === 'face') return this.faceDragMove(e, d)
     if (d.kind === 'angle') return this.entityHandleMove(e, d)
     if (d.kind === 'resize') {
@@ -1650,6 +1775,7 @@ export class ViewportPanel implements IContentRenderer {
     const rmbClick = e.button === 2 && (this.drag?.kind === 'look' || this.drag?.kind === 'orbit' || (this.drag?.kind === 'pan' && this.rmbPanning)) && this.rmbTravel < 4
     this.clipDrag = null
     if (this.drag?.kind === 'resize' || this.drag?.kind === 'angle') this.store.endDrag()
+    if (this.drag?.kind === 'terrain') this.terrainEnd()
     if (this.drag?.kind === 'gizmo' || this.drag?.kind === 'face') { this.store.endDrag(); if (this.drag.kind === 'gizmo' && this.drag.mesh) this.followConverted() }
     if (this.drag?.kind === 'face' && this.drag.extend) {
       // the new brush's end cap becomes the selected face: its handle carries on pushing the extension
@@ -1659,7 +1785,7 @@ export class ViewportPanel implements IContentRenderer {
     }
     if (this.boxSel) this.finishBoxSel()
     if (this.drag?.kind === 'look') this.stopFly()
-    if (this.drag && !['gizmo', 'face', 'resize', 'angle'].includes(this.drag.kind)) this.unlockPointer()
+    if (this.drag && !['gizmo', 'face', 'resize', 'angle', 'terrain'].includes(this.drag.kind)) this.unlockPointer()
     this.drag = null
     if (e.button === 0 && this.drawing?.phase === 'rect') {
       const rect = this.currentRect(this.drawing)
@@ -1812,9 +1938,7 @@ export class ViewportPanel implements IContentRenderer {
       const params = lightParams(p.entity, st.entityDefs.find((d) => d.name === p.entity.classname))
       if (!params) continue
       const selected = p.ids.length ? instances.has(p.ids[0]) : list.some((x) => x.instanceId === undefined && x.entityId === p.entity.id)
-      // a black light would draw black lines: keep the gizmo readable
-      const color = params.color.map((v) => 0.25 + 0.75 * Math.min(1, Math.max(0, v))) as [number, number, number]
-      out.push({ color, lines: lightGizmo(p.entity, params, selected) })
+      out.push({ color: lightGizmoColor(params), lines: lightGizmo(p.entity, params, selected) })  // readable for black lights, violet + crossed for dark ones
     }
     return out
   }

@@ -890,3 +890,115 @@ TEST_CASE("bake sky: a skybox bright on one side lights the faces that look at i
         CHECK(sumErr / std::max<size_t>(1, n) < 1e-3);
     }
 }
+
+// ---- dark lights (negative brightness) ---------------------------------------------------------------------------------------
+TEST_CASE("dark lights: collectLights keeps the sign of a negative brightness, the level's light scale multiplies it") {
+    Document doc;
+    Entity w = ent("w", "worldspawn");
+    w.keyvalues["_light_scale"] = "2";
+    doc.entities = {w, light("d", "light_point", {0, 0, 0}, {{"brightness", "-8"}}), light("s", "light_sky", {0, 0, 0}, {{"brightness", "-0.5"}})};
+    const LightScene s = collectLights(doc, {});
+    REQUIRE(s.lights.size() == 2);
+    CHECK(s.lights[0].brightness == doctest::Approx(-16));
+    CHECK(s.lights[1].brightness == doctest::Approx(-1));
+}
+
+TEST_CASE("dark lights cpu: a negative light subtracts its irradiance; the baked texel is never below 0") {
+    // a wide positive light and a narrow, strong dark one at the same spot, plus an ambient term
+    Scene1 sc({ent("w", "worldspawn", {Brush::makeBox("floor", {-8, -1, -8}, {8, 0, 8})}),
+               light("a", "light_point", {0.03, 2, 0.03}, {{"brightness", "8"}, {"radius", "20"}}),
+               light("b", "light_point", {0.03, 2, 0.03}, {{"brightness", "-40"}, {"radius", "3"}})});
+    sc.lights.ambient = {0.5, 0.5, 0.5};
+    BakeOptions o;
+    o.forceCpu = true;
+    o.shadows = false;
+    o.bounces = 0;
+    const auto raw = evaluateDirectCpu(sc.samples, sc.lights, nullptr, o);
+    auto one = [&](double brightness, double radius, const Vec3& p, const Vec3& n) {
+        const Vec3 d = Vec3{0.03, 2, 0.03} - p;
+        const double dist = d.length();
+        return brightness * win(dist, radius) / (dist * dist) * std::max(0.0, n.dot(d) / dist);
+    };
+    double minRaw = 1e9;
+    size_t clamped = 0, kept = 0;
+    const LightmapPages pages = bakeLightmaps(sc.layout, sc.surfaces, sc.lights, o);
+    const size_t per = static_cast<size_t>(pages.atlas) * pages.atlas;
+    for (size_t i = 0; i < sc.samples.count(); ++i) {
+        const Vec3 p = pos(sc.samples, i);
+        const Vec3 n{sc.samples.nrm[i * 4], sc.samples.nrm[i * 4 + 1], sc.samples.nrm[i * 4 + 2]};
+        const double expect = 0.5 + one(8, 20, p, n) + one(-40, 3, p, n);
+        CHECK(val(raw, i) == doctest::Approx(expect).epsilon(1e-5).scale(1));   // the evaluator sums signed
+        minRaw = std::min(minRaw, static_cast<double>(val(raw, i)));
+        const size_t page = sc.samples.texel[i] / per, t = sc.samples.texel[i] % per;
+        for (size_t c = 0; c < 3; ++c) CHECK(pages.rgb[page][t * 3 + c] == doctest::Approx(std::max(0.0, expect)).epsilon(1e-5).scale(1));
+        if (expect <= 0) ++clamped; else ++kept;
+    }
+    CHECK(minRaw < -1.0);  // under the dark light the sum really is negative ...
+    CHECK(clamped > 0);    // ... and the baked value is exactly 0 there
+    CHECK(kept > 0);       // far from it the dark light has no reach and the positive light shows
+    for (const auto& page : pages.rgb) for (float v : page) CHECK(v >= 0.f);  // gutters included
+    // the dark light alone on a black level: nothing but black
+    Scene1 only({ent("w", "worldspawn", {Brush::makeBox("floor", {-8, -1, -8}, {8, 0, 8})}), light("b", "light_point", {0, 2, 0}, {{"brightness", "-5"}, {"radius", "9"}})});
+    const LightmapPages black = bakeLightmaps(only.layout, only.surfaces, only.lights, o);
+    for (const auto& page : black.rgb) for (float v : page) CHECK(v == 0.f);
+}
+
+TEST_CASE("dark lights cpu: a dark light is shadowed like any other light") {
+    Scene1 sc(floorAndSlab({-1, 2, -1}, {1, 2.2, 1}, {light("d", "light_point", {0, 4, 0}, {{"brightness", "-100"}, {"radius", "30"}})}));
+    sc.lights.ambient = {2, 2, 2};
+    const auto lit = evaluateDirectCpu(sc.samples, sc.lights);  // no occluders
+    const auto v = evalShadowed(sc);
+    const size_t under = sc.nearest({0, 0, 0}, {0, 1, 0}), outside = sc.nearest({6, 0, 0}, {0, 1, 0});
+    CHECK(val(lit, under) < -2.0);                       // unshadowed, the dark light overwhelms the ambient
+    CHECK(val(v, under) == doctest::Approx(2.0));        // the slab shadows it: only the ambient is left
+    CHECK(val(v, outside) == doctest::Approx(val(lit, outside)).epsilon(1e-4));  // untouched in the open
+    CHECK(val(v, outside) < 1.5f);                       // and the dark light does take light away there (ambient 2)
+}
+
+TEST_CASE("dark lights gpu: the compute shaders agree with the CPU reference (shadows, soft shadows, ambient, every dark light type)") {
+    std::vector<Entity> es{ent("w", "worldspawn", {Brush::makeBox("floor", {-8, -1, -8}, {8, 0, 8}), Brush::makeBox("slab", {-1, 2, -1}, {1, 2.2, 1}),
+                                                  Brush::makeBox("pillar", {3, 0, 3}, {4, 3, 4})}),
+                           light("p", "light_point", {0, 4, 0}, {{"brightness", "10"}, {"radius", "30"}}),
+                           light("d1", "light_point", {-4, 2, 2}, {{"brightness", "-14"}, {"radius", "9"}, {"source_size", "0.4"}}),
+                           light("d2", "light_spot", {5, 3.5, -3}, {{"brightness", "-9"}, {"radius", "30"}, {"inner_angle", "20"}, {"outer_angle", "50"}}, {80, -30, 0}),
+                           light("d3", "light_directional", {0, 0, 0}, {{"brightness", "-0.8"}, {"source_size", "6"}}, {55, 25, 0}),
+                           light("d4", "light_rect", {2, 3.5, 5}, {{"brightness", "-5"}, {"radius", "30"}, {"width", "2"}, {"height", "1.5"}}, {90, 0, 0})};
+    Scene1 sc(es);
+    sc.lights.ambient = {0.3, 0.3, 0.3};
+    BakeOptions gpuOpt;
+    gpuOpt.gpuValidation = true;
+    gpuOpt.areaSamples = 32;
+    gpuOpt.bounces = 0;
+    BakeStats gst;
+    const LightmapPages g = bakeLightmaps(sc.layout, sc.surfaces, sc.lights, gpuOpt, &gst);
+    if (!gst.usedGpu) {
+        MESSAGE("no Vulkan device with ray query, GPU dark light test skipped: " << (gst.warnings.empty() ? "" : gst.warnings.back()));
+        return;
+    }
+    for (const auto& m : gst.validationMessages) CHECK(m.rfind("[note]", 0) == 0);
+    BakeOptions cpuOpt = gpuOpt;
+    cpuOpt.forceCpu = true;
+    const LightmapPages c = bakeLightmaps(sc.layout, sc.surfaces, sc.lights, cpuOpt);
+    size_t texels = 0, mismatched = 0, black = 0, lit = 0;
+    double sumErr = 0;
+    for (int p = 0; p < g.pageCount; ++p)
+        for (size_t t = 0; t < g.valid[static_cast<size_t>(p)].size(); ++t) {
+            if (g.valid[static_cast<size_t>(p)][t] != 1) continue;
+            ++texels;
+            double e = 0, sum = 0;
+            for (size_t ch = 0; ch < 3; ++ch) {
+                const double a = g.rgb[static_cast<size_t>(p)][t * 3 + ch], b = c.rgb[static_cast<size_t>(p)][t * 3 + ch];
+                CHECK(a >= 0.0);
+                e = std::max(e, std::fabs(a - b) / std::max(1.0, std::fabs(b)));
+                sum += b;
+            }
+            sumErr += e;
+            if (e > 2e-3) ++mismatched;
+            if (sum == 0) ++black; else ++lit;
+        }
+    MESSAGE("texels " << texels << ", mismatched " << mismatched << ", black " << black << ", lit " << lit << ", mean err " << sumErr / static_cast<double>(texels));
+    CHECK(black > texels / 50);  // the dark lights really take all the light away somewhere ...
+    CHECK(lit > texels / 10);    // ... and leave some elsewhere
+    CHECK(static_cast<double>(mismatched) < 0.005 * static_cast<double>(texels));
+    CHECK(sumErr / static_cast<double>(texels) < 1e-3);
+}

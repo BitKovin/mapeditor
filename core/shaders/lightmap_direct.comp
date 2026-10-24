@@ -329,7 +329,7 @@ void shade(vec3 p, vec3 n, uint seed, inout vec3 sum, inout vec3 sumB) {
                 v = lt[k * LREC + 1u].rgb * skyVisibility(k, seed, o, n);
             } else {
                 v = evalLight(k, p, n);
-                if (v.x > 0.0 || v.y > 0.0 || v.z > 0.0) v *= visibility(k, seed, o);
+                if (v.x != 0.0 || v.y != 0.0 || v.z != 0.0) v *= visibility(k, seed, o);  // != : a dark light (negative brightness) is shadowed too
             }
         } else {
             v = evalLight(k, p, n);

@@ -93,7 +93,7 @@ describe('prefab instance actions (N1 c/d)', () => {
   })
 })
 
-import { setEntityRef, setOverrideRef } from '../src/state/actions'
+import { setEntityRef, setOverrideRef, shareTargetName } from '../src/state/actions'
 describe('references (N1 e)', () => {
   it('setEntityRef writes and clears refs on a document entity (no empty shell left)', () => {
     const doc = emptyDocument()
@@ -106,6 +106,33 @@ describe('references (N1 e)', () => {
     expect(store.state.doc.entities[0].refs).toEqual({ killtarget: 'x' })
     setEntityRef(store, 'b', 'killtarget', null)
     expect(store.state.doc.entities[0].refs).toBeUndefined()
+  })
+  it('a reference may hold several targets: a list is stored as an array, one target stays a plain string, an empty list clears', () => {
+    const doc = emptyDocument()
+    doc.entities = [{ id: 'b', classname: 'func_button', origin: [0, 0, 0] }]
+    const { store } = app(doc)
+    setEntityRef(store, 'b', 'target', ['d1', 'd2', 'd1'])
+    expect(store.state.doc.entities[0].refs).toEqual({ target: ['d1', 'd2'] })
+    const doc1 = store.state.doc
+    setEntityRef(store, 'b', 'target', ['d1', 'd2'])           // same list: no edit
+    expect(store.state.doc).toBe(doc1)
+    setEntityRef(store, 'b', 'target', ['d2'])
+    expect(store.state.doc.entities[0].refs).toEqual({ target: 'd2' })
+    setEntityRef(store, 'b', 'target', [])
+    expect(store.state.doc.entities[0].refs).toBeUndefined()
+  })
+  it('shareTargetName gives the targets of the document the name of the first', () => {
+    const doc = emptyDocument()
+    doc.entities = [
+      { id: 'a', classname: 'func_door', origin: [0, 0, 0], keyvalues: { targetname: 'gate' } },
+      { id: 'b', classname: 'func_door', origin: [0, 0, 0], keyvalues: { targetname: 'other', health: '5' } },
+      { id: 'c', classname: 'func_door', origin: [0, 0, 0] },
+    ]
+    const { store } = app(doc)
+    expect(shareTargetName(store, ['a', 'b', 'c', 'inst/x'])).toBe(true)
+    expect(store.state.doc.entities.map((e) => e.keyvalues?.targetname)).toEqual(['gate', 'gate', 'gate'])
+    expect(store.state.doc.entities[1].keyvalues?.health).toBe('5')
+    expect(shareTargetName(store, ['zz', 'a'])).toBe(false)
   })
   it('setOverrideRef stores the override and reverting prunes the empty override', () => {
     const { store } = app()

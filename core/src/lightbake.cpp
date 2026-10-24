@@ -5,6 +5,7 @@
 #include "core/parallel.h"
 #include "gpu_bake.h"
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -612,7 +613,7 @@ std::vector<float> directCpu(const TexelSamples& s, const LightScene& scene, con
                     v = (L.color * L.brightness).mul(skyVisibility(L, static_cast<uint32_t>(k), seedId, o, n, sc));
                 } else {
                     v = evalLight(L, p, n);
-                    if (traced && (v.x > 0 || v.y > 0 || v.z > 0)) v = v.mul(visibility(L, static_cast<uint32_t>(k), seedId, o, sc));
+                    if (traced && (v.x != 0 || v.y != 0 || v.z != 0)) v = v.mul(visibility(L, static_cast<uint32_t>(k), seedId, o, sc));
                 }
                 sum = sum + v;
                 sumB = sumB + v * (L.bounce * bounceNearFactor(L, p));
@@ -764,25 +765,43 @@ GiSamples buildGiSamples(const TexelSamples& base, int scale) {
     g.s.atlas = base.atlas * scale;
     g.s.pageCount = base.pageCount;
     const size_t atlas = static_cast<size_t>(base.atlas), hi = atlas * static_cast<size_t>(scale), perPage = atlas * atlas;
-    g.begin.assign(base.count() + 1, 0);
-    for (size_t i = 0; i < base.count(); ++i) {
-        g.begin[i] = static_cast<uint32_t>(g.s.count());
-        const size_t t = base.texel[i], page = t / perPage, x = t % atlas, y = (t / atlas) % atlas;
-        const uint32_t mask = base.gridMask(i, scale);
-        auto add = [&](const Vec3& p, int cx, int cy) {
-            g.s.pos.insert(g.s.pos.end(), {static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z), 1.f});
-            g.s.nrm.insert(g.s.nrm.end(), base.nrm.begin() + static_cast<std::ptrdiff_t>(i * 4), base.nrm.begin() + static_cast<std::ptrdiff_t>(i * 4 + 4));
-            g.s.texel.push_back(static_cast<uint32_t>((page * hi + y * static_cast<size_t>(scale) + static_cast<size_t>(cy)) * hi + x * static_cast<size_t>(scale) + static_cast<size_t>(cx)));
-            g.owner.push_back(static_cast<uint32_t>(i));
-        };
-        if (mask == 0) {  // no cell lies inside the fragment: one entry at the sample's own position, in the middle cell
-            add({base.pos[i * 4], base.pos[i * 4 + 1], base.pos[i * 4 + 2]}, scale / 2, scale / 2);
-            continue;
+    // Two passes over all cores: how many entries every sample gets (a prefix sum gives where they go), then every sample writes its own entries.
+    const size_t n = base.count();
+    g.begin.assign(n + 1, 0);
+    std::vector<uint32_t> masks(n);
+    parallelFor(n, 4096, [&](size_t b0, size_t e0) {
+        for (size_t i = b0; i < e0; ++i) {
+            masks[i] = base.gridMask(i, scale);
+            g.begin[i + 1] = masks[i] == 0 ? 1u : static_cast<uint32_t>(std::popcount(masks[i]));
         }
-        for (int c = 0; c < scale * scale; ++c)
-            if (mask & (1u << c)) add(base.gridPosition(i, scale, c), c % scale, c / scale);
-    }
-    g.begin[base.count()] = static_cast<uint32_t>(g.s.count());
+    });
+    for (size_t i = 0; i < n; ++i) g.begin[i + 1] += g.begin[i];
+    const size_t total = g.begin[n];
+    g.s.pos.resize(total * 4);
+    g.s.nrm.resize(total * 4);
+    g.s.texel.resize(total);
+    g.owner.resize(total);
+    parallelFor(n, 4096, [&](size_t b0, size_t e0) {
+        for (size_t i = b0; i < e0; ++i) {
+            size_t at = g.begin[i];
+            const size_t t = base.texel[i], page = t / perPage, x = t % atlas, y = (t / atlas) % atlas;
+            const uint32_t mask = masks[i];
+            auto add = [&](const Vec3& p, int cx, int cy) {
+                float* po = &g.s.pos[at * 4];
+                po[0] = static_cast<float>(p.x); po[1] = static_cast<float>(p.y); po[2] = static_cast<float>(p.z); po[3] = 1.f;
+                std::memcpy(&g.s.nrm[at * 4], &base.nrm[i * 4], 4 * sizeof(float));
+                g.s.texel[at] = static_cast<uint32_t>((page * hi + y * static_cast<size_t>(scale) + static_cast<size_t>(cy)) * hi + x * static_cast<size_t>(scale) + static_cast<size_t>(cx));
+                g.owner[at] = static_cast<uint32_t>(i);
+                ++at;
+            };
+            if (mask == 0) {  // no cell lies inside the fragment: one entry at the sample's own position, in the middle cell
+                add({base.pos[i * 4], base.pos[i * 4 + 1], base.pos[i * 4 + 2]}, scale / 2, scale / 2);
+                continue;
+            }
+            for (int c = 0; c < scale * scale; ++c)
+                if (mask & (1u << c)) add(base.gridPosition(i, scale, c), c % scale, c / scale);
+        }
+    });
     return g;
 }
 
@@ -902,6 +921,8 @@ LightmapPages bakeLightmaps(const LightmapLayout& layout, const std::vector<Ligh
             st.warnings.push_back("GI denoiser not applied (the indirect light stays noisy): " + d.error);
         }
     }
+    for (size_t i = 0; i + 2 < values.size(); i += 4)  // dark lights (negative brightness) can leave a texel below 0: a lightmap stores none
+        for (size_t c = 0; c < 3; ++c) values[i + c] = std::max(0.f, values[i + c]);
     LightmapPages pages = assemblePages(layout, samples, values);
     st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     return pages;

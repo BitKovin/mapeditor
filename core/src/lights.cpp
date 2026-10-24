@@ -99,7 +99,7 @@ LightScene collectLights(const Document& doc, const std::vector<ResolvedEntity>&
         l.up = rotate({0, 1, 0}, e.angles).normalized();
         colorKey(e, "color", l.color);
         double v;
-        if (numberKey(e, "brightness", v)) l.brightness = std::max(0.0, v);
+        if (numberKey(e, "brightness", v)) l.brightness = v;  // negative = a dark light (it subtracts; the baked texel is clamped at 0, lights.h)
         if (numberKey(e, "radius", v)) l.radius = std::max(1e-3, v);
         if (numberKey(e, "bounce", v)) l.bounce = std::max(0.0, v);
         if (numberKey(e, "cast_shadows", v)) l.castShadows = v != 0;

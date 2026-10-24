@@ -238,7 +238,8 @@ authored data into *surface fragments* `{ parent face, polygons, owner entity, k
 one derived-geometry channel.
 
 Known limits: filtering seams between charts (standard lightmap problem, handled later), and
-non-planar surfaces (displacement, curved patches) will need a different chart type.
+non-planar surfaces (displacement, curved patches) would need a different chart type. The two curved things the editor has, imported patches
+(§12 Importer) and the terrain (§8.k), avoid that by being meshes of planar triangles with `smooth` edges, so they need no new chart type.
 
 ## 6. Rendering & Viewports
 
@@ -351,7 +352,7 @@ headers (`core/src/shaders/*.spv.h`); `python3 tools/compile_shaders.py` regener
 (inside the window) stores `B`. Bounces follow from the same convention: `V_indirect(x) = mean over cosine-weighted rays of albedo(y) * V(y)`.
 
 **Light entities** (`light_point`, `light_spot`, `light_directional`, `light_rect`, `light_sky`; keyvalues): `color` ("r g b", 0..1, default
-white), `brightness` (default 1), `radius` (attenuation radius, m), `bounce` (bounce power, default 1), `cast_shadows` (0/1, default 1),
+white), `brightness` (default 1; negative = a dark light, below), `radius` (attenuation radius, m), `bounce` (bounce power, default 1), `cast_shadows` (0/1, default 1),
 `style` (0..), `source_size` (m for point/spot sphere radius, degrees for directional angular diameter), spot: `inner_angle`, `outer_angle`
 (degrees, full cone half-angles), rect: `width`, `height` (m). Direction = `R * (0,0,1)` with `R = Ry(yaw) Rx(pitch) Rz(roll)`, the same
 forward axis as the Shell's direction arrows. Entities inside prefab instances are resolved like every other entity.
@@ -393,6 +394,30 @@ shadow caster without a lightmap absorbs. Rays towards the sky are not gathered 
 a texel are the same in every bounce (sampler slot 100000): still unbiased because inner gathers happen at other texels, and the result is
 monotonic in the bounce count. Limits: only surfaces in the acceleration structure (shadow-casting classes) are visible to gather rays; the
 two atlas buffers must fit `maxStorageBufferRange` (else CPU fallback); no light styles per bounce yet.
+
+**Dark lights (negative `brightness`, REQUIREMENTS §40).** A light whose `brightness` is negative takes light away, like a negative `light` in Quake 3 (the `.ent` range is -1000..1000).
+Same formulas and shadows as a positive light, the sign rides on `brightness`; what changes is where the sign may survive:
+- **Everything is summed signed.** `V = ambient + sum of the lights` per texel (`evalLight`, the shader's `shade`), so a dark light subtracts its irradiance from the other lights of its
+  style layer and from the ambient. Shadow rays are traced for a light whose value is *not 0* (CPU `v != 0`, shader `!= 0.0`; it used to be `> 0`, which would have left a dark light
+  unshadowed): a dark light is blocked by the same occluders as a bright one. `_light_scale` multiplies the sign too.
+- **Bounces are linear in the signed light.** `Db` carries the dark light times its `bounce` (negative), the gather averages `albedo * S` of what it hits, so near a dark light the indirect
+  light is negative and subtracts too; `bounce 0` makes a dark light direct-only. The bounce source `S`, the indirect `I` and `Db` are never clamped, so the light of `A` and a dark `B` is
+  exactly the light of `A` minus the light of `B` (test `bounce cpu: dark lights are linear ...`); the live baker's moving average works the same way.
+- **The only clamp is the finished texel.** `max(0, direct + indirect)` per channel, after the ambient occlusion factor (which is >= 0): `bakeLightmaps` before the pages are assembled
+  and `LiveBaker::shownValue` (so `renderTile`, `snapshot`, the tiles sent to the Shell, the mirror and the EXR / OBJ / rBSP pages). A lightmap therefore never holds light below 0, and the
+  RGBA16F transport and the EXR writer never see a negative number (`floatToHalf` also maps negatives to 0, kept as a guard). The raw evaluators (`evaluateDirectCpu`,
+  `evaluateGiCpu`, `LiveBaker::value`) stay signed on purpose: the passes blend raw values and the tests check them.
+- **Denoiser.** OIDN only knows values in [0, inf) (`filterRGB` zeroes the rest), so `denoiseSamples` filters the positive part and the negative part of the indirect light as two images and
+  subtracts them again when any value is negative; levels without dark lights take the old single-image path at no cost.
+- **Light volumes.** A probe fits the finished light: `V(n)` (and the direct-only copy that decides the direction) is clamped at 0 per normal before the sphere moments, so a probe agrees with
+  the lightmaps next to it and `ambient`, `directed` stay >= 0 (the x2 byte range has no negative values).
+- **Light styles.** Every style layer is its own bake, clamped on its own (§6.8), and the Shell adds the layers. A dark light therefore darkens only lights of ITS style (and the ambient when
+  it is style 0); it cannot darken a light of another style, and a dark light of a style with no positive light just makes an all-black layer. Use style 0 for a dark light that should
+  darken the static lighting. The style analysis ranks a light by `|brightness|`.
+- **Change detection.** `sameLight` (live baker) and `sameLightLists` (light volumes) compare the signed brightness with `==`, so flipping the sign re-bakes the light's reach like any
+  other brightness edit.
+- **Shell.** `lightParams` no longer clamps `brightness`; the Details editor takes the `.ent` range (-1000..1000); a dark light's gizmo is drawn violet and crossed (see §6.9). The Lit and
+  Lighting-only views need nothing: they only ever receive clamped light.
 
 **Lighting classes and buried texels.** Which entities block light and which receive baked light is data in the game profile (see
 REQUIREMENTS §18 step 1b); entities that do not receive baked light are to be lit from light volumes. Brushes of the same entity overlap
@@ -562,6 +587,8 @@ probes have the same slots (one probe per style layer; the entity sums them). Th
 Patterns: the engine's built-in table (styles 0..11), overridable per game in `game_profile.json` `lighting.lightStyles` { "12": "mmmaaa" } (letters a..z only, ids 1..63);
 the Core sends the table to the Shell (`light_styles`), the Shell has no table of its own.
 
+**Dark lights (negative brightness, §6.5) and layers:** each layer is clamped at 0 on its own, so a dark light only darkens the lights of its own style.
+
 **Layers are independent bakes (linearity).** Light transport is linear, so layer `s` is exactly the bake of the lights with style `s` alone, GI bounces included: it gets its own
 `LiveBaker` (own bounce source, own refinement, own GPU session) over the charts that carry the style, with the layout filtered by `layoutForStyle` (same page and rectangle as in the
 full layout, so every layer's tiles address the same pixels). `LightingService` keeps the base layer as `baker_` and one more baker per style that has lights reaching some chart.
@@ -602,6 +629,10 @@ Classic Quake 3 classes (no defaults) keep the plain key / value list. The panel
 **Spawn.** Place > Lights lists the five lights; a click or drag spawns the entity with no keyvalues (the defaults apply). Lights with a direction (spot, sun, rect) start pointing straight down
 (pitch 90: forward = R * (0,0,1) = -Y), like a lamp on a ceiling (`defaultLightAngles`, used by every spawn path).
 
+**Dark lights.** `brightness` has the range -1000..1000 in the `.ent` (the Details editor and the baker accept it as it is; the Core test checks the minimum is not clamped). A negative value is a
+dark light that subtracts light (DESIGN §6.5). Its gizmo gets a cross (the four body diagonals of a small cube) over the normal icon and a violet-leaning colour (`isDarkLight`,
+`lightGizmoColor`), so it cannot be mistaken for a normal light of the same colour.
+
 **Preview gizmos (`model/lights.ts`, View > Light gizmos).** Pure line geometry in the light's colour (lifted so black lights stay readable), drawn as coloured overlays for the document's and
 prefab content's lights. Every light shows an icon with its real shape: point = diamond; spot = cone along the arrow (outer circle and spokes, inner circle) up to 1.2 m; directional = ring of
 parallel rays and an arrow; rect = the real width x height rectangle with diagonals and an arrow out of its emitting side; sky = a dome with rays coming down. A **selected** light also shows its
@@ -633,7 +664,7 @@ modeling and texturing.
 |---|---|---|
 | Block Tool | Create primitives (box, cylinder, arch, wedge, spike/torus, etc.) with pre-creation shape preview | **Box: done (M2.5)** — drag on a surface or the void, height by mouse, Shift = 1:1:1, grid snapping. Other primitives in M3 |
 | Clipping Tool | Slice geometry along a 2D-viewport line; 3 modes (keep front/back/both); 3-point clip for arbitrary angles | Not started |
-| Displacement Tool | Sculpt terrain-like detail on top of a base surface | Not started, low priority |
+| Displacement Tool | Sculpt terrain-like detail on top of a base surface | **Done as the Terrain tool** (§8.k): a terrain is a grid of slab brushes sculpted with raise / lower / smooth / flatten / paint brushes; not a displacement on an arbitrary base surface |
 | Boolean / non-destructive CSG | Add/Subtract brush resolution (see §5.1, §8) | **Beyond what Hammer 5 offers** (its own "Convex Tool" is explicitly unsupported) — this is one of our differentiators |
 
 **Organization**
@@ -756,6 +787,37 @@ committed once you confirm the operation).
 - **GPU**: with transparency the BLAS is built non-opaque with `NO_DUPLICATE_ANY_HIT_INVOCATION` (each triangle once per ray), and the shaders handle the candidates of their ray queries (direct: multiply / confirm + terminate; gather: confirm unless a hole). Without transparency the geometry stays opaque and the shaders take the old fast path (push constant bit). The direct shader gets two storage buffers (binding 9: per-triangle record + winding normal, 10: the words); the gather gets the words at binding 11, so its variable-count texture array moved to 12 (it must be the last binding).
 - **Re-bake on a property edit**: `write_texture_props` calls `LightingService::textureChanged(path)`; the next input flush rebuilds the occluders and marks the boxes of the faces that use the texture as changed.
 - **Views**: decoded textures carry `hasAlpha`; `drawTransparency(info)` gives the shaders `uTransp` (mode, cutoff, opacity). Cutout discards below the cutoff; translucent groups are drawn after all opaque geometry, blended, without depth writes (Unlit and the textured Lit view).
+
+### 8.k Terrain (REQUIREMENTS §39)
+A terrain editor that adds nothing to the Core: the terrain is made of ordinary brushes, so validation, lightmapping and rBSP / OBJ export already work.
+- **Storage: one `func_detail` entity of closed slab brushes ("tiles")**, entity record `terrain = { cols, rows, cell, tile }` and `terrainTile = [tx, ty]` on each tile brush
+  (`model/terrain.ts`; Core keeps both unknown keys as it keeps `shape`). A concave solid cannot live in worldspawn / func_group (§5.1), hence func_detail. A tile covers up to
+  `tile` x `tile` cells and is a closed manifold of planar faces: the top grid points then the bottom ring (at the slab's bottom plane) as vertices; 2 triangles per cell (the
+  diagonal alternates like a chessboard); one quad wall per cell edge on the tile border (vertical, so planar); one bottom polygon. Walls and bottom are `common/caulk`, the top
+  keeps the painted texture. **Every edge between two top triangles is `smooth`** (§5.1a), so the surface shades and lightmaps as one; smoothing never crosses brushes, so there
+  is a faint seam where two tiles meet (known). Why tiles, not one brush: a stroke rebuilds only the tiles it touches, and the lighting, keyed by (brush id, face id) (§5.6), then
+  only has to look at those; one brush for 65 536 cells would be rebuilt and re-diffed whole on every stroke. Why triangles: any heightfield is planar per triangle, so Core's
+  planarity rule holds with no tolerance games.
+- **No second copy of the heights.** The heights are the y of the top vertices; `terrainOf(entity)` reads them back (and checks that every tile still is exactly what the record says,
+  seams included), cached per entity object. The grid's place is read from tile (0, 0), so moving the whole entity, undo, copy / paste and save / load need no bookkeeping.
+- **The record stays honest** (`reconcileTerrain`, run by the store after every edit next to `reconcileShapes`): a tile that changed must still be what the record builds
+  from its own top heights (moving the entity, or lifting an inner vertex in Mesh mode, is fine; a vertex moved sideways, one tile moved alone, a clip, a deleted tile is not).
+  Otherwise the record and the tile marks are dropped and the tiles are ordinary brushes (nothing is lost). Brushes built by the terrain code are remembered in a `WeakSet` and not re-checked.
+- **Sculpting is replacing `vertices` arrays.** Face ids, the triangulation and the smooth pairs never change, so a stroke makes new brush objects only for the tiles it touched
+  (a point on a tile border belongs to both tiles); every other tile stays the same object (cheap undo history, GPU caches keyed by brush). Painting replaces `texture` strings
+  of the top faces of a cell. Heights are rounded to 0.1 mm and never go below the slab bottom + 0.25 m.
+- **Brushes** (`stamp`): weight = 1 up to `(1 - falloff)` of the radius, then a smoothstep to 0 at the radius. *Raise / Lower*: +/- `strength` x 0.5 m at the centre; *Smooth*: blend
+  toward the mean of the 3x3 neighbours by `strength` x weight (reads old, writes new); *Flatten*: blend toward a target (the height under the first stamp, or a fixed height) by
+  `strength` x weight; *Paint*: the texture of the Content Browser on the cells whose centre is within the radius. Shift swaps Raise and Lower.
+- **A stroke** (`TerrainStroke`) keeps a working copy of the heights and places a stamp every `max(0.2 radius, 0.25 cell)` along the path, so the result does not depend on how many
+  pointer events arrived; holding still stamps again every 120 ms. `document(start)` returns the document with the tiles changed so far. The viewport drives it through the usual
+  `beginDrag / dragUpdate / endDrag`, so one stroke is one undo step; Esc cancels. The pointer ray hits the heightfield directly (`rayTerrain`, a cell walk, no triangle soup);
+  the brush circle (radius and falloff) is laid on the ground.
+- **Responsive on large grids** (measured: 256 x 256 cells = 147 712 faces, 256 brushes): a stroke update is about 1 ms; creating takes about 1.4 s; the whole document is 11 MB, so
+  `dragUpdate(fn, submit = false)` shows an update without sending it, and the viewport sends the document to Core at most every 250 ms (6 x what the last send took), plus once at
+  the end of the stroke. A selected terrain makes the Texture / Details panels walk all its faces on each update, so a stroke deselects it. The Outliner shows one row per terrain.
+- **Limits:** at most 512 cells per side and 65 536 cells, tiles of 2..64 cells, a 1 m minimum thickness. Textures use the axial world projection (no stored UVs), so a slope
+  steeper than 45 degrees shows the side projection. The editor does not resize, rotate or scale a terrain (a moved terrain is still one; a rotated one becomes plain brushes).
 
 ## 9. UV & Texturing Tools
 
@@ -1053,6 +1115,40 @@ reliefs; the engine decides collision from texture names and does not read the c
     lat, lng, flags; values / 2 * 255, dir from lat / lng as in the editor), x fastest, then y, then z. Absent without a bake.
   - `<name>/lm_NNNN.exr`: the pages, as for rBSP (all light styles; the OBJ refers to the base style's).
 
+### Importer: Quake 3 `.map` (File > Import Quake Map…, `core/map_import.h`)
+
+`import_map { path, overwrite? }` (a `.map` inside the game folder) converts the file to `<name>.map.json` beside it and opens it; the response carries `stats` and `warnings`.
+`map_import_tool <assetsRoot> <in.map> [out.map.json]` does the same on the command line. The converted document is validated before it is returned (one bad brush would make the
+Core refuse the whole file), so an import either opens or fails with a reason.
+
+- **Syntax read:** classic planes (Quake 1 and Quake 3, with or without `contents surface value`), Valve 220 (`[ ux uy uz off ] [ vx vy vz off ]`), Quake 3 brush primitives
+  (`brushDef`), `patchDef2` / `patchDef3`, `//` and `/* */` comments, any mix in one file. `brushDef3` / `patchDef5` / `terrainDef` (Doom 3 and later) are refused with a line number.
+- **Space:** Quake units, Z up -> metres, Y up: `editor = (qx, qz, -qy) / 32`. A pure rotation, so winding is kept.
+- **Brushes:** the planes are intersected (every triple, welded at 0.002 units) into a closed convex mesh whose faces list all their vertices (no T-junctions), CCW from outside;
+  redundant planes drop out. Every result passes `checkConvexSolid`, also in entities that would allow concave brushes. A brush that cannot be built is skipped with a warning.
+  `common/origin` brushes set the entity's `origin` and are not geometry. A brush with the `detail` content flag (0x8000000) in worldspawn / `func_group` goes to a `func_detail`
+  entity (`e_detail`). Non-zero contents / surface / value flags are kept on the face as `q3`.
+- **UVs:** the editor stores repeats, Quake pixels / units, so the texture's pixel size is read from the image header (`imageSize`; fallback 64x64 with a warning; shader-only names
+  like `common/*` and `*cube` are silent). Classic = q3map2's `QuakeTextureVecs` (six base axes, rotation, scale, shift), Valve = `dot(p, axis) / scale + offset`, brush primitives =
+  Radiant's `ComputeAxisBase` matrix. Checked against q3map2-compiled BSPs of the game's own maps (every shared planar vertex, mod 1): classic 351/351 and 333/333, brush primitives
+  48/48. Each face also gets a `projection` of kind `free` that reproduces the uvs, so the Surface Inspector can edit them.
+- **Patches ("displacements"):** the editor has no curved surfaces, so a patch is tessellated (quadratic Bezier, adaptive: chord error <= `patchTolerance` = 2 units, at most 16 segments
+  per span) and becomes ONE closed triangle slab, `patchThickness` = 4 units BEHIND the front side (front = columns x rows, as q3map2), in `func_detail` (`e_patches`) when it came from
+  worldspawn / `func_group` (patches do not seal visibility and are not convex). The top keeps the patch texture and its `s t`; back and sides take `common/caulk` (a Quake patch is
+  one-sided). Edges between top triangles are in the brush's `smooth` list, so the lightmap and normals treat the curve as one surface. Collapsed edges (cones, spheres) are welded.
+- **Entities:** every key survives, except those converted: `origin` -> the entity's `origin`; `angles` (pitch yaw roll in Quake's axes) -> the entity's `angles`; `angle` stays a key
+  (same convention in both). Brush entities keep world-space brushes; `origin` = the origin brush or key, else the centre of the geometry (the editor's default pivot).
+  `target` / `killtarget` become `refs` to the entity with that `targetname`, or to ALL of them when the name is shared (several targets, see §18.1); unknown names stay text (a warning names them). TrenchBroom `func_group` layers and
+  groups without brushes are dropped (their `_tb_*` keys stay on the members). `_lightmapscale` N -> faces' `lightmapScale` 1/N. worldspawn `_ambient N` (0..255, tinted by `_color`)
+  -> `_ambient "r g b"`.
+- **Lights** (Quake 3 / q3map2 meaning; documented approximations): `light` + `_sun 1` -> `light_directional` looking from the light to its `target` entity (brightness = light / 255);
+  `light` with a `target` -> `light_spot` (outer angle = atan(radius / distance), inner 80 %); `light` -> `light_point`. Reach = `light / fade` units (spawnflags 1, linear) or
+  sqrt(light * 7500) (default falloff), radius = reach / 32 m; brightness is chosen so the editor's irradiance equals the Quake value at half the reach. `_color` -> `color`, `style`
+  kept, `_deviance` -> `source_size`. A negative `light` stays negative: a dark light (§6.5) whose reach and strength come from the absolute value (the sample maps have -8000 and -1500). The game's own `light_point` (`light_color`, `intensity`, `radius`) is renamed
+  (`color`, `brightness`, `radius`, same numbers: its radius is already metres). Other keys (`fogLight`, `transformPoint`, ...) are the game's and pass through unchanged.
+- **Not converted:** keys that hold Quake-unit lengths for the game (`targetLocation`, `radius` of non-light entities, ...) are passed as written; `patchDef3`'s explicit subdivision
+  numbers (tessellation is adaptive); `terrainDef`.
+
 ## 13. Explicitly Deferred / Not Yet Decided
 
 - The entire real-time lighting pipeline (§6.3) and the light-volume format (§5.3) — waiting on
@@ -1191,7 +1287,7 @@ authored brushes, prefab contents are not carved, and there is no fragment mergi
 
 | Key | Action |
 |---|---|
-| `Q` / `B` | Select tool / Box tool |
+| `Q` / `B` / `T` | Select tool / Box tool / Terrain tool (§8.k; `[` `]` change the brush radius) |
 | `Tab` | Toggle Object ↔ Face mode |
 | `Ctrl+Z`, `Ctrl+Y` / `Ctrl+Shift+Z` | Undo / Redo |
 | `Ctrl+S` | Save |
@@ -1239,7 +1335,8 @@ Each block says *what* was decided so it is not re-invented. Status lives in REQ
 ### 18.1 Prefab identity, references, overrides (M3.3, priority #1)
 - **Instance** = `{ id (reserved, never shown), name (unique among siblings in its scope; default = file basename + incrementing number: door_prefab, door_prefab2…), file, origin, angles, scale?, overrides }`. Renaming changes `name` only.
 - **Entity names:** the entity's own name is its `targetname` keyvalue (key name configurable in the game profile: `nameKey`). **References are never typed strings.** An entity stores `refs: { "<key>": "<scope-relative path>" }` for every reference key (`referenceKeys` in the profile, default `target`, `killtarget`; additionally any key whose `.ent` type is `target`). A path is `entityId`, `childInstanceId/entityId`, `childA/childB/entityId`…; it is relative to the **scope in which it is declared**: for a ref written in a prefab file the scope is that prefab instance; for a ref written in an *override* the scope is the instance's **parent** scope (this is how two sibling child prefabs reference each other, or a child references something in its parent).
-- **Resolved name** (shown in the UI and written at compile) = instance names from the root joined with `|`, then the entity's `targetname`: `button_prefab3|button` → `door_prefab2|door`; nested: `outer|inner|door`. Root-document entities have no prefix. Because refs use ids, **renaming an entity or an instance rewrites nothing** — resolved names are recomputed. Duplicate `targetname` within one scope is a validation warning.
+- **Resolved name** (shown in the UI and written at compile) = instance names from the root joined with `|`, then the entity's `targetname`: `button_prefab3|button` → `door_prefab2|door`; nested: `outer|inner|door`. Root-document entities have no prefix. Because refs use ids, **renaming an entity or an instance rewrites nothing** — resolved names are recomputed. Several entities may share one `targetname` (by design: a Quake `target` triggers every entity with that name), so a duplicate name is no problem.
+- **Several targets (2026-10-24).** `refs["<key>"]` is one path (the usual form, unchanged) or an array of paths: `{ "target": ["door1", "door2"] }`; Core's `RefTargets`, the Shell's `RefValue` (`refPaths`, `refValueOf`). The key still holds ONE name in the compiled entity, so the targets must share it: `flattenForCompile` writes the first named target's name; an unnamed target joins that name (a problem line says so); a target with another name is reported (`different names`) and not reachable through that key; unresolved paths are reported and skipped, the others still count. An override replaces the whole list. The Details editor shows one picker per target, a trailing one to add (the pipette adds too), `×` removes one, and when the names differ a **Share first name** button gives the document's targets the first one's name (`shareTargetName`, one undo step). Links are drawn to every target; a plain-text `target` name links to every entity with that name.
 - **Overrides:** `instance.overrides = { "<entityPath within the instance>": { keyvalues?, refs?, origin?, angles?, scale?, deleted? } }`; only differences are stored; each overridden field has a **revert** button; the sub-tree (instance → child instances → entities) is shown in the Outliner and Details.
 - **Compile = flatten:** a Core function walks the instance tree applying overrides, transforms and name resolution and emits one flat entity list with resolved `targetname`/`target` strings (used by export, M6, and by tests now).
 - **UI:** Place tab lists prefab files (click or drag into the viewport → new instance with generated name); instances are pickable (their expanded content picks the *instance*), selectable in the Outliner, movable/rotatable/scalable with gizmo and G/R/S, deletable, renameable; the reference picker is a list of all entities (grouped by prefab) plus a **pipette** (click an entity in the viewport).

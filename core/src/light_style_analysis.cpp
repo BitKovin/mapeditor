@@ -64,7 +64,7 @@ Reach reach(const Light& L, const Vec3& p, const Vec3& n, const TriangleBvh* bvh
             if (n.dot(dir) <= 1e-6) continue;
             if (!blocked(o + dir * 1.0e4)) { open = true; break; }
         }
-        irradiance = L.brightness * lum(L.color) * (L.type == LightType::Directional ? c : 0.5);
+        irradiance = std::fabs(L.brightness) * lum(L.color) * (L.type == LightType::Directional ? c : 0.5);
     } else {
         const Vec3 v = L.position - p;
         const double d = v.length();
@@ -78,7 +78,7 @@ Reach reach(const Light& L, const Vec3& p, const Vec3& n, const TriangleBvh* bvh
             if (std::acos(std::clamp(c, -1.0, 1.0)) > L.outerAngle * kDeg + std::asin(std::min(1.0, L.sourceSize / d))) return r;
         }
         for (const Vec3& t : targets) if (!blocked(t)) { open = true; break; }
-        irradiance = L.brightness * lum(L.color) * window(d, L.radius) * cosT / std::max(d * d, 0.0025);
+        irradiance = std::fabs(L.brightness) * lum(L.color) * window(d, L.radius) * cosT / std::max(d * d, 0.0025);
     }
     r.reached = open;
     r.influence = open ? irradiance : 0;

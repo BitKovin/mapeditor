@@ -59,6 +59,14 @@ describe('resolveLinks', () => {
     expect(l).toHaveLength(1)
     expect(l[0].from.entity.id).toBe('btn'); expect(l[0].to.entity.id).toBe('door'); expect(l[0].key).toBe('target')
   })
+  it('a ref with several targets links to each of them', () => {
+    const items = [P(ent('btn', { refs: { target: ['d1', 'nope', 'd2'] } })), P(ent('d1')), P(ent('d2'))]
+    expect(resolveLinks(items, keys).map((l) => l.to.entity.id)).toEqual(['d1', 'd2'])
+  })
+  it('a plain name reaches every entity that has it (names may be shared)', () => {
+    const items = [P(ent('btn', { keyvalues: { target: 'gate' } })), P(ent('g1', { keyvalues: { targetname: 'gate' } })), P(ent('g2', { keyvalues: { targetname: 'gate' } })), P(ent('x', { keyvalues: { targetname: 'other' } }))]
+    expect(resolveLinks(items, keys).map((l) => l.to.entity.id)).toEqual(['g1', 'g2'])
+  })
   it('ignores dangling refs and self refs', () => {
     expect(resolveLinks([P(ent('a', { refs: { target: 'nope' } })), P(ent('b', { refs: { target: 'b' } }))], keys)).toEqual([])
   })

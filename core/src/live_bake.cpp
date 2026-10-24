@@ -93,11 +93,10 @@ Vec3 LiveBaker::value(size_t i) const {
 }
 
 Vec3 LiveBaker::shownValue(size_t i) const {
-    const size_t page = samples_.texel[i] / (static_cast<size_t>(samples_.atlas) * samples_.atlas);
     const double k = aoFactor(i);
-    if (page < pageState_.size() && pageState_[page] == 1 && indirectDn_.size() == samples_.count() * 4)
-        return Vec3{direct_[i * 4] + indirectDn_[i * 4], direct_[i * 4 + 1] + indirectDn_[i * 4 + 1], direct_[i * 4 + 2] + indirectDn_[i * 4 + 2]} * k;
-    return value(i) * k;
+    if (i < chunkOf_.size() && chunkDn_[static_cast<size_t>(chunkOf_[i])] == 1 && indirectDn_.size() == samples_.count() * 4)
+        return clampLight(Vec3{direct_[i * 4] + indirectDn_[i * 4], direct_[i * 4 + 1] + indirectDn_[i * 4 + 1], direct_[i * 4 + 2] + indirectDn_[i * 4 + 2]} * k);
+    return clampLight(value(i) * k);
 }
 
 float LiveBaker::aoFactor(size_t i) const {
@@ -185,17 +184,28 @@ void LiveBaker::computeOcclusion(const std::vector<int>& chunkIds) {
 }
 
 size_t LiveBaker::denoisedPages() const {
+    std::vector<char> all(static_cast<size_t>(std::max(0, samples_.pageCount)), 1), any(all.size(), 0);
+    for (size_t ci = 0; ci < chunks_.size(); ++ci) {
+        const size_t pg = static_cast<size_t>(chunks_[ci].page);
+        any[pg] = 1;
+        if (chunkDn_[ci] != 1) all[pg] = 0;
+    }
     size_t n = 0;
-    for (char c : pageState_) n += c == 1;
+    for (size_t pg = 0; pg < all.size(); ++pg) n += all[pg] && any[pg];
     return n;
 }
 
+namespace {
+constexpr double kDnWholePage = 0.6;     // windows are used only when they have fewer pixels than this share of the page
+}  // namespace
+
 bool LiveBaker::denoisePending() const {
     if (!denoiseWanted()) return false;
-    const size_t pages = pageState_.size();
-    std::vector<char> ready(pages, 1);
+    const size_t pages = static_cast<size_t>(std::max(0, samples_.pageCount));
+    std::vector<char> ready(pages, 1), wants(pages, 0);
     for (const auto& c : chunks_) if (c.passes < cfg_.maxPasses) ready[static_cast<size_t>(c.page)] = 0;
-    for (const auto& c : chunks_) if (pageState_[static_cast<size_t>(c.page)] == 0 && ready[static_cast<size_t>(c.page)]) return true;
+    for (size_t ci = 0; ci < chunks_.size(); ++ci) if (chunkDn_[ci] == 0) wants[static_cast<size_t>(chunks_[ci].page)] = 1;
+    for (size_t pg = 0; pg < pages; ++pg) if (ready[pg] && wants[pg]) return true;
     return false;
 }
 
@@ -208,12 +218,12 @@ bool LiveBaker::denoiseNext(std::vector<int>* outChunks) {
 
 bool LiveBaker::beginDenoise(DenoiseJob& job) {
     if (!denoiseWanted()) return false;
-    const size_t pages = pageState_.size();
-    std::vector<char> ready(pages, 1);
+    const size_t pages = static_cast<size_t>(std::max(0, samples_.pageCount));
+    std::vector<char> ready(pages, 1), wants(pages, 0);
     for (const auto& c : chunks_) if (c.passes < cfg_.maxPasses) ready[static_cast<size_t>(c.page)] = 0;
+    for (size_t ci = 0; ci < chunks_.size(); ++ci) if (chunkDn_[ci] == 0) wants[static_cast<size_t>(chunks_[ci].page)] = 1;
     int page = -1;
-    for (const auto& c : chunks_)
-        if (pageState_[static_cast<size_t>(c.page)] == 0 && ready[static_cast<size_t>(c.page)]) { page = c.page; break; }
+    for (size_t pg = 0; pg < pages && page < 0; ++pg) if (ready[pg] && wants[pg]) page = static_cast<int>(pg);
     if (page < 0) return false;
     const denoise::Info info = denoise::probe();
     if (!info.available) {
@@ -223,53 +233,113 @@ bool LiveBaker::beginDenoise(DenoiseJob& job) {
     }
     // The denoiser only needs the atlas layout and where each value sits in it. On the fine grid the values are the grid entries (fine atlas).
     const bool fine = fineGi();
+    const int edge = std::max(1, cfg_.chunkTexels);
+    const int chunkPx = edge * (fine ? gi_.scale : 1);                 // a chunk's side in the pixels of the filtered image
+    const int atlasPx = fine ? gi_.s.atlas : samples_.atlas;
+    const size_t perPagePx = static_cast<size_t>(atlasPx) * atlasPx;
+    const std::vector<float>& source = fine ? indirectHi_ : indirect_;
     job = DenoiseJob{};
     job.page = page;
     job.fine = fine;
     job.geometry = geometryGen_;
-    job.ps.atlas = fine ? gi_.s.atlas : samples_.atlas;
-    job.ps.pageCount = samples_.pageCount;
+    std::vector<int> pageChunks;
     for (size_t ci = 0; ci < chunks_.size(); ++ci) {
         if (chunks_[ci].page != page) continue;
-        job.ids.push_back(static_cast<int>(ci));
-        for (uint32_t s : chunks_[ci].samples) {
-            if (!fine) { job.ps.texel.push_back(samples_.texel[s]); job.idx.push_back(s); continue; }
-            for (uint32_t e = gi_.begin[s]; e < gi_.begin[s + 1]; ++e) { job.ps.texel.push_back(gi_.s.texel[e]); job.idx.push_back(e); }
+        pageChunks.push_back(static_cast<int>(ci));
+        if (chunkDn_[ci] == 0) job.stale.push_back(static_cast<int>(ci));
+    }
+    // Which windows: the whole page, or one window per group of changed chunks plus a margin of context around it (the filter sees about this far). The
+    // changed chunks of a page are often scattered over it (the atlas keeps charts of one texture together, not charts that are near in the world), and
+    // then the windows cost more than the page: take whichever has fewer pixels.
+    struct Win { int x0, y0, x1, y1; };
+    std::vector<Win> wins;
+    {
+        const int margin = fine ? 64 : 32;
+        double bestPx = static_cast<double>(atlasPx) * atlasPx * kDnWholePage;  // windows have to beat this share of the page
+        int bestK = 0;
+        for (int k : {2, 4, 8}) {
+            std::set<std::pair<int, int>> groups;
+            for (int ci : job.stale) groups.insert({chunks_[static_cast<size_t>(ci)].tx / k, chunks_[static_cast<size_t>(ci)].ty / k});
+            const double side = std::min<double>(atlasPx, k * chunkPx + 2.0 * margin);
+            const double px = static_cast<double>(groups.size()) * side * side;
+            if (px < bestPx) { bestPx = px; bestK = k; }
+        }
+        if (bestK == 0) {
+            wins.push_back({0, 0, atlasPx, atlasPx});
+        } else {
+            std::set<std::pair<int, int>> groups;
+            for (int ci : job.stale) groups.insert({chunks_[static_cast<size_t>(ci)].tx / bestK, chunks_[static_cast<size_t>(ci)].ty / bestK});
+            for (const auto& g : groups) {
+                const int cx0 = g.first * bestK * chunkPx, cy0 = g.second * bestK * chunkPx;
+                wins.push_back({std::max(0, cx0 - margin), std::max(0, cy0 - margin), std::min(atlasPx, cx0 + bestK * chunkPx + margin),
+                                std::min(atlasPx, cy0 + bestK * chunkPx + margin)});
+            }
         }
     }
-    const std::vector<float>& source = fine ? indirectHi_ : indirect_;
-    job.vals.assign(job.idx.size() * 4, 0.f);
-    for (size_t j = 0; j < job.idx.size(); ++j)
-        for (size_t c = 0; c < 3; ++c) job.vals[j * 4 + c] = source[static_cast<size_t>(job.idx[j]) * 4 + c];
-    pageState_[static_cast<size_t>(page)] = 3;
+    for (const Win& w : wins) {
+        DenoiseTile tile;
+        const int side = std::max(w.x1 - w.x0, w.y1 - w.y0);
+        tile.ps.atlas = side;
+        tile.ps.pageCount = 1;
+        for (int ci : pageChunks) {
+            const LiveChunk& c = chunks_[static_cast<size_t>(ci)];
+            if ((c.tx + 1) * chunkPx <= w.x0 || c.tx * chunkPx >= w.x1 || (c.ty + 1) * chunkPx <= w.y0 || c.ty * chunkPx >= w.y1) continue;
+            auto add = [&](uint32_t texel, uint32_t index) {
+                const size_t local = texel % perPagePx;
+                const int x = static_cast<int>(local % static_cast<size_t>(atlasPx)), y = static_cast<int>(local / static_cast<size_t>(atlasPx));
+                if (x < w.x0 || x >= w.x1 || y < w.y0 || y >= w.y1) return;
+                tile.ps.texel.push_back(static_cast<uint32_t>((y - w.y0) * side + (x - w.x0)));
+                tile.idx.push_back(index);
+                tile.owner.push_back(ci);
+                for (size_t ch = 0; ch < 3; ++ch) tile.vals.push_back(source[static_cast<size_t>(index) * 4 + ch]);
+                tile.vals.push_back(0.f);
+            };
+            for (uint32_t s : c.samples) {
+                if (!fine) { add(samples_.texel[s], s); continue; }
+                for (uint32_t e = gi_.begin[s]; e < gi_.begin[s + 1]; ++e) add(gi_.s.texel[e], e);
+            }
+        }
+        if (!tile.idx.empty()) job.tiles.push_back(std::move(tile));
+    }
+    for (int ci : job.stale) chunkDn_[static_cast<size_t>(ci)] = 2;
     return true;
 }
 
 denoise::Result LiveBaker::runDenoise(DenoiseJob& job, int quality) {
-    // A page without any indirect light (e.g. a style layer whose lights do not bounce here) stays exactly black: the filter would add a faint haze.
-    if (std::all_of(job.vals.begin(), job.vals.end(), [](float v) { return v == 0.f; })) { denoise::Result r; r.ok = true; return r; }
-    return denoise::denoiseSamples(job.ps, job.vals, static_cast<denoise::Quality>(std::clamp(quality, 0, 2)), 8);
+    denoise::Result total;
+    total.ok = true;
+    for (DenoiseTile& tile : job.tiles) {
+        // A tile without any indirect light (e.g. a style layer whose lights do not bounce here) stays exactly black: the filter would add a faint haze.
+        if (std::all_of(tile.vals.begin(), tile.vals.end(), [](float v) { return v == 0.f; })) continue;
+        const denoise::Result r = denoise::denoiseSamples(tile.ps, tile.vals, static_cast<denoise::Quality>(std::clamp(quality, 0, 2)), 8);
+        total.seconds += r.seconds;
+        if (!r.ok) { total.ok = false; total.error = r.error; return total; }
+    }
+    return total;
 }
 
 bool LiveBaker::finishDenoise(DenoiseJob& job, const denoise::Result& r, std::vector<int>* outChunks) {
-    const size_t page = static_cast<size_t>(job.page);
-    if (job.geometry != geometryGen_ || page >= pageState_.size() || pageState_[page] != 3) return false;  // refined or replaced meanwhile: the page is pending again
+    if (job.geometry != geometryGen_ || job.stale.empty()) return false;  // replaced meanwhile: the new chunks are pending
     if (!r.ok) {
         denoiseError_ = r.error;
-        pageState_[page] = 2;
+        for (int ci : job.stale) if (chunkDn_[static_cast<size_t>(ci)] == 2) chunkDn_[static_cast<size_t>(ci)] = 3;
         return false;
     }
     denoiseError_.clear();
     denoiseSeconds_ += r.seconds;
-    const std::vector<uint32_t>& idx = job.idx;
-    const std::vector<float>& vals = job.vals;
     if (indirectDn_.size() != samples_.count() * 4) indirectDn_.assign(samples_.count() * 4, 0.f);
-    if (job.fine) {
-        if (indirectHiDn_.size() != gi_.count() * 4) indirectHiDn_.assign(gi_.count() * 4, 0.f);
-        for (size_t j = 0; j < idx.size(); ++j)
-            for (size_t c = 0; c < 3; ++c) indirectHiDn_[static_cast<size_t>(idx[j]) * 4 + c] = vals[j * 4 + c];
-        for (int id : job.ids)  // back to the texels: mean of each sample's denoised grid entries
-            for (uint32_t s : chunks_[static_cast<size_t>(id)].samples) {
+    if (job.fine && indirectHiDn_.size() != gi_.count() * 4) indirectHiDn_.assign(gi_.count() * 4, 0.f);
+    std::vector<float>& dst = job.fine ? indirectHiDn_ : indirectDn_;
+    for (const DenoiseTile& tile : job.tiles)
+        for (size_t j = 0; j < tile.idx.size(); ++j) {
+            if (chunkDn_[static_cast<size_t>(tile.owner[j])] != 2) continue;  // context of the tile, or refined meanwhile: keep what it has
+            for (size_t c = 0; c < 3; ++c) dst[static_cast<size_t>(tile.idx[j]) * 4 + c] = tile.vals[j * 4 + c];
+        }
+    std::vector<int> done;
+    for (int ci : job.stale) {
+        if (chunkDn_[static_cast<size_t>(ci)] != 2) continue;  // refined while the filter ran: its result is dropped, the chunk is pending again
+        if (job.fine)
+            for (uint32_t s : chunks_[static_cast<size_t>(ci)].samples) {  // back to the texels: mean of each sample's denoised grid entries
                 const uint32_t a = gi_.begin[s], b = gi_.begin[s + 1];
                 for (size_t c = 0; c < 3; ++c) {
                     float acc = 0.f;
@@ -277,14 +347,13 @@ bool LiveBaker::finishDenoise(DenoiseJob& job, const denoise::Result& r, std::ve
                     indirectDn_[static_cast<size_t>(s) * 4 + c] = b > a ? acc / static_cast<float>(b - a) : 0.f;
                 }
             }
-    } else {
-        for (size_t j = 0; j < idx.size(); ++j)
-            for (size_t c = 0; c < 3; ++c) indirectDn_[static_cast<size_t>(idx[j]) * 4 + c] = vals[j * 4 + c];
+        chunkDn_[static_cast<size_t>(ci)] = 1;
+        chunkDirty_[static_cast<size_t>(ci)] = 1;
+        sentPasses_[static_cast<size_t>(ci)] = -1;  // shown with the denoised light now
+        done.push_back(ci);
     }
-    pageState_[page] = 1;
-    for (int id : job.ids) { chunkDirty_[static_cast<size_t>(id)] = 1; sentPasses_[static_cast<size_t>(id)] = -1; }  // shown with the denoised light now
-    if (outChunks) *outChunks = job.ids;
-    return true;
+    if (outChunks) *outChunks = done;
+    return !done.empty();
 }
 
 size_t LiveBaker::giEntryCount(const LiveChunk& c) const {
@@ -358,7 +427,8 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
     const std::vector<float> oldD = std::move(direct_), oldDb = std::move(db_), oldI = std::move(indirect_), oldDn = std::move(indirectDn_);
     const std::vector<float> oldOcc = std::move(occ_);
     const std::vector<int32_t> oldAt = std::move(sampleAt_);
-    const std::vector<char> oldPageState = pageState_;
+    const std::vector<char> oldChunkDn = std::move(chunkDn_);
+    const std::vector<int32_t> oldChunkOf = std::move(chunkOf_);
     std::vector<int> oldPasses(oldSamples.count(), 0);
     std::vector<char> oldUnsent(oldSamples.count(), 0);  // inside a chunk whose tile the client has not received yet
     for (size_t ci = 0; ci < chunks_.size(); ++ci) {
@@ -423,7 +493,6 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
             fresh[i] = 1;  // same light, other place in the atlas
         }
     }
-    std::vector<char> pageTouched(static_cast<size_t>(std::max(0, samples_.pageCount)), 0);  // some texel of the page is new or moved
     const size_t perPage = static_cast<size_t>(samples_.atlas) * samples_.atlas;
     for (size_t i = 0; i < n; ++i) {
         const int32_t o = from[i];
@@ -438,7 +507,6 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
             if (static_cast<size_t>(o) < oldOcc.size()) occ_[i] = oldOcc[static_cast<size_t>(o)];
             if (oldUnsent[static_cast<size_t>(o)]) fresh[i] = 1;
         }
-        if (fresh[i]) pageTouched[samples_.texel[i] / perPage] = 1;
     }
     gt.inherit += since(t1);
 
@@ -516,6 +584,7 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
     const int edge = std::max(1, cfg_.chunkTexels);
     const size_t tilesPerRow = static_cast<size_t>((atlas + edge - 1) / edge);
     std::vector<int32_t> chunkAt(static_cast<size_t>(std::max(0, samples_.pageCount)) * tilesPerRow * tilesPerRow, -1);
+    chunkOf_.assign(n, 0);
     for (size_t i = 0; i < n; ++i) {
         const size_t page = samples_.texel[i] / perPage, local = samples_.texel[i] % perPage;
         const int x = static_cast<int>(local % static_cast<size_t>(atlas)), y = static_cast<int>(local / static_cast<size_t>(atlas));
@@ -531,29 +600,38 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
             chunkDirty_.push_back(0);
             sentPasses_.push_back(-1);
         }
+        chunkOf_[i] = slot;
         LiveChunk& c = chunks_[static_cast<size_t>(slot)];
         c.samples.push_back(static_cast<uint32_t>(i));
         c.bounds.add({samples_.pos[i * 4], samples_.pos[i * 4 + 1], samples_.pos[i * 4 + 2]});
         c.passes = inherited[i] < 0 ? 0 : std::min(c.passes, inherited[i]);
         if (fresh[i]) chunkDirty_[static_cast<size_t>(slot)] = 1;
     }
+    chunkAt_ = std::move(chunkAt);
+    chunkTilesPerRow_ = tilesPerRow;
     // what the client holds of a chunk that is not dirty is what it has now; the dirty ones are sent whatever they have
     for (size_t ci = 0; ci < chunks_.size(); ++ci) sentPasses_[ci] = chunkDirty_[ci] ? -1 : chunks_[ci].passes;
     gt.chunks = since(t1);
 
     t1 = Clock::now();
-    // Denoised copies: texels that took over a result take over its denoised indirect light too, and a page whose texels are all unchanged stays
-    // denoised (a moved crate must not cost a denoise run of every page).
-    pageState_.assign(static_cast<size_t>(std::max(0, samples_.pageCount)), 0);
+    // Denoised copies: a chunk whose texels all took over a result that was denoised keeps the denoised light too (a moved crate must not cost a denoise
+    // run of every page), the others are filtered again once their page has converged.
+    chunkDn_.assign(chunks_.size(), 0);
     indirectDn_.clear();
-    if (sameAtlas && oldDn.size() == oldSamples.count() * 4) {
+    if (sameAtlas && oldDn.size() == oldSamples.count() * 4 && oldChunkOf.size() == oldSamples.count()) {
         bool any = false;
-        for (size_t pg = 0; pg < pageState_.size() && pg < oldPageState.size(); ++pg)
-            if (oldPageState[pg] == 1 && !pageTouched[pg]) { pageState_[pg] = 1; any = true; }
+        for (size_t ci = 0; ci < chunks_.size(); ++ci) {
+            bool ok = true;
+            for (uint32_t s : chunks_[ci].samples) {
+                const int32_t o = from[s];
+                if (o < 0 || fresh[s] || oldChunkDn[static_cast<size_t>(oldChunkOf[static_cast<size_t>(o)])] != 1) { ok = false; break; }
+            }
+            if (ok) { chunkDn_[ci] = 1; any = true; }
+        }
         if (any) {
             indirectDn_.assign(n * 4, 0.f);
             for (size_t i = 0; i < n; ++i) {
-                if (from[i] < 0 || pageState_[samples_.texel[i] / perPage] != 1) continue;
+                if (chunkDn_[static_cast<size_t>(chunkOf_[i])] != 1) continue;
                 for (size_t c = 0; c < 4; ++c) indirectDn_[i * 4 + c] = oldDn[static_cast<size_t>(from[i]) * 4 + c];
             }
         }
@@ -591,12 +669,20 @@ std::vector<int> LiveBaker::takeDirtyChunks() {
         if (chunkDirty_[i]) { out.push_back(static_cast<int>(i)); chunkDirty_[i] = 0; }
     return out;
 }
-std::vector<int> LiveBaker::takeDueChunks() {
+std::vector<int> LiveBaker::takeDueChunks(const Vec3* camera, double nearRadius) {
     std::vector<int> out;
+    const bool denoise = denoiseWanted();
     for (size_t i = 0; i < chunkDirty_.size(); ++i) {
         if (!chunkDirty_[i]) continue;
         const int p = chunks_[i].passes, sent = sentPasses_[i];
-        if (sent >= 0 && p > sent && p < cfg_.maxPasses && p * 2 < sent * 3) continue;  // refinement only, and not enough of it yet
+        if (sent > 0 && p > sent) {  // refinement only since the last send (sent 0: nothing worth showing went out yet, the first pass does)
+            if (p >= cfg_.maxPasses) {
+                if (denoise && (chunkDn_[i] == 0 || chunkDn_[i] == 2)) continue;  // the denoised version follows: this one would be sent for nothing
+            } else {
+                if (p < sent * 3) continue;                                         // not enough of it yet
+                if (camera && nearRadius > 0 && (chunks_[i].bounds.center() - *camera).length() > nearRadius) continue;  // far away: first and final only
+            }
+        }
         out.push_back(static_cast<int>(i));
         chunkDirty_[i] = 0;
     }
@@ -710,21 +796,57 @@ void LiveBaker::setLights(const LightScene& next) {
 
 LiveBaker::StepResult LiveBaker::step(const Vec3* camera, size_t texelBudget) {
     StepResult r;
-    std::vector<int> order;
-    for (size_t i = 0; i < chunks_.size(); ++i) if (chunks_[i].passes < cfg_.maxPasses) order.push_back(static_cast<int>(i));
-    auto dist = [&](int i) { return camera ? (chunks_[static_cast<size_t>(i)].bounds.center() - *camera).length() : 0.0; };
-    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
-        const LiveChunk &ca = chunks_[static_cast<size_t>(a)], &cb = chunks_[static_cast<size_t>(b)];
-        const bool sa = ca.passes == 0, sb = cb.passes == 0;
-        if (sa != sb) return sa;                                  // stale chunks first
-        if (!sa && ca.passes != cb.passes) return ca.passes < cb.passes;  // then the least refined
-        return dist(a) < dist(b);                                  // nearest to the camera first
-    });
+    struct Item { double dist; int bucket; int pageRank; uint32_t index; };
+    // Every chunk first gets `warm` passes, least refined first, so the whole picture is usable early. From there on the pages are finished one after the
+    // other, nearest first: a page that reached its last pass is denoised while the GPU works on the next ones (all pages used to finish together at the end
+    // and the filter ran alone after the last step: a quarter of the whole bake).
+    const int warm = std::max(1, cfg_.maxPasses / 3);
+    std::vector<double> pageDist(static_cast<size_t>(std::max(0, samples_.pageCount)), 1e300);
+    std::vector<double> chunkDist(chunks_.size(), 0.0);
+    for (size_t i = 0; i < chunks_.size(); ++i) {
+        if (chunks_[i].passes >= cfg_.maxPasses) continue;
+        chunkDist[i] = camera ? (chunks_[i].bounds.center() - *camera).length() : 0.0;
+        double& pd = pageDist[static_cast<size_t>(chunks_[i].page)];
+        pd = std::min(pd, chunkDist[i]);
+    }
+    std::vector<int> pageRank(pageDist.size(), 0);
+    {
+        std::vector<int> byDist(pageDist.size());
+        for (size_t i = 0; i < byDist.size(); ++i) byDist[i] = static_cast<int>(i);
+        std::stable_sort(byDist.begin(), byDist.end(), [&](int a, int b) { return pageDist[static_cast<size_t>(a)] < pageDist[static_cast<size_t>(b)]; });
+        for (size_t r = 0; r < byDist.size(); ++r) pageRank[static_cast<size_t>(byDist[r])] = static_cast<int>(r);
+    }
+    std::vector<Item> order;
+    for (size_t i = 0; i < chunks_.size(); ++i)
+        if (chunks_[i].passes < cfg_.maxPasses)
+            order.push_back({chunkDist[i], std::min(chunks_[i].passes, warm), pageRank[static_cast<size_t>(chunks_[i].page)], static_cast<uint32_t>(i)});
     const auto t0 = std::chrono::steady_clock::now();
     if (!order.empty() && cfg_.gpuTexelsPerStep > 0 && prepareGpu()) texelBudget = std::max<size_t>(texelBudget, gpuBudget_);
+    // Stale chunks first, then the least refined, nearest to the camera first (ties: chunk order). A step takes only the first few thousand of
+    // a hundred thousand chunks, so only those are put in order (sorting them all took longer than the GPU on a big level).
+    const auto before = [warm](const Item& a, const Item& b) {
+        const bool sa = a.bucket == 0, sb = b.bucket == 0;
+        if (sa != sb) return sa;
+        if (!sa && a.bucket != b.bucket) return a.bucket < b.bucket;
+        if (!sa && a.bucket >= warm && a.pageRank != b.pageRank) return a.pageRank < b.pageRank;  // warm: page by page
+        if (a.dist != b.dist) return a.dist < b.dist;
+        return a.index < b.index;
+    };
+    const size_t avg = std::max<size_t>(1, samples_.count() / std::max<size_t>(1, chunks_.size()));
+    size_t sorted = 0;  // order[0, sorted) is in order and precedes the rest
+    auto sortMore = [&](size_t upTo) {
+        upTo = std::min(upTo, order.size());
+        if (upTo <= sorted) return;
+        if (upTo < order.size()) std::nth_element(order.begin() + static_cast<std::ptrdiff_t>(sorted), order.begin() + static_cast<std::ptrdiff_t>(upTo), order.end(), before);
+        std::sort(order.begin() + static_cast<std::ptrdiff_t>(sorted), order.begin() + static_cast<std::ptrdiff_t>(upTo), before);
+        sorted = upTo;
+    };
+    sortMore(texelBudget / avg * 3 / 2 + 64);
     std::vector<int> chosen;
-    for (int i : order) {
+    for (size_t k = 0; k < order.size(); ++k) {
         if (r.texels >= texelBudget && !r.chunks.empty()) break;
+        if (k >= sorted) sortMore(sorted * 2 + 64);  // chunks with few texels: the estimate was short
+        const int i = static_cast<int>(order[k].index);
         chosen.push_back(i);
         r.chunks.push_back(i);
         r.texels += chunks_[static_cast<size_t>(i)].samples.size();
@@ -733,7 +855,7 @@ LiveBaker::StepResult LiveBaker::step(const Vec3* camera, size_t texelBudget) {
         if (lights_.level.ao.active()) computeOcclusion(chosen);
         refineBatch(chosen);
         for (int i : chosen) {
-            pageState_[static_cast<size_t>(chunks_[static_cast<size_t>(i)].page)] = 0;  // refined: its denoised copy is stale
+            chunkDn_[static_cast<size_t>(i)] = 0;  // refined: its denoised copy is stale
             chunkDirty_[static_cast<size_t>(i)] = 1;
         }
         stats_.stepSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

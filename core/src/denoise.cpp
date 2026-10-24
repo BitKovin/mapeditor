@@ -259,7 +259,32 @@ Result filterRGB(std::vector<float>& rgb, int width, int height, Quality quality
     return r;
 }
 
+namespace {
+Result denoiseNonNegative(const TexelSamples& samples, std::vector<float>& values4, Quality quality, int fillRadius, const std::vector<int>* pages);
+}  // namespace
+
+// Dark lights (negative brightness, lights.h) make the indirect light signed, but the network only knows values in [0, inf) (filterRGB zeroes the rest).
+// So the positive and the negative part are filtered as two images and subtracted again; a level without dark lights has no negative value and pays nothing.
 Result denoiseSamples(const TexelSamples& samples, std::vector<float>& values4, Quality quality, int fillRadius, const std::vector<int>* pages) {
+    bool negative = false;
+    for (size_t i = 0; i < values4.size() && !negative; ++i) negative = (i & 3) != 3 && values4[i] < 0.f;
+    if (!negative) return denoiseNonNegative(samples, values4, quality, fillRadius, pages);
+    std::vector<float> pos = values4, neg = values4;
+    for (size_t i = 0; i < values4.size(); ++i) {
+        pos[i] = values4[i] > 0.f ? values4[i] : 0.f;
+        neg[i] = values4[i] < 0.f ? -values4[i] : 0.f;
+    }
+    Result a = denoiseNonNegative(samples, pos, quality, fillRadius, pages);
+    if (!a.ok) return a;
+    const Result b = denoiseNonNegative(samples, neg, quality, fillRadius, pages);
+    if (!b.ok) return b;
+    for (size_t i = 0; i < values4.size(); ++i) if ((i & 3) != 3) values4[i] = pos[i] - neg[i];
+    a.seconds += b.seconds;
+    return a;
+}
+
+namespace {
+Result denoiseNonNegative(const TexelSamples& samples, std::vector<float>& values4, Quality quality, int fillRadius, const std::vector<int>* pages) {
     Result total;
     if (values4.size() != samples.count() * 4) { total.error = "denoise: values do not match the samples"; return total; }
     const Info info = probe();
@@ -338,5 +363,6 @@ Result denoiseSamples(const TexelSamples& samples, std::vector<float>& values4, 
     total.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     return total;
 }
+}  // namespace
 
 }  // namespace core::denoise

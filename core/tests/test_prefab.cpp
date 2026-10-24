@@ -508,7 +508,7 @@ TEST_CASE("renaming an instance or entity changes the output names but never bre
     CHECK(findFlat(after, "kitchen|button")->entity.keyvalues.at("target") == "kitchen|gate");
 }
 
-TEST_CASE("flatten problems: unresolved ref, deleted target, unnamed target, duplicate names") {
+TEST_CASE("flatten problems: unresolved ref, deleted target, unnamed target; shared names are fine") {
     FakeFs fs;
     Entity btn = named("btn", "button");
     btn.refs["target"] = "nope";
@@ -530,8 +530,50 @@ TEST_CASE("flatten problems: unresolved ref, deleted target, unnamed target, dup
         return std::any_of(res.problems.begin(), res.problems.end(), [&](const std::string& p) { return p.find(s) != std::string::npos; });
     };
     CHECK(has("does not resolve"));
-    CHECK(has("duplicate resolved name 'room|same'"));
+    CHECK_FALSE(has("duplicate"));  // several entities may share a name: one reference then triggers them all
     CHECK(has("has no 'targetname'"));
+}
+
+TEST_CASE("flatten refs: one key may target several entities, which share one name") {
+    FakeFs fs;
+    Entity btn = named("btn", "button");
+    btn.refs["target"] = RefTargets(std::vector<std::string>{"d1", "d2", "d3", "gone"});
+    Entity d1 = named("d1", "door"), d2 = named("d2", "door"), d3 = named("d3", "");  // d3 has no name yet: it joins "door"
+    fs.docs["room.json"] = docWith({btn, d1, d2, d3});
+    auto res = flattenForCompile(docWith({}, {instOf("r", "room.json", {0, 0, 0}, "room")}), fs.loader());
+    CHECK(findFlat(res, "room|button")->entity.keyvalues.at("target") == "room|door");
+    int doors = 0;
+    for (const auto& e : res.entities) if (e.resolvedName == "room|door") ++doors;
+    CHECK(doors == 3);
+    auto has = [&](const std::string& s) {
+        return std::any_of(res.problems.begin(), res.problems.end(), [&](const std::string& p) { return p.find(s) != std::string::npos; });
+    };
+    CHECK(has("'gone' does not resolve"));      // the other targets still work
+    CHECK(has("takes that name"));
+    CHECK_FALSE(has("different names"));
+}
+
+TEST_CASE("flatten refs: targets with different names write the first name and say so") {
+    FakeFs fs;
+    Entity btn = named("btn", "button");
+    btn.refs["target"] = RefTargets(std::vector<std::string>{"a", "b"});
+    fs.docs["room.json"] = docWith({btn, named("a", "alpha"), named("b", "beta")});
+    auto res = flattenForCompile(docWith({}, {instOf("r", "room.json", {0, 0, 0}, "room")}), fs.loader());
+    CHECK(findFlat(res, "room|button")->entity.keyvalues.at("target") == "room|alpha");
+    CHECK(std::any_of(res.problems.begin(), res.problems.end(), [](const std::string& p) { return p.find("different names") != std::string::npos; }));
+}
+
+TEST_CASE("flatten refs: an override replaces all targets of a key") {
+    FakeFs fs;
+    Entity btn = named("btn", "button");
+    btn.refs["target"] = RefTargets(std::vector<std::string>{"a", "b"});
+    fs.docs["room.json"] = docWith({btn, named("a", "alpha"), named("b", "alpha"), named("c", "gamma")});
+    PrefabInstance pi = instOf("r", "room.json", {0, 0, 0}, "room");
+    auto before = flattenForCompile(docWith({}, {pi}), fs.loader());
+    CHECK(findFlat(before, "room|button")->entity.keyvalues.at("target") == "room|alpha");
+    pi.overrides["btn"].refs["target"] = "r/c";  // relative to the instance's parent scope: instance id, then entity id
+    auto after = flattenForCompile(docWith({}, {pi}), fs.loader());
+    CHECK(findFlat(after, "room|button")->entity.keyvalues.at("target") == "room|gamma");
 }
 
 TEST_CASE("flatten still detects cycles and excess depth; rootPath seeds the cycle check") {

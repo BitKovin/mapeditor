@@ -638,3 +638,34 @@ TEST_CASE("lightvol fill: in-wall probes take their neighbours' light ring by ri
     fillInvalidProbes(none);
     for (const Probe& p : none.probes) CHECK(!p.valid);
 }
+
+TEST_CASE("lightvol bake: a dark light fits the finished (clamped) light - no negative probe, the mean light of the sphere is kept") {
+    // ambient 0.2 everywhere, a dark sun of 5: the light is 0 on the sun side (n . l > 0.04) and 0.2 on the other
+    Room room({ent("w", "worldspawn", {Brush::makeBox("floor", {-3, -1, -3}, {3, 0, 3})}), directional({90, 0, 0}, -5)});
+    room.lights.ambient = {0.2, 0.2, 0.2};
+    LightvolSettings cfg;
+    cfg.gridSize = 2;
+    cfg.useGpu = false;
+    cfg.bounces = false;
+    LightvolGrid g = buildLightvolGrid(room.surfaces, room.solids.get(), cfg);
+    std::vector<char> solid = solidProbes(g, room.solids.get()), baked;
+    bakeProbesCpu(g, solid, baked, 0, g.count(), room.source(), cfg);
+    const Light& L = room.lights.lights.at(0);
+    const Vec3 l = Vec3{-L.forward.x, -L.forward.y, -L.forward.z}.normalized();
+    double expectedMean = 0;
+    const std::vector<Vec3> normals = sphereNormals(cfg.normals);
+    for (const Vec3& n : normals) expectedMean += std::max(0.0, 0.2 - 5.0 * std::max(0.0, n.dot(l)));
+    expectedMean /= static_cast<double>(normals.size());
+    size_t checked = 0;
+    for (size_t i = 0; i < g.count(); ++i) {
+        if (solid[i]) continue;
+        const Probe& p = g.probes[i];
+        REQUIRE(p.valid);
+        for (double c : {p.ambient.x, p.ambient.y, p.ambient.z, p.directed.x, p.directed.y, p.directed.z}) { CHECK(std::isfinite(c)); CHECK(c >= 0.0); }
+        // ambient + directed / 4 = the mean of V(n) over the sphere (every probe keeps its mean light), and the dark side is darker than the lit one
+        CHECK(p.ambient.x + p.directed.x / 4 == doctest::Approx(expectedMean).epsilon(0.02));
+        ++checked;
+    }
+    CHECK(checked > 5);
+    CHECK(expectedMean < 0.15);  // roughly half the sphere is black: the dark light was not ignored
+}

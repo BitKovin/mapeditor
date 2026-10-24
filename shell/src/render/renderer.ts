@@ -270,7 +270,25 @@ precision mediump float; uniform sampler2D uTex; in vec2 vUv; out vec4 o;
 void main() { o = texture(uTex, vUv); }`
 
 interface Group { texture: string; first: number; count: number }
-interface GpuBrush { vao: WebGLVertexArrayObject; buf: WebGLBuffer; count: number; groups: Group[]; evao: WebGLVertexArrayObject; ebuf: WebGLBuffer; ecount: number; /** texture environment revision / signature the UVs were built for */ rev?: number; sig?: string }
+interface GpuBrush { vao: WebGLVertexArrayObject; buf: WebGLBuffer; count: number; groups: Group[]; evao: WebGLVertexArrayObject; ebuf: WebGLBuffer; ecount: number; /** world box of the vertices: min xyz, max xyz (the draw skips what is outside the view) */ box: [number, number, number, number, number, number]; /** texture environment revision / signature the UVs were built for */ rev?: number; sig?: string }
+
+/** The six planes (a b c d, normal pointing in) of the view frustum of a column-major view-projection matrix. */
+export function frustumPlanes(m: ArrayLike<number>): Float32Array {
+  const out = new Float32Array(24)
+  const row = (i: number, j: number) => m[j * 4 + i]
+  const set = (k: number, sign: number, r: number) => { for (let j = 0; j < 4; j++) out[k * 4 + j] = row(3, j) + sign * row(r, j) }
+  set(0, 1, 0); set(1, -1, 0); set(2, 1, 1); set(3, -1, 1); set(4, 1, 2); set(5, -1, 2)
+  return out
+}
+
+/** False when the box lies completely outside one of the planes. */
+export function boxInFrustum(planes: Float32Array, b: ArrayLike<number>): boolean {
+  for (let k = 0; k < 6; k++) {
+    const a = planes[k * 4], bb = planes[k * 4 + 1], c = planes[k * 4 + 2], d = planes[k * 4 + 3]
+    if (a * (a >= 0 ? b[3] : b[0]) + bb * (bb >= 0 ? b[4] : b[1]) + c * (c >= 0 ? b[5] : b[2]) + d < 0) return false
+  }
+  return true
+}
 
 /** Stable colour per texture path so different surfaces are distinguishable without loading images. */
 export function textureColor(texture: string | undefined): [number, number, number] {
@@ -479,7 +497,9 @@ export class Renderer {
       return { vao, buf }
     }
     const m = mkMesh(), e = mkEdges()
-    return { vao: m.vao, buf: m.buf, count: tri.length / 8, groups, evao: e.vao, ebuf: e.buf, ecount: edges.length / 3 }
+    const box: [number, number, number, number, number, number] = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]
+    for (let i = 0; i + 2 < tri.length; i += 8) for (let k = 0; k < 3; k++) { box[k] = Math.min(box[k], tri[i + k]); box[k + 3] = Math.max(box[k + 3], tri[i + k]) }
+    return { vao: m.vao, buf: m.buf, count: tri.length / 8, groups, evao: e.vao, ebuf: e.buf, ecount: edges.length / 3, box }
   }
 
   /** The GL texture for a path if it has finished loading; otherwise null (flat colour is used meanwhile). */
@@ -972,6 +992,17 @@ export class Renderer {
     const uTransp = gl.getUniformLocation(this.mesh, 'uTransp')
     gl.uniform3f(uTransp, 0, 0, 0)
     const entityLit: { g: GpuBrush; lights: NonNullable<ReturnType<LightvolStore['entity']>> }[] = []
+    // A big map has thousands of brushes: what is outside the view is not drawn, and a texture's colour, image and transparency are looked up once per
+    // frame, not once per brush (the draw calls and their state changes were most of the frame on a map with 14k of them)
+    const planes = frustumPlanes(vp)
+    const texStates = new Map<string, { r: number; g: number; b: number; tex: WebGLTexture | null; tp: [number, number, number] }>()
+    const texState = (path: string) => {
+      let t = texStates.get(path)
+      if (!t) { const [r, g, b] = textureColor(path); t = { r, g, b, tex: this.texture(path), tp: drawTransparency(this.textures.info(path)) }; texStates.set(path, t) }
+      return t
+    }
+    let boundTex: WebGLTexture | null | undefined, lastHas = -1, lastCol = '', lastTp = ''
+    const resetState = () => { boundTex = undefined; lastHas = -1; lastCol = ''; lastTp = '' }
     // sky faces (REQUIREMENTS §28 K10): never lit, not in the Core's lit mesh; drawn by direction after the other opaque faces
     const skyDraws: { vao: WebGLVertexArrayObject; grp: Group }[] = []
     for (const { entity, instance } of wire ? [] : frame.entities)
@@ -980,6 +1011,7 @@ export class Renderer {
         const g = carved ? this.uploadCarved(carved) : this.upload(b)
         if (b.op === 'subtract') { subtractive.push({ g }); continue }
         for (const grp of g.groups) if (isSkyTexture(grp.texture)) skyDraws.push({ vao: g.vao, grp })
+        if (!boxInFrustum(planes, g.box)) continue
         if (litMode) {
           // lightmapped entities come from the Core's lit mesh below; the others are lit from the light volume; without it (not baked yet)
           // Lit shows them unlit, Lighting-only leaves them out
@@ -991,9 +1023,7 @@ export class Renderer {
         gl.bindVertexArray(g.vao)
         for (const grp of g.groups) {
           if (isSkyTexture(grp.texture)) continue
-          const [r, gg, bl] = textureColor(grp.texture)
-          const tex = this.texture(grp.texture)
-          const tp = drawTransparency(this.textures.info(grp.texture))
+          const { r, g: gg, b: bl, tex, tp } = texState(grp.texture)
           const one = () => {
             if (tex) gl.bindTexture(gl.TEXTURE_2D, tex)
             gl.uniform1f(uHasTex, tex ? 1 : 0)
@@ -1002,10 +1032,19 @@ export class Renderer {
             gl.drawArrays(gl.TRIANGLES, grp.first, grp.count)
           }
           if (tp[0] === 2) { const vao = g.vao; translucent.push(() => { gl.useProgram(this.mesh); gl.activeTexture(gl.TEXTURE0); gl.bindVertexArray(vao); one() }); continue }
-          one()
+          // opaque: only what differs from the previous draw is set
+          if (tex && tex !== boundTex) { gl.bindTexture(gl.TEXTURE_2D, tex); boundTex = tex }
+          const has = tex ? 1 : 0
+          if (has !== lastHas) { gl.uniform1f(uHasTex, has); lastHas = has }
+          const col = `${r},${gg},${bl}`
+          if (col !== lastCol) { gl.uniform4f(uColor, r, gg, bl, 1); lastCol = col }
+          const tpKey = `${tp[0]},${tp[1]},${tp[2]}`
+          if (tpKey !== lastTp) { gl.uniform3f(uTransp, tp[0], tp[1], tp[2]); lastTp = tpKey }
+          gl.drawArrays(gl.TRIANGLES, grp.first, grp.count)
         }
-        gl.uniform3f(uTransp, 0, 0, 0)
       }
+    resetState()
+    gl.uniform3f(uTransp, 0, 0, 0)
     if (texturedLit && this.lmTex && this.litTexDraw && this.litTexVao) {
       gl.useProgram(this.litTexProg)
       gl.uniformMatrix4fv(gl.getUniformLocation(this.litTexProg, 'uViewProj'), false, vp)
