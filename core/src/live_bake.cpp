@@ -282,7 +282,7 @@ bool LiveBaker::finishDenoise(DenoiseJob& job, const denoise::Result& r, std::ve
             for (size_t c = 0; c < 3; ++c) indirectDn_[static_cast<size_t>(idx[j]) * 4 + c] = vals[j * 4 + c];
     }
     pageState_[page] = 1;
-    for (int id : job.ids) chunkDirty_[static_cast<size_t>(id)] = 1;  // shown with the denoised light now
+    for (int id : job.ids) { chunkDirty_[static_cast<size_t>(id)] = 1; sentPasses_[static_cast<size_t>(id)] = -1; }  // shown with the denoised light now
     if (outChunks) *outChunks = job.ids;
     return true;
 }
@@ -511,6 +511,7 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
     t1 = Clock::now();
     chunks_.clear();
     chunkDirty_.clear();
+    sentPasses_.clear();
     const int atlas = samples_.atlas;
     const int edge = std::max(1, cfg_.chunkTexels);
     const size_t tilesPerRow = static_cast<size_t>((atlas + edge - 1) / edge);
@@ -528,6 +529,7 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
             c.passes = cfg_.maxPasses;  // lowered below to the minimum over its samples
             chunks_.push_back(std::move(c));
             chunkDirty_.push_back(0);
+            sentPasses_.push_back(-1);
         }
         LiveChunk& c = chunks_[static_cast<size_t>(slot)];
         c.samples.push_back(static_cast<uint32_t>(i));
@@ -535,6 +537,8 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
         c.passes = inherited[i] < 0 ? 0 : std::min(c.passes, inherited[i]);
         if (fresh[i]) chunkDirty_[static_cast<size_t>(slot)] = 1;
     }
+    // what the client holds of a chunk that is not dirty is what it has now; the dirty ones are sent whatever they have
+    for (size_t ci = 0; ci < chunks_.size(); ++ci) sentPasses_[ci] = chunkDirty_[ci] ? -1 : chunks_[ci].passes;
     gt.chunks = since(t1);
 
     t1 = Clock::now();
@@ -587,7 +591,24 @@ std::vector<int> LiveBaker::takeDirtyChunks() {
         if (chunkDirty_[i]) { out.push_back(static_cast<int>(i)); chunkDirty_[i] = 0; }
     return out;
 }
-void LiveBaker::markAllChunksDirty() { std::fill(chunkDirty_.begin(), chunkDirty_.end(), 1); }
+std::vector<int> LiveBaker::takeDueChunks() {
+    std::vector<int> out;
+    for (size_t i = 0; i < chunkDirty_.size(); ++i) {
+        if (!chunkDirty_[i]) continue;
+        const int p = chunks_[i].passes, sent = sentPasses_[i];
+        if (sent >= 0 && p > sent && p < cfg_.maxPasses && p * 2 < sent * 3) continue;  // refinement only, and not enough of it yet
+        out.push_back(static_cast<int>(i));
+        chunkDirty_[i] = 0;
+    }
+    return out;
+}
+void LiveBaker::noteSent(const std::vector<int>& ids) {
+    for (int id : ids) sentPasses_[static_cast<size_t>(id)] = chunks_[static_cast<size_t>(id)].passes;
+}
+void LiveBaker::markAllChunksDirty() {
+    std::fill(chunkDirty_.begin(), chunkDirty_.end(), 1);
+    std::fill(sentPasses_.begin(), sentPasses_.end(), -1);
+}
 bool LiveBaker::hasDirtyChunks() const {
     for (char d : chunkDirty_) if (d) return true;
     return false;

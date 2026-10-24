@@ -162,6 +162,11 @@ public:
     // Chunks whose pixels changed since the last call (refined, denoised, or holding texels that are new / moved / still unsent from before a rebuild):
     // exactly the tiles a client has to be sent. Cleared by the call.
     std::vector<int> takeDirtyChunks();
+    // Like takeDirtyChunks(), but a chunk that only gained refinement passes since its last send waits until it gained half again (1, 2, 3, 5, 8, 12, ...
+    // and always the last pass): re-sending every chunk after every pass sent each tile ~maxPasses times for a picture that barely changes. A chunk
+    // left out stays dirty. noteSent() records what the client holds.
+    std::vector<int> takeDueChunks();
+    void noteSent(const std::vector<int>& ids);
     bool hasDirtyChunks() const;
     void markAllChunksDirty();   // e.g. the exposure changed
     // Rectangle (padding included, clipped to the atlas) of chunk `i` in its page: what to re-send after the chunk was refined.
@@ -252,6 +257,7 @@ private:
     bool denoiseWanted() const { return cfg_.denoiseIndirect && cfg_.bounces && !denoiseUnavailable_ && !chunks_.empty(); }
     TexelSampleCache texelCache_;                 // what every surface piece contributes, kept between edits
     std::vector<char> chunkDirty_;                // per chunk: its pixels changed since takeDirtyChunks()
+    std::vector<int> sentPasses_;                 // per chunk: passes it had when the client last got it, -1 = send it whatever its passes
     std::vector<int32_t> sampleAt_;               // sample index per atlas texel (pages * atlas * atlas), -1 = none
 
     // Refines the given chunks: one direct-light evaluation for all of them (GPU or CPU), then per chunk accumulation + bounce gather.

@@ -1,5 +1,6 @@
 #include "core/light_style_analysis.h"
 #include "core/lightmap_uv.h"
+#include "core/parallel.h"
 #include <algorithm>
 #include <cmath>
 #include <set>
@@ -104,7 +105,20 @@ StyleAnalysis analyseLightStyles(const std::vector<LightSurface>& surfaces, cons
         faces[probe.key()].push_back({s.verts, s.normal});
     }
     const int maxOthers = std::max(0, cfg.maxSlots - 1);  // the base style takes a slot
-    for (const auto& [key, pieces] : faces) {
+    // Every face is independent (the BVH is only read), so the faces run in parallel; the results are merged in key order afterwards.
+    struct FaceResult {
+        std::vector<int> ids;      // styles that reach the face (empty: none)
+        std::vector<int> dropped;  // styles that did not fit
+        std::string warning;
+    };
+    std::vector<const std::pair<const std::string, std::vector<FacePiece>>*> order;
+    for (const auto& kv : faces) order.push_back(&kv);
+    std::vector<FaceResult> results(order.size());
+    parallelFor(order.size(), 16, [&](size_t begin, size_t end) {
+    for (size_t fi = begin; fi < end; ++fi) {
+        const std::string& key = order[fi]->first;
+        const std::vector<FacePiece>& pieces = order[fi]->second;
+        FaceResult& res = results[fi];
         // sample points: proportional to the area of each piece, at least 3 per piece
         double total = 0;
         std::vector<double> area(pieces.size(), 0.0);
@@ -143,14 +157,25 @@ StyleAnalysis analyseLightStyles(const std::vector<LightSurface>& surfaces, cons
             std::vector<int> dropped(ids.begin() + maxOthers, ids.end());
             ids.resize(static_cast<size_t>(maxOthers));
             std::sort(dropped.begin(), dropped.end());
-            out.discarded[key] = dropped;
             std::string w = "light styles: face " + key + " is touched by " + std::to_string(ids.size() + dropped.size()) + " styles besides the base, only " +
                             std::to_string(maxOthers) + " fit; discarded (smallest influence):";
             for (int d : dropped) w += " " + std::to_string(d);
-            out.warnings.push_back(w);
+            res.warning = std::move(w);
+            res.dropped = std::move(dropped);
         }
         std::sort(ids.begin(), ids.end());
-        out.faceStyles[key] = ids;
+        res.ids = std::move(ids);
+    }
+    });
+    for (size_t fi = 0; fi < order.size(); ++fi) {
+        FaceResult& res = results[fi];
+        if (res.ids.empty() && res.dropped.empty()) continue;
+        const std::string& key = order[fi]->first;
+        if (!res.warning.empty()) {
+            out.discarded[key] = std::move(res.dropped);
+            out.warnings.push_back(std::move(res.warning));
+        }
+        out.faceStyles[key] = std::move(res.ids);
     }
     return out;
 }

@@ -324,6 +324,7 @@ void LightingService::allChunksOf(const LiveBaker& baker, std::vector<int>& ids)
 // Renders the chunks of one layer, keeps the ones whose pixels differ from what the clients hold and appends them as lightmap_tiles messages.
 size_t LightingService::tilesFor(int style, LiveBaker& baker, const std::vector<int>& chunks, std::vector<std::string>& out) {
     const auto t0 = Clock::now();
+    baker.noteSent(chunks);
     const int atlas = baker_.layout().settings.atlasSize;
     std::string msg;
     size_t sent = 0, inMsg = 0, bytes = 0;
@@ -400,7 +401,7 @@ size_t LightingService::flushDirty(std::vector<std::string>& out) {
         for (auto& [style, b] : bakers()) b->takeDirtyChunks();
         return 0;
     }
-    for (auto& [style, b] : bakers()) if (b->hasDirtyChunks()) sent += tilesFor(style, *b, b->takeDirtyChunks(), out);
+    for (auto& [style, b] : bakers()) if (b->hasDirtyChunks()) sent += tilesFor(style, *b, b->takeDueChunks(), out);
     return sent;
 }
 
@@ -513,7 +514,9 @@ bool LightingService::workLightvol(double budgetSeconds, Clock::time_point t0, c
         sendLightvol(volSendDue_, out);
         volSendDue_ = entityLightDue_ = false;
     }
-    if (!allConverged()) {  // the probes gather from the lightmaps' bounce sources: wait until they stopped moving
+    // The probes come last: the lightmaps (refined and denoised) are what the level is edited against, so they get the cores first. The probes gather
+    // from the lightmaps' bounce sources: wait until those stopped moving.
+    if (!allConverged() || anyDenoisePending() || denoiseInFlight_) {
         if (volRunning_) { probes_.reset(); volRunning_ = false; volStale_ = true; }
         return finish();
     }

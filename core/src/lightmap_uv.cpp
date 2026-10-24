@@ -128,18 +128,22 @@ struct Page {
         if (best < 0) return std::nullopt;
         const Rect r{freeRects[best].x, freeRects[best].y, w, h};
         std::vector<Rect> next;
+        std::vector<char> fresh;  // 1 = a piece cut from a rectangle the new one overlapped
         for (const Rect& f : freeRects) {
-            if (r.x >= f.x + f.w || r.x + r.w <= f.x || r.y >= f.y + f.h || r.y + r.h <= f.y) { next.push_back(f); continue; }
-            if (r.x > f.x) next.push_back({f.x, f.y, r.x - f.x, f.h});
-            if (r.x + r.w < f.x + f.w) next.push_back({r.x + r.w, f.y, f.x + f.w - (r.x + r.w), f.h});
-            if (r.y > f.y) next.push_back({f.x, f.y, f.w, r.y - f.y});
-            if (r.y + r.h < f.y + f.h) next.push_back({f.x, r.y + r.h, f.w, f.y + f.h - (r.y + r.h)});
+            if (r.x >= f.x + f.w || r.x + r.w <= f.x || r.y >= f.y + f.h || r.y + r.h <= f.y) { next.push_back(f); fresh.push_back(0); continue; }
+            auto add = [&](const Rect& piece) { next.push_back(piece); fresh.push_back(1); };
+            if (r.x > f.x) add({f.x, f.y, r.x - f.x, f.h});
+            if (r.x + r.w < f.x + f.w) add({r.x + r.w, f.y, f.x + f.w - (r.x + r.w), f.h});
+            if (r.y > f.y) add({f.x, f.y, f.w, r.y - f.y});
+            if (r.y + r.h < f.y + f.h) add({f.x, r.y + r.h, f.w, f.y + f.h - (r.y + r.h)});
         }
-        // prune rectangles contained in another one
+        // prune rectangles contained in another one. The rectangles kept from before are not contained in each other, and a piece lies inside
+        // the rectangle it was cut from, so only the new pieces can be contained: the others are kept without looking (this was quadratic in the
+        // free list for every chart placed, and took seconds on a level with tens of thousands of charts).
         std::vector<Rect> kept;
         for (size_t i = 0; i < next.size(); ++i) {
             bool contained = false;
-            for (size_t j = 0; j < next.size() && !contained; ++j) {
+            for (size_t j = 0; fresh[i] && j < next.size() && !contained; ++j) {
                 if (i == j) continue;
                 const Rect &a = next[i], &b = next[j];
                 if (a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h && (i > j || !(a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h))) contained = true;
@@ -181,9 +185,18 @@ struct Island {
 // ---- lookup ----------------------------------------------------------------------------------------------------------
 const LightmapFace* LightmapLayout::find(const std::string& instance, const std::string& entityId, const std::string& brushInstance,
                                          const std::string& brushId, uint32_t faceId, FaceSide side) const {
-    for (const auto& f : faces)
-        if (f.faceId == faceId && f.side == side && f.brushId == brushId && f.entityId == entityId && f.instance == instance && f.brushInstance == brushInstance) return &f;
-    return nullptr;
+    // `faces` is sorted by key() (the generator and layoutForStyle keep it so): a binary search instead of a scan of every face per fragment, which
+    // took seconds on a level with tens of thousands of faces
+    LightmapFace probe;
+    probe.instance = instance; probe.entityId = entityId; probe.brushInstance = brushInstance; probe.brushId = brushId; probe.faceId = faceId; probe.side = side;
+    const std::string key = probe.key();
+    size_t lo = 0, hi = faces.size();
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (faces[mid].key() < key) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo < faces.size() && faces[lo].key() == key ? &faces[lo] : nullptr;
 }
 
 const LightmapFace* LightmapLayout::findForFragment(const std::string& instance, const std::string& entityId,

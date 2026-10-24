@@ -515,6 +515,32 @@ TEST_CASE("live: dirty chunks are the ones whose pixels changed since the last t
     CHECK(dirty.size() < b.chunkCount() / 2);
 }
 
+TEST_CASE("live: takeDueChunks sends a chunk that only gained passes when it gained half again, and always the last pass") {
+    World w(corridor({pointLight("l", {0, 3, 0}, 10, 30)}));
+    LiveSettings cfg = smallChunks();
+    LiveBaker b(cfg);
+    b.setGeometry(w.layout, w.surfaces);
+    b.setLights(w.lights);
+    CHECK(b.takeDueChunks().size() == b.chunkCount());  // new texels: all due
+    const Vec3 cam{0, 1, 0};
+    size_t sends = 0;
+    int guard = 0;
+    while (!b.converged() && guard++ < 1000) {
+        b.step(&cam, 1000000);  // every chunk one pass per step
+        const auto due = b.takeDueChunks();
+        b.noteSent(due);
+        if (!due.empty()) ++sends;
+    }
+    REQUIRE(b.converged());
+    CHECK(sends < static_cast<size_t>(cfg.maxPasses));  // not one send per pass
+    CHECK(!b.takeDueChunks().empty() == b.hasDirtyChunks());
+    CHECK(b.takeDueChunks().empty());                    // the final pass of every chunk went out
+    CHECK(!b.hasDirtyChunks());
+    // a quality change on the shown values is sent whatever the passes are
+    b.markAllChunksDirty();
+    CHECK(b.takeDueChunks().size() == b.chunkCount());
+}
+
 #include "gpu_bake.h"
 
 TEST_CASE("live gpu: a session made after another one reuses its buffers and gives the same light") {
