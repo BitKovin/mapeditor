@@ -65,6 +65,30 @@ describe('lightvol sample preview', () => {
     expect(p.total).toBe(3)
   })
 
+  it('a grid with more probes than the cap shows the ones around the center at the grid spacing, every one of them', () => {
+    // 40 x 40 x 1 baked probes, 1 m apart, the cap draws 30: a ball of about 3 cells around the center
+    const n = 40 * 40, bytes = new Uint8Array(n * PROBE_BYTES)
+    for (let i = 0; i < n; i++) { bytes[i * PROBE_BYTES] = 128; bytes[i * PROBE_BYTES + 8] = 1 }
+    const s = new LightvolStore()
+    expect(s.applyGrid({ type: 'lightvol', rev: 1, origin: [0, 0, 0], cell: 1, dims: [40, 40, 1], probes: b64(Array.from(bytes)), layers: [] })).toBe(true)
+    const p = buildProbePreview(s, 1, 30, [30, 5, 0])
+    expect(p.shown).toBeGreaterThan(5)
+    expect(p.shown).toBeLessThanOrEqual(30)
+    expect(p.total).toBe(n)
+    // every drawn sphere is centred on a whole grid position within a few cells of the center (not spread over the grid)
+    const V = p.tris.length / PREVIEW_STRIDE / p.shown
+    for (let k = 0; k < p.shown; k++) {
+      let sx = 0, sy = 0
+      for (let v = 0; v < V; v++) { sx += p.tris[(k * V + v) * PREVIEW_STRIDE]; sy += p.tris[(k * V + v) * PREVIEW_STRIDE + 1] }
+      const cx = sx / V, cy = sy / V
+      expect(Math.abs(cx - Math.round(cx))).toBeLessThan(0.02)
+      expect(Math.hypot(cx - 30, cy - 5)).toBeLessThanOrEqual(3.01)
+    }
+    // a center elsewhere shows other probes
+    const q = buildProbePreview(s, 1, 30, [5, 30, 0])
+    expect(q.tris[0]).not.toBe(p.tris[0])
+  })
+
   it('an empty store gives an empty preview', () => {
     const p = buildProbePreview(new LightvolStore())
     expect(p.shown).toBe(0)

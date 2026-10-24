@@ -8,12 +8,12 @@ export interface ProbePreview {
   tris: Float32Array
   /** The same layout for every line end (normal = 0: lines are not shaded). */
   lines: Float32Array
-  /** Probes drawn and probes that are baked at all (the preview thins out above `maxProbes`). */
+  /** Probes drawn and probes that are baked at all (the preview draws at most `maxProbes`). */
   shown: number
   total: number
 }
 
-export const PROBE_PREVIEW_MAX = 6000
+export const PROBE_PREVIEW_MAX = 8000
 /** Floats per vertex of the buffers above. */
 export const PREVIEW_STRIDE = 9
 
@@ -47,22 +47,44 @@ function icosphere(level: number): [number, number, number][][] {
 }
 const SPHERE = icosphere(SPHERE_LEVEL)
 
-export function buildProbePreview(store: LightvolStore, exposure = 1, maxProbes = PROBE_PREVIEW_MAX): ProbePreview {
-  const [nx, ny] = store.dims
+/**
+ * The probes to draw. Up to `maxProbes` of them are drawn: a grid with more baked probes than that shows the ones around `center` (every one of them, at the
+ * grid's own spacing), or, without a center, an even thinning of the whole grid.
+ */
+export function buildProbePreview(store: LightvolStore, exposure = 1, maxProbes = PROBE_PREVIEW_MAX, center?: readonly [number, number, number]): ProbePreview {
+  const [nx, ny, nz] = store.dims
   const n = store.probeCount
-  const valid: number[] = []
-  for (let i = 0; i < n; i++) if (store.probes[i * 10 + 9] > 0) valid.push(i)
-  const stride = Math.max(1, Math.ceil(valid.length / maxProbes))
   const picked: number[] = []
-  for (let k = 0; k < valid.length; k += stride) picked.push(valid[k])
+  let total = 0
+  if (center && n > maxProbes) {
+    // a ball of cells around the center that holds about maxProbes probes (every cell has one); the cells of the box around it are tested one by one
+    const R = Math.max(1, Math.ceil(Math.cbrt((3 * maxProbes) / (4 * Math.PI))))
+    const cx = Math.round((center[0] - store.origin[0]) / store.cell), cy = Math.round((center[1] - store.origin[1]) / store.cell), cz = Math.round((center[2] - store.origin[2]) / store.cell)
+    for (let z = Math.max(0, cz - R); z <= Math.min(nz - 1, cz + R); z++)
+      for (let y = Math.max(0, cy - R); y <= Math.min(ny - 1, cy + R); y++)
+        for (let x = Math.max(0, cx - R); x <= Math.min(nx - 1, cx + R); x++) {
+          const dx = x - cx, dy = y - cy, dz = z - cz
+          if (dx * dx + dy * dy + dz * dz > R * R) continue
+          const i = (z * ny + y) * nx + x
+          if (store.valid(i) && picked.length < maxProbes) picked.push(i)
+        }
+    total = n
+  } else {
+    const valid: number[] = []
+    for (let i = 0; i < n; i++) if (store.valid(i)) valid.push(i)
+    const stride = Math.max(1, Math.ceil(valid.length / maxProbes))
+    for (let k = 0; k < valid.length; k += stride) picked.push(valid[k])
+    total = valid.length
+  }
   const r = store.cell * 0.12
   const tris = new Float32Array(picked.length * SPHERE.length * 3 * PREVIEW_STRIDE)
   const lines = new Float32Array(picked.length * 2 * PREVIEW_STRIDE)
   let t = 0, l = 0
+  const probeBuf = new Float32Array(10)
   for (const i of picked) {
     const x = i % nx, y = Math.floor(i / nx) % ny, z = Math.floor(i / (nx * ny))
     const px = store.origin[0] + x * store.cell, py = store.origin[1] + y * store.cell, pz = store.origin[2] + z * store.cell
-    const o = i * 10, P = store.probes
+    const P = store.probe(i, 0, probeBuf), o = 0
     const amb = [P[o], P[o + 1], P[o + 2]], dir = [P[o + 3], P[o + 4], P[o + 5]], d = [P[o + 6], P[o + 7], P[o + 8]]
     // smooth shading: each vertex shows the light a surface facing along its normal receives (ambient + directed * max(0, n . dir))
     for (const tri of SPHERE) for (const n of tri) {
@@ -82,5 +104,5 @@ export function buildProbePreview(store: LightvolStore, exposure = 1, maxProbes 
       l += 2 * PREVIEW_STRIDE
     }
   }
-  return { tris, lines: lines.subarray(0, l), shown: picked.length, total: valid.length }
+  return { tris, lines: lines.subarray(0, l), shown: picked.length, total }
 }

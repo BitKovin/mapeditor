@@ -18,7 +18,7 @@ import { LightmapStore, LIT_VERTEX_FLOATS, packRect } from './lightmapStore'
 import type { LightvolStore } from './lightvolStore'
 import { styleValue } from './lightStyles'
 import { entityLightKey } from './lightvolStore'
-import { buildProbePreview, PREVIEW_STRIDE } from './lightvolPreview'
+import { buildProbePreview, PREVIEW_STRIDE, PROBE_PREVIEW_MAX } from './lightvolPreview'
 import { DENSITY_HIGH, DENSITY_LOW, DENSITY_STRIDE, densityOf } from './lightmapDensity'
 import type { ProbePreview } from './lightvolPreview'
 import type { LitDraw } from './litTextured'
@@ -312,7 +312,7 @@ export class Renderer {
   private probeVao: WebGLVertexArrayObject
   private probeBuf: WebGLBuffer
   private probeLineBuf: WebGLBuffer
-  private probeCache: { serial: number; exposure: number; preview: ProbePreview } | null = null
+  private probeCache: { serial: number; exposure: number; center?: [number, number, number]; preview: ProbePreview } | null = null
   private cache = new WeakMap<Brush, GpuBrush>()
   private carvedCache = new WeakMap<CarvedMesh, GpuBrush>()
   private dyn: WebGLBuffer
@@ -654,8 +654,13 @@ export class Renderer {
     if (!store?.ready) return
     const gl = this.gl
     const exposure = frame.lighting?.exposure ?? 1
-    if (!this.probeCache || this.probeCache.serial !== store.serial || this.probeCache.exposure !== exposure) {
-      this.probeCache = { serial: store.serial, exposure, preview: buildProbePreview(store, exposure) }
+    // a grid with more probes than the preview draws shows the ones around the view's target, rebuilt when the target has moved a few cells away
+    const local = store.probeCount > PROBE_PREVIEW_MAX
+    const target = frame.camera.target
+    const moved = local && this.probeCache?.center ? Math.hypot(target[0] - this.probeCache.center[0], target[1] - this.probeCache.center[1], target[2] - this.probeCache.center[2]) > store.cell * 5 : false
+    if (!this.probeCache || this.probeCache.serial !== store.serial || this.probeCache.exposure !== exposure || (local && (!this.probeCache.center || moved))) {
+      const center = local ? ([target[0], target[1], target[2]] as [number, number, number]) : undefined
+      this.probeCache = { serial: store.serial, exposure, center, preview: buildProbePreview(store, exposure, PROBE_PREVIEW_MAX, center) }
       gl.bindBuffer(gl.ARRAY_BUFFER, this.probeBuf); gl.bufferData(gl.ARRAY_BUFFER, this.probeCache.preview.tris, gl.STATIC_DRAW)
       gl.bindBuffer(gl.ARRAY_BUFFER, this.probeLineBuf); gl.bufferData(gl.ARRAY_BUFFER, this.probeCache.preview.lines, gl.STATIC_DRAW)
     }

@@ -514,12 +514,14 @@ std::string LightingService::lightvolGridMessage() const {
     const auto base = vols_.find(0);
     if (base == vols_.end() || base->second.count() == 0) return {};
     const LightvolGrid& g = base->second;
-    // The Shell draws the grid as an overlay and decodes every probe (40 bytes each): a grid of millions of probes goes out with every s-th probe along
-    // each axis. The light of the entities is sampled from the full grid here, and the export carries all of it.
-    constexpr size_t kPreviewProbes = size_t(1) << 20;
+    // The Shell keeps every probe (9 bytes) and draws the ones around the view: the whole grid goes out. A message carries at most about this many probes
+    // over all style layers (base64 of 24M probes is 290 MB); a bigger grid goes out with every s-th probe along each axis. The light of the entities is
+    // sampled from the full grid here, and the export carries all of it.
+    constexpr size_t kMessageProbes = size_t(24) << 20;
+    const size_t layerCount = vols_.size();
     int stride = 1;
     auto strided = [&](int n) { return static_cast<size_t>((n + stride - 1) / stride); };
-    while (strided(g.nx) * strided(g.ny) * strided(g.nz) > kPreviewProbes) ++stride;
+    while (strided(g.nx) * strided(g.ny) * strided(g.nz) * layerCount > kMessageProbes) ++stride;
     auto pack = [&](const LightvolGrid& src) {
         if (stride == 1) return base64Encode(src.packed());
         LightvolGrid sub;

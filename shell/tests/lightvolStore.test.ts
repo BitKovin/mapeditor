@@ -17,12 +17,15 @@ describe('light volume store', () => {
     expect(s.applyGrid({ type: 'lightvol', rev: 4, origin: [1, 2, 3], cell: 0.5, dims: [2, 1, 1], probes: b64(bytes) })).toBe(true)
     expect(s.ready).toBe(true)
     expect(s.probeCount).toBe(2)
-    expect(s.probes[0]).toBeCloseTo(2)
-    expect(s.probes[1]).toBeCloseTo(fromByte(128))
-    expect(s.probes[5]).toBeCloseTo(2)
-    expect([s.probes[6], s.probes[7], s.probes[8]].map((v) => +v.toFixed(3))).toEqual([0, 1, 0])
-    expect(s.probes[9]).toBe(1)
-    expect(s.probes[19]).toBe(0)
+    const p0 = s.probe(0), p1 = s.probe(1)
+    expect(p0[0]).toBeCloseTo(2)
+    expect(p0[1]).toBeCloseTo(fromByte(128))
+    expect(p0[5]).toBeCloseTo(2)
+    expect([p0[6], p0[7], p0[8]].map((v) => +v.toFixed(3))).toEqual([0, 1, 0])
+    expect(p0[9]).toBe(1)
+    expect(p1[9]).toBe(0)
+    expect(s.valid(0)).toBe(true)
+    expect(s.valid(1)).toBe(false)
     expect(s.origin).toEqual([1, 2, 3])
   })
 
@@ -62,8 +65,9 @@ describe('protocol: lit mesh faces, lightvol, entity light', () => {
     const s = new LightvolStore()
     const one = (b: number[]) => b64(new Uint8Array(b))
     expect(s.applyGrid({ type: 'lightvol', rev: 1, origin: [0, 0, 0], cell: 1, dims: [1, 1, 1], probes: one([10, 0, 0, 0, 0, 0, 0, 0, 1]), layers: [{ s: 7, probes: one([255, 0, 0, 0, 0, 0, 0, 0, 1]) }] })).toBe(true)
-    expect(s.probes[0]).toBeCloseTo(fromByte(10))
-    expect(s.styleProbes.get(7)![0]).toBeCloseTo(2)
+    expect(s.probe(0)[0]).toBeCloseTo(fromByte(10))
+    expect(s.probe(0, 7)[0]).toBeCloseTo(2)
+    expect(s.probe(0, 99)[9]).toBe(0)  // no such layer
     expect(s.applyGrid({ type: 'lightvol', rev: 2, origin: [0, 0, 0], cell: 1, dims: [1, 1, 1], probes: one([0, 0, 0, 0, 0, 0, 0, 0, 1]), layers: [{ s: 7, probes: one([1, 2]) }] })).toBe(false) // wrong size
   })
 
