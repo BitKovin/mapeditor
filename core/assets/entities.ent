@@ -228,7 +228,7 @@ Generic placeholder for inserting models to map. Model triangles are baked to BS
     Point light: shines in every direction from its origin (Unreal's PointLight).
     -------- KEYS --------
     <color1 key="color" name="Colour" default="1 1 1">Light colour, "r g b", each 0..1.</color1>
-    <real key="brightness" name="Brightness" default="1" min="0" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units.</real>
+    <real key="brightness" name="Brightness" default="1" min="-1000" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units. Negative = a dark light: it takes light away from the other lights and the ambient (a texel never gets darker than black).</real>
     <real key="bounce" name="Bounce power" default="1" min="0" max="10" step="0.05">How strongly the light it makes bounces off surfaces (global illumination). 0 = direct light only.</real>
     <boolean key="cast_shadows" name="Cast shadows" default="1">Cast ray traced shadows (hard, or soft when the light has a source size).</boolean>
     <integer key="style" name="Light style" default="0" min="0" max="63" step="1">0 = always on. Other styles are their own lightmap layer, animated at 10 Hz by the style's pattern (1 flicker, 2 slow pulse, 3 candle, 4 fast strobe, 5 gentle pulse, 9 slow strobe, ... see the game profile); at most 8 styles reach one surface.</integer>
@@ -239,7 +239,7 @@ Generic placeholder for inserting models to map. Model triangles are baked to BS
     Spot light: a cone along the entity's direction arrow (Unreal's SpotLight). Place it, then rotate it (R) or edit the angles.
     -------- KEYS --------
     <color1 key="color" name="Colour" default="1 1 1">Light colour, "r g b", each 0..1.</color1>
-    <real key="brightness" name="Brightness" default="1" min="0" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units.</real>
+    <real key="brightness" name="Brightness" default="1" min="-1000" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units. Negative = a dark light: it takes light away from the other lights and the ambient (a texel never gets darker than black).</real>
     <real key="bounce" name="Bounce power" default="1" min="0" max="10" step="0.05">How strongly the light it makes bounces off surfaces (global illumination). 0 = direct light only.</real>
     <boolean key="cast_shadows" name="Cast shadows" default="1">Cast ray traced shadows (hard, or soft when the light has a source size).</boolean>
     <integer key="style" name="Light style" default="0" min="0" max="63" step="1">0 = always on. Other styles are their own lightmap layer, animated at 10 Hz by the style's pattern (1 flicker, 2 slow pulse, 3 candle, 4 fast strobe, 5 gentle pulse, 9 slow strobe, ... see the game profile); at most 8 styles reach one surface.</integer>
@@ -252,7 +252,7 @@ Generic placeholder for inserting models to map. Model triangles are baked to BS
     Directional light (the sun): parallel rays along the direction arrow, no position and no attenuation (Unreal's DirectionalLight).
     -------- KEYS --------
     <color1 key="color" name="Colour" default="1 1 1">Light colour, "r g b", each 0..1.</color1>
-    <real key="brightness" name="Brightness" default="1" min="0" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units.</real>
+    <real key="brightness" name="Brightness" default="1" min="-1000" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units. Negative = a dark light: it takes light away from the other lights and the ambient (a texel never gets darker than black).</real>
     <real key="bounce" name="Bounce power" default="1" min="0" max="10" step="0.05">How strongly the light it makes bounces off surfaces (global illumination). 0 = direct light only.</real>
     <boolean key="cast_shadows" name="Cast shadows" default="1">Cast ray traced shadows (hard, or soft when the light has a source size).</boolean>
     <integer key="style" name="Light style" default="0" min="0" max="63" step="1">0 = always on. Other styles are their own lightmap layer, animated at 10 Hz by the style's pattern (1 flicker, 2 slow pulse, 3 candle, 4 fast strobe, 5 gentle pulse, 9 slow strobe, ... see the game profile); at most 8 styles reach one surface.</integer>
@@ -262,7 +262,7 @@ Generic placeholder for inserting models to map. Model triangles are baked to BS
     Rectangular area light: emits from one side of a width x height rectangle, towards the direction arrow (Unreal's RectLight).
     -------- KEYS --------
     <color1 key="color" name="Colour" default="1 1 1">Light colour, "r g b", each 0..1.</color1>
-    <real key="brightness" name="Brightness" default="1" min="0" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units.</real>
+    <real key="brightness" name="Brightness" default="1" min="-1000" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units. Negative = a dark light: it takes light away from the other lights and the ambient (a texel never gets darker than black).</real>
     <real key="bounce" name="Bounce power" default="1" min="0" max="10" step="0.05">How strongly the light it makes bounces off surfaces (global illumination). 0 = direct light only.</real>
     <boolean key="cast_shadows" name="Cast shadows" default="1">Cast ray traced shadows (hard, or soft when the light has a source size).</boolean>
     <integer key="style" name="Light style" default="0" min="0" max="63" step="1">0 = always on. Other styles are their own lightmap layer, animated at 10 Hz by the style's pattern (1 flicker, 2 slow pulse, 3 candle, 4 fast strobe, 5 gentle pulse, 9 slow strobe, ... see the game profile); at most 8 styles reach one surface.</integer>
@@ -274,7 +274,7 @@ Generic placeholder for inserting models to map. Model triangles are baked to BS
     Sky light: uniform light from the whole upper hemisphere, occluded by geometry (ambient occlusion from the sky; Unreal's SkyLight).
     -------- KEYS --------
     <color1 key="color" name="Colour" default="1 1 1">Light colour, "r g b", each 0..1.</color1>
-    <real key="brightness" name="Brightness" default="1" min="0" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units.</real>
+    <real key="brightness" name="Brightness" default="1" min="-1000" max="1000" step="0.1">How much light a white surface facing the light receives (inside the attenuation radius, for point / spot at 1 m). There are no physical units. Negative = a dark light: it takes light away from the other lights and the ambient (a texel never gets darker than black).</real>
     <real key="bounce" name="Bounce power" default="1" min="0" max="10" step="0.05">How strongly the light it makes bounces off surfaces (global illumination). 0 = direct light only.</real>
     <boolean key="cast_shadows" name="Cast shadows" default="1">Cast ray traced shadows (hard, or soft when the light has a source size).</boolean>
     <integer key="style" name="Light style" default="0" min="0" max="63" step="1">0 = always on. Other styles are their own lightmap layer, animated at 10 Hz by the style's pattern (1 flicker, 2 slow pulse, 3 candle, 4 fast strobe, 5 gentle pulse, 9 slow strobe, ... see the game profile); at most 8 styles reach one surface.</integer>

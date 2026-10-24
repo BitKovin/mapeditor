@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultLightAngles, isModernLight, lightFrame, lightGizmo, lightParams } from '../src/model/lights'
+import { defaultLightAngles, isDarkLight, isModernLight, lightFrame, lightGizmo, lightGizmoColor, lightParams } from '../src/model/lights'
 import { clampValue, colorToHex, currentValue, formatColor, hexToColor, isChecked, isDefault, parseColor1, propertyKeys } from '../src/ui/properties'
 import type { EntityClassDef, EntityKeyDef } from '../src/net/protocol'
 import type { Entity } from '../src/model/document'
@@ -36,12 +36,21 @@ describe('light parameters (the baker\'s keys, clamps and defaults)', () => {
     expect(p.outerAngle).toBe(40)
     expect(p.innerAngle).toBe(20)          // inner >= outer: half of outer
     expect(p.radius).toBeCloseTo(1e-3)
-    expect(p.brightness).toBe(0)
+    expect(p.brightness).toBe(-1)          // not clamped: a negative brightness is a dark light
     expect(p.style).toBe(63)
     expect(p.castShadows).toBe(false)
     expect(p.width).toBeCloseTo(1e-3)
     expect(p.sourceSize).toBe(0)
     expect(lightParams(ent('light_spot', { outer_angle: '200' }))!.outerAngle).toBe(89.9)
+  })
+  it('a negative brightness is a dark light and keeps its sign (the baker subtracts it)', () => {
+    expect(lightParams(ent('light_point', { brightness: '-8' }))!.brightness).toBe(-8)
+    expect(isDarkLight(lightParams(ent('light_point', { brightness: '-0.5' }))!)).toBe(true)
+    expect(isDarkLight(lightParams(ent('light_point', { brightness: '0' }))!)).toBe(false)
+    expect(isDarkLight(lightParams(ent('light_point'))!)).toBe(false)
+    const def = classDef('light_point', [key('brightness', 'real', '1', { min: -1000, max: 1000 })])
+    expect(clampValue(def.keys[0], -250)).toBe(-250)   // the Details editor accepts a negative value
+    expect(clampValue(def.keys[0], -5000)).toBe(-1000)
   })
   it('a bad colour falls back to white', () => { expect(lightParams(ent('light_point', { color: 'red' }))!.color).toEqual([1, 1, 1]) })
   it('the frame is the baker\'s: forward = R*(0,0,1); pitch 90 points straight down (the default of spot / sun / rect lights)', () => {
@@ -124,6 +133,23 @@ describe('light preview gizmos', () => {
     const icon = gizmo(at('light_sky'), false), sel = gizmo(at('light_sky'), true)
     expect(Math.max(...segments(icon).flatMap(([a, b]) => [a[1], b[1]]))).toBeLessThan(2 + 1)
     expect(Math.max(...segments(sel).flatMap(([a, b]) => [a[1], b[1]]))).toBeCloseTo(2 + 2, 5)
+  })
+  it('a dark light is marked: a cross over every kind of icon and a violet-leaning colour, a normal light has neither', () => {
+    for (const cls of ['light_point', 'light_spot', 'light_directional', 'light_rect', 'light_sky']) {
+      for (const sel of [false, true]) {
+        const normal = gizmo(at(cls, { brightness: '3' }), sel), dark = gizmo(at(cls, { brightness: '-3' }), sel)
+        expect(dark.length).toBe(normal.length + 4 * 6)  // 4 diagonals
+        expect(dark.slice(0, normal.length)).toEqual(normal)
+        const cross = segments(dark.slice(normal.length))
+        for (const [a, b] of cross) expect([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2].every((x, i) => Math.abs(x - o[i]) < 1e-9)).toBe(true)  // through the light
+      }
+    }
+    const white = lightParams(ent('light_point', { color: '1 1 1' }))!, darkWhite = lightParams(ent('light_point', { color: '1 1 1', brightness: '-1' }))!
+    const c = lightGizmoColor(white), d = lightGizmoColor(darkWhite)
+    expect(c).toEqual([1, 1, 1])
+    expect(d[2]).toBeGreaterThan(d[1] + 0.2)         // violet: blue clearly above green
+    expect(Math.min(...d)).toBeGreaterThan(0.25)     // still readable on the dark background
+    expect(lightGizmoColor(lightParams(ent('light_point', { color: '0 0 0', brightness: '-1' }))!).every((v) => v > 0.25)).toBe(true)
   })
   it('follows the entity: moving it moves the gizmo, nothing else changes', () => {
     const a = gizmo(at('light_spot', { radius: '4' }), true)

@@ -58,7 +58,7 @@ export type Inbound =
   | { type: 'lightmap_tiles'; rev: number; atlas: number; /** light style layer, 0 = base */ style?: number; tiles: LightmapTile[] }
   | { type: 'lighting_status'; enabled: boolean; rev: number; chunks: number; stale: number; minPasses: number; maxPasses: number; converged: boolean; texels: number; pages: number; /** the light style layers that exist (0 = base first) */ styles?: number[]; styleWarnings?: string[]; /** display multiplier (Level settings exposure); absent = 1 */ exposure?: number; /** display offset added after the exposure (Level settings brightness); absent = 0 */ brightness?: number }
   | { type: 'derived_geometry'; rev: number; carved: DerivedEntry[]; skipped: { entityId: string; instance?: string; brushId: string }[]; decals: DecalEntry[] }
-  | { type: 'response'; requestId: RequestId; ok: boolean; path?: string; rev?: number; error?: string; ext?: string; data?: string; props?: unknown; textures?: string[]; texgroups?: string[]; group?: unknown
+  | { type: 'response'; requestId: RequestId; ok: boolean; path?: string; rev?: number; error?: string; /** import_map: the .map.json is already there */ exists?: boolean; /** import_map: what was not converted exactly, and the counts */ warnings?: string[]; stats?: { entities: number; brushes: number; patches: number; lights: number; faces: number; skipped: number; droppedEntities: number }; ext?: string; data?: string; props?: unknown; textures?: string[]; texgroups?: string[]; group?: unknown
       // read_texture of a skybox (REQUIREMENTS §28): its faces (lf rt up dn ft bk) or its panorama, as the engine loads them from env/
       sky?: { panorama: boolean; images: { ext: string; data: string }[] }
       // list_directory
@@ -184,6 +184,7 @@ export function parseInbound(text: string): Inbound | null {
 export const msg = {
   documentUpdate: (doc: MapDocument) => JSON.stringify({ type: 'document_update', doc }),
   openDocument: (requestId: number, path: string) => JSON.stringify({ type: 'open_document', requestId, path }),
+  importMap: (requestId: number, path: string, overwrite = false) => JSON.stringify({ type: 'import_map', requestId, path, ...(overwrite ? { overwrite: true } : {}) }),
   listTextures: (requestId: number) => JSON.stringify({ type: 'list_textures', requestId }),
   readTexture: (requestId: number, path: string) => JSON.stringify({ type: 'read_texture', requestId, path }),
   writeTextureProps: (requestId: number, path: string, props: unknown) => JSON.stringify({ type: 'write_texture_props', requestId, path, props }),

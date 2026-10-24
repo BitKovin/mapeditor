@@ -12,6 +12,8 @@ namespace core::proto {
 // Shell -> Core
 inline constexpr const char* kDocumentUpdate = "document_update";  // { doc }
 inline constexpr const char* kOpenDocument = "open_document";      // { requestId, path }
+inline constexpr const char* kImportMap = "import_map";            // { requestId, path (assets relative .map), overwrite?: bool } -> converts the Quake map to <name>.map.json beside it and opens that
+                                                                    //   (map_import.h); response { path, warnings: [text], stats } like open_document, or { ok: false, exists: true, path } when the .map.json is there and overwrite is not set
 inline constexpr const char* kSaveDocument = "save_document";      // { requestId, path? }
 inline constexpr const char* kListTextures = "list_textures";      // { requestId }            -> response { textures: [path] }
 inline constexpr const char* kReadTexture = "read_texture";        // { requestId, path }      -> response { ext, data: base64, props?: <texture>.json contents }

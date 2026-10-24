@@ -2,7 +2,7 @@
 // and is replaced in the level by ONE instance of that file at the pivot, so nothing moves on screen.
 // Pure document functions; the file picking and writing is in app.ts.
 import {
-  Brush, Entity, MapDocument, PrefabInstance, Vec3, addInstance, classOf, findEntity, findInstance, newId, newInstanceName, removeBrush, removeEntity, removeInstance,
+  Brush, Entity, MapDocument, PrefabInstance, RefValue, Vec3, refPaths, refValueOf, addInstance, classOf, findEntity, findInstance, newId, newInstanceName, removeBrush, removeEntity, removeInstance,
 } from '../model/document'
 import { translateBrush } from '../model/geometry'
 import { selectionPivot } from '../model/transform'
@@ -43,7 +43,8 @@ export function extractPrefab(doc: MapDocument, sels: readonly Selection[]): Pre
   const ids = new Set(entities.map((e) => e.id))
   for (const e of entities) {
     if (!e.refs) continue
-    const refs = Object.fromEntries(Object.entries(e.refs).filter(([, t]) => ids.has(t)))
+    const refs: Record<string, RefValue> = {}
+    for (const [k, v] of Object.entries(e.refs)) { const kept = refValueOf(refPaths(v).filter((t) => ids.has(t))); if (kept !== undefined) refs[k] = kept }
     if (Object.keys(refs).length) e.refs = refs; else delete e.refs
   }
   const { entities: _e, prefabInstances: _p, ...rest } = doc

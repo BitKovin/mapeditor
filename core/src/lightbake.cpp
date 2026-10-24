@@ -612,7 +612,7 @@ std::vector<float> directCpu(const TexelSamples& s, const LightScene& scene, con
                     v = (L.color * L.brightness).mul(skyVisibility(L, static_cast<uint32_t>(k), seedId, o, n, sc));
                 } else {
                     v = evalLight(L, p, n);
-                    if (traced && (v.x > 0 || v.y > 0 || v.z > 0)) v = v.mul(visibility(L, static_cast<uint32_t>(k), seedId, o, sc));
+                    if (traced && (v.x != 0 || v.y != 0 || v.z != 0)) v = v.mul(visibility(L, static_cast<uint32_t>(k), seedId, o, sc));
                 }
                 sum = sum + v;
                 sumB = sumB + v * (L.bounce * bounceNearFactor(L, p));
@@ -902,6 +902,8 @@ LightmapPages bakeLightmaps(const LightmapLayout& layout, const std::vector<Ligh
             st.warnings.push_back("GI denoiser not applied (the indirect light stays noisy): " + d.error);
         }
     }
+    for (size_t i = 0; i + 2 < values.size(); i += 4)  // dark lights (negative brightness) can leave a texel below 0: a lightmap stores none
+        for (size_t c = 0; c < 3; ++c) values[i + c] = std::max(0.f, values[i + c]);
     LightmapPages pages = assemblePages(layout, samples, values);
     st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     return pages;

@@ -649,3 +649,47 @@ TEST_CASE("live: a denoise in three steps gives what denoiseNext gives, and it i
     while (!d.converged() && guard++ < 1000) d.step(&cam, 100000);
     CHECK_FALSE(d.finishDenoise(j2, r2));
 }
+
+TEST_CASE("live: dark lights - the shown light and the tiles are never below 0; a converged set equals a full bake") {
+    std::vector<Entity> es{ent("w", "worldspawn", {Brush::makeBox("floor", {-6, -1, -6}, {6, 0, 6}), Brush::makeBox("slab", {-1, 2, -1}, {1, 2.2, 1})}),
+                           pointLight("l", {0, 4, 0}, 10, 40), pointLight("d", {3, 1.5, 0}, -30, 5)};
+    World w(es, 3);
+    LiveSettings cfg = smallChunks();
+    cfg.maxPasses = 3;
+    LiveBaker b(cfg);
+    b.setGeometry(w.layout, w.surfaces);
+    b.setLights(w.lights);
+    while (!b.converged()) b.step(nullptr, 100000);
+    bool someNegativeRaw = false;
+    for (size_t i = 0; i < b.sampleCount(); ++i) {
+        const Vec3 raw = b.value(i), shown = b.shownValue(i);
+        if (raw.x < 0) someNegativeRaw = true;
+        CHECK(shown.x >= 0.0);
+        CHECK(shown.y >= 0.0);
+        CHECK(shown.z >= 0.0);
+        CHECK(shown.x == std::max(0.0, raw.x));
+    }
+    CHECK(someNegativeRaw);  // the dark light really overpowers the lamp near it
+    // the tiles sent to the Shell (RGBA16F): no sign bit in rgb, alpha 1 where there is a value
+    size_t zeroPixels = 0;
+    for (size_t ci = 0; ci < b.chunkCount(); ++ci) {
+        const std::vector<uint16_t> px = b.renderTile(b.chunkRect(static_cast<int>(ci)));
+        for (size_t p = 0; p + 3 < px.size(); p += 4) {
+            for (size_t c = 0; c < 3; ++c) CHECK((px[p + c] & 0x8000) == 0);
+            if (px[p + 3] != 0 && px[p] == 0 && px[p + 1] == 0 && px[p + 2] == 0) ++zeroPixels;
+        }
+    }
+    CHECK(zeroPixels > 0);
+    BakeOptions o;
+    o.forceCpu = true;
+    const LightmapPages full = bakeLightmaps(w.layout, w.surfaces, w.lights, o);
+    const LightmapPages live = b.snapshot();
+    REQUIRE(live.pageCount == full.pageCount);
+    double maxDiff = 0;
+    for (int p = 0; p < full.pageCount; ++p)
+        for (size_t i = 0; i < full.rgb[static_cast<size_t>(p)].size(); ++i) {
+            CHECK(live.rgb[static_cast<size_t>(p)][i] >= 0.f);
+            maxDiff = std::max(maxDiff, static_cast<double>(std::fabs(full.rgb[static_cast<size_t>(p)][i] - live.rgb[static_cast<size_t>(p)][i])));
+        }
+    CHECK(maxDiff < 1e-4);
+}

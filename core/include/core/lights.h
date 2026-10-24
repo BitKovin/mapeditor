@@ -14,7 +14,7 @@ namespace core {
 //
 //   classname:     light_point | light_spot | light_directional | light_rect | light_sky
 //   color          "r g b", 0..1                              (default 1 1 1)
-//   brightness     >= 0                                       (default 1)
+//   brightness     any sign; negative = a dark light, see below (default 1)
 //   radius         attenuation radius in metres               (default 10; point, spot, rect)
 //   bounce         bounce power, >= 0                         (default 1)
 //   cast_shadows   0 | 1                                      (default 1)
@@ -25,6 +25,9 @@ namespace core {
 // Direction: forward = R * (0,0,1), right = R * (1,0,0), up = R * (0,1,0), R = Ry(yaw) Rx(pitch) Rz(roll) from the entity's
 // `angles` (the Shell's direction arrow axis). A rect light emits towards `forward`.
 // worldspawn's `_ambient` ("r g b") is a constant added to every texel.
+// Dark lights (DESIGN §6.5): a light with a negative brightness subtracts its irradiance (and its bounce, scaled by `bounce`) from the other lights of the
+// same style layer and from the ambient, like a negative `light` in Quake 3. Everything is summed signed; only the finished texel is clamped at 0 (a
+// lightmap never stores light below 0).
 enum class LightType : int { Point = 0, Spot = 1, Directional = 2, Rect = 3, Sky = 4 };
 
 struct Light {

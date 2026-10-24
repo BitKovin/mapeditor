@@ -265,7 +265,7 @@ TEST_CASE("entities.ent: the modern light classes exist, are complete, and their
             const std::string key_s = key, def = *k->defaultValue;
             const double n = key_s == "color" ? 0 : std::stod(def);
             if (key_s == "color") { CHECK(def == "1 1 1"); CHECK(L.color.x == 1.0); CHECK(L.color.y == 1.0); CHECK(L.color.z == 1.0); }
-            else if (key_s == "brightness") CHECK(L.brightness == n);
+            else if (key_s == "brightness") { CHECK(L.brightness == n); REQUIRE(k->min); CHECK(*k->min < 0); }  // dark lights: the range goes below 0
             else if (key_s == "bounce") CHECK(L.bounce == n);
             else if (key_s == "cast_shadows") CHECK(L.castShadows == (n != 0));
             else if (key_s == "style") CHECK(L.style == static_cast<int>(n));

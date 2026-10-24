@@ -10,6 +10,17 @@ function level(): { doc: MapDocument; a: any; b: any } {
   return { doc, a: r1.sel, b: r2.sel }
 }
 
+describe('turn into prefab, references with several targets', () => {
+  it('keeps the targets inside the selection and drops the rest', () => {
+    const { doc } = level()
+    const d2 = { ...doc, entities: doc.entities.map((e) => (e.id === 'l1' ? { ...e, refs: { target: ['l2', 'l3', 'gone'] } } : e)).concat([{ id: 'l3', classname: 'light', origin: [1, 1, 1] }]) }
+    const ex = extractPrefab(d2, [{ entityId: 'l1' }, { entityId: 'l2' }, { entityId: 'l3' }])!
+    expect(ex.prefab.entities.find((e) => e.id === 'l1')!.refs).toEqual({ target: ['l2', 'l3'] })
+    const one = extractPrefab(d2, [{ entityId: 'l1' }, { entityId: 'l3' }])!
+    expect(one.prefab.entities.find((e) => e.id === 'l1')!.refs).toEqual({ target: 'l3' })
+  })
+})
+
 describe('turn into prefab', () => {
   it('centres the prefab on the selection pivot and keeps untouched brushes out', () => {
     const { doc, a, b } = level()

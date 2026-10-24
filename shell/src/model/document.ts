@@ -21,6 +21,20 @@ export interface Brush {
   faces: Face[]
   [k: string]: unknown
 }
+/** The target(s) of one reference key: a scope-relative path, or several paths of entities that share one name (every entity with a name is triggered together). */
+export type RefValue = string | string[]
+/** The paths of a reference value, in order. */
+export const refPaths = (v: RefValue | undefined): string[] => v === undefined ? [] : typeof v === 'string' ? [v] : v
+/** The stored form of a list of paths: undefined for none, the plain string for one (the usual file form), else the array. Duplicates are dropped. */
+export function refValueOf(paths: readonly string[]): RefValue | undefined {
+  const list = [...new Set(paths)]
+  return list.length === 0 ? undefined : list.length === 1 ? list[0] : list
+}
+export const sameRefValue = (a: RefValue | undefined, b: RefValue | undefined): boolean => {
+  const x = refPaths(a), y = refPaths(b)
+  return x.length === y.length && x.every((p, i) => p === y[i])
+}
+
 export interface Entity {
   id: string
   classname?: string
@@ -28,14 +42,14 @@ export interface Entity {
   origin?: Vec3
   angles?: Vec3
   /** Reference keys (target, killtarget...) -> scope-relative path "entityId" | "childInstanceId/entityId" (DESIGN 18.1). */
-  refs?: Record<string, string>
+  refs?: Record<string, RefValue>
   brushes?: Brush[]
   [k: string]: unknown
 }
 /** What an instance stores against ONE entity of its prefab file; only differences are stored (DESIGN 18.1a). */
 export interface EntityOverride {
   keyvalues?: Record<string, string>
-  refs?: Record<string, string>
+  refs?: Record<string, RefValue>
   origin?: Vec3
   angles?: Vec3
   scale?: Vec3

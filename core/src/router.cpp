@@ -1,5 +1,6 @@
 #include "core/router.h"
 #include "core/exporter.h"
+#include "core/map_import.h"
 #include "core/native_dialog.h"
 #include "core/profile.h"
 #include "core/texgroups.h"
@@ -179,6 +180,7 @@ RouterOutput Router::onMessage(const std::string& text) {
         if (type == proto::kDocumentUpdate) handleUpdate(req, out);
         else if (type == proto::kOpenDocument) handleOpen(req, out);
         else if (type == proto::kSaveDocument) handleSave(req, out);
+        else if (type == proto::kImportMap) handleImportMap(req, out);
         else if (type == proto::kListTextures) handleListTextures(req, out);
         else if (type == proto::kReadTexture) handleReadTexture(req, out);
         else if (type == proto::kWriteTextureProps) handleWriteTextureProps(req, out);
@@ -254,6 +256,43 @@ void Router::handleOpen(const json& req, RouterOutput& out) {
     out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true},
                                 {"path", scene_.currentPath()}, {"rev", scene_.revision()}}
                                .dump());
+}
+
+void Router::handleImportMap(const json& req, RouterOutput& out) {
+    const std::string path = normalizeAssetPath(req.at("path").get<std::string>());
+    const std::string ext = ".map";
+    std::string lowerPath = path;
+    for (char& c : lowerPath) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (path.empty() || path.rfind("..", 0) == 0 || std::filesystem::path(path).is_absolute() || path.find(':') != std::string::npos ||
+        lowerPath.size() <= ext.size() || lowerPath.compare(lowerPath.size() - ext.size(), ext.size(), ext) != 0) {
+        out.toSender.push_back(failedResponse(req, "import_map needs a .map file inside the game folder: " + path));
+        return;
+    }
+    const std::string target = path.substr(0, path.size() - ext.size()) + ".map.json";
+    const std::filesystem::path full = scene_.assetsRoot() / std::filesystem::path(target);
+    if (std::filesystem::exists(full) && !(req.contains("overwrite") && req["overwrite"].is_boolean() && req["overwrite"].get<bool>())) {
+        out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", false}, {"exists", true}, {"path", target},
+                                    {"error", target + " already exists"}}.dump());
+        return;
+    }
+    MapImportResult imported;
+    try {
+        imported = importQuakeMapFile(scene_.assetsRoot() / std::filesystem::path(path), importOptionsFor(scene_.assetsRoot(), scene_.profile()));
+        scene_.writePrefab(target, imported.doc);  // validates like any document and writes atomically
+    } catch (const std::exception& e) {
+        out.toSender.push_back(failedResponse(req, std::string("import failed: ") + e.what()));
+        return;
+    }
+    handleOpen(json{{"requestId", req.contains("requestId") ? req["requestId"] : json(nullptr)}, {"path", target}}, out);
+    if (!out.toSender.empty()) {  // the open's reply carries what the import found
+        json res = json::parse(out.toSender.back());
+        if (res.value("ok", false)) {
+            const MapImportStats& s = imported.stats;
+            res["warnings"] = imported.warnings;
+            res["stats"] = json{{"entities", s.entities}, {"brushes", s.brushes}, {"patches", s.patches}, {"lights", s.lights}, {"faces", s.faces}, {"skipped", s.skipped}, {"droppedEntities", s.droppedEntities}};
+            out.toSender.back() = res.dump();
+        }
+    }
 }
 
 void Router::handleSave(const json& req, RouterOutput& out) {

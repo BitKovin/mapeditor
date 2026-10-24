@@ -11,6 +11,7 @@ import { CarvedMesh, DecalEntry, DerivedEntry, DerivedResult, World, usableCarve
 import { reliefFaces, reliefMessage, reliefSignature } from '../model/reliefBake'
 import { classOf, mapBrush, moveBrushToDetail, newId, requiresConvexBrushes } from '../model/document'
 import { reconcileShapes } from '../model/parametric'
+import { BrushParams, CreateParams, DEFAULT_BRUSH, DEFAULT_CREATE, TerrainTool, reconcileTerrain } from '../model/terrain'
 import { validateBrush } from '../model/geometry'
 import { MeshSel, SelMode, cleanSel, convertSel, emptySel } from '../model/meshTopology'
 import { OpResult, isError } from '../model/meshOps'
@@ -52,7 +53,9 @@ export function soleBrushOf(doc: MapDocument, sel: Selection): Selection {
   const e = findEntity(doc, sel.entityId)
   return e && classOf(e) !== 'worldspawn' && e.brushes?.length === 1 ? { entityId: sel.entityId, brushId: e.brushes[0].id } : sel
 }
-export type Tool = 'select' | 'box' | 'decal'
+export type Tool = 'select' | 'box' | 'decal' | 'terrain'
+/** The Terrain tool's settings (REQUIREMENTS §39): the brush, and the size of the next terrain made in the Terrain panel. */
+export interface TerrainSettings { tool: TerrainTool; brush: BrushParams; /** Flatten aims here; null = the height under the first stamp */ flattenHeight: number | null; create: Omit<CreateParams, 'origin' | 'texture'> }
 /** Object = pick whole brushes/entities. Face = pick faces for texturing. Mesh = edit vertices/edges/faces of one brush. */
 export type EditMode = 'object' | 'face' | 'mesh'
 export interface HistoryEntry { label: string; doc: MapDocument }
@@ -97,6 +100,7 @@ export interface State {
   shapeParams: ShapeParams
   /** Decal projector size for the Decal tool. */
   decalParams: { width: number; height: number; depth: number }
+  terrain: TerrainSettings
   /** Mesh edit mode: which element kind is being selected, and what is selected in the primary brush. */
   meshMode: SelMode
   meshSel: MeshSel
@@ -162,7 +166,7 @@ export class Store {
       doc, path: '', rev: 0, status: 'disconnected', synced: false, library: {}, prefabEntities: [],
       problems: [], selection: null, multi: [], history: [{ label: 'Empty', doc }], historyIndex: 0, message: null,
       tool: 'select', editMode: 'object', activeTexture: 'dev/grey',
-      uvLock: true, pipette: null, autoDetail: true, proportional: false, propRadius: 1, hidden: [], uvClipboard: null, exporting: null, texSteps: { ...DEFAULT_TEX_STEPS }, shape: 'box', shapeParams: defaultShapeParams(), decalParams: { width: 1, height: 1, depth: 0.5 }, meshMode: 'vertex', meshSel: emptySel(),
+      uvLock: true, pipette: null, autoDetail: true, proportional: false, propRadius: 1, hidden: [], uvClipboard: null, exporting: null, texSteps: { ...DEFAULT_TEX_STEPS }, shape: 'box', shapeParams: defaultShapeParams(), decalParams: { width: 1, height: 1, depth: 0.5 }, terrain: { tool: 'raise', brush: { ...DEFAULT_BRUSH }, flattenHeight: null, create: { ...DEFAULT_CREATE } }, meshMode: 'vertex', meshSel: emptySel(),
       dirty: false, profile: null, exportFormat: RBSP_FORMAT, entityDefs: [], entityWarnings: [], assetsRoot: '', coreSettings: null, lastExport: null,
     }
   }
@@ -210,6 +214,11 @@ export class Store {
   setShape(shape: ShapeId): void { this.set({ shape, tool: 'box' }) }
   setShapeParams(p: Partial<ShapeParams>): void { this.set({ shapeParams: { ...this.s.shapeParams, ...p } }) }
   setDecalParams(p: Partial<State['decalParams']>): void { this.set({ decalParams: { ...this.s.decalParams, ...p } }) }
+  /** Terrain tool settings; picking a brush (a tool name) also switches to the Terrain tool. */
+  setTerrain(p: { tool?: TerrainTool; brush?: Partial<BrushParams>; flattenHeight?: number | null; create?: Partial<TerrainSettings['create']> }): void {
+    const t = this.s.terrain
+    this.set({ terrain: { tool: p.tool ?? t.tool, brush: { ...t.brush, ...p.brush }, flattenHeight: p.flattenHeight !== undefined ? p.flattenHeight : t.flattenHeight, create: { ...t.create, ...p.create } }, ...(p.tool ? { tool: 'terrain' as const } : {}) })
+  }
 
   setEditMode(editMode: EditMode): void {
     const picked = this.s.selection
@@ -277,7 +286,7 @@ export class Store {
   /** One undoable step. `fn` must be pure and return the SAME doc if nothing changed. */
   edit(label: string, fn: (doc: MapDocument) => MapDocument): boolean {
     if (!this.guard()) return false
-    const doc = reconcileShapes(this.s.doc, fn(this.s.doc), () => newId('s'))
+    const doc = this.reconciled(this.s.doc, fn(this.s.doc))
     if (doc === this.s.doc) return false
     this.applyDoc(doc)
     this.pushHistory(label, doc)
@@ -291,17 +300,29 @@ export class Store {
     this.drag = { start: this.s.doc, label }
     return true
   }
-  dragUpdate(fn: (start: MapDocument) => MapDocument): void {
+  /**
+   * `submit = false`: show the result but do not send it to Core yet (a stroke over a big terrain would stringify a megabyte per mouse move); the caller
+   * sends it now and then with `submitCurrent`, and `endDrag` always sends the final document.
+   */
+  dragUpdate(fn: (start: MapDocument) => MapDocument, submit = true): void {
     if (!this.drag) return
-    const doc = reconcileShapes(this.drag.start, fn(this.drag.start), () => newId('s'))
+    const doc = this.reconciled(this.drag.start, fn(this.drag.start))
     this.applyDoc(doc)
-    this.conn.submitDocument(doc)
+    if (submit) { this.conn.submitDocument(doc); this.unsent = false } else this.unsent = true
+  }
+  /** Sends the working document to Core now (after `dragUpdate(fn, false)`). */
+  submitCurrent(): void { if (this.unsent) { this.unsent = false; this.conn.submitDocument(this.s.doc) } }
+  private unsent = false
+  /** The shape and terrain records brought in line with what the edit did to the geometry. */
+  private reconciled(prev: MapDocument, next: MapDocument): MapDocument {
+    return reconcileTerrain(prev, reconcileShapes(prev, next, () => newId('s')))
   }
   /** Abandons a continuous edit: the document goes back to how it was when `beginDrag` was called. */
   cancelDrag(): void {
     if (!this.drag) return
     const { start } = this.drag
     this.drag = null
+    this.unsent = false
     if (this.s.doc !== start) { this.applyDoc(start); this.conn.submitDocument(start) }
   }
 
@@ -311,6 +332,7 @@ export class Store {
     if (!this.drag) return
     const { start, label } = this.drag
     this.drag = null
+    if (this.unsent) { this.unsent = false; this.conn.submitDocument(this.s.doc) }
     if (this.s.doc !== start) this.pushHistory(label, this.s.doc)
   }
 

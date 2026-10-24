@@ -38,6 +38,10 @@ End-to-end smoke test against a running server (needs `pip install websockets`):
 Core only accepts WebSocket connections from `localhost`/`127.0.0.1` origins (or no Origin
 at all, for tools), binds to 127.0.0.1, and sandboxes every path to the assets root.
 
+## Importing Quake maps
+
+File > Import Quake Map... converts a Quake 3 `.map` from the game folder (brushes in every syntax, curved patches, entities, lights) to `<name>.map.json` beside it and opens it; `core/build/map_import_tool <gameFolder> <in.map> [out.map.json]` does the same without the editor. What is converted and how: DESIGN.md, "Importer: Quake 3 .map".
+
 ## Demo assets
 
 `core/assets/gen_demo.py` regenerates `maps/` and `prefabs/` (meters, Y-up, schema 0.2); `gen_textures.py` the demo textures; `game_profile.json` is the demo game profile and `entities.ent` a small stand-in for a Quake 3 entity definition file.

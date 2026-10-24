@@ -26,6 +26,27 @@ const row = (p: InspectorPanel, label: string) => rows(p).find((l) => l.querySel
 const refLabels = (p: InspectorPanel) => [...p.element.querySelectorAll('.field.ref')].map((l) => l.querySelector('span')!.textContent)
 
 describe('Details: typed fields and references', () => {
+  it('a reference with several targets shows one picker each plus one to add another; picking and removing edit the list', () => {
+    const app = makeApp(); app.sync()
+    const spawn = (name: string, x: number) => { addPointEntity(app.store, 'info_x', [x, 0, 0], { targetname: name }); return app.store.state.selection!.entityId }
+    const a = spawn('a', 0), b = spawn('b', 1), c = spawn('c', 2), d = spawn('d', 3)
+    setEntityRef(app.store, c, 'target', [a, b])
+    app.store.select({ entityId: c })
+    const refOf = () => app.store.state.doc.entities.find((e) => e.id === c)!.refs!.target
+    const p = new InspectorPanel(app.store); p.init()
+    const selects = () => [...p.element.querySelectorAll('.field.ref select')] as HTMLSelectElement[]
+    expect(selects().map((s) => s.value)).toEqual([a, b, ''])                // two targets and the "add" picker
+    expect(p.element.querySelector('.refwarn')).not.toBeNull()                // the names a and b differ
+    selects()[2].value = d; selects()[2].dispatchEvent(new Event('change'))
+    expect(refOf()).toEqual([a, b, d])
+    const q = new InspectorPanel(app.store); q.init()
+    const buttons = () => [...q.element.querySelectorAll('.field.ref .refrow button')].filter((x) => x.textContent === '×') as HTMLElement[]
+    expect(buttons()).toHaveLength(3)
+    buttons()[0].click()
+    expect(refOf()).toEqual([b, d])
+    p.dispose(); q.dispose()
+  })
+
   it('targetname is right after the id; an undefined class gets no target / killtarget pickers it did not ask for', () => {
     const app = makeApp(); app.sync()
     addPointEntity(app.store, 'info_notnull', [0, 0, 0], { targetname: 'door1', note: 'x' })

@@ -41,3 +41,4 @@ export async function nativePick(conn: CoreConnection, store: Store, o: NativePi
 }
 
 export const MAP_FILTERS: DialogFilter[] = [{ name: 'Maps (*.map.json)', pattern: '*.map.json' }]
+export const QUAKE_MAP_FILTERS: DialogFilter[] = [{ name: 'Quake maps (*.map)', pattern: '*.map' }]

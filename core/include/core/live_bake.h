@@ -176,10 +176,10 @@ public:
     // a rectangle of a page, row by row. Texels without a sample get the average of their baked neighbours (gutter); where there are none the pixel is
     // all zero (alpha 0 = nothing here, alpha 1.0 = a value). Values beyond the half range (65504) saturate there.
     std::vector<uint16_t> renderTile(const Rect& r) const;
-    // Current value of one sample (direct + indirect, both raw).
+    // Current value of one sample (direct + indirect, both raw: signed when the level has dark lights).
     Vec3 value(size_t sample) const;
     // What is displayed: like value(), but with the denoised indirect light where its page has been denoised (renderTile and snapshot use this),
-    // times the baked ambient occlusion factor (aoFactor).
+    // times the baked ambient occlusion factor (aoFactor), clamped at 0 (dark lights make the raw sums signed).
     Vec3 shownValue(size_t sample) const;
     // Baked ambient occlusion (level settings `_ao_*`, REQUIREMENTS §22 P2): the factor the sample's light is multiplied by (1 = open, or AO off,
     // or not computed yet), and the raw occluded fraction (NaN = not computed). Occlusion depends on geometry, the radius and the ray count only: it

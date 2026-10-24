@@ -68,7 +68,7 @@ struct FlattenedEntity {
 
 struct FlattenResult {
     std::vector<FlattenedEntity> entities;  // the root document's own entities first, then every instance's
-    std::vector<std::string> problems;      // warnings: unresolved refs, duplicate resolved names, ...
+    std::vector<std::string> problems;      // warnings: unresolved refs, targets of one ref with different names, ...
 };
 
 // Throws PrefabResolveError for inclusion cycles / excess depth, like resolvePrefabs.

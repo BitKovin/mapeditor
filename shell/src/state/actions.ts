@@ -2,7 +2,7 @@
 // stay small and everything is testable without a DOM.
 import { defaultLightAngles } from '../model/lights'
 import {
-  Brush, Entity, EntityOverride, MapDocument, PrefabInstance, Vec3, addEntity, addInstance, brushesCentre, classOf, findEntity, findInstance, instanceNameProblem,
+  Brush, Entity, EntityOverride, MapDocument, PrefabInstance, RefValue, Vec3, refPaths, refValueOf, sameRefValue, addEntity, addInstance, brushesCentre, classOf, findEntity, findInstance, instanceNameProblem,
   mapBrush, mapEntity, mapInstance, newId, newInstanceName, originOf, removeBrush, removeEntity, removeInstance,
   requiresConvexBrushes, showsCustomOrigin, translateEntity, isBrushEntity,
 } from '../model/document'
@@ -24,6 +24,8 @@ import { selectionPivot } from '../model/transform'
 import type { Selection, Store } from './store'
 import { ShapePatch, regenerateShape, shapeOf } from '../model/parametric'
 import { hideKeys } from '../model/visibility'
+import { createTerrain } from '../model/terrain'
+import { snap } from '../model/math'
 
 export function ensureWorldspawn(doc: MapDocument): MapDocument {
   if (doc.entities.some((e) => classOf(e) === 'worldspawn')) return doc
@@ -49,6 +51,20 @@ export function addBox(store: Store, center: Vec3): void {
 export function addPointEntity(store: Store, classname: string, origin: Vec3, keyvalues: Record<string, string> = {}, angles?: Vec3): void {
   const entity: Entity = { id: newId('e'), classname, keyvalues: { ...keyvalues }, origin, angles: angles ?? defaultLightAngles(classname) ?? [0, 0, 0] }
   if (store.edit(`Add ${classname}`, (d) => addEntity(d, entity))) store.select({ entityId: entity.id })
+}
+
+/** Makes a flat terrain of the size in the Terrain settings, centred on `centre` (its corner on the cell grid), textured with the active texture; selects it and switches to the Terrain tool. */
+export function addTerrain(store: Store, centre: Vec3): boolean {
+  const c = store.state.terrain.create
+  const origin: Vec3 = [snap(centre[0] - c.sizeX / 2, c.cell), centre[1], snap(centre[2] - c.sizeZ / 2, c.cell)]
+  const id = newId('e')
+  const made = createTerrain({ ...c, origin, texture: store.state.activeTexture }, id, () => newId('b'))
+  if ('error' in made) { store.setMessage(made.error); return false }
+  if (!store.edit('Add terrain', (d) => addEntity(d, made.entity))) return false
+  store.select({ entityId: id })
+  store.setTerrain({ tool: store.state.terrain.tool })
+  store.setMessage('Terrain made: drag on it to sculpt (Shift swaps raise and lower, [ ] change the radius)')
+  return true
 }
 
 /** Everything selected, as a list (the primary selection when there is no multi-selection yet). */
@@ -567,11 +583,12 @@ export function revertOverride(store: Store, instId: string, path: string): bool
 }
 
 // ---- references (N1 e) -------------------------------------------------------------------
-/** Points reference `key` of a document entity at `path` (a root-relative target path); null removes it. */
-export function setEntityRef(store: Store, entityId: string, key: string, path: string | null): boolean {
-  return store.edit(path === null ? `Clear ${key}` : `Set ${key}`, (d) => mapEntity(d, entityId, (e) => {
+/** Points reference `key` of a document entity at `target` (a root-relative target path, or several: entities that share one name); null (or an empty list) removes it. */
+export function setEntityRef(store: Store, entityId: string, key: string, target: RefValue | null): boolean {
+  const value = target === null ? undefined : refValueOf(refPaths(target))
+  return store.edit(value === undefined ? `Clear ${key}` : `Set ${key}`, (d) => mapEntity(d, entityId, (e) => {
     const refs = { ...(e.refs ?? {}) }
-    if (path === null) { if (!(key in refs)) return e; delete refs[key] } else { if (refs[key] === path) return e; refs[key] = path }
+    if (value === undefined) { if (!(key in refs)) return e; delete refs[key] } else { if (sameRefValue(refs[key], value)) return e; refs[key] = value }
     const { refs: _r, ...rest } = e
     void _r
     return Object.keys(refs).length ? { ...rest, refs } : rest
@@ -580,14 +597,24 @@ export function setEntityRef(store: Store, entityId: string, key: string, path: 
 
 /** Overrides a reference of one prefab entity for THIS instance. The path is relative to the instance's parent scope
  *  (for a top-level instance: the document root), which is exactly what the picker lists. null reverts to the prefab's own. */
-export function setOverrideRef(store: Store, instId: string, entityPath: string, key: string, path: string | null): boolean {
-  return store.edit(path === null ? 'Revert reference' : `Override ${key}`, (d) => editOverride(d, instId, entityPath, (o) => {
+export function setOverrideRef(store: Store, instId: string, entityPath: string, key: string, target: RefValue | null): boolean {
+  const value = target === null ? undefined : refValueOf(refPaths(target))
+  return store.edit(value === undefined ? 'Revert reference' : `Override ${key}`, (d) => editOverride(d, instId, entityPath, (o) => {
     const refs = { ...(o.refs ?? {}) }
-    if (path === null) { if (!(key in refs)) return o; delete refs[key] } else { if (refs[key] === path) return o; refs[key] = path }
+    if (value === undefined) { if (!(key in refs)) return o; delete refs[key] } else { if (sameRefValue(refs[key], value)) return o; refs[key] = value }
     const { refs: _r, ...rest } = o
     void _r
     return Object.keys(refs).length ? { ...rest, refs } : rest
   }))
+}
+
+/** Gives the document entities at `paths` (root-relative ids; targets inside prefab instances are skipped) the targetname of the first one, so one reference
+ *  reaches them all. Returns false when there is nothing to change. */
+export function shareTargetName(store: Store, paths: readonly string[]): boolean {
+  const first = findEntity(store.state.doc, paths[0] ?? '')
+  const name = first?.keyvalues?.targetname
+  if (!name) return false
+  return store.edit('Share name', (d) => paths.slice(1).reduce((doc, id) => mapEntity(doc, id, (e) => (e.keyvalues?.targetname === name ? e : { ...e, keyvalues: { ...(e.keyvalues ?? {}), targetname: name } })), d))
 }
 
 // ---- Radiant brush operations on the selected brushes (clip, hollow, merge, flip, rotate, snap) ----------------------

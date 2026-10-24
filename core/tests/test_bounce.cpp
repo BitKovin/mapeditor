@@ -517,3 +517,32 @@ TEST_CASE("bounce cpu: a light right next to a surface never feeds more than its
     CHECK(maxD > 10.5f);              // the direct light itself is not capped (it exceeds the brightness here)
     CHECK(maxDb <= 10.f * 1.0001f);   // brightness 10 at the reference distance, times cos <= 1
 }
+
+TEST_CASE("bounce cpu: dark lights are linear - the light of A and a dark B is the light of A minus the light of B, bounces included") {
+    auto room = [&](std::vector<Entity> lights) {
+        std::vector<Entity> es = floorCeiling();
+        es.pop_back();  // the default lamp
+        for (auto& l : lights) es.push_back(std::move(l));
+        return es;
+    };
+    auto lamp = [&](const std::string& id, Vec3 o, double brightness) { Entity e = pointLight(o, brightness, 100); e.id = id; return e; };
+    GiScene a(room({lamp("a", {0, 2.5, 0}, 10)})), b(room({lamp("b", {4, 1.5, 3}, 6)})), both(room({lamp("a", {0, 2.5, 0}, 10), lamp("b", {4, 1.5, 3}, -6)}));
+    REQUIRE(a.samples.count() == both.samples.count());
+    BakeOptions o;
+    o.bounces = 2;
+    o.giSamples = 32;
+    const auto va = a.run(o), vb = b.run(o), vboth = both.run(o);
+    double minBoth = 1e9, indirectDark = 0;
+    for (size_t i = 0; i < vboth.size(); ++i) {
+        if (i % 4 == 3) continue;
+        CHECK(vboth[i] == doctest::Approx(va[i] - vb[i]).epsilon(2e-4).scale(1));
+        minBoth = std::min(minBoth, static_cast<double>(vboth[i]));
+    }
+    // the dark light's bounce is subtracted too (negative indirect light), not only its direct share
+    BakeOptions direct = o;
+    direct.bounces = 0;
+    const auto db = b.run(direct);
+    for (size_t i = 0; i < b.samples.count(); ++i) indirectDark += vb[i * 4] - db[i * 4];
+    CHECK(minBoth < -0.5);        // the dark light really overpowers the lamp near it
+    CHECK(indirectDark > 1.0);    // and there is bounce light of it to subtract
+}

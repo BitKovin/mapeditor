@@ -94,7 +94,7 @@ bool parseVec(const std::string& s, Vec3& out) {
 // ---- the walker ----------------------------------------------------------------------------------
 struct RefSlot {
     std::string key;
-    std::string path;
+    std::vector<std::string> paths;  // one target, or several that are meant to share one name
     size_t scopeLen;  // number of leading instance ids of the entity's chain the path is relative to
 };
 
@@ -117,7 +117,7 @@ struct Walker {
         // overrides: inner -> outer so the outer instance wins. Path = ids below that instance + entity id.
         Entity e = src;
         std::vector<RefSlot> refs;
-        for (const auto& [k, v] : src.refs) refs.push_back({k, v, chain.size()});
+        for (const auto& [k, v] : src.refs) refs.push_back({k, v.paths, chain.size()});
         for (size_t j = chain.size(); j-- > 0;) {
             std::string path;
             for (size_t i = j + 1; i < chain.size(); ++i) path += chain[i]->id + "/";
@@ -129,7 +129,7 @@ struct Walker {
             for (const auto& [k, v] : ov.keyvalues) e.keyvalues[k] = v;
             for (const auto& [k, v] : ov.refs) {
                 refs.erase(std::remove_if(refs.begin(), refs.end(), [&](const RefSlot& r) { return r.key == k; }), refs.end());
-                refs.push_back({k, v, j});  // written in instance j's override -> relative to j's parent scope
+                refs.push_back({k, v.paths, j});  // written in instance j's override -> relative to j's parent scope
             }
             if (ov.origin) e.origin = *ov.origin;
             if (ov.angles) e.angles = *ov.angles;
@@ -274,34 +274,49 @@ FlattenResult flattenForCompile(const Document& root, const DocumentLoader& load
         Node& n = nodes[i];
         std::sort(n.refs.begin(), n.refs.end(), [](const RefSlot& a, const RefSlot& b) { return a.key < b.key; });
         for (const auto& r : n.refs) {
-            std::string full = join(n.chainIds, "/", r.scopeLen);
-            full += (full.empty() ? "" : "/") + r.path;
-            const auto hit = index.find(full);
             const std::string who = "entity '" + (n.chainIds.empty() ? "" : join(n.chainIds, "/", n.chainIds.size()) + "/") + n.sourceId + "'";
-            if (hit == index.end()) {
-                res.problems.push_back(who + ": ref '" + r.key + "' -> '" + r.path + "' does not resolve (target missing or deleted)");
+            std::vector<size_t> targets;
+            for (const std::string& path : r.paths) {
+                std::string full = join(n.chainIds, "/", r.scopeLen);
+                full += (full.empty() ? "" : "/") + path;
+                const auto hit = index.find(full);
+                if (hit == index.end()) res.problems.push_back(who + ": ref '" + r.key + "' -> '" + path + "' does not resolve (target missing or deleted)");
+                else if (std::find(targets.begin(), targets.end(), hit->second) == targets.end()) targets.push_back(hit->second);
+            }
+            if (targets.empty()) {
                 n.entity.keyvalues.erase(r.key);
                 continue;
             }
-            const size_t t = hit->second;
-            if (nameOf(t).empty()) {
+            // The key holds ONE name, so several targets must share it (a name may belong to any number of entities; every one of them is triggered).
+            // The first named target gives the name; an unnamed target joins it; a target with another name cannot be reached through this key.
+            size_t named = targets.size();
+            for (size_t k = 0; k < targets.size() && named == targets.size(); ++k) if (!nameOf(targets[k]).empty()) named = k;
+            if (named == targets.size()) {
                 // referenced but unnamed: give it a stable generated name
+                const size_t t = targets[0];
                 std::string prefix = nodes[t].chainNames.empty() ? "" : join(nodes[t].chainNames, "|", nodes[t].chainNames.size()) + "|";
                 resolved[t] = prefix + nodes[t].sourceId;
-                res.problems.push_back("entity '" + nodes[t].sourceId + "' is referenced but has no '" + opts.nameKey +
-                                       "'; generated '" + resolved[t] + "'");
+                res.problems.push_back("entity '" + nodes[t].sourceId + "' is referenced but has no '" + opts.nameKey + "'; generated '" + resolved[t] + "'");
+                named = 0;
             }
-            n.entity.keyvalues[r.key] = resolved[t];
+            const std::string chosen = resolved[targets[named]];
+            for (const size_t t : targets) {
+                if (resolved[t].empty()) {
+                    resolved[t] = chosen;
+                    res.problems.push_back("entity '" + nodes[t].sourceId + "' is referenced together with '" + chosen + "' and has no '" + opts.nameKey + "'; it takes that name");
+                } else if (resolved[t] != chosen) {
+                    res.problems.push_back(who + ": ref '" + r.key + "' has targets with different names ('" + chosen + "', '" + resolved[t] + "'); only '" + chosen + "' is written");
+                }
+            }
+            n.entity.keyvalues[r.key] = chosen;
         }
     }
 
-    // 3) write names, detect duplicates, emit
-    std::unordered_map<std::string, int> seen;
+    // 3) write names, emit (several entities may share a name: that is how one reference triggers many)
     for (size_t i = 0; i < nodes.size(); ++i) {
         Node& n = nodes[i];
         if (!resolved[i].empty()) {
             n.entity.keyvalues[opts.nameKey] = resolved[i];
-            if (++seen[resolved[i]] == 2) res.problems.push_back("duplicate resolved name '" + resolved[i] + "'");
         }
         n.entity.refs.clear();
         res.entities.push_back(FlattenedEntity{std::move(n.entity), resolved[i], n.chainNames, pathWithRoot(n.chainIds), n.sourceId});

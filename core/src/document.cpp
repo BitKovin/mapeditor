@@ -76,6 +76,20 @@ std::unordered_map<std::string, std::string> stringMap(const json& j, const std:
     return out;
 }
 
+// "refs": every key is one path or a non-empty array of paths
+std::unordered_map<std::string, RefTargets> refMap(const json& j, const std::string& what) {
+    if (!j.is_object()) throw std::runtime_error(what + " must be an object");
+    std::unordered_map<std::string, RefTargets> out;
+    for (const auto& [k, v] : j.items()) {
+        if (v.is_string()) { out[k] = RefTargets(v.get<std::string>()); continue; }
+        if (!v.is_array() || v.empty()) throw std::runtime_error(what + " value must be a path or a non-empty array of paths");
+        std::vector<std::string> list;
+        for (const auto& p : v) list.push_back(str(p, what + " value"));
+        out[k] = RefTargets(std::move(list));
+    }
+    return out;
+}
+
 Entity entityFromJson(const json& j) {
     Entity e;
     e.id = str(j.at("id"), "entity id");
@@ -83,7 +97,7 @@ Entity entityFromJson(const json& j) {
     if (j.contains("keyvalues")) e.keyvalues = stringMap(j["keyvalues"], "entity keyvalues");
     if (j.contains("origin")) e.origin = vec3(j["origin"], "entity origin");
     if (j.contains("angles")) e.angles = vec3(j["angles"], "entity angles");
-    if (j.contains("refs")) e.refs = stringMap(j["refs"], "entity refs");
+    if (j.contains("refs")) e.refs = refMap(j["refs"], "entity refs");
     if (j.contains("brushes")) {
         for (const auto& bj : j["brushes"]) e.brushes.push_back(brushFromJson(bj));
     }
@@ -101,7 +115,7 @@ EntityOverride overrideFromJson(const json& j) {
     }
     for (const auto& [k, v] : j.items()) {
         if (k == "keyvalues") o.keyvalues = stringMap(v, "override keyvalues");
-        else if (k == "refs") o.refs = stringMap(v, "override refs");
+        else if (k == "refs") o.refs = refMap(v, "override refs");
         else if (k == "origin") o.origin = vec3(v, "override origin");
         else if (k == "angles") o.angles = vec3(v, "override angles");
         else if (k == "scale") o.scale = vec3(v, "override scale");
@@ -246,7 +260,8 @@ std::optional<std::string> validateDocument(const Document& doc) {
         if (e.id.empty()) return "entity with an empty id";
         if (!entityIds.insert(e.id).second) return "duplicate entity id '" + e.id + "'";
         for (const auto& [k, v] : e.refs)
-            if (auto err = badPath("entity '" + e.id + "' ref '" + k + "'", v)) return err;
+            for (const auto& path : v.paths)
+                if (auto err = badPath("entity '" + e.id + "' ref '" + k + "'", path)) return err;
 
         for (const auto& b : e.brushes) {
             const std::string where = "entity '" + e.id + "' brush '" + b.id + "'";
@@ -272,7 +287,8 @@ std::optional<std::string> validateDocument(const Document& doc) {
             const std::string where = "prefab instance '" + p.id + "' override '" + path + "'";
             if (auto err = badPath(where, path)) return err;
             for (const auto& [k, v] : ov.refs)
-                if (auto err = badPath(where + " ref '" + k + "'", v)) return err;
+                for (const auto& rp : v.paths)
+                    if (auto err = badPath(where + " ref '" + k + "'", rp)) return err;
         }
     }
     return std::nullopt;

@@ -297,6 +297,8 @@ void fitFrom(LightvolGrid& grid, size_t probe, const std::vector<Vec3>& normals,
         const size_t t = (at + k) * 4;
         d[k] = v[k] = {direct[t], direct[t + 1], direct[t + 2]};
         if (indirect) v[k] = v[k] + Vec3{indirect[t], indirect[t + 1], indirect[t + 2]};
+        v[k] = clampLight(v[k]);  // dark lights: the probe fits the finished light V(n) >= 0, like a lightmap texel
+        d[k] = clampLight(d[k]);
     }
     grid.probes[probe] = fitProbeDirectFirst(probeMoments(normals, v, &d), bounceWeight);
 }

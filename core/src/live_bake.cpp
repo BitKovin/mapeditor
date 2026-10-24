@@ -96,8 +96,8 @@ Vec3 LiveBaker::shownValue(size_t i) const {
     const size_t page = samples_.texel[i] / (static_cast<size_t>(samples_.atlas) * samples_.atlas);
     const double k = aoFactor(i);
     if (page < pageState_.size() && pageState_[page] == 1 && indirectDn_.size() == samples_.count() * 4)
-        return Vec3{direct_[i * 4] + indirectDn_[i * 4], direct_[i * 4 + 1] + indirectDn_[i * 4 + 1], direct_[i * 4 + 2] + indirectDn_[i * 4 + 2]} * k;
-    return value(i) * k;
+        return clampLight(Vec3{direct_[i * 4] + indirectDn_[i * 4], direct_[i * 4 + 1] + indirectDn_[i * 4 + 1], direct_[i * 4 + 2] + indirectDn_[i * 4 + 2]} * k);
+    return clampLight(value(i) * k);
 }
 
 float LiveBaker::aoFactor(size_t i) const {
