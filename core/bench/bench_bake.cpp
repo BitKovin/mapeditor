@@ -2,6 +2,8 @@
 // the real Vulkan session, with the time split into where it went.
 //
 //   bench_bake <assetsRoot> <map.map.json> [--quality Q] [--lighting lighting.json] [--no-lightvol] [--tiles] [--validate] [--dump file.bin]
+//   --camera X Y Z  where the viewer is (tiles far from it are sent less often)
+//   --threaded  run the service on its bake thread with a receiver that is always ready, like the editor (the default is the synchronous loop of the export)
 //   --edits    after the bake settles, replay edits of the map (sun angle, a prefab instance moved, a detail brush moved) and print, per edit, the time to
 //              the first tiles and to convergence plus where the rebuild went (needs a real map, not --rooms)
 //   bench_bake <assetsRoot> --rooms N [...]   a generated level instead: N x N rooms of 12 m, one point light each and a sun
@@ -13,6 +15,7 @@
 #include "core/lighting_service.h"
 #include "core/scene.h"
 #include "test_util.h"
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +23,7 @@
 #include <functional>
 #include <iostream>
 #include <string>
+#include <thread>
 
 using namespace core;
 using namespace testutil;
@@ -66,7 +70,8 @@ int main(int argc, char** argv) {
     double quality = 2.0;
     std::string dump;
     int rooms = 0;
-    bool edits = false;
+    bool edits = false, haveCamera = false, threaded = false;
+    Vec3 camera;
     bool tiles = false;  // like the export; --tiles renders them like the editor
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -76,6 +81,8 @@ int main(int argc, char** argv) {
         else if (a == "--lighting" && i + 1 < argc) opt = LightingService::loadOptions(argv[++i]);
         else if (a == "--tiles") tiles = true;
         else if (a == "--edits") edits = true;
+        else if (a == "--threaded") threaded = true;
+        else if (a == "--camera" && i + 3 < argc) { camera = {std::atof(argv[i + 1]), std::atof(argv[i + 2]), std::atof(argv[i + 3])}; haveCamera = true; i += 3; }
         else if (a == "--validate") opt.live.gpuValidation = true;
         else if (a == "--no-lightvol") opt.lightvolEnabled = false;
         else if (a == "--dump" && i + 1 < argc) dump = argv[++i];
@@ -126,14 +133,80 @@ int main(int argc, char** argv) {
     LightingService svc(scene, opt);
     svc.setLog([](const std::string& l) { std::printf("log: %s\n", l.c_str()); });
     svc.setEnabled(true);
+    if (haveCamera) svc.setCamera(camera);
 
     const auto t0 = Clock::now();
     double lmSeconds = 0, volSeconds = 0;
+    size_t tileBytes = 0, tileMsgs = 0;
     int idle = 0, ticks = 0;
+    if (threaded) {
+        std::atomic<size_t> bytes{0}, msgs{0};
+        std::atomic<double> firstMs{-1}, meshMs{-1};
+        svc.startWorker([&](std::vector<std::string>&& m) {
+            for (const auto& x : m) {
+                if (x.size() > 1000) { bytes += x.size(); ++msgs; }
+                const double now = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                if (x.size() > 1000 && x.find("\"lightmap_tiles\"") != std::string::npos && firstMs.load() < 0) firstMs = now;
+                if (x.size() > 1000 && x.find("\"lit_mesh\"") != std::string::npos && meshMs.load() < 0) meshMs = now;
+            }
+            svc.delivered();
+        });
+        svc.flushInputs();
+        double convMs = -1, volMs = -1, stepsMs = -1, halfDnMs = -1, firstDnMs = -1;
+        int pages = 0;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            const double now = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            const auto st = svc.statusJson();
+            pages = st.value("pages", 0);
+            if (stepsMs < 0 && st.value("converged", false)) stepsMs = now;
+            if (firstDnMs < 0 && st.value("denoisedPages", 0) >= 1) firstDnMs = now;
+            if (halfDnMs < 0 && pages > 0 && st.value("denoisedPages", 0) * 2 >= pages) halfDnMs = now;
+            if (convMs < 0 && st.value("converged", false) && st.value("denoisedPages", 0) >= pages && pages > 0) convMs = now;
+            if (volMs < 0 && svc.lightvolReady()) volMs = now;
+            if ((convMs >= 0 && volMs >= 0) || now > 300000) break;
+        }
+        if (edits && rooms == 0) {  // stress: edits one after the other on the running service (the editor's pattern), each waits for the light to settle
+            const int rounds = std::getenv("BENCH_REPEAT") ? std::atoi(std::getenv("BENCH_REPEAT")) : 1;
+            const std::filesystem::path tmpRel = "maps/_bench_edit.map.json", editFile = root / tmpRel;
+            json base;
+            { std::ifstream in(root / map); in >> base; }
+            for (int round = 0; round < rounds; ++round)
+                for (int kind = 0; kind < 3; ++kind) {
+                    json doc = base;
+                    const int k = 1 + (round % 5);
+                    if (kind == 0) { for (auto& e : doc["entities"]) if (e["classname"] == "light_directional") e["angles"] = {-50 - 3 * k, 30 + 5 * k, 0}; }
+                    else if (kind == 1) doc["entities"].push_back({{"id", "e_bench_light"}, {"classname", "light_point"}, {"origin", {-170.0 + 2.0 * k, 3.0, -60.0}}, {"angles", {0, 0, 0}}, {"keyvalues", {{"brightness", "20"}, {"radius", "20"}}}});
+                    else for (auto& pi : doc["prefabInstances"]) if (pi["id"] == "i_village_a") pi["origin"][0] = pi["origin"][0].get<double>() + 1.0 * k;
+                    { std::ofstream out(editFile); out << doc.dump(); }
+                    const auto e0 = Clock::now();
+                    scene.openDocument(tmpRel.generic_string());
+                    svc.markDirty();
+                    svc.flushInputs();
+                    double ms = 0;
+                    for (;;) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        ms = std::chrono::duration<double, std::milli>(Clock::now() - e0).count();
+                        const auto st = svc.statusJson();
+                        const double conv = st.contains("timingsMs") ? st["timingsMs"].value("converged", 0.0) : 0.0;
+                        if ((conv > 0 && st.value("denoisedPages", 0) >= st.value("pages", 0) && ms > 500) || ms > 120000) break;
+                    }
+                    std::printf("threaded edit round %d kind %d: settled after %.0f ms%s\n", round, kind, ms, ms > 120000 ? " (TIMEOUT)" : "");
+                    std::fflush(stdout);
+                }
+            std::filesystem::remove(editFile);
+        }
+        svc.stopWorker();
+        std::printf("threaded     refinement done at %.0f ms, half of the pages denoised at %.0f ms, first page denoised at %.0f ms\n", stepsMs, halfDnMs, firstDnMs);
+        std::printf("threaded     lit mesh at %.0f ms, first tiles %.0f ms, converged+denoised %.0f ms, light volume %.0f ms, %.1f MB in %zu messages\n", meshMs.load(), firstMs.load(), convMs, volMs, bytes / 1e6, msgs.load());
+        return 0;
+    }
     for (;;) {
         const auto a = Clock::now();
         const bool lmBefore = svc.busy() || ticks == 0;
-        svc.tick(0.25);
+        size_t tickBytes = 0;
+        for (const auto& m : svc.tick(0.25)) if (m.size() > 1000) { tileBytes += m.size(); ++tileMsgs; tickBytes += m.size(); }
+        if (std::getenv("BENCH_TICKS")) std::printf("tick %d: %.1f MB, base layer minPasses %d, stale %zu\n", ticks, tickBytes / 1e6, svc.baker().minPasses(), svc.baker().staleChunks());
         const double dt = std::chrono::duration<double>(Clock::now() - a).count();
         (lmBefore ? lmSeconds : volSeconds) += dt;
         ++ticks;
@@ -145,6 +218,7 @@ int main(int argc, char** argv) {
     const LiveBaker::Stats& st = b.stats();
     const LightingService::Timings& tm = svc.timings();
     std::printf("device       %s (ao %s)\n", b.evaluator().c_str(), b.aoEvaluator().c_str());
+    std::printf("sent         %.1f MB in %zu messages\n", tileBytes / 1e6, tileMsgs);
     std::printf("samples      %zu, chunks %zu, pages %d, passes %d\n", b.sampleCount(), b.chunkCount(), b.layout().pageCount, b.settings().maxPasses);
     std::printf("total        %.3f s (%d ticks)\n", total, ticks);
     std::printf("  lightmap   %.3f s\n", lmSeconds);

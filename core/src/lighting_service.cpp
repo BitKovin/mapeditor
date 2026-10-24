@@ -5,16 +5,21 @@
 #include "core/protocol.h"
 #include "core/textures.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <set>
 #include <thread>
 
 using nlohmann::json;
 
 namespace core {
+
+// Chunks within this distance (m) of the camera get the intermediate versions of their light; further away only the first and the final one are sent
+constexpr double kNearTiles = 150.0;
 namespace {
 json optionsToJson(const LightingService::Options& o) {
     return json{{"texelsPerMeter", o.layout.texelsPerMeter}, {"atlasSize", o.layout.atlasSize}, {"padding", o.layout.padding},
@@ -321,6 +326,42 @@ void LightingService::allChunksOf(const LiveBaker& baker, std::vector<int>& ids)
     for (size_t i = 0; i < baker.chunkCount(); ++i) if (baker.chunkHasData(static_cast<int>(i))) ids.push_back(static_cast<int>(i));
 }
 
+// The rectangles to send for a set of chunks: runs of chunks next to each other in a row, then rows of equal runs on top of each other (blocks of at most
+// kMaxBlockChunks per side), each with the padding of its outer chunks.
+std::vector<LiveBaker::Rect> LightingService::mergeChunkRects(const LiveBaker& baker, std::vector<int> ids) {
+    constexpr int kMaxBlockChunks = 8;
+    auto key = [&](int id) { const LiveChunk& c = baker.chunk(id); return std::array<int, 3>{c.page, c.ty, c.tx}; };
+    std::sort(ids.begin(), ids.end(), [&](int a, int b) { return key(a) < key(b); });
+    struct Run { int page, ty, tx0, tx1; };
+    std::vector<Run> runs;
+    for (int id : ids) {
+        const LiveChunk& c = baker.chunk(id);
+        if (!runs.empty() && runs.back().page == c.page && runs.back().ty == c.ty && runs.back().tx1 + 1 == c.tx && runs.back().tx1 - runs.back().tx0 + 1 < kMaxBlockChunks) runs.back().tx1 = c.tx;
+        else runs.push_back({c.page, c.ty, c.tx, c.tx});
+    }
+    struct Block { int page, ty0, ty1, tx0, tx1; };
+    std::vector<Block> blocks;
+    std::map<std::array<int, 3>, size_t> open;  // (page, tx0, tx1) -> the block that ends in the previous row
+    for (const Run& r : runs) {
+        const auto it = open.find({r.page, r.tx0, r.tx1});
+        if (it != open.end() && blocks[it->second].ty1 + 1 == r.ty && blocks[it->second].ty1 - blocks[it->second].ty0 + 1 < kMaxBlockChunks) {
+            blocks[it->second].ty1 = r.ty;
+            continue;
+        }
+        open[{r.page, r.tx0, r.tx1}] = blocks.size();
+        blocks.push_back({r.page, r.ty, r.ty, r.tx0, r.tx1});
+    }
+    // a rectangle is the union of the rectangles of its first and last chunk; chunk indices are found through the sorted ids
+    std::map<std::array<int, 3>, int> idOf;
+    for (int id : ids) idOf[key(id)] = id;
+    std::vector<LiveBaker::Rect> out;
+    for (const Block& b : blocks) {
+        const LiveBaker::Rect a = baker.chunkRect(idOf.at({b.page, b.ty0, b.tx0})), z = baker.chunkRect(idOf.at({b.page, b.ty1, b.tx1}));
+        out.push_back({a.page, a.x, a.y, z.x + z.w - a.x, z.y + z.h - a.y});
+    }
+    return out;
+}
+
 // Renders the chunks of one layer, keeps the ones whose pixels differ from what the clients hold and appends them as lightmap_tiles messages.
 size_t LightingService::tilesFor(int style, LiveBaker& baker, const std::vector<int>& chunks, std::vector<std::string>& out) {
     const auto t0 = Clock::now();
@@ -343,14 +384,14 @@ size_t LightingService::tilesFor(int style, LiveBaker& baker, const std::vector<
     };
     // Rendering and encoding run on all cores (every refined chunk is re-sent after every step: on a big level that was the most expensive part of a
     // step); the comparison with the mirror stays in chunk order, because neighbouring tiles overlap in their padding.
-    const size_t nc = chunks.size();
-    std::vector<LiveBaker::Rect> rects(nc);
+    // Neighbouring chunks go out as one rectangle: every chunk's tile carries a margin of padding on all sides (the bicubic lookup reads 2 texels around a
+    // chart), 56% more pixels than the chunk itself, and a block of 8 x 8 chunks only 6% more.
+    const std::vector<LiveBaker::Rect> rects = mergeChunkRects(baker, chunks);
+    const size_t nc = rects.size();
     std::vector<std::vector<uint16_t>> pixels(nc);
-    parallelFor(nc, 16, [&](size_t b, size_t e) {
-        for (size_t i = b; i < e; ++i) {
-            rects[i] = baker.chunkRect(chunks[i]);
+    parallelFor(nc, 4, [&](size_t b, size_t e) {
+        for (size_t i = b; i < e; ++i)
             if (rects[i].w > 0 && rects[i].h > 0) pixels[i] = baker.renderTile(rects[i]);
-        }
     });
     std::vector<char> changed(nc, 0);
     {
@@ -401,7 +442,7 @@ size_t LightingService::flushDirty(std::vector<std::string>& out) {
         for (auto& [style, b] : bakers()) b->takeDirtyChunks();
         return 0;
     }
-    for (auto& [style, b] : bakers()) if (b->hasDirtyChunks()) sent += tilesFor(style, *b, b->takeDueChunks(), out);
+    for (auto& [style, b] : bakers()) if (b->hasDirtyChunks()) sent += tilesFor(style, *b, b->takeDueChunks(flushHaveCamera_ ? &flushCamera_ : nullptr, kNearTiles), out);
     return sent;
 }
 
@@ -846,6 +887,8 @@ bool LightingService::work(double budgetSeconds, const Emit& emit, const Interru
         std::lock_guard<std::mutex> lock(m_);
         camera = camera_;
         haveCamera = haveCamera_;
+        flushCamera_ = camera_;
+        flushHaveCamera_ = haveCamera_;
     }
     constexpr double kFirstPassGuardMs = 500;
     // an interruption counts only once the snapshot applied last has shown its first pass
@@ -870,7 +913,7 @@ bool LightingService::work(double budgetSeconds, const Emit& emit, const Interru
     }
     // Denoise the indirect light of a converged page. With a bake thread the filter runs on its own thread (startDenoise); in synchronous mode at
     // most one page per call (an OIDN run takes up to a few hundred ms), when time is left.
-    if (allConverged() && anyDenoisePending() && !superseded()) {
+    if (anyDenoisePending() && !superseded()) {  // a page is pending once all its own chunks reached their last pass
         if (threaded()) {
             if (!denoiseInFlight_)
                 for (auto& [style, b] : bakers()) if (b->denoisePending()) { startDenoise(style, *b); break; }

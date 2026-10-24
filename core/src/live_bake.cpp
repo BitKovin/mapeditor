@@ -196,8 +196,7 @@ size_t LiveBaker::denoisedPages() const {
 }
 
 namespace {
-constexpr int kDnTileChunks = 8;         // a window of the filter covers this many chunks per side ...
-constexpr double kDnWholePage = 0.35;    // ... unless more than this share of the page's chunks changed: then the whole page is filtered in one go
+constexpr double kDnWholePage = 0.6;     // windows are used only when they have fewer pixels than this share of the page
 }  // namespace
 
 bool LiveBaker::denoisePending() const {
@@ -249,20 +248,32 @@ bool LiveBaker::beginDenoise(DenoiseJob& job) {
         pageChunks.push_back(static_cast<int>(ci));
         if (chunkDn_[ci] == 0) job.stale.push_back(static_cast<int>(ci));
     }
-    // Which windows: the whole page, or one window per group of changed chunks plus a margin of context around it (the filter sees about this far)
+    // Which windows: the whole page, or one window per group of changed chunks plus a margin of context around it (the filter sees about this far). The
+    // changed chunks of a page are often scattered over it (the atlas keeps charts of one texture together, not charts that are near in the world), and
+    // then the windows cost more than the page: take whichever has fewer pixels.
     struct Win { int x0, y0, x1, y1; };
     std::vector<Win> wins;
-    const bool whole = static_cast<double>(job.stale.size()) > kDnWholePage * static_cast<double>(pageChunks.size());
-    if (whole) {
-        wins.push_back({0, 0, atlasPx, atlasPx});
-    } else {
+    {
         const int margin = fine ? 64 : 32;
-        std::set<std::pair<int, int>> groups;
-        for (int ci : job.stale) groups.insert({chunks_[static_cast<size_t>(ci)].tx / kDnTileChunks, chunks_[static_cast<size_t>(ci)].ty / kDnTileChunks});
-        for (const auto& g : groups) {
-            const int cx0 = g.first * kDnTileChunks * chunkPx, cy0 = g.second * kDnTileChunks * chunkPx;
-            wins.push_back({std::max(0, cx0 - margin), std::max(0, cy0 - margin), std::min(atlasPx, cx0 + kDnTileChunks * chunkPx + margin),
-                            std::min(atlasPx, cy0 + kDnTileChunks * chunkPx + margin)});
+        double bestPx = static_cast<double>(atlasPx) * atlasPx * kDnWholePage;  // windows have to beat this share of the page
+        int bestK = 0;
+        for (int k : {2, 4, 8}) {
+            std::set<std::pair<int, int>> groups;
+            for (int ci : job.stale) groups.insert({chunks_[static_cast<size_t>(ci)].tx / k, chunks_[static_cast<size_t>(ci)].ty / k});
+            const double side = std::min<double>(atlasPx, k * chunkPx + 2.0 * margin);
+            const double px = static_cast<double>(groups.size()) * side * side;
+            if (px < bestPx) { bestPx = px; bestK = k; }
+        }
+        if (bestK == 0) {
+            wins.push_back({0, 0, atlasPx, atlasPx});
+        } else {
+            std::set<std::pair<int, int>> groups;
+            for (int ci : job.stale) groups.insert({chunks_[static_cast<size_t>(ci)].tx / bestK, chunks_[static_cast<size_t>(ci)].ty / bestK});
+            for (const auto& g : groups) {
+                const int cx0 = g.first * bestK * chunkPx, cy0 = g.second * bestK * chunkPx;
+                wins.push_back({std::max(0, cx0 - margin), std::max(0, cy0 - margin), std::min(atlasPx, cx0 + bestK * chunkPx + margin),
+                                std::min(atlasPx, cy0 + bestK * chunkPx + margin)});
+            }
         }
     }
     for (const Win& w : wins) {
@@ -658,12 +669,20 @@ std::vector<int> LiveBaker::takeDirtyChunks() {
         if (chunkDirty_[i]) { out.push_back(static_cast<int>(i)); chunkDirty_[i] = 0; }
     return out;
 }
-std::vector<int> LiveBaker::takeDueChunks() {
+std::vector<int> LiveBaker::takeDueChunks(const Vec3* camera, double nearRadius) {
     std::vector<int> out;
+    const bool denoise = denoiseWanted();
     for (size_t i = 0; i < chunkDirty_.size(); ++i) {
         if (!chunkDirty_[i]) continue;
         const int p = chunks_[i].passes, sent = sentPasses_[i];
-        if (sent >= 0 && p > sent && p < cfg_.maxPasses && p * 2 < sent * 3) continue;  // refinement only, and not enough of it yet
+        if (sent > 0 && p > sent) {  // refinement only since the last send (sent 0: nothing worth showing went out yet, the first pass does)
+            if (p >= cfg_.maxPasses) {
+                if (denoise && (chunkDn_[i] == 0 || chunkDn_[i] == 2)) continue;  // the denoised version follows: this one would be sent for nothing
+            } else {
+                if (p < sent * 3) continue;                                         // not enough of it yet
+                if (camera && nearRadius > 0 && (chunks_[i].bounds.center() - *camera).length() > nearRadius) continue;  // far away: first and final only
+            }
+        }
         out.push_back(static_cast<int>(i));
         chunkDirty_[i] = 0;
     }
@@ -777,21 +796,57 @@ void LiveBaker::setLights(const LightScene& next) {
 
 LiveBaker::StepResult LiveBaker::step(const Vec3* camera, size_t texelBudget) {
     StepResult r;
-    std::vector<int> order;
-    for (size_t i = 0; i < chunks_.size(); ++i) if (chunks_[i].passes < cfg_.maxPasses) order.push_back(static_cast<int>(i));
-    auto dist = [&](int i) { return camera ? (chunks_[static_cast<size_t>(i)].bounds.center() - *camera).length() : 0.0; };
-    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
-        const LiveChunk &ca = chunks_[static_cast<size_t>(a)], &cb = chunks_[static_cast<size_t>(b)];
-        const bool sa = ca.passes == 0, sb = cb.passes == 0;
-        if (sa != sb) return sa;                                  // stale chunks first
-        if (!sa && ca.passes != cb.passes) return ca.passes < cb.passes;  // then the least refined
-        return dist(a) < dist(b);                                  // nearest to the camera first
-    });
+    struct Item { double dist; int bucket; int pageRank; uint32_t index; };
+    // Every chunk first gets `warm` passes, least refined first, so the whole picture is usable early. From there on the pages are finished one after the
+    // other, nearest first: a page that reached its last pass is denoised while the GPU works on the next ones (all pages used to finish together at the end
+    // and the filter ran alone after the last step: a quarter of the whole bake).
+    const int warm = std::max(1, cfg_.maxPasses / 3);
+    std::vector<double> pageDist(static_cast<size_t>(std::max(0, samples_.pageCount)), 1e300);
+    std::vector<double> chunkDist(chunks_.size(), 0.0);
+    for (size_t i = 0; i < chunks_.size(); ++i) {
+        if (chunks_[i].passes >= cfg_.maxPasses) continue;
+        chunkDist[i] = camera ? (chunks_[i].bounds.center() - *camera).length() : 0.0;
+        double& pd = pageDist[static_cast<size_t>(chunks_[i].page)];
+        pd = std::min(pd, chunkDist[i]);
+    }
+    std::vector<int> pageRank(pageDist.size(), 0);
+    {
+        std::vector<int> byDist(pageDist.size());
+        for (size_t i = 0; i < byDist.size(); ++i) byDist[i] = static_cast<int>(i);
+        std::stable_sort(byDist.begin(), byDist.end(), [&](int a, int b) { return pageDist[static_cast<size_t>(a)] < pageDist[static_cast<size_t>(b)]; });
+        for (size_t r = 0; r < byDist.size(); ++r) pageRank[static_cast<size_t>(byDist[r])] = static_cast<int>(r);
+    }
+    std::vector<Item> order;
+    for (size_t i = 0; i < chunks_.size(); ++i)
+        if (chunks_[i].passes < cfg_.maxPasses)
+            order.push_back({chunkDist[i], std::min(chunks_[i].passes, warm), pageRank[static_cast<size_t>(chunks_[i].page)], static_cast<uint32_t>(i)});
     const auto t0 = std::chrono::steady_clock::now();
     if (!order.empty() && cfg_.gpuTexelsPerStep > 0 && prepareGpu()) texelBudget = std::max<size_t>(texelBudget, gpuBudget_);
+    // Stale chunks first, then the least refined, nearest to the camera first (ties: chunk order). A step takes only the first few thousand of
+    // a hundred thousand chunks, so only those are put in order (sorting them all took longer than the GPU on a big level).
+    const auto before = [warm](const Item& a, const Item& b) {
+        const bool sa = a.bucket == 0, sb = b.bucket == 0;
+        if (sa != sb) return sa;
+        if (!sa && a.bucket != b.bucket) return a.bucket < b.bucket;
+        if (!sa && a.bucket >= warm && a.pageRank != b.pageRank) return a.pageRank < b.pageRank;  // warm: page by page
+        if (a.dist != b.dist) return a.dist < b.dist;
+        return a.index < b.index;
+    };
+    const size_t avg = std::max<size_t>(1, samples_.count() / std::max<size_t>(1, chunks_.size()));
+    size_t sorted = 0;  // order[0, sorted) is in order and precedes the rest
+    auto sortMore = [&](size_t upTo) {
+        upTo = std::min(upTo, order.size());
+        if (upTo <= sorted) return;
+        if (upTo < order.size()) std::nth_element(order.begin() + static_cast<std::ptrdiff_t>(sorted), order.begin() + static_cast<std::ptrdiff_t>(upTo), order.end(), before);
+        std::sort(order.begin() + static_cast<std::ptrdiff_t>(sorted), order.begin() + static_cast<std::ptrdiff_t>(upTo), before);
+        sorted = upTo;
+    };
+    sortMore(texelBudget / avg * 3 / 2 + 64);
     std::vector<int> chosen;
-    for (int i : order) {
+    for (size_t k = 0; k < order.size(); ++k) {
         if (r.texels >= texelBudget && !r.chunks.empty()) break;
+        if (k >= sorted) sortMore(sorted * 2 + 64);  // chunks with few texels: the estimate was short
+        const int i = static_cast<int>(order[k].index);
         chosen.push_back(i);
         r.chunks.push_back(i);
         r.texels += chunks_[static_cast<size_t>(i)].samples.size();

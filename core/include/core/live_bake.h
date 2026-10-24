@@ -162,10 +162,11 @@ public:
     // Chunks whose pixels changed since the last call (refined, denoised, or holding texels that are new / moved / still unsent from before a rebuild):
     // exactly the tiles a client has to be sent. Cleared by the call.
     std::vector<int> takeDirtyChunks();
-    // Like takeDirtyChunks(), but a chunk that only gained refinement passes since its last send waits until it gained half again (1, 2, 3, 5, 8, 12, ...
-    // and always the last pass): re-sending every chunk after every pass sent each tile ~maxPasses times for a picture that barely changes. A chunk
-    // left out stays dirty. noteSent() records what the client holds.
-    std::vector<int> takeDueChunks();
+    // Like takeDirtyChunks(), but only what is worth sending now. A chunk that only gained refinement passes since its last send waits until it tripled its
+    // passes (1, 3, 9, 27, ...), and only when it is within `nearRadius` of `camera` (null = all chunks are near): further away the first and the final
+    // version are enough. The final raw version is not sent when the denoised one follows. Re-sending every chunk after every pass sent each tile ~10
+    // times (5 GB for a big level) for a picture that barely changes. A chunk left out stays dirty. noteSent() records what the client holds.
+    std::vector<int> takeDueChunks(const Vec3* camera = nullptr, double nearRadius = 0);
     void noteSent(const std::vector<int>& ids);
     bool hasDirtyChunks() const;
     void markAllChunksDirty();   // e.g. the exposure changed

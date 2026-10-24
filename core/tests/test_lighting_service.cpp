@@ -577,6 +577,7 @@ struct ClientSim {
     std::vector<std::string> log;
     std::map<int, std::vector<std::vector<uint16_t>>> pages;  // per style layer: RGBA16F pages (the base always; another layer with its first tile)
     std::set<std::tuple<int, int, int>> touched;  // distinct tile rectangles (page, x, y) applied since the test last cleared it
+    size_t touchedArea = 0;                       // texels those rectangles cover (neighbouring chunks are sent as one rectangle, so their count says little)
     void apply(const json& m) {
         const std::string type = m["type"];
         if (type == "lit_mesh") {
@@ -618,6 +619,7 @@ struct ClientSim {
                     }
                 ++tilesApplied;
                 touched.insert({pg, x0, y0});
+                touchedArea += static_cast<size_t>(w) * h;
             }
         }
     }
@@ -705,8 +707,9 @@ TEST_CASE("lighting service (thread): a live client and a client that joins late
     CHECK(live.meshes == 1);
     CHECK(live.lastKeep == false);
     CHECK(live.tilesApplied > 4);
-    const size_t firstTiles = live.touched.size();
+    const size_t firstTiles = live.touchedArea;
     live.touched.clear();
+    live.touchedArea = 0;
     const size_t firstMeshes = live.meshes;
     {   // a window opened now
         ClientSim late;
@@ -724,7 +727,7 @@ TEST_CASE("lighting service (thread): a live client and a client that joins late
     CHECK(live.meshes == static_cast<int>(firstMeshes) + 1);
     CHECK(live.lastKeep == true);  // the Shell keeps its pages and its texture
     CHECK(live.touched.size() > 0);
-    CHECK(live.touched.size() < firstTiles / 2);  // not the whole atlas again: what did not change is not sent
+    CHECK(live.touchedArea < firstTiles / 2);  // not the whole atlas again: what did not change is not sent
     ClientSim late;
     for (const auto& s : rig.router.onConnect().toSender) late.apply(json::parse(s));
     CHECK(late.pages == live.pages);
