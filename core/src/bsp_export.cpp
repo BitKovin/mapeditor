@@ -54,7 +54,7 @@ bool isStatic(const std::string& c, const LightingClasses& classes) {
 }  // namespace
 
 json BspExportResult::toJson() const {
-    json s = {{"surfaces", stats.surfaces}, {"decals", stats.decals}, {"sky", stats.skySurfaces}, {"laidOut", stats.laidOutSurfaces}, {"droppedSurfaces", stats.droppedSurfaces}, {"degenerateTriangles", stats.degenerateTriangles}, {"lightmapJpegPages", stats.lightmapJpegPages}, {"lightmapJpegRejected", stats.lightmapJpegRejected}, {"lightmapPages", stats.lightmapPages}, {"brushes", stats.brushes}, {"models", stats.models},
+    json s = {{"surfaces", stats.surfaces}, {"decals", stats.decals}, {"sky", stats.skySurfaces}, {"laidOut", stats.laidOutSurfaces}, {"droppedSurfaces", stats.droppedSurfaces}, {"degenerateTriangles", stats.degenerateTriangles}, {"reliefSkipped", stats.reliefSkipped}, {"weldedVertices", stats.weldedVertices}, {"lightmapJpegPages", stats.lightmapJpegPages}, {"lightmapJpegRejected", stats.lightmapJpegRejected}, {"lightmapPages", stats.lightmapPages}, {"brushes", stats.brushes}, {"models", stats.models},
               {"leafs", stats.leafs}, {"clusters", stats.clusters}, {"lightmapPages", stats.lightmapPages}, {"gridPoints", stats.gridPoints},
               {"palette", stats.palette}, {"visCell", stats.visCell}, {"visSeconds", stats.visSeconds}};
     return {{"type", "export_result"}, {"ok", ok}, {"cancelled", cancelled}, {"error", error}, {"warnings", warnings}, {"stats", s},
@@ -98,6 +98,7 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
             return !img || img->transparency.mode == TransparencyMode::Opaque;
         };
         in.decals = collectDecals(doc, prefabs);
+        in.playable = collectPlayableArea(doc, prefabs);
         // the authored faces (world space, prefabs resolved) and the textures / groups: the texture layout as the editor shows it (texplan.h)
         std::map<std::pair<std::string, std::string>, const Brush*> brushIndex;
         for (const auto& e : doc.entities) for (const auto& b : e.brushes) brushIndex[{"", b.id}] = &b;
@@ -165,6 +166,11 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                 in.settings.sky = skySettingsOf(e, [&]() { return listSkyboxes(req.assetsRoot); }, &r.warnings);  // REQUIREMENTS §28
                 if (in.settings.sky.mode != AutoSky::Off && !in.settings.sky.texture.empty() && !readSkybox(req.assetsRoot, in.settings.sky.texture))
                     r.warnings.push_back("auto sky: " + in.settings.sky.texture + " has no image in env/ (the engine would draw nothing)");
+                if (const auto d = e.keyvalues.find("_relief_distance"); d != e.keyvalues.end()) {  // texture reliefs only near the playable area (bsp_compile.h)
+                    try { in.settings.reliefDistance = std::clamp(std::stod(d->second), 0.0, 100000.0); } catch (...) { r.warnings.push_back("_relief_distance is not a number"); }
+                } else {
+                    in.settings.reliefDistance = 48;
+                }
                 {  // 8 bit lightmap pages as .jpg (bsp_compile.h): on unless _lightmap_jpg is 0; _lightmap_jpg_quality
                     auto flag = [&](const char* key, bool dflt) { const auto k = e.keyvalues.find(key); return k == e.keyvalues.end() || k->second.empty() ? dflt : k->second != "0"; };
                     in.settings.lightmapJpeg = flag("_lightmap_jpg", true);

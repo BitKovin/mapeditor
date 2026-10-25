@@ -674,7 +674,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             }
             std::vector<texplan::V3> poly;
             for (const Vec3& v : s.verts) poly.push_back(texplan::v3(v));
-            const auto tris = texplan::texturePolygon(poly, texplan::v3(s.normal), parent.first, parent.second, in.texInfo, in.texGroups, &reliefBudget, "dev/grey",
+            const auto tris = texplan::texturePolygon(poly, texplan::v3(s.normal), parent.first, parent.second, info, in.texGroups, &reliefBudget, "dev/grey",
                                                      &outlines.of(static_cast<size_t>(&s - in.surfaces.data())));
             std::map<std::string, Poly> byTexture;  // one surface per texture the face samples
             for (const auto& t : tris) {
