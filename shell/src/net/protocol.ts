@@ -9,6 +9,8 @@ export interface GameProfile {
   entityDefinitions: string; mapRoot: string; prefabRoot: string; texGroupRoot?: string
   /** Texture pixels per meter when a texture has no properties of its own (default 64). */
   pixelsPerMeter?: number
+  /** The Hide menu's class patterns, shared by everyone on the game (absent: the file has none yet). */
+  hideGroups?: string[]
 }
 /** One class from the game's .ent file (see core/include/core/entdef.h). */
 /** `default` / `min` / `max` / `step` are the .ent's typed-editor hints: the game's value when the key is absent and the numeric range. */

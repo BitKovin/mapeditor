@@ -46,6 +46,20 @@ TEST_CASE("exporters: registry, unknown ids fall back to rBSP, the path takes th
     CHECK(withExporterExtension("maps/v1.2/a.bsp", *findExporter("rbsp")) == "maps/v1.2/a.bsp");
 }
 
+TEST_CASE("profile: hideGroups (the editor's Hide menu) are optional, validated and written back") {
+    CHECK(!GameProfile{}.hideGroups.has_value());
+    CHECK(!GameProfile{}.toJson().contains("hideGroups"));
+    const GameProfile p = profileFromJson(json{{"hideGroups", json::array({"trigger_*", "func_clip"})}});
+    REQUIRE(p.hideGroups.has_value());
+    CHECK(*p.hideGroups == std::vector<std::string>{"trigger_*", "func_clip"});
+    CHECK(p.toJson()["hideGroups"] == json::array({"trigger_*", "func_clip"}));
+    CHECK(profileFromJson(json{{"hideGroups", json::array()}}).hideGroups->empty());  // an empty list is a list
+    CHECK_THROWS(profileFromJson(json{{"hideGroups", "trigger_*"}}));
+    CHECK_THROWS(profileFromJson(json{{"hideGroups", json::array({""})}}));
+    CHECK_THROWS(profileFromJson(json{{"hideGroups", json::array({1})}}));
+    CHECK_THROWS(profileFromJson(json{{"hideGroups", json::array({std::string(81, 'a')})}}));
+}
+
 TEST_CASE("exporters: the format is a game profile setting") {
     CHECK(GameProfile{}.exporter == "rbsp");
     CHECK(profileFromJson(json{{"exporter", "obj"}}).exporter == "obj");

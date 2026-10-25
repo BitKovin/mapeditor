@@ -28,6 +28,8 @@ import { TexturePanel } from './ui/texturePanel'
 import { openTextureProperties } from './ui/texturePropsWindow'
 import { openReliefEditor } from './ui/reliefEditor'
 import { propsToJson } from './model/texprops'
+import { restoreHideRules, rulePatterns, rulesFromGroups } from './model/visibility'
+import { setHideRules as applyHideRules } from './state/actions'
 import { TexGroupCache } from './state/texgroups'
 import { TexGroupsPanel } from './ui/texGroupsPanel'
 import { toggleFastTextureTool } from './ui/fastTextureTool'
@@ -507,6 +509,43 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   const LAYOUT_KEY = 'levelEditor.layout.v1', PRESETS_KEY = 'levelEditor.layoutPresets.v1'
   function readJson<T>(key: string): T | null { try { const v = localStorage.getItem(key); return v ? (JSON.parse(v) as T) : null } catch { return null } }
   function writeJson(key: string, value: unknown): void { try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* storage blocked: the layout just is not kept */ } }
+  // hide rules (viewport > Hide) are kept like the layout: your own patterns and what is switched on come back after a restart
+  const HIDE_RULES_KEY = 'levelEditor.hideRules.v1'
+  store.setHideRules(restoreHideRules(readJson<unknown>(HIDE_RULES_KEY)))
+  let savedRules = store.state.hideRules
+  // The list of groups (the patterns) belongs to the game: game_profile.json "hideGroups" is shared by everyone who works on it. What is switched on stays
+  // in this browser. A new list from the Core (the file changed, another developer's edit) replaces ours; our own change is written to the file.
+  let seenProfile: typeof store.state.profile = null
+  let pendingGroups: string | null = null  // what we asked the Core to write: its answer (the same list) is not news, an older list in between is ignored
+  const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i])
+  store.subscribe(() => {
+    const st = store.state
+    if (st.profile !== seenProfile) {
+      seenProfile = st.profile
+      const groups = st.profile?.hideGroups
+      if (groups) {
+        if (pendingGroups !== null) { if (pendingGroups !== JSON.stringify(groups)) return; pendingGroups = null }
+        const next = rulesFromGroups(groups, st.hideRules)
+        if (!sameList(rulePatterns(next), rulePatterns(st.hideRules)) || next.some((r, i) => r.enabled !== st.hideRules[i]?.enabled)) { savedRules = next; applyHideRules(store, next); writeJson(HIDE_RULES_KEY, next) }
+      } else if (st.profile && st.hideRules.some((r) => r.custom)) {
+        writeGroups(rulePatterns(st.hideRules))  // an older profile without the key: our own groups become the shared ones
+      }
+      return
+    }
+    if (st.hideRules !== savedRules) {
+      const listChanged = !sameList(rulePatterns(st.hideRules), rulePatterns(savedRules))
+      savedRules = st.hideRules
+      writeJson(HIDE_RULES_KEY, savedRules)
+      if (listChanged && st.profile) writeGroups(rulePatterns(savedRules))
+    }
+  })
+  function writeGroups(groups: string[]): void {
+    if (store.state.profile?.hideGroups && sameList(store.state.profile.hideGroups, groups)) return
+    pendingGroups = JSON.stringify(groups)
+    conn.request((id) => msg.writeGameProfile(id, { hideGroups: groups })).then((r) => {
+      if (!r.ok) { pendingGroups = null; store.setMessage(`Hide groups not saved to game_profile.json: ${r.error ?? 'the Core refused'}`) }
+    }, (e: unknown) => { pendingGroups = null; store.setMessage(`Hide groups not saved to game_profile.json: ${e instanceof Error ? e.message : String(e)}`) })
+  }
   type SavedLayout = { dock: ReturnType<DockviewApi['toJSON']>; reopen?: string[] }
   const layoutPresets = (): Record<string, SavedLayout> => readJson<Record<string, SavedLayout>>(PRESETS_KEY) ?? {}
   /** The current arrangement. Panels in their own OS windows are not kept as windows (a browser may block them on start): they reopen docked. */

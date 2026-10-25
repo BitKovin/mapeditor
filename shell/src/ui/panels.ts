@@ -9,7 +9,12 @@ import { specOf as terrainSpecOf } from '../model/terrain'
 import type { EntityClassDef } from '../net/protocol'
 import type { Store } from '../state/store'
 import { wholeEntityIfSole } from '../state/store'
+import { toggleHidden } from '../state/actions'
+import { brushKey, entityKey, hiddenState, instanceKey, ruleMatcher } from '../model/visibility'
 import { fmt, h } from './dom'
+
+const EYE_ON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8s2.6-5 7-5 7 5 7 5-2.6 5-7 5-7-5-7-5z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2.2" fill="currentColor"/></svg>'
+const EYE_OFF = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1 8s2.6-5 7-5 7 5 7 5-2.6 5-7 5-7-5-7-5z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2 14L14 2" stroke="currentColor" stroke-width="1.5"/></svg>'
 
 abstract class Panel implements IContentRenderer {
   readonly element = h('div', { class: 'panel' })
@@ -22,44 +27,142 @@ abstract class Panel implements IContentRenderer {
 
 export class OutlinerPanel extends Panel {
   private sig = ''
+  /** The search text: rows whose label does not contain every word of it are left out (an entity stays while any of its brushes matches). */
+  private query = ''
+  /** Entities whose brushes are listed. Everything starts collapsed; a selected brush highlights its collapsed entity instead of opening it. */
+  private readonly expanded = new Set<string>()
+  private readonly search = h('input', { type: 'search', class: 'outliner-search', placeholder: 'Search outliner…', title: 'Filter by class, target name, id, brush or prefab name (Esc clears)', 'aria-label': 'Search outliner', spellcheck: 'false', autocomplete: 'off' }) as HTMLInputElement
+  private readonly bar = h('div', { class: 'outliner-bar' }, this.search)
+  init(): void {
+    this.search.addEventListener('input', () => { this.query = this.search.value; this.refresh() })
+    this.search.addEventListener('keydown', (ev) => {
+      ev.stopPropagation() // typing must not trigger viewport / app shortcuts
+      if (ev.key === 'Escape' && this.search.value) { ev.preventDefault(); this.search.value = ''; this.query = ''; this.refresh() }
+    })
+    super.init()
+  }
+  /** The selection the outliner last scrolled to: only a changed selection moves the list (an unrelated rebuild must not take the scroll position away). */
+  private revealed = ''
   protected refresh(): void {
     const st = this.store.state
     // Rebuilding on every drag tick would eat pointer events; only rebuild when the tree or selection changed.
-    const sig = JSON.stringify([st.doc.entities.map((e) => [e.id, e.classname, e.brushes?.map((b) => b.id)]), st.doc.prefabInstances.map((p) => [p.id, p.file, p.name]), st.selection, st.multi.length, st.problems])
+    const sig = JSON.stringify([st.doc.entities.map((e) => [e.id, e.classname, e.keyvalues?.targetname, e.brushes?.map((b) => b.id)]), st.doc.prefabInstances.map((p) => [p.id, p.file, p.name]), st.selection, st.multi.length, st.problems, st.hidden, st.hideRules, this.query, [...this.expanded]])
     if (sig === this.sig) return
     this.sig = sig
     const root = h('div', { class: 'tree' })
+    const hid = new Set(st.hidden), ruled = ruleMatcher(st.hideRules)
+    const words = this.query.toLowerCase().split(/\s+/).filter(Boolean)
+    const filtering = words.length > 0
+    const hit = (text: string) => { const t = text.toLowerCase(); return words.every((w) => t.includes(w)) }
+    let shown = 0
     for (const e of st.doc.entities) {
-      const isSel = st.selection?.entityId === e.id && !st.selection.brushId
-      const row = h('div', { class: `row${isSel ? ' sel' : ''}` }, `${e.classname ?? 'point_entity'}`, h('span', { class: 'dim' }, ` ${e.id}`))
-      row.addEventListener('click', () => this.store.select({ entityId: e.id }))
+      const target = e.keyvalues?.targetname?.trim() ?? ''
+      const eText = `${e.classname ?? 'point_entity'} ${e.id} ${target}`
+      const eHit = !filtering || hit(eText)
+      const spec0 = terrainSpecOf(e)
+      const brushHit = (b: NonNullable<Entity['brushes']>[number]) => hit(`${eText} ${b.op === 'subtract' ? 'subtract' : 'add'} brush ${b.id}`)
+      if (filtering && !eHit && !(spec0 ? hit(`${eText} terrain`) : (e.brushes ?? []).some(brushHit))) continue
+      shown++
+      const spec = terrainSpecOf(e)
+      const nBrushes = spec ? 0 : e.brushes?.length ?? 0
+      // while searching, an entity that is listed only for a matching brush is open so the brush can be seen
+      const open = nBrushes > 0 && (this.expanded.has(e.id) || (filtering && !eHit))
+      const inSel = st.selection?.entityId === e.id
+      const isSel = inSel && (!st.selection!.brushId || (nBrushes > 0 && !open))  // a brush picked inside a collapsed entity lights the entity's row
+      const hs = hiddenState(hid, ruled, e)
+      const row = h('div', { class: `row${isSel ? ' sel' : ''}${hs !== 'no' ? ' hid' : ''}`, 'data-key': entityKey(e.id) }, this.twisty(e.id, nBrushes, open), this.eye(hs, entityKey(e.id)), `${e.classname ?? 'point_entity'}`, target ? h('span', { class: 'target', title: 'targetname' }, ` “${target}”`) : '', h('span', { class: 'dim' }, ` ${e.id}${nBrushes && !open ? ` · ${nBrushes} brush${nBrushes === 1 ? '' : 'es'}` : ''}`))
+      row.addEventListener('click', () => this.pick(hs !== 'no', { entityId: e.id }))
       root.append(row)
       // a terrain is hundreds of tile brushes: one row for all of them (REQUIREMENTS §39)
-      const spec = terrainSpecOf(e)
       if (spec) {
-        const tr = h('div', { class: 'row child' }, `terrain ${spec.cols} x ${spec.rows}`, h('span', { class: 'dim' }, ` ${e.brushes?.length ?? 0} tiles`))
-        tr.addEventListener('click', () => this.store.select({ entityId: e.id }))
+        if (filtering && !eHit && !hit(`${eText} terrain`)) continue
+        const tr = h('div', { class: `row child${hs !== 'no' ? ' hid' : ''}`, 'data-key': entityKey(e.id) + '#terrain' }, `terrain ${spec.cols} x ${spec.rows}`, h('span', { class: 'dim' }, ` ${e.brushes?.length ?? 0} tiles`))
+        tr.addEventListener('click', () => this.pick(hs !== 'no', { entityId: e.id }))
         root.append(tr)
         continue
       }
+      if (!open) continue
       for (const b of e.brushes ?? []) {
+        if (filtering && !eHit && !brushHit(b)) continue
         const bsel = st.selection?.entityId === e.id && st.selection.brushId === b.id
-        const br = h('div', { class: `row child${bsel ? ' sel' : ''}` }, `${b.op === 'subtract' ? '− ' : '+ '}brush`, h('span', { class: 'dim' }, ` ${b.id}`))
-        br.addEventListener('click', () => this.store.select(wholeEntityIfSole(this.store.state.doc, { entityId: e.id, brushId: b.id })))
+        const bs = hiddenState(hid, ruled, e, b.id)
+        const br = h('div', { class: `row child${bsel ? ' sel' : ''}${bs !== 'no' ? ' hid' : ''}`, 'data-key': brushKey(e.id, b.id) }, this.eye(bs, brushKey(e.id, b.id)), `${b.op === 'subtract' ? '− ' : '+ '}brush`, h('span', { class: 'dim' }, ` ${b.id}`))
+        br.addEventListener('click', () => this.pick(bs !== 'no', wholeEntityIfSole(this.store.state.doc, { entityId: e.id, brushId: b.id })))
         root.append(br)
       }
     }
     const names = instanceNames(st.doc.prefabInstances)
     st.doc.prefabInstances.forEach((p, i) => {
+      if (filtering && !hit(`${names[i]} ${p.file} prefab`)) return
+      shown++
       const isSel = st.multi.some((m) => m.instanceId === p.id) || st.selection?.instanceId === p.id
-      const row = h('div', { class: `row prefab${isSel ? ' sel' : ''}` }, '▣ ', names[i], h('span', { class: 'dim' }, ` ${p.file}`))
-      row.addEventListener('click', (ev) => (ev.ctrlKey || ev.metaKey ? this.store.toggleSelect({ entityId: '', instanceId: p.id }) : this.store.select({ entityId: '', instanceId: p.id })))
+      const ph = hid.has(instanceKey(p.id))
+      const row = h('div', { class: `row prefab${isSel ? ' sel' : ''}${ph ? ' hid' : ''}`, 'data-key': instanceKey(p.id) }, this.eye(ph ? 'self' : 'no', instanceKey(p.id)), '▣ ', names[i], h('span', { class: 'dim' }, ` ${p.file}`))
+      row.addEventListener('click', (ev) => (ph ? this.pick(true, { entityId: '', instanceId: p.id }) : ev.ctrlKey || ev.metaKey ? this.store.toggleSelect({ entityId: '', instanceId: p.id }) : this.store.select({ entityId: '', instanceId: p.id })))
       root.append(row)
     })
     if (!st.doc.entities.length && !st.doc.prefabInstances.length) root.append(h('div', { class: 'dim pad' }, 'Empty map. Add a box from the toolbar.'))
+    else if (filtering && !shown) root.append(h('div', { class: 'dim pad' }, `Nothing matches “${this.query.trim()}”.`))
     if (st.problems.length) root.append(h('div', { class: 'problems' }, ...st.problems.map((p) => h('div', {}, `⚠ ${p}`))))
-    this.element.replaceChildren(root)
+    // the search box is re-attached on every rebuild: keep the caret in it when the user is typing
+    const typing = this.element.ownerDocument.activeElement === this.search
+    const caret: [number | null, number | null] = [this.search.selectionStart, this.search.selectionEnd]
+    const scrollTop = this.element.scrollTop  // a rebuild (an eye clicked, a fold) must not move the list
+    this.element.replaceChildren(this.bar, root)
+    this.element.scrollTop = scrollTop
+    if (typing) { this.search.focus(); try { this.search.setSelectionRange(caret[0], caret[1]) } catch { /* not supported for this input type */ } }
+    this.revealSelection(root)
   }
+
+  /** The fold arrow of an entity row with brushes (an empty spacer of the same width for the others, so the rows line up). */
+  private twisty(entityId: string, brushes: number, open: boolean): HTMLElement {
+    if (!brushes) return h('span', { class: 'twisty none' })
+    const t = h('button', { class: 'twisty', title: open ? 'Collapse brushes' : 'Show brushes', 'aria-label': open ? 'Collapse brushes' : 'Show brushes', 'aria-expanded': String(open) }, open ? '▾' : '▸')
+    t.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      if (this.expanded.has(entityId)) this.expanded.delete(entityId); else this.expanded.add(entityId)
+      this.refresh()
+    })
+    t.addEventListener('dblclick', (ev) => ev.stopPropagation())
+    return t
+  }
+
+  /** The eye of a row: open = shown, struck through = hidden by this row's own key (click shows it again). Hidden through the entity or a class rule: it says so and cannot be switched here. */
+  private eye(state: 'no' | 'self' | 'rule' | 'parent', key: string): HTMLElement {
+    const hidden = state !== 'no'
+    const title = state === 'rule' ? 'Hidden by a Hide rule (viewport > Hide)' : state === 'parent' ? 'Hidden with its entity' : hidden ? 'Hidden: click to show' : 'Click to hide (stays in the map)'
+    const b = h('button', { class: `eye${hidden ? ' off' : ''}${state === 'rule' || state === 'parent' ? ' locked' : ''}`, title, 'aria-label': title, 'aria-pressed': String(hidden) })
+    b.innerHTML = hidden ? EYE_OFF : EYE_ON
+    b.addEventListener('click', (ev) => { ev.stopPropagation(); if (state === 'no' || state === 'self') toggleHidden(this.store, key) })
+    b.addEventListener('dblclick', (ev) => ev.stopPropagation())
+    return b
+  }
+  /** A hidden thing cannot be selected (it could be moved or deleted unseen): the click only says how to get it back. */
+  private pick(hidden: boolean, sel: Parameters<Store['select']>[0]): void {
+    if (hidden) this.store.setMessage('Hidden: click its eye in the Outliner to show it again')
+    else this.store.select(sel)
+  }
+
+  /** Scrolls the row of the primary selection into view (a brush: its own row; an entity picked as a whole, a point entity, a terrain: the entity's row; a prefab instance: its row). */
+  private revealSelection(root: HTMLElement): void {
+    const sel = this.store.state.selection
+    const key = sel ? `${sel.entityId}|${sel.brushId ?? ''}|${sel.instanceId ?? ''}` : ''
+    if (key === this.revealed) return
+    this.revealed = key
+    if (!sel) return
+    const rows = [...root.querySelectorAll<HTMLElement>('[data-key]')]
+    const find = (k: string) => rows.find((r) => r.dataset.key === k)
+    const row = sel.instanceId !== undefined ? find(`i:${sel.instanceId}`)
+      : (sel.brushId !== undefined ? find(brushKey(sel.entityId, sel.brushId)) : undefined) ?? find(entityKey(sel.entityId))
+    if (row) revealIn(this.element, row)
+  }
+}
+
+/** Scrolls `row` to the middle of `scroller` when it is not fully inside it (nothing moves for a row that is already visible, e.g. one just clicked). */
+export function revealIn(scroller: HTMLElement, row: HTMLElement): void {
+  const a = scroller.getBoundingClientRect(), b = row.getBoundingClientRect()
+  if (b.top >= a.top && b.bottom <= a.bottom) return
+  row.scrollIntoView?.({ block: 'center' })
 }
 
 export class InspectorPanel extends Panel {

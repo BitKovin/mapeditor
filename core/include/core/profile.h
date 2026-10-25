@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,10 @@ struct GameProfile {
     nlohmann::json bsp;
     // The export format of this game (REQUIREMENTS §31 X2): an exporter id of exporter.h ("rbsp", "obj"). An unknown id exports rBSP, with a warning.
     std::string exporter = "rbsp";
+    // The editor's Hide groups (viewport > Hide): class patterns (`*` matches anything, "trigger_*") every developer of the game sees in the Hide menu.
+    // Kept here, not in a developer's own settings, so a team shares one list. Which of them are switched on stays each developer's own choice.
+    // nullopt = the file has no "hideGroups" key (the Shell then offers its built-in ones and writes its list on the first change).
+    std::optional<std::vector<std::string>> hideGroups;
 
     nlohmann::json toJson() const;
 };

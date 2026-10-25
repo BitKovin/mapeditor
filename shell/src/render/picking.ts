@@ -73,6 +73,8 @@ export interface PickOptions {
   includeSubtractive?: boolean
   /** false: editor-only volumes (editor_*) are hidden and not picked */
   includeVolumes?: boolean
+  /** True for a carved triangle whose owner (the subtractor of a cut wall) is hidden: it must not catch clicks. */
+  skipTri?: (tri: PickTri) => boolean
   /** Bounding box of a point-entity class relative to its origin (editor space); the default box when absent. */
   entityBox?: (classname: string) => Box
 }
@@ -104,6 +106,7 @@ export function pick(r: Ray, entities: Entity[], opts: PickOptions = {}): Hit | 
       const carved = b.op !== 'subtract' ? opts.carved?.get(carvedKey(e.id, b.id, opts.instances?.get(e) ?? '')) : undefined
       if (carved) {
         for (const tri of carved.pickTris) {
+          if (opts.skipTri?.(tri)) continue
           const t = rayTriangle(r, tri.a, tri.b, tri.c)
           if (t !== null) consider({ entity: ownerOf(tri, e), entityId: tri.entityId, brushId: tri.brushId, faceId: tri.faceId, t, point: add3(r.origin, r.dir, t), normal: facing(tri.normal) })
         }

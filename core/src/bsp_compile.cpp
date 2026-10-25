@@ -156,6 +156,13 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     std::vector<lightscale::Scale> chartScale;  // per chart: the colour its vertices carry and its texels are divided by (light_scale.h); neutral when off
     std::vector<uint8_t> vertexLitAlpha;        // per vertex lit chart: the exponent its vertices share with the rest of their smooth group (peak of the group's style 0 texels)
     std::vector<char> vertexLitChart;           // per chart: no texels in the file, the light is read at the vertices (BspSettings::vertexLitMaxArea)
+    // Vertex lit surfaces still reference a lightmap: a pure white island of kWhiteIsland x kWhiteIsland texels the compiler packs into one of the pages itself
+    // (the level never allocates or tracks it). The page holds light / scale, the vertex colour holds the light, so white (1) is neutral. whiteId is its
+    // pseudo chart index (== the number of charts) in the per chart arrays while packing; `white` is where it ended up (page -1 = none).
+    constexpr int kWhiteIsland = 5;
+    size_t whiteId = 0;
+    bool needWhite = false;
+    Placement white{-1, 0, 0};
     if (lit) {
         const LightmapPages& bp = basePages->second;
         const size_t nCharts = layout->charts.size();
@@ -275,6 +282,13 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             res.stats.clippedCharts = clippedCharts;
             if (clippedCharts) res.warnings.push_back(std::to_string(clippedCharts) + " lightmap chart(s) are brighter than 32 (the light scale's maximum); their brightest texels are clipped");
         }
+        needWhite = res.stats.vertexLitCharts > 0;
+        whiteId = nCharts;
+        if (needWhite) {  // the island is one more "chart" to the packer: its own size, never shared, light scale 1
+            outSize.push_back({kWhiteIsland, kWhiteIsland});
+            repOf.push_back(static_cast<int>(whiteId));
+            chartScale.push_back(lightscale::Scale{});
+        }
         auto invScale = [&](int c, float inv[3]) { for (int q = 0; q < 3; ++q) { const double v = chartScale[static_cast<size_t>(c)].value[q]; inv[q] = v > 0 ? static_cast<float>(1.0 / v) : 0.0f; } };
         if (cfg.lightmapTolerance > 0 && nCharts > 0) {
             // Fit every chart to the fewest texels that look the same (lightmap_fit.h), all layers of a chart together; identical charts share one rectangle.
@@ -326,6 +340,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             if (shrunk) res.warnings.push_back("lightmaps fitted: " + std::to_string(before / 1000) + "k -> " + std::to_string(after / 1000) + "k texels (" +
                                                std::to_string(shared) + " charts share the light of another)");
         }
+        if (needWhite && jpg) { ldrOf.resize(whiteId + 1, 0); ldrOf[whiteId] = 1; }  // white survives 8 bits exactly: it goes to a .jpg page (no .exr page just for it)
         // Where a chart's layer k goes: copied as it is when its size is unchanged (the baked gutter stays), else resampled with a replicated gutter
         // (8 bit pages hold their charts in whole 8x8 blocks, see packGroups: the rectangle is filled up to the block edge with the continued gradient)
         auto store = [&](const LightmapChart& ch, int c, size_t k, const Placement& dst, BspLightmapPage& page) {
@@ -363,6 +378,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         for (auto& m : placed) m.clear();
         res.stats.lightmapJpegPages = res.stats.lightmapJpegRejected = 0;
         res.warnings.resize(warnMark);
+        white = {-1, 0, 0};
         // Packs charts into pages, 8 bit charts apart from the others (in whole 8x8 blocks at block positions, so no JPEG block mixes two charts) (a page is either a .jpg or an .exr): the placement's page is group * 100000 + page
         auto packGroups = [&](const std::vector<int>& list) {
             std::map<int, Placement> where;
@@ -409,6 +425,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         if ((cfg.repackLightmaps || shrunk) && nCharts > 0) {
             std::vector<int> reps;
             for (size_t c = 0; c < nCharts; ++c) if (repOf[c] == static_cast<int>(c) && !vertexLitChart[c]) reps.push_back(static_cast<int>(c));
+            if (needWhite) reps.push_back(static_cast<int>(whiteId));
             const std::map<int, Placement> where = packGroups(reps);
             std::set<int> distinctPages;
             for (const auto& kv : where) distinctPages.insert(kv.second.page);
@@ -416,7 +433,22 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                 repacked = true;
                 std::map<int, int> outPage;
                 for (int c : distinctPages) outPage[c] = newPage(c >= 100000);  // in order: the .exr pages first
-                for (int c : reps) placed[0][c] = put(outPage, c, 0, where.at(c));
+                for (int c : reps) {
+                    if (needWhite && c == static_cast<int>(whiteId)) {  // the white island: every texel 1 (light / scale 1), the whole 8x8 block when the page is a .jpg
+                        const Placement rel = where.at(c);
+                        auto op = outPage.find(rel.page);
+                        if (op == outPage.end()) op = outPage.emplace(rel.page, newPage(rel.page >= 100000)).first;
+                        BspLightmapPage& pg = res.lightmaps[static_cast<size_t>(op->second)];
+                        const int w = pg.ldr ? blockUp(kWhiteIsland) : kWhiteIsland;
+                        for (int y = 0; y < w && rel.y + y < atlas; ++y)
+                            for (int x = 0; x < w && rel.x + x < atlas; ++x)
+                                for (int q = 0; q < 3; ++q) pg.rgb[(static_cast<size_t>(rel.y + y) * atlas + rel.x + x) * 3 + q] = 1.0f;
+                        pageRects[static_cast<size_t>(op->second)].push_back({rel.x, rel.y, w, w, kWhiteIsland, kWhiteIsland, c});
+                        white = {op->second, rel.x, rel.y};
+                        continue;
+                    }
+                    placed[0][c] = put(outPage, c, 0, where.at(c));
+                }
                 for (size_t c = 0; c < nCharts; ++c) if (repOf[c] != static_cast<int>(c)) placed[0][static_cast<int>(c)] = placed[0].at(repOf[c]);
                 res.warnings.push_back("lightmaps repacked: " + std::to_string(bp.pageCount) + " -> " + std::to_string(distinctPages.size()) + " pages");
             }
@@ -692,6 +724,16 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         std::array<Vec2, rbsp::kStyles> shift{};
         double fitX = 1, fitY = 1;
         int slots = 0;
+        Vec2 whiteUv{0, 0};  // vertex lit: every vertex reads the middle of the white island (page fractions)
+        if (vlit && white.page >= 0) {
+            out.lightmapStyles[0] = 0;
+            out.lightmapNum[0] = white.page;
+            out.lightmapCorner[0][0] = white.x;
+            out.lightmapCorner[0][1] = white.y;
+            out.lightmapSize[0] = out.lightmapSize[1] = kWhiteIsland;  // no vecs / origin: the island has no extent in the world
+            whiteUv = {(white.x + kWhiteIsland * 0.5) / atlas, (white.y + kWhiteIsland * 0.5) / atlas};
+            slots = 1;
+        }
         if (chart) {
             const auto& osz = outSize[static_cast<size_t>(lf->chart)];
             fitX = double(osz.first - 2 * lmPad) / std::max(1, chart->w - 2 * lmPad);
@@ -740,6 +782,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                 put3(dv.xyz, q);
                 bb.add(q);
                 dv.st[0] = float(s.triSt[k].u); dv.st[1] = float(s.triSt[k].v);
+                if (slots && !chart) { dv.lightmap[0][0] = float(whiteUv.u); dv.lightmap[0][1] = float(whiteUv.v); }
                 if (chart) {
                     const Vec3 foot = p - s.normal * (s.normal.dot(p) - planeD);  // a relief point takes the lightmap of the flat point under it
                     const Vec2 uv = layout->uv(*lf, foot);
@@ -811,6 +854,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             bb.add(q);
             const Vec2 st = s.st(src, p);
             dv.st[0] = float(st.u); dv.st[1] = float(st.v);
+            if (slots && !chart) { dv.lightmap[0][0] = float(whiteUv.u); dv.lightmap[0][1] = float(whiteUv.v); }
             if (chart) {
                 const Vec2 uv = layout->uv(*lf, p);
                 for (int k = 0; k < slots; ++k) {

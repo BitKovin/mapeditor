@@ -23,7 +23,8 @@ import { Projection, clampLightmapScale, defaultProjectionFor, fitProjection, li
 import { selectionPivot } from '../model/transform'
 import type { Selection, Store } from './store'
 import { ShapePatch, regenerateShape, shapeOf } from '../model/parametric'
-import { hideKeys } from '../model/visibility'
+import { brushKey, entityKey, hideKeys, instanceKey, ruleMatcher } from '../model/visibility'
+import type { HideRule } from '../model/visibility'
 import { createTerrain } from '../model/terrain'
 import { snap } from '../model/math'
 
@@ -947,6 +948,28 @@ export function hideSelection(store: Store): number {
   return keys.length
 }
 export function unhideAll(store: Store): void { store.setHidden([]) }
+
+/** Drops from the selection whatever is hidden now (a hidden thing cannot stay selected: it could still be moved or deleted unseen). */
+export function pruneHiddenSelection(store: Store): void {
+  const st = store.state
+  const ruled = ruleMatcher(st.hideRules), hid = new Set(st.hidden)
+  const gone = (s: { entityId: string; brushId?: string; instanceId?: string }): boolean => {
+    if (s.instanceId !== undefined) return hid.has(instanceKey(s.instanceId))
+    if (!s.entityId) return false
+    return hid.has(entityKey(s.entityId)) || (s.brushId !== undefined && hid.has(brushKey(s.entityId, s.brushId))) || ruled(findEntity(st.doc, s.entityId)?.classname)
+  }
+  const keep = st.multi.filter((s) => !gone(s))
+  if (keep.length === st.multi.length) return
+  if (keep.length) store.selectMany(keep); else store.select(null)
+}
+/** The outliner's eye: hides the thing with this key (see model/visibility.ts), or shows it again when it is hidden. Hidden things leave the selection. */
+export function toggleHidden(store: Store, key: string): void {
+  const hid = store.state.hidden
+  store.setHidden(hid.includes(key) ? hid.filter((k) => k !== key) : [...hid, key])
+  pruneHiddenSelection(store)
+}
+/** Sets the hide rules (View > Hide menu) and deselects what they hide. */
+export function setHideRules(store: Store, rules: HideRule[]): void { store.setHideRules(rules); pruneHiddenSelection(store) }
 
 /** Group = the selected brushes into a new func_group; Ungroup = the brushes of selected func_groups back into the world. */
 export const groupSelection = (store: Store): boolean => makeEntityFromSelection(store, 'func_group')

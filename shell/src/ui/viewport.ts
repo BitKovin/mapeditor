@@ -19,6 +19,9 @@ import { clashes, depthAxis, hitClipPoint, rayPlaneHit, snapPoint } from '../too
 import { handles2D, pixelsToMetres, resizeMap, screenAxis, Handle2D, ScreenAxis } from '../model/resize2d'
 import { mirrors, rotateAbout, scaleAbout, transformSelections, translateBy } from '../model/transform'
 import { instanceOf } from '../model/derived'
+import { buildHideMenu } from './hideMenu'
+import type { HideMenu } from './hideMenu'
+import type { PickTri } from '../model/derived'
 import { Camera, FlyCamera, OrbitCamera, OrthoCamera, Ray } from '../render/camera'
 import { AXIS_DIR, Axis, axisDistance, dragDelta, gizmoLength, angleDelta, hitAxis, hitDir, hitRing, lineDistance, ringAngle } from '../render/gizmo'
 import { Hit, pick } from '../render/picking'
@@ -37,6 +40,7 @@ import { DragItem, dragItem, isDragTransfer, itemFromTransfer, onDragItemChange 
 import type { Box } from '../model/entityBox'
 import { entityOrigin, prefabOrigin } from '../model/placement'
 import type { Entity } from '../model/document'
+import type { ResolvedEntity } from '../model/expand'
 import { autoSkyOf, isCubemapPath, SKY_TEXTURE_KEY } from '../model/sky'
 import { worldspawnOf } from '../model/levelSettings'
 import type { PrefabPreviews } from '../state/prefabPreview'
@@ -47,7 +51,7 @@ import { DrawPlane, MIN_SIZE, Rect, buildBrush, fallbackPlane, heightFor, planeT
 import { ModalKind, advanceVirtualCursor, alongLine, describeModal, stepSegments, grabDelta, metresPerPixel, planePoint, rotateAngle, scaleFactor, scaleVector, typeInto, typedValue, widthFromMouse } from '../tools/modal'
 import { boxSelect, combineSel, nearestFaceEdge, pickEdge, pickFaceId, pickVertex, Project } from '../tools/meshPick'
 import { ActiveElem, MeshPickAt, clickSelect } from '../model/meshSelect'
-import { visibleEntities } from '../model/visibility'
+import { brushKey, entityKey, instanceKey, ruleMatcher, visibleEntities, visiblePrefabs } from '../model/visibility'
 import { KnifePoint, connectVerts, knifeCut, knifePos, subdivideEdges } from '../model/meshCut'
 import { densityLegend, densityOf } from '../render/lightmapDensity'
 import { h } from './dom'
@@ -187,7 +191,7 @@ export class ViewportPanel implements IContentRenderer {
       this.element.append(h('div', { class: 'gl-error' }, `Viewport unavailable: ${(e as Error).message}`))
       return
     }
-    this.unsubs.push(this.store.subscribe(() => { this.checkTool(); this.updateLightStatus(); this.invalidate() }), this.textures.onChange(() => this.invalidate()),
+    this.unsubs.push(this.store.subscribe(() => { this.checkTool(); this.updateLightStatus(); this.hideMenu?.refresh(); this.invalidate() }), this.textures.onChange(() => this.invalidate()),
       this.store.subscribeTiles(() => this.tilesArrived()))
     this.bindDocument()
     this.invalidate()
@@ -215,7 +219,10 @@ export class ViewportPanel implements IContentRenderer {
     // fly keys are caught at the document in the capture phase: while the pointer is locked some browsers stop delivering
     // key events to the canvas, and the app's own shortcuts (Q = select tool ...) must not see them while flying
     const flyDown = (e: KeyboardEvent) => this.onFlyKey(e, true), flyUp = (e: KeyboardEvent) => this.onFlyKey(e, false)
-    const away = (ev: PointerEvent) => { const m = this.viewMenu; if (m && !m.contains(ev.target as Node) && !this.viewBtn?.contains(ev.target as Node)) m.style.display = 'none' }
+    const away = (ev: PointerEvent) => {
+      const m = this.viewMenu; if (m && !m.contains(ev.target as Node) && !this.viewBtn?.contains(ev.target as Node)) m.style.display = 'none'
+      const hm = this.hideMenu; if (hm && !hm.menu.contains(ev.target as Node) && !hm.button.contains(ev.target as Node)) hm.menu.style.display = 'none'
+    }
     doc.addEventListener('keydown', key); doc.addEventListener('keyup', key)
     doc.addEventListener('keydown', flyDown, true); doc.addEventListener('keyup', flyUp, true)
     doc.addEventListener('pointerdown', away)
@@ -228,6 +235,7 @@ export class ViewportPanel implements IContentRenderer {
     }
   }
   private viewMenu: HTMLElement | null = null
+  private hideMenu: HideMenu | null = null
   private viewBtn: HTMLElement | null = null
 
   /** Set by dispose(); the app drops disposed viewports so tools and keys never target a dead one. */
@@ -294,10 +302,27 @@ export class ViewportPanel implements IContentRenderer {
     this.invalidate()
   }
 
+  /** Tells whether the owner of a carved triangle is hidden (a cut wall is the subtractor's face, and the subtractor may be hidden while the wall's brush is not). */
+  private hiddenOwner(): (tri: PickTri) => boolean {
+    const st = this.store.state, hid = new Set(st.hidden), ruled = ruleMatcher(st.hideRules)
+    if (!hid.size && !st.hideRules.some((r) => r.enabled)) return () => false
+    return (tri) => {
+      if (tri.instance !== '') return hid.has(instanceKey(tri.instance.split('/')[0]))  // a cut wall inside prefab content: hidden with its instance
+      return hid.has(entityKey(tri.entityId)) || hid.has(brushKey(tri.entityId, tri.brushId)) || ruled(findEntity(st.doc, tri.entityId)?.classname)
+    }
+  }
+  /** The document's entities as this view shows and picks them: what the user hid (eye, Hide, rules) is left out. */
+  private shownEntities(): Entity[] { const st = this.store.state; return visibleEntities(st.doc.entities, st.hidden, st.hideRules) }
+  /** The prefab content as shown and picked: content of a hidden class is left out. */
+  private shownPrefabs(): ResolvedEntity[] {
+    const st = this.store.state
+    return visiblePrefabs(st.prefabEntities, st.hidden, st.hideRules)
+  }
+
   frameAll(): void {
     const min: Vec3 = [Infinity, Infinity, Infinity], max: Vec3 = [-Infinity, -Infinity, -Infinity]
     let any = false
-    for (const e of [...this.store.state.doc.entities, ...this.store.state.prefabEntities.map((p) => p.entity)])
+    for (const e of [...this.shownEntities(), ...this.shownPrefabs().map((p) => p.entity)])
       for (const b of e.brushes ?? []) {
         const bb = brushBounds(b)
         if (!bb) continue
@@ -325,8 +350,8 @@ export class ViewportPanel implements IContentRenderer {
     return { x: ((nx + 1) / 2) * w, y: ((1 - ny) / 2) * hgt, depth: cw }
   }
 
-  private pickOpts(): { carved: ReturnType<Store['carved']>; instances: Map<import('../model/document').Entity, string>; includeSubtractive: boolean; includeVolumes: boolean; entityBox: (classname: string) => Box } {
-    return { carved: this.store.carved(), instances: new Map(this.store.state.prefabEntities.map((p) => [p.entity, instanceOf(p)])), includeSubtractive: this.settings.showSubtractive, includeVolumes: this.settings.showVolumes, entityBox: (c) => this.store.entityBox(c) }
+  private pickOpts(): { carved: ReturnType<Store['carved']>; instances: Map<import('../model/document').Entity, string>; includeSubtractive: boolean; includeVolumes: boolean; entityBox: (classname: string) => Box; skipTri: (tri: PickTri) => boolean } {
+    return { skipTri: this.hiddenOwner(), carved: this.store.carved(), instances: new Map(this.store.state.prefabEntities.map((p) => [p.entity, instanceOf(p)])), includeSubtractive: this.settings.showSubtractive, includeVolumes: this.settings.showVolumes, entityBox: (c) => this.store.entityBox(c) }
   }
 
   /** A single selected brush face (Shift+click) gets one handle along its normal: dragging it moves the face plane (Radiant style). */
@@ -516,12 +541,12 @@ export class ViewportPanel implements IContentRenderer {
       camera: this.camera, settings: this.settings, lighting: this.store.lightmap, lightvol: this.store.lightvol, world: { doc: st.doc, prefabs: st.prefabEntities }, selection: sel, selections: st.editMode === 'object' ? st.multi : undefined,
       entityColor: (c) => this.store.entityColor(c), entityBox: (c) => this.store.entityBox(c), ghost: this.ghost, carved: this.store.carved(), decals: this.store.decals(), decalEntries: this.store.decalEntries(),
       entities: [
-        ...visibleEntities(st.doc.entities, st.hidden).map((entity) => ({ entity, readonly: false })),
-        ...st.prefabEntities.map((p) => ({ entity: p.entity, readonly: true, instanceId: p.instancePath[1], instance: instanceOf(p) })),
+        ...this.shownEntities().map((entity) => ({ entity, readonly: false })),
+        ...this.shownPrefabs().map((p) => ({ entity: p.entity, readonly: true, instanceId: p.instancePath[1], instance: instanceOf(p) })),
       ],
       gizmo: this.faceGizmo() && this.store.canEdit ? { pivot: this.faceGizmo()!.pivot, dir: this.faceGizmo()!.dir, length: gizmoLength(this.camera.distanceTo(this.faceGizmo()!.pivot)), active: this.drag?.kind === 'face' || this.hoverFace ? 0 : null }
         : pivot && this.store.canEdit ? { pivot, length: gizmoLength(this.camera.distanceTo(pivot)), active: this.drag?.kind === 'gizmo' ? this.drag.axis : this.hoverAxis, mode: this.gizmoMode() } : null,
-      annotations: this.settings.showOrigins ? entityAnnotations([...visibleEntities(st.doc.entities, st.hidden), ...st.prefabEntities.map((p) => p.entity)]) : undefined,
+      annotations: this.settings.showOrigins ? entityAnnotations([...this.shownEntities(), ...this.shownPrefabs().map((p) => p.entity)]) : undefined,
       overlays: [...this.arrowOverlays(), ...this.lightOverlays(), ...this.decalSelectionOverlay()],
       handles: [...this.entityHandleOverlay(), ...this.smoothEdgeOverlay(mt?.brush)],
       sizeLabels: this.sizeLabels(),
@@ -848,8 +873,9 @@ export class ViewportPanel implements IContentRenderer {
   /** Nearest thing under the ray among the document's own entities and prefab content; prefab hits name their top-level instance. */
   private pickAny(ray: Ray): { hit: Hit | null; instanceId?: string } {
     const st = this.store.state
-    const own = pick(ray, visibleEntities(st.doc.entities, st.hidden), this.pickOpts())  // hidden things are not picked
-    const pre = st.prefabEntities.length ? pick(ray, st.prefabEntities.map((p) => p.entity), this.pickOpts()) : null
+    const own = pick(ray, this.shownEntities(), this.pickOpts())  // hidden things are not picked
+    const shownPre = this.shownPrefabs()
+    const pre = shownPre.length ? pick(ray, shownPre.map((p) => p.entity), this.pickOpts()) : null
     if (pre && (!own || pre.t < own.t)) {
       const r = st.prefabEntities.find((p) => p.entity === pre.entity)
       if (r) return { hit: pre, instanceId: r.instancePath[1] }
@@ -1328,7 +1354,7 @@ export class ViewportPanel implements IContentRenderer {
   /** Decal tool: click a surface to lay a projector on it (size from the tool settings), pointing into the surface. */
   private decalDown(e: PointerEvent): void {
     if (!this.store.canEdit) return this.store.setMessage('Not connected to Core - editing is disabled')
-    const hit = pick(this.ray(e), [...this.store.state.doc.entities, ...this.store.state.prefabEntities.map((p) => p.entity)], this.pickOpts())
+    const hit = pick(this.ray(e), [...this.shownEntities(), ...this.shownPrefabs().map((p) => p.entity)], this.pickOpts())
     if (!hit?.brushId) return this.store.setMessage('Click on a surface to place a decal')
     const { width, height, depth } = this.store.state.decalParams
     const angles = anglesForDirection(scale(hit.normal, -1))
@@ -1341,9 +1367,8 @@ export class ViewportPanel implements IContentRenderer {
   private terrainRun: { stroke: TerrainStroke; timer: number; sent: number; moved: number; gap: number } | null = null
 
   private terrainUnder(ray: Ray): { entity: Entity; hf: Heightfield; point: Vec3 } | null {
-    const st = this.store.state
     let best: { entity: Entity; hf: Heightfield; point: Vec3; t: number } | null = null
-    for (const en of visibleEntities(st.doc.entities, st.hidden)) {
+    for (const en of this.shownEntities()) {
       if (en.terrain === undefined) continue
       const hf = terrainOf(en)
       const r = hf ? rayTerrain(hf, ray.origin, ray.dir) : null
@@ -1433,7 +1458,7 @@ export class ViewportPanel implements IContentRenderer {
     if (this.drawing?.phase === 'height') return this.commitDrawing() // second click finishes the shape
     if (!this.store.canEdit) return this.store.setMessage('Not connected to Core - editing is disabled')
     const ray = this.ray(e)
-    const hit = pick(ray, [...this.store.state.doc.entities, ...this.store.state.prefabEntities.map((p) => p.entity)], this.pickOpts())
+    const hit = pick(ray, [...this.shownEntities(), ...this.shownPrefabs().map((p) => p.entity)], this.pickOpts())
     const plane = hit ? planeThrough(hit.point, hit.normal) : fallbackPlane(ray)
     // the start point is snapped to the world grid (measured along the surface), never left where the click landed
     const p0 = this.snap(hit ? hit.point : rayPlane(ray, plane) ?? plane.origin, plane)
@@ -1896,7 +1921,7 @@ export class ViewportPanel implements IContentRenderer {
       if (!k) keys.set(c, (k = refKeysOf(st.entityDefs.find((d) => d.name === c))))
       return k
     }
-    const items = placedEntities(st.doc.entities, st.prefabEntities)
+    const items = placedEntities(this.shownEntities(), this.shownPrefabs())
     const names = new Map<string, string>()
     return entityArrows(items, {
       boxOf: (c) => this.store.entityBox(c), colorOf: (c) => this.store.entityColor(c), refKeys,
@@ -1919,7 +1944,7 @@ export class ViewportPanel implements IContentRenderer {
     const list = st.editMode === 'object' ? st.multi : st.selection ? [st.selection] : []
     const instances = new Set(list.flatMap((x) => (x.instanceId !== undefined ? [x.instanceId] : [])))
     const lines: number[] = []
-    for (const p of placedEntities(st.doc.entities, st.prefabEntities)) {
+    for (const p of placedEntities(this.shownEntities(), this.shownPrefabs())) {
       if (p.entity.classname !== 'decal' || p.entity.brushes?.length) continue
       const selected = p.ids.length ? instances.has(p.ids[0]) : list.some((x) => x.instanceId === undefined && x.entityId === p.entity.id)
       if (selected) lines.push(...decalBoundsLines(p.entity))
@@ -1934,7 +1959,7 @@ export class ViewportPanel implements IContentRenderer {
     const list = st.editMode === 'object' ? st.multi : st.selection ? [st.selection] : []
     const instances = new Set(list.flatMap((x) => (x.instanceId !== undefined ? [x.instanceId] : [])))
     const out: { color: [number, number, number]; lines: number[] }[] = []
-    for (const p of placedEntities(st.doc.entities, st.prefabEntities)) {
+    for (const p of placedEntities(this.shownEntities(), this.shownPrefabs())) {
       if (!isModernLight(p.entity.classname)) continue
       const params = lightParams(p.entity, st.entityDefs.find((d) => d.name === p.entity.classname))
       if (!params) continue
@@ -1989,6 +2014,8 @@ export class ViewportPanel implements IContentRenderer {
     viewBtn.addEventListener('click', (ev) => { ev.stopPropagation(); drawMenu(); menu.style.display = menu.style.display === 'none' ? '' : 'none' })
     this.viewMenu = menu; this.viewBtn = viewBtn
     const viewWrap = h('span', { class: 'vp-menu-wrap' }, viewBtn, menu)
+    const hide = buildHideMenu(this.store)
+    this.hideMenu = hide
 
     const snapBtn = h('button', { class: 'chip on', title: 'Grid snapping (on/off)' }, '⊞ Snap')
     const size = h('select', { title: 'Grid size (metres)' })
@@ -2027,7 +2054,7 @@ export class ViewportPanel implements IContentRenderer {
     const frame = h('button', { class: 'chip', title: 'Frame everything (F)' }, 'Frame')
     frame.addEventListener('click', () => this.frameAll())
     return h('div', { class: 'vp-header' },
-      h('div', { class: 'vp-group' }, h('span', { class: 'vp-label' }, 'Perspective'), cam, speed, mode, lightStatus, viewWrap, frame, ...(this.onPopout ? [pop] : [])),
+      h('div', { class: 'vp-group' }, h('span', { class: 'vp-label' }, 'Perspective'), cam, speed, mode, lightStatus, viewWrap, hide.wrap, frame, ...(this.onPopout ? [pop] : [])),
       h('div', { class: 'vp-group' }, ...gizmoBtns, snapBtn, size, rot, scl))
   }
 }

@@ -107,6 +107,16 @@ input, select, textarea { user-select: text; }
 .section::after { content: ''; flex: 1; height: 1px; background: var(--line2); }
 .panel > .section:first-child { margin-top: 8px; }
 .tree .row { padding: 2px 10px; cursor: pointer; white-space: nowrap; } .tree .row.child { padding-left: 26px; }
+.tree .row { display: flex; align-items: center; gap: 4px; }
+.outliner-bar { position: sticky; top: 0; z-index: 1; padding: 4px 6px; background: var(--bg2, var(--bg3)); }
+.outliner-bar .outliner-search { width: 100%; box-sizing: border-box; }
+.tree .row .twisty { width: 14px; height: 16px; padding: 0; margin: 0 -2px 0 -6px; border: 0; background: none; color: inherit; opacity: .7; cursor: pointer; font-size: 11px; line-height: 1; flex: none; }
+.tree .row .twisty:hover { opacity: 1; } .tree .row .twisty.none { cursor: default; }
+.tree .row .target { color: #e6c36a; }
+.tree .row.sel .target { color: inherit; }
+.tree .row.hid { opacity: .5; } .tree .row.hid:hover { opacity: .8; }
+.tree .eye { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 16px; padding: 0; background: transparent; border: 0; color: var(--dim); cursor: pointer; border-radius: 3px; }
+.tree .eye:hover { color: #fff; background: var(--bg3); } .tree .eye.off { color: #e0a060; } .tree .eye.locked { cursor: default; } .tree .eye.locked:hover { background: transparent; color: #e0a060; }
 .tree .row:hover { background: var(--bg3); } .tree .row.sel { background: var(--accent-bg); color: #fff; } .tree .row.prefab { color: #7fb2ff; cursor: default; }
 .problems { margin: 8px; padding: 6px 8px; border: 1px solid var(--bad); border-radius: 4px; color: var(--bad); }
 .form { padding: 6px 10px; display: grid; gap: 5px; } .form .section { padding: 0; }
@@ -171,6 +181,12 @@ button.primary { background: var(--accent-bg); border-color: var(--accent); colo
 .speed-box { display: inline-flex; align-items: center; gap: 4px; } .speed-slider { width: 90px; } .speed-text { width: 52px; text-align: right; }
 .vp-menu-wrap { position: relative; display: inline-block; }
 .vp-menu { position: absolute; top: 100%; left: 0; z-index: 50; margin-top: 4px; padding: 6px 4px; min-width: 230px; background: var(--bg2); border: 1px solid var(--line2); border-radius: 4px; box-shadow: 0 6px 20px rgba(0,0,0,.5); }
+.hide-menu { min-width: 260px; max-height: 70vh; overflow: auto; }
+.hide-title { padding: 4px 8px 2px; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.hide-pattern { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono, monospace); }
+.hide-add { display: flex; gap: 4px; padding: 4px 8px; } .hide-input { flex: 1; min-width: 0; }
+.hide-x { margin-left: auto; padding: 0 6px; background: transparent; color: var(--dim); border: 0; cursor: pointer; } .hide-x:hover { color: #fff; }
+.hide-foot { padding: 6px 8px 2px; border-top: 1px solid var(--line2); margin-top: 4px; } .hide-empty { padding: 3px 8px; }
 .vp-menu-row { display: flex; gap: 8px; align-items: center; padding: 3px 8px; cursor: pointer; } .vp-menu-row:hover { background: var(--bg3); }
 
 /* mesh edit */

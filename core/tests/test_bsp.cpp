@@ -1770,7 +1770,7 @@ TEST_CASE("bsp lightmaps: one colour covers every style layer of a chart (the pe
     CHECK(checked > 0);
 }
 
-TEST_CASE("bsp lightmaps: vertex lit charts keep no texels, no lightmap slot and one exponent per surface; the colour is the baked light at the vertex") {
+TEST_CASE("bsp lightmaps: vertex lit charts keep no texels of their own, read one shared white island and have one exponent per surface; the colour is the baked light at the vertex") {
     Document d = twoRooms(false);
     std::shared_ptr<SolidSet> solids;
     BspInput in = inputFor(d, solids);
@@ -1787,7 +1787,9 @@ TEST_CASE("bsp lightmaps: vertex lit charts keep no texels, no lightmap slot and
     const BspOutput out = compileBsp(in);
     CHECK(out.stats.vertexLitCharts == layout.charts.size());
     CHECK(out.stats.vertexLitSurfaces > 0);
-    CHECK(out.lightmaps.empty());  // no texel is stored
+    // no chart texel is stored: the only thing on the pages is the white island (5x5 texels, 1.0) every vertex lit surface reads
+    REQUIRE(out.lightmaps.size() == 1);
+    CHECK(out.stats.lightmapPages == 1);
     BspView v;
     REQUIRE(v.open(out.bsp));
     const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
@@ -1796,7 +1798,25 @@ TEST_CASE("bsp lightmaps: vertex lit charts keep no texels, no lightmap slot and
     for (const auto& s : surfaces) {
         if (s.vertexStyles[0] != 0) continue;  // sky etc.
         ++lit;
-        for (int k = 0; k < rbsp::kStyles; ++k) { CHECK(s.lightmapStyles[k] == rbsp::kNoStyle); CHECK(s.lightmapNum[k] == -1); }
+        CHECK(s.lightmapStyles[0] == 0);
+        CHECK(s.lightmapNum[0] == 0);
+        CHECK(s.lightmapSize[0] == 5);
+        CHECK(s.lightmapSize[1] == 5);
+        for (int k = 1; k < rbsp::kStyles; ++k) { CHECK(s.lightmapStyles[k] == rbsp::kNoStyle); CHECK(s.lightmapNum[k] == -1); }
+        {   // every vertex points into the island, which is white
+            const int atlas = out.lightmaps[0].size;
+            const int x0 = s.lightmapCorner[0][0], y0 = s.lightmapCorner[0][1];
+            for (int k = 0; k < s.numVerts; ++k) {
+                const auto& dv = verts[static_cast<size_t>(s.firstVert + k)];
+                CHECK(dv.lightmap[0][0] * atlas >= x0);
+                CHECK(dv.lightmap[0][0] * atlas <= x0 + 5);
+                CHECK(dv.lightmap[0][1] * atlas >= y0);
+                CHECK(dv.lightmap[0][1] * atlas <= y0 + 5);
+            }
+            for (int y = 0; y < 5; ++y)
+                for (int x = 0; x < 5; ++x)
+                    for (int q = 0; q < 3; ++q) CHECK(out.lightmaps[0].rgb[(static_cast<size_t>(y0 + y) * atlas + x0 + x) * 3 + q] == doctest::Approx(1.0).epsilon(0.02));
+        }
         double lo = 1e9, hi = -1e9;
         const auto& first = verts[static_cast<size_t>(s.firstVert)];
         for (int k = 0; k < s.numVerts; ++k) {

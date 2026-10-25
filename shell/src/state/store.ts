@@ -5,6 +5,8 @@
 //  * A remote document is adopted only when we have nothing in flight (last-writer-wins).
 //  * A rejected update rolls the working document back to the last one Core accepted.
 import type { MapDocument } from '../model/document'
+import { defaultHideRules } from '../model/visibility'
+import type { HideRule } from '../model/visibility'
 import type { Brush, Entity } from '../model/document'
 import { emptyDocument, findEntity } from '../model/document'
 import { CarvedMesh, DecalEntry, DerivedEntry, DerivedResult, World, usableCarved, usableDecalEntries, usableDecals, usableEntries, carvedKey } from '../model/derived'
@@ -110,6 +112,8 @@ export interface State {
   proportional: boolean
   /** Hidden things (model/visibility.ts keys): a view setting, not saved, not undone */
   hidden: string[]
+  /** Hide rules (model/visibility.ts): every entity whose class matches an enabled rule is hidden. A view setting too. */
+  hideRules: HideRule[]
   /** A BSP export runs in the Core (REQUIREMENTS §25 E9): the last progress, null when none runs. */
   exporting: { stage: string; fraction: number } | null
   /** Copy UV / Paste UV (right-click): the face whose texture and mapping Paste UV copies */
@@ -188,7 +192,7 @@ export class Store {
       doc, path: '', rev: 0, status: 'disconnected', synced: false, library: {}, prefabEntities: [],
       problems: [], selection: null, multi: [], history: [{ label: 'Empty', doc }], historyIndex: 0, message: null,
       tool: 'select', editMode: 'object', activeTexture: 'dev/grey',
-      uvLock: true, pipette: null, autoDetail: true, proportional: false, propRadius: 1, hidden: [], uvClipboard: null, exporting: null, texSteps: { ...DEFAULT_TEX_STEPS }, shape: 'box', shapeParams: defaultShapeParams(), decalParams: { width: 1, height: 1, depth: 0.5 }, terrain: { tool: 'raise', brush: { ...DEFAULT_BRUSH }, flattenHeight: null, create: { ...DEFAULT_CREATE } }, meshMode: 'vertex', meshSel: emptySel(),
+      uvLock: true, pipette: null, autoDetail: true, proportional: false, propRadius: 1, hidden: [], hideRules: defaultHideRules(), uvClipboard: null, exporting: null, texSteps: { ...DEFAULT_TEX_STEPS }, shape: 'box', shapeParams: defaultShapeParams(), decalParams: { width: 1, height: 1, depth: 0.5 }, terrain: { tool: 'raise', brush: { ...DEFAULT_BRUSH }, flattenHeight: null, create: { ...DEFAULT_CREATE } }, meshMode: 'vertex', meshSel: emptySel(),
       dirty: false, profile: null, exportFormat: RBSP_FORMAT, entityDefs: [], entityWarnings: [], assetsRoot: '', coreSettings: null, lastExport: null,
     }
   }
@@ -237,6 +241,7 @@ export class Store {
   setTool(tool: Tool): void { this.set({ tool }) }
   setAutoDetail(autoDetail: boolean): void { this.set({ autoDetail }) }
   setHidden(hidden: string[]): void { this.set({ hidden }) }
+  setHideRules(hideRules: HideRule[]): void { this.set({ hideRules }) }
   setUvClipboard(uvClipboard: State['uvClipboard']): void { this.set({ uvClipboard }) }
   /** Asks the app to show a panel (e.g. 'inspector' for right-click > Properties); set by app.ts. */
   showPanel: (id: string) => void = () => {}

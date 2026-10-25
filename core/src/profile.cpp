@@ -9,11 +9,13 @@ namespace core {
 json GameProfile::toJson() const {
     json lightStylesJson = json::object();
     for (const auto& [id, pattern] : lightStyles) lightStylesJson[std::to_string(id)] = pattern;
-    return json{{"name", name}, {"textureRoot", textureRoot}, {"textureExtensions", textureExtensions},
+    json j = json{{"name", name}, {"textureRoot", textureRoot}, {"textureExtensions", textureExtensions},
                 {"modelExtensions", modelExtensions}, {"entityDefinitions", entityDefinitions},
                 {"mapRoot", mapRoot}, {"prefabRoot", prefabRoot}, {"texGroupRoot", texGroupRoot}, {"pixelsPerMeter", pixelsPerMeter},
                 {"lighting", json{{"blockLight", blockLight}, {"receiveBakedLight", receiveBakedLight}, {"lightStyles", lightStylesJson}}},
                 {"bsp", bsp.is_object() ? bsp : json::object()}, {"exporter", exporter}};
+    if (hideGroups) j["hideGroups"] = *hideGroups;
+    return j;
 }
 
 static std::vector<std::string> extensions(const json& j, const char* key) {
@@ -100,6 +102,16 @@ GameProfile profileFromJson(const json& j) {
     if (j.contains("exporter")) {
         if (!j["exporter"].is_string()) throw std::runtime_error("game_profile.json: exporter must be a string (rbsp, obj)");
         p.exporter = j["exporter"].get<std::string>();
+    }
+    if (j.contains("hideGroups")) {
+        if (!j["hideGroups"].is_array()) throw std::runtime_error("game_profile.json: hideGroups must be an array of class patterns (\"trigger_*\")");
+        std::vector<std::string> groups;
+        for (const auto& e : j["hideGroups"]) {
+            if (!e.is_string() || e.get<std::string>().empty() || e.get<std::string>().size() > 80)
+                throw std::runtime_error("game_profile.json: hideGroups must contain non-empty class patterns of at most 80 characters");
+            groups.push_back(e.get<std::string>());
+        }
+        p.hideGroups = std::move(groups);
     }
     return p;
 }

@@ -21,7 +21,7 @@ describe('hide / unhide', () => {
     const v = visibleEntities([e, p], [brushKey('w', 'a'), entityKey('p')])
     expect(v).toHaveLength(1); expect(v[0].brushes!.map((b) => b.id)).toEqual(['b'])
     expect(visibleEntities([e], [brushKey('w', 'a'), brushKey('w', 'b')])).toHaveLength(0)
-    expect(hideKeys([{ entityId: 'w', brushId: 'a' }, { entityId: 'p' }, { entityId: '', instanceId: 'i' }])).toEqual([brushKey('w', 'a'), entityKey('p')])
+    expect(hideKeys([{ entityId: 'w', brushId: 'a' }, { entityId: 'p' }, { entityId: '', instanceId: 'i' }])).toEqual([brushKey('w', 'a'), entityKey('p'), 'i:i'])  // a prefab instance hides by its own key
   })
   it('Hide hides the selection (not saved, not an undo step), Unhide all brings it back', () => {
     const app = setup()

@@ -45,3 +45,8 @@ export function makeApp() {
   }
   return { conn, store, sock, sockets, timers, sync }
 }
+
+/** Opens every entity of an outliner (they start collapsed): clicks each fold arrow. */
+export function expandOutliner(panelEl: HTMLElement): void {
+  for (const t of [...panelEl.querySelectorAll<HTMLElement>('button.twisty[aria-expanded="false"]')]) t.click()
+}
