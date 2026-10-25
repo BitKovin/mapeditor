@@ -607,8 +607,8 @@ bool LightingService::workLightvol(double budgetSeconds, Clock::time_point t0, c
         probes_ = std::make_unique<ProbeBaker>(volBase_, volSolid_, src, cfg);
     };
     if (volStale_ && !volRunning_) {
-        volBase_ = buildLightvolGrid(prevSurfaces_, prevSolidSet_.get(), cfg);
-        volSolid_ = solidProbes(volBase_, prevSolidSet_.get());
+        volBase_ = buildLightvolGrid(prevSurfaces_, prevSolidSet_.get(), cfg, prevPlayable_.get(), prevLod_.lightvolMargin);
+        volSolid_ = solidProbes(volBase_, prevSolidSet_.get(), prevPlayable_.get(), prevLod_.lightvolMargin);
         if (log_ && volBase_.count() > 0) {
             char line[200];
             std::snprintf(line, sizeof line, "lighting: light volume grid %dx%dx%d = %zu probes (cell %.2f m, lightvolGridSize / lightvolMaxProbes)", volBase_.nx, volBase_.ny, volBase_.nz,
@@ -702,7 +702,10 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
         const bool styledSame = styled == prevStyled_ && sameLightLists(styledLights, prevStyledLights_);
         // a texture whose properties changed (transparency) is part of the occluders even when no face changed: rebuild, and re-bake around its faces
         const bool texturesTouched = !in.changedTextures.empty() && std::any_of(in.surfaces.begin(), in.surfaces.end(), [&](const LightSurface& s) { return in.changedTextures.count(s.texture) > 0; });
-        const bool geometrySame = built_ && in.classes == prevClasses_ && solidsFp == prevSolids_ && sameSurfaces(prevSurfaces_, in.surfaces) && styledSame && !texturesTouched;
+        // the playable area decides the density of the lightmap charts and the extent of the light volume
+        const uint64_t playableFp = in.lights.playable ? in.lights.playable->fingerprint() : 0;
+        const bool playableSame = playableFp == (prevPlayable_ ? prevPlayable_->fingerprint() : 0) && (playableFp == 0 || in.lights.level.lod == prevLod_);
+        const bool geometrySame = built_ && playableSame && in.classes == prevClasses_ && solidsFp == prevSolids_ && sameSurfaces(prevSurfaces_, in.surfaces) && styledSame && !texturesTouched;
         const size_t chunksBefore = totalChunks();
         const int pagesBefore = baker_.layout().pageCount;
         const bool hadSurfaces = !prevSurfaces_.empty();
@@ -711,6 +714,8 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
         if (!geometrySame) {
             const auto a1 = Clock::now();
             LightmapSettings layoutSettings = opt_.layout;
+            layoutSettings.playable = in.lights.playable;
+            layoutSettings.lod = in.lights.level.lod;
             styleWarnings_.clear();
             if (styled) {
                 const OccluderMesh shadowMesh = buildOccluders(in.surfaces, in.classes);
@@ -771,6 +776,8 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
             prevClasses_ = in.classes;
             prevSolids_ = solidsFp;
             prevSolidSet_ = in.solids;
+            prevPlayable_ = in.lights.playable;
+            prevLod_ = in.lights.level.lod;
         }
         prevStyled_ = styled;
         prevStyledLights_ = std::move(styledLights);

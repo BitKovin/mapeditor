@@ -1,4 +1,5 @@
 #include "core/prefab.h"
+#include "core/entity_class.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -319,6 +320,7 @@ FlattenResult flattenForCompile(const Document& root, const DocumentLoader& load
             n.entity.keyvalues[opts.nameKey] = resolved[i];
         }
         n.entity.refs.clear();
+        if (EntityClassRegistry::isEditorOnly(n.entity.classname)) continue;  // editor-only volumes never reach the compiler
         res.entities.push_back(FlattenedEntity{std::move(n.entity), resolved[i], n.chainNames, pathWithRoot(n.chainIds), n.sourceId});
     }
     return res;

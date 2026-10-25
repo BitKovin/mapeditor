@@ -65,6 +65,11 @@ LevelSettings levelSettingsOf(const Entity& w, std::vector<std::string>* warning
     num("_lightvol_grid", s.lightvolGrid, 0.0, 64.0);
     if (s.lightvolGrid > 0 && s.lightvolGrid < 0.25) s.lightvolGrid = 0.25;
     num("_bake_quality", s.bakeQuality, 0.25, 16.0);
+    num("_lod_radius", s.lod.radius, 1.0, 1024.0);
+    integer("_lod_levels", s.lod.levels, 0, 8);
+    num("_lod_range", s.lod.range, 1.1, 8.0);
+    num("_lod_density", s.lod.density, 0.05, 1.0);
+    num("_lightvol_margin", s.lod.lightvolMargin, 0.0, 256.0);
     return s;
 }
 
@@ -114,6 +119,7 @@ LightScene collectLights(const Document& doc, const std::vector<ResolvedEntity>&
     };
     for (const auto& e : doc.entities) visit(e, "");
     for (const auto& r : prefabs) visit(r.entity, instanceString(r.instancePath));
+    out.playable = collectPlayableArea(doc, prefabs);
     if (out.level.lightScale != 1) for (Light& l : out.lights) l.brightness *= out.level.lightScale;  // the level's general brightness
     return out;
 }
@@ -123,6 +129,7 @@ LightScene lightsOfStyle(const LightScene& all, int style) {
     LightScene out;
     out.warnings = all.warnings;
     if (style == 0) out.ambient = all.ambient;
+    out.playable = all.playable;
     out.level = all.level;  // AO and the quality settings apply to every layer
     for (const Light& l : all.lights) if (l.style == style) out.lights.push_back(l);
     return out;

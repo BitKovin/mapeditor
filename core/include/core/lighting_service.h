@@ -199,6 +199,8 @@ private:
     std::vector<LightSurface> prevSurfaces_;
     LightingClasses prevClasses_;
     uint64_t prevSolids_ = 0;
+    std::shared_ptr<const PlayableArea> prevPlayable_;  // the playable area and its quality falloff of the geometry in the bakers (layout, light volume bounds)
+    PlayableLod prevLod_;
     std::shared_ptr<const SolidSet> prevSolidSet_;   // the solids of the geometry in the bakers (the light volume samples them)
     static bool sameLightLists(const std::vector<Light>& a, const std::vector<Light>& b);
     static std::vector<LiveBaker::Rect> mergeChunkRects(const LiveBaker& baker, std::vector<int> chunks);

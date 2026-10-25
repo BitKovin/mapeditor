@@ -2,7 +2,9 @@
 #include "core/derived.h"
 #include "core/lighting_classes.h"
 #include "core/math3.h"
+#include "core/playable.h"
 #include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -29,6 +31,10 @@ struct LightmapSettings {
     // Per-face density multiplier (hook for the density tools), keyed by LightmapFace::key(). Faces with different
     // multipliers are never merged into one chart.
     std::map<std::string, double> densityScale;
+    // Quality falloff outside the playable area (playable.h): the density of every face is multiplied by lod.densityAt(distance of the face from the
+    // area), so far away faces get fewer texels. Null or empty area = no falloff. Faces in different cascades are never merged into one chart.
+    std::shared_ptr<const PlayableArea> playable;
+    PlayableLod lod;
     // Light styles (light_style_analysis.h): the non-base styles that touch each face, keyed by LightmapFace::key(). Faces with a different set are never
     // merged into one chart, so a chart carries as few style layers as possible; a face absent from the map has only the base style.
     std::map<std::string, std::vector<int>> faceStyles;

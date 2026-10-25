@@ -118,7 +118,10 @@ void fillInvalidProbes(LightvolGrid& grid);
 
 // Axis aligned grid over the bounds of every surface (plus one cell). Probes inside a light-blocking solid are invalid, the others wait to be baked
 // (valid = false until then: use `isBaked`).
-LightvolGrid buildLightvolGrid(const std::vector<LightSurface>& surfaces, const SolidSet* solids, const LightvolSettings& settings);
+// With a non-empty `playable` area the grid only spans the area grown by `margin` m (clipped to the surfaces' bounds); solidProbes() then leaves out the probes
+// further than `margin` from it, and the export fills them from their neighbours like the ones inside solids.
+LightvolGrid buildLightvolGrid(const std::vector<LightSurface>& surfaces, const SolidSet* solids, const LightvolSettings& settings,
+                               const PlayableArea* playable = nullptr, double margin = 2.0);
 
 // Everything the probes gather from. `atlasS` / `atlasSize` / `pages` are the baker's bounce source (rgb + valid per texel); empty = no bounces.
 struct LightvolSource {
@@ -159,7 +162,7 @@ private:
 };
 
 // Which probes lie inside solids (computed once per geometry).
-std::vector<char> solidProbes(const LightvolGrid& grid, const SolidSet* solids);
+std::vector<char> solidProbes(const LightvolGrid& grid, const SolidSet* solids, const PlayableArea* playable = nullptr, double margin = 2.0);
 
 // A brush entity that is lit from the grid: sampled once at the centre of its brushes' bounds.
 struct EntityLight {

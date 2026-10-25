@@ -118,7 +118,7 @@ endif()
 add_library(core_lib STATIC
     src/brush.cpp src/entity_class.cpp src/document.cpp src/prefab.cpp
     src/scene.cpp src/router.cpp src/origin.cpp src/profile.cpp src/textures.cpp src/sky.cpp src/texgroups.cpp
-    src/entdef.cpp src/settings.cpp src/native_dialog.cpp src/csg.cpp src/decal.cpp src/derived.cpp
+    src/entdef.cpp src/settings.cpp src/native_dialog.cpp src/csg.cpp src/decal.cpp src/derived.cpp src/playable.cpp
     src/lighting_classes.cpp src/lightmap_uv.cpp src/lights.cpp src/lightbake.cpp src/parallel.cpp src/gpu_bake.cpp src/raytrace.cpp src/live_bake.cpp src/lighting_service.cpp src/relief_geometry.cpp
     src/albedo.cpp src/lightvol.cpp src/light_styles.cpp src/light_style_analysis.cpp src/denoise.cpp
     src/map_import.cpp src/exr.cpp src/bsp_convex.cpp src/bsp_compile.cpp src/bsp_export.cpp src/exporter.cpp src/smoothing.cpp
@@ -165,7 +165,7 @@ add_executable(core_tests
     tests/test_main.cpp tests/test_brush.cpp tests/test_document.cpp tests/test_prefab.cpp
     tests/test_scene.cpp tests/test_router.cpp tests/test_textures.cpp tests/test_texgroups.cpp
     tests/test_entdef.cpp tests/test_settings.cpp tests/test_config_ui.cpp tests/test_csg.cpp tests/test_derived.cpp
-    tests/test_lightmap_uv.cpp tests/test_lightbake.cpp tests/test_raytrace.cpp tests/test_bounce.cpp tests/test_live_bake.cpp tests/test_lighting_service.cpp tests/test_denoise.cpp tests/test_lightvol.cpp tests/test_light_styles.cpp tests/test_albedo.cpp tests/test_relief_geometry.cpp tests/test_level_settings.cpp tests/test_transparency.cpp tests/test_bsp.cpp tests/test_texplan.cpp tests/test_exporters.cpp tests/test_smoothing.cpp tests/test_map_import.cpp)
+    tests/test_lightmap_uv.cpp tests/test_lightbake.cpp tests/test_raytrace.cpp tests/test_bounce.cpp tests/test_live_bake.cpp tests/test_lighting_service.cpp tests/test_denoise.cpp tests/test_lightvol.cpp tests/test_light_styles.cpp tests/test_albedo.cpp tests/test_relief_geometry.cpp tests/test_level_settings.cpp tests/test_transparency.cpp tests/test_bsp.cpp tests/test_texplan.cpp tests/test_exporters.cpp tests/test_smoothing.cpp tests/test_map_import.cpp tests/test_playable.cpp)
 target_include_directories(core_tests PRIVATE tests src)
 target_compile_definitions(core_tests PRIVATE TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../testdata")
 target_link_libraries(core_tests PRIVATE core_lib)

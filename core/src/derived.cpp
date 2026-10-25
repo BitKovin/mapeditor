@@ -21,8 +21,9 @@ struct Item {
 
 std::vector<Item> allEntities(const Document& doc, const std::vector<ResolvedEntity>& prefabs) {
     std::vector<Item> items;
-    for (const auto& e : doc.entities) items.push_back({&e, ""});
-    for (const auto& r : prefabs) items.push_back({&r.entity, instanceString(r.instancePath)});
+    // editor-only volumes (entity_class.h) are not part of the level: no surfaces, no carving, no solids
+    for (const auto& e : doc.entities) if (!EntityClassRegistry::isEditorOnly(e.classname)) items.push_back({&e, ""});
+    for (const auto& r : prefabs) if (!EntityClassRegistry::isEditorOnly(r.entity.classname)) items.push_back({&r.entity, instanceString(r.instancePath)});
     return items;
 }
 

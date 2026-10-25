@@ -1,6 +1,7 @@
 #pragma once
 #include "core/document.h"
 #include "core/math3.h"
+#include "core/playable.h"
 #include "core/prefab.h"
 #include "core/sky.h"
 #include <memory>
@@ -64,6 +65,11 @@ struct Light {
 //   _supersample     sub-texel positions per texel for the direct light; 0 = lighting.json      (default 0)
 //   _lightvol_grid   light volume grid spacing in m; 0 = lighting.json                          (default 0)
 //   _rays_per_probe  gather rays per light volume probe; 0 = lighting.json                      (default 0)
+//   _lod_radius      lightmap quality falloff outside the playable area (editor_playable_area volumes): m of full density around it   (default 16)
+//   _lod_levels      number of cascades beyond the full-density one; 0 = no falloff                                                  (default 4)
+//   _lod_range       every cascade reaches this many times further than the previous one (cascade k ends at radius * range^k)   (default 2)
+//   _lod_density     texel density multiplier per cascade (0.5 = half the texels per metre in cascade 1, a quarter in 2, ...)     (default 0.5)
+//   _lightvol_margin the light volume covers the playable area grown by this many m                                              (default 2)
 //   _bake_quality    multiplier of the ray counts for the final bake (M6 export); the live bake uses x1 (default 2)
 struct AoSettings {
     double radius = 0, power = 1, intensity = 1, strength = 1, falloff = 1;
@@ -80,6 +86,7 @@ struct LevelSettings {
     double exposure = 0, brightness = 0;
     int raysPerTexel = 0, supersample = 0, raysPerProbe = 0;
     double lightvolGrid = 0, bakeQuality = 2;
+    PlayableLod lod;  // only matters when the level has a playable area (LightScene::playable)
 };
 // The level settings of a document's worldspawn (missing / bad keys keep the defaults; values are clamped; `warnings` gets what was wrong).
 LevelSettings levelSettingsOf(const Entity& worldspawn, std::vector<std::string>* warnings = nullptr);
@@ -87,6 +94,7 @@ LevelSettings levelSettingsOf(const Entity& worldspawn, std::vector<std::string>
 struct LightScene {
     std::vector<Light> lights;
     Vec3 ambient;  // black unless worldspawn has `_ambient`
+    std::shared_ptr<const PlayableArea> playable;  // the level's playable-area volumes (never null; empty = none)
     LevelSettings level;  // from worldspawn; every light's brightness already includes level.lightScale
     std::vector<std::string> warnings;
 };

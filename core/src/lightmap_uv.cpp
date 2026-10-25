@@ -1,4 +1,5 @@
 #include "core/lightmap_uv.h"
+#include "core/parallel.h"
 #include "core/smoothing.h"
 #include <algorithm>
 #include <array>
@@ -273,6 +274,16 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
     std::sort(sorted.begin(), sorted.end(), [](const Face& a, const Face& b) { return a.out.key() < b.out.key(); });
     faces = std::move(sorted);
     const int N = static_cast<int>(faces.size());
+    if (cfg.playable && !cfg.playable->empty() && cfg.lod.levels > 0) {
+        // quality falloff: the density of a face follows its distance from the playable area, in cascades (PlayableLod)
+        parallelFor(faces.size(), 64, [&](size_t b, size_t e) {
+            for (size_t i = b; i < e; ++i) {
+                double d = 1e300;
+                for (const auto& piece : faces[i].pieces) d = std::min(d, cfg.playable->distance(piece, d));
+                faces[i].scale *= cfg.lod.densityAt(d);
+            }
+        });
+    }
     for (auto& f : faces) {
         frameFor(f.out.normal, f.u, f.v);
         f.mn = Vec3{1e300, 1e300, 1e300};

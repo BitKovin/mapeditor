@@ -32,6 +32,13 @@ export const LEVEL_SECTIONS: LevelSection[] = [
     { key: '_ao_falloff', label: 'Distance falloff', dflt: 1, min: 0, max: 8, step: 0.1, hint: 'How a hit fades with its distance: 0 = every hit within the radius counts fully (strongest), 1 = linear, higher = only very near geometry' },
     { key: '_ao_rays', label: 'Rays', dflt: 32, min: 1, max: 1024, step: 8, int: true, hint: 'Occlusion rays per texel (ray traced on the GPU when it supports ray queries): more = smoother' },
   ] },
+  { title: 'Quality falloff (outside the playable area)', note: 'Needs an editor_playable_area volume (Place tab). Lightmap detail drops in cascades with the distance from it: full density up to Radius, then each cascade reaches Range times further and has Density times the texels per metre of the one before. The light volume only covers the area plus the margin.', fields: [
+    { key: '_lod_radius', label: 'Full detail radius (m)', dflt: 16, min: 1, max: 1024, step: 1, hint: 'Surfaces this close to the playable area keep the full lightmap density' },
+    { key: '_lod_levels', label: 'Cascades', dflt: 4, min: 0, max: 8, step: 1, int: true, hint: 'Number of lower-detail cascades beyond the full-detail one; 0 = no falloff. Surfaces further out stay in the last cascade' },
+    { key: '_lod_range', label: 'Range factor', dflt: 2, min: 1.1, max: 8, step: 0.1, hint: 'Each cascade reaches this many times further than the previous one (cascade k ends at Radius x Range^k)' },
+    { key: '_lod_density', label: 'Density per cascade', dflt: 0.5, min: 0.05, max: 1, step: 0.05, hint: 'Lightmap texels per metre of a cascade relative to the one before (0.5 = half, so a quarter in the second)' },
+    { key: '_lightvol_margin', label: 'Light volume margin (m)', dflt: 2, min: 0, max: 256, step: 0.5, hint: 'The light volume covers the playable area grown by this much' },
+  ] },
   { title: 'Optimisation', note: 'Empty = the Core\'s lighting.json value.', fields: [
     { key: '_lightvol_grid', label: 'Lightvol grid size (m)', dflt: null, min: 0.25, max: 64, step: 0.25, hint: 'Spacing of the light volume probes' },
     { key: '_rays_per_texel', label: 'Rays per lightmap pixel', dflt: null, min: 1, max: 65536, step: 16, int: true, hint: 'Bounce-light gather rays per texel over the whole bake' },

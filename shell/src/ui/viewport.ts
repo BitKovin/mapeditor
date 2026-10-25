@@ -325,8 +325,8 @@ export class ViewportPanel implements IContentRenderer {
     return { x: ((nx + 1) / 2) * w, y: ((1 - ny) / 2) * hgt, depth: cw }
   }
 
-  private pickOpts(): { carved: ReturnType<Store['carved']>; instances: Map<import('../model/document').Entity, string>; includeSubtractive: boolean; entityBox: (classname: string) => Box } {
-    return { carved: this.store.carved(), instances: new Map(this.store.state.prefabEntities.map((p) => [p.entity, instanceOf(p)])), includeSubtractive: this.settings.showSubtractive, entityBox: (c) => this.store.entityBox(c) }
+  private pickOpts(): { carved: ReturnType<Store['carved']>; instances: Map<import('../model/document').Entity, string>; includeSubtractive: boolean; includeVolumes: boolean; entityBox: (classname: string) => Box } {
+    return { carved: this.store.carved(), instances: new Map(this.store.state.prefabEntities.map((p) => [p.entity, instanceOf(p)])), includeSubtractive: this.settings.showSubtractive, includeVolumes: this.settings.showVolumes, entityBox: (c) => this.store.entityBox(c) }
   }
 
   /** A single selected brush face (Shift+click) gets one handle along its normal: dragging it moves the face plane (Radiant style). */
@@ -1970,10 +1970,10 @@ export class ViewportPanel implements IContentRenderer {
     this.updateLightStatus()
 
     // one "View" menu for every optional overlay (more arrive with lighting: lightvol samples, lightmap density)
-    type Opt = { label: string; key?: 'showSizes' | 'showGrid' | 'showOrigins' | 'showDirections' | 'showLinks' | 'showLightGizmos' | 'showLightvol' | 'showLightmapDensity' | 'showTexelHeat' | 'showOutlines' | 'showSubtractive' | 'backfaceCulling'; later?: boolean }
+    type Opt = { label: string; key?: 'showSizes' | 'showGrid' | 'showOrigins' | 'showDirections' | 'showLinks' | 'showLightGizmos' | 'showLightvol' | 'showLightmapDensity' | 'showTexelHeat' | 'showOutlines' | 'showSubtractive' | 'showVolumes' | 'backfaceCulling'; later?: boolean }
     const OPTIONS: Opt[] = [
       { label: 'Grid', key: 'showGrid' }, { label: 'Selection size', key: 'showSizes' }, { label: 'Entity origins', key: 'showOrigins' }, { label: 'Entity direction arrows', key: 'showDirections' }, { label: 'Entity link arrows (all; the selection\'s always show)', key: 'showLinks' }, { label: 'Light gizmos (icons; the selection\'s reach)', key: 'showLightGizmos' }, { label: 'Face outlines (black edges)', key: 'showOutlines' },
-      { label: 'Subtractive brush shapes', key: 'showSubtractive' }, { label: 'Backface culling', key: 'backfaceCulling' }, { label: 'Lightvol samples (baked light probes)', key: 'showLightvol' }, { label: 'Lightmap density (texel checker)', key: 'showLightmapDensity' }, { label: 'Texel density heat map (texture pixels per meter)', key: 'showTexelHeat' },
+      { label: 'Subtractive brush shapes', key: 'showSubtractive' }, { label: 'Editor volumes (playable area)', key: 'showVolumes' }, { label: 'Backface culling', key: 'backfaceCulling' }, { label: 'Lightvol samples (baked light probes)', key: 'showLightvol' }, { label: 'Lightmap density (texel checker)', key: 'showLightmapDensity' }, { label: 'Texel density heat map (texture pixels per meter)', key: 'showTexelHeat' },
     ]
     const menu = h('div', { class: 'vp-menu', style: 'display:none' })
     const viewBtn = h('button', { class: 'chip', title: 'View options' }, 'View ▾')

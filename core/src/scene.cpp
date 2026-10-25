@@ -340,7 +340,13 @@ std::shared_ptr<const SkyRadiance> Scene::skyTable(const std::string& texture, s
 }
 
 LightmapLayout Scene::lightmapLayout(const LightmapSettings& settings) {
-    return buildLightmapLayout(lightSurfaces(), lightingClasses(), settings);
+    LightmapSettings s = settings;
+    if (!s.playable) {  // the level's quality falloff outside its playable area
+        const LightScene lights = collectLights(doc_, resolvedInside());
+        s.playable = lights.playable;
+        s.lod = lights.level.lod;
+    }
+    return buildLightmapLayout(lightSurfaces(), lightingClasses(), s);
 }
 
 bool Scene::hasDerivedGeometry() {

@@ -639,6 +639,16 @@ parallel rays and an arrow; rect = the real width x height rectangle with diagon
 reach: point = attenuation sphere (+ source sphere), spot = the cone out to the attenuation radius with the outer and inner circles and the radius arcs, directional = long arrow and the cone of the
 angular diameter, rect = the front half of the attenuation sphere in two planes and rays from the corners, sky = a large dome. The gizmos follow every edit (they read the entity's keys each frame).
 
+### 6.10 Playable area and lightmap budget (`playable.h`)
+
+Big maps make huge lightmaps because every surface gets the full density. The level says where the player can be, and lighting spends its budget there.
+
+- **Playable area** = the union of the brushes of `editor_playable_area` entities (any number, in the map or in prefabs; convex pieces of each brush, subtractive brushes ignored). It is an *editor-only volume*: the class prefix `editor_` (`EntityClassRegistry::isEditorOnly`) means no surfaces, no carving, no solids, no decals, no vis, and nothing in the compiled map (`flattenForCompile` drops it). The Shell draws it as a texture-less tinted volume with outlines (View > Editor volumes). No volume in the level = everywhere is playable and nothing below applies.
+- **Quality falloff (cascades).** The distance `d` of a face from the area (smallest over sample points of its pieces, about 2 m apart; the distance to a convex piece is `max(box distance, largest violated plane)`, a lower bound) picks a cascade `k = ceil(log_range(d / radius))`, clamped to `levels`; `k = 0` for `d <= radius`. The face's texel density is multiplied by `density^k` (`LightmapSettings::playable/lod`, applied to `Face::scale` before the islands are built, so faces of different cascades never merge into one chart). One scale per face: a big floor that reaches into the area keeps full density as a whole.
+- **World settings** (worldspawn keys, `LevelSettings::lod`, Shell: World settings > Quality falloff): `_lod_radius` (16 m), `_lod_levels` (4; 0 = off), `_lod_range` (2), `_lod_density` (0.5), `_lightvol_margin` (2 m).
+- **Light volume.** `buildLightvolGrid` spans the area grown by the margin (clipped to the surfaces' bounds); `solidProbes` leaves out the probes further than the margin from the area like probes in solids, and the export fills them from their neighbours. The light array header already carries the explicit bounds, so the engine reads the smaller grid unchanged.
+- The live bake and the export use the same layout: `LightingService` re-lays out when the area or the settings change.
+
 ## 7. Editor Tools & UX — Hammer 5 (Source 2) feature inventory
 
 Researched from Valve Developer Community's Hammer (Source 2) documentation. This is the

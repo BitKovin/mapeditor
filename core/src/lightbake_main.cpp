@@ -40,8 +40,10 @@ int main(int argc, char** argv) {
         scene.loadGameProfile();
         scene.openDocument(argv[2]);
         const auto surfaces = scene.lightSurfaces();
-        const LightmapLayout layout = buildLightmapLayout(surfaces, scene.lightingClasses(), cfg);
         const LightScene lights = scene.lightScene();
+        cfg.playable = lights.playable;
+        cfg.lod = lights.level.lod;
+        const LightmapLayout layout = buildLightmapLayout(surfaces, scene.lightingClasses(), cfg);
         opt.solids = scene.lightSolids();
         opt.classes = scene.lightingClasses();
         BakeStats st;

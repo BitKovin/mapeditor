@@ -77,6 +77,8 @@ export interface MapDocument {
 // --- class rules (mirror core/src/entity_class.cpp) -------------------------------
 const STRUCTURAL = new Set(['worldspawn', 'func_detail', 'func_group'])
 const CONVEX = new Set(['worldspawn', 'func_group'])
+/** Editor-only volumes (mirror core EntityClassRegistry::isEditorOnly): brushes without texture that are never part of the level (e.g. editor_playable_area). */
+export const isEditorOnly = (c: string): boolean => c.startsWith('editor_')
 export const classOf = (e: Entity): string => e.classname ?? 'point_entity'
 export const isStructural = (c: string): boolean => STRUCTURAL.has(c)
 export const requiresConvexBrushes = (c: string): boolean => CONVEX.has(c)

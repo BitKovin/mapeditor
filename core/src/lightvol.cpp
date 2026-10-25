@@ -259,12 +259,21 @@ std::vector<uint8_t> LightvolGrid::packed() const {
     return out;
 }
 
-LightvolGrid buildLightvolGrid(const std::vector<LightSurface>& surfaces, const SolidSet* solids, const LightvolSettings& settings) {
+LightvolGrid buildLightvolGrid(const std::vector<LightSurface>& surfaces, const SolidSet* solids, const LightvolSettings& settings,
+                               const PlayableArea* playable, double margin) {
     LightvolGrid g;
     Aabb b;
     for (const auto& s : surfaces)
         for (const Vec3& v : s.verts) b.add(v);
     if (!b.valid()) return g;
+    if (playable && !playable->empty()) {  // only the playable area (plus the margin) needs light
+        const Vec3 m{margin, margin, margin};
+        const Vec3 lo = playable->mn() - m, hi = playable->mx() + m;
+        Aabb c;
+        c.mn = {std::max(b.mn.x, lo.x), std::max(b.mn.y, lo.y), std::max(b.mn.z, lo.z)};
+        c.mx = {std::min(b.mx.x, hi.x), std::min(b.mx.y, hi.y), std::min(b.mx.z, hi.z)};
+        if (c.mn.x <= c.mx.x && c.mn.y <= c.mx.y && c.mn.z <= c.mx.z) b = c;
+    }
     double cell = std::max(settings.gridSize, 0.05);
     auto dims = [&](double c, int& nx, int& ny, int& nz) {
         const Vec3 ext = b.mx - b.mn;
@@ -283,13 +292,19 @@ LightvolGrid buildLightvolGrid(const std::vector<LightSurface>& surfaces, const 
     return g;
 }
 
-std::vector<char> solidProbes(const LightvolGrid& grid, const SolidSet* solids) {
+std::vector<char> solidProbes(const LightvolGrid& grid, const SolidSet* solids, const PlayableArea* playable, double margin) {
     std::vector<char> out(grid.count(), 0);
-    if (!solids) return out;
+    const bool area = playable && !playable->empty();
+    if (!solids && !area) return out;
     // (a level has tens of millions of probes: on all cores; neighbouring probes share a lookup cell, so each range keeps its own probe cache)
     parallelFor(grid.count(), 65536, [&](size_t b, size_t e) {
         SolidSet::Probe probe;
-        for (size_t i = b; i < e; ++i) out[i] = solids->inside(grid.position(i), probe) ? 1 : 0;
+        for (size_t i = b; i < e; ++i) {
+            const Vec3 p = grid.position(i);
+            // outside the playable area (+ margin) a probe is not baked: it is left out like one inside a solid
+            if (area && !playable->near(p, margin)) { out[i] = 1; continue; }
+            out[i] = solids && solids->inside(p, probe) ? 1 : 0;
+        }
     });
     return out;
 }

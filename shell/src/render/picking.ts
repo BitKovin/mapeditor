@@ -1,5 +1,5 @@
 import type { Brush, Entity } from '../model/document'
-import { classOf, isBrushEntity } from '../model/document'
+import { classOf, isBrushEntity, isEditorOnly } from '../model/document'
 import { Box, boxFromQuake } from '../model/entityBox'
 import type { OrientedBox } from '../model/pointBox'
 import { pointBox, toLocal, unrotate } from '../model/pointBox'
@@ -71,6 +71,8 @@ export interface PickOptions {
   instances?: Map<Entity, string>
   /** False when subtractive brush shapes are hidden: they must not catch clicks either. Default true. */
   includeSubtractive?: boolean
+  /** false: editor-only volumes (editor_*) are hidden and not picked */
+  includeVolumes?: boolean
   /** Bounding box of a point-entity class relative to its origin (editor space); the default box when absent. */
   entityBox?: (classname: string) => Box
 }
@@ -98,6 +100,7 @@ export function pick(r: Ray, entities: Entity[], opts: PickOptions = {}): Hit | 
     }
     for (const b of e.brushes ?? []) {
       if (b.op === 'subtract' && opts.includeSubtractive === false) continue
+      if (opts.includeVolumes === false && isEditorOnly(classOf(e))) continue
       const carved = b.op !== 'subtract' ? opts.carved?.get(carvedKey(e.id, b.id, opts.instances?.get(e) ?? '')) : undefined
       if (carved) {
         for (const tri of carved.pickTris) {

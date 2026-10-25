@@ -6,7 +6,7 @@ import type { CarvedMesh } from '../model/derived'
 import type { MeshSel, SelMode } from '../model/meshTopology'
 import { buildTopology, parseEdge } from '../model/meshTopology'
 import { carvedKey } from '../model/derived'
-import { classOf, isBrushEntity, originOf, showsCustomOrigin } from '../model/document'
+import { classOf, isBrushEntity, isEditorOnly, originOf, showsCustomOrigin } from '../model/document'
 import { faceNormal, triangulateFace } from '../model/geometry'
 import { uvsForDraw } from '../model/uv'
 import { drawTransparency, texEnv } from '../model/texprops'
@@ -1016,6 +1016,7 @@ export class Renderer {
         const g = carved ? this.uploadCarved(carved) : this.upload(b)
         if (b.op === 'subtract') { subtractive.push({ g }); continue }
         for (const grp of g.groups) if (isSkyTexture(grp.texture)) skyDraws.push({ vao: g.vao, grp })
+        if (isEditorOnly(classOf(entity))) { volumes.push({ g, color: frame.entityColor?.(classOf(entity)) ?? DEFAULT_MARKER }); continue }
         if (!boxInFrustum(planes, g.box)) continue
         if (litMode) {
           // lightmapped entities come from the Core's lit mesh below; the others are lit from the light volume; without it (not baked yet)
@@ -1242,6 +1243,7 @@ export class Renderer {
     if (frame.settings.showSubtractive) for (const { g } of subtractive) { gl.bindVertexArray(g.vao); gl.drawArrays(gl.TRIANGLES, 0, g.count) }
     gl.depthMask(true)
     gl.disable(gl.POLYGON_OFFSET_FILL)
+    if (frame.settings.showVolumes) for (const { g, color } of volumes) { gl.uniform4f(uColor, color[0], color[1], color[2], 0.2); gl.bindVertexArray(g.vao); gl.drawArrays(gl.TRIANGLES, 0, g.count) }
 
     // edges
     gl.useProgram(this.line)
@@ -1258,7 +1260,9 @@ export class Renderer {
         const g = carved ? this.uploadCarved(carved) : this.upload(b)
         const brushSel = inSelectedInstance || (instanceId === undefined && (frame.selections ? frame.selections.some((s) => s.instanceId === undefined && s.entityId === entity.id && (!s.brushId || s.brushId === b.id)) : isSel && (!sel!.brushId || sel!.brushId === b.id)))
         if (b.op === 'subtract' && !frame.settings.showSubtractive) continue
-        if (!brushSel && !frame.settings.showOutlines && !wire) continue
+        const volume = isEditorOnly(classOf(entity))
+        if (volume && !frame.settings.showVolumes) continue
+        if (!volume && !brushSel && !frame.settings.showOutlines && !wire) continue
         if (brushSel) gl.uniform4f(lColor, 1, 0.62, 0.15, 1)
         else if (b.op === 'subtract') gl.uniform4f(lColor, 1, 0.4, 0.4, 0.9)
         else if (wire) { const c = classOf(entity) === 'worldspawn' ? [0.78, 0.82, 0.88] : frame.entityColor?.(classOf(entity)) ?? DEFAULT_MARKER; gl.uniform4f(lColor, c[0], c[1], c[2], 0.95) }

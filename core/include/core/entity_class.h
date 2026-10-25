@@ -18,6 +18,10 @@ class EntityClassRegistry {
 public:
     static bool isStructural(const std::string& classname);
     static bool requiresConvexBrushes(const std::string& classname);
+    // Editor-only volumes (classname prefix "editor_", e.g. editor_playable_area): authored with brushes but never part of the level. They have
+    // no surfaces, no texture, do not carve, block light or collide, and nothing of them is exported; the lighting reads them as bake inputs.
+    static bool isEditorOnly(const std::string& classname) { return classname.rfind("editor_", 0) == 0; }
+    static bool isPlayableArea(const std::string& classname) { return classname == "editor_playable_area"; }
     static bool showsCustomOriginGizmo(const std::string& classname) { return !isStructural(classname); }
 };
 
