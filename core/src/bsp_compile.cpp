@@ -101,6 +101,11 @@ double hash01(uint32_t a, uint32_t b, uint32_t c) {
     return (h >> 8) * (1.0 / 16777216.0);
 }
 
+// A triangle whose corners, as the file stores them (floats, Quake units), span less than this (length of the cross product, units^2) is dropped: the engine
+// builds its physics mesh from the same triangles and refuses degenerate ones (relief walls of height 0, slivers that collapse when rounded to floats).
+constexpr double kMinTriangleCross = 1e-3;
+Vec3 asStored(const Vec3& quake) { return {double(float(quake.x)), double(float(quake.y)), double(float(quake.z))}; }
+
 // Shelf packing of rectangles into square pages: (page, x, y) per rectangle.
 struct Placement { int page = 0, x = 0, y = 0; };
 std::vector<Placement> shelfPack(const std::vector<std::pair<int, int>>& sizes, int pageSize, int& pages) {
@@ -518,10 +523,16 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                 stageVerts.push_back(dv);
             };
             for (size_t t = 0; t + 2 < s.triPos.size(); t += 3) {
+                // a triangle without area (a relief wall of height 0, two equal corners) is no surface and breaks the engine's physics mesh
+                {
+                    const Vec3 a = asStored(toQuake(s.triPos[t]) + lift), b = asStored(toQuake(s.triPos[t + 1]) + lift), c = asStored(toQuake(s.triPos[t + 2]) + lift);
+                    if ((b - a).cross(c - a).length() < kMinTriangleCross) { ++res.stats.degenerateTriangles; continue; }
+                }
                 const int32_t base = static_cast<int32_t>(stageVerts.size() - vFirst);
                 vert(t); vert(t + 2); vert(t + 1);  // Quake's windings are clockwise seen from the front
                 stageIdx.push_back(base); stageIdx.push_back(base + 1); stageIdx.push_back(base + 2);
             }
+            if (stageVerts.size() == vFirst) return;  // nothing but degenerate triangles
             out.numVerts = static_cast<int32_t>(stageVerts.size() - vFirst);
             out.numIndexes = static_cast<int32_t>(stageIdx.size() - iFirst);
             (s.decal ? modelDecals : modelSurfaces)[static_cast<size_t>(s.model)].push_back(static_cast<int>(unordered.size()));
@@ -554,10 +565,15 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             stageVerts.push_back(dv);
         }
         for (size_t i = 1; i + 1 < n; ++i) {
+            {  // collinear corners
+                const Vec3 a = asStored(toQuake(pv[n - 1]) + lift), b = asStored(toQuake(pv[n - 1 - i]) + lift), c = asStored(toQuake(pv[n - 2 - i]) + lift);
+                if ((b - a).cross(c - a).length() < kMinTriangleCross) { ++res.stats.degenerateTriangles; continue; }
+            }
             stageIdx.push_back(0);
             stageIdx.push_back(static_cast<int32_t>(i));
             stageIdx.push_back(static_cast<int32_t>(i + 1));
         }
+        if (stageIdx.size() == iFirst) { stageVerts.resize(vFirst); return; }  // no triangle left: no surface
         out.numVerts = static_cast<int32_t>(n);
         out.numIndexes = static_cast<int32_t>(stageIdx.size() - iFirst);
         (s.decal ? modelDecals : modelSurfaces)[static_cast<size_t>(s.model)].push_back(static_cast<int>(unordered.size()));

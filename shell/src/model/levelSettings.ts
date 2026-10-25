@@ -41,7 +41,7 @@ export const LEVEL_SECTIONS: LevelSection[] = [
     { key: '_lightvol_margin', label: 'Light volume margin (m)', dflt: 2, min: 0, max: 256, step: 0.5, hint: 'The light volume covers the playable area grown by this much' },
   ] },
   { title: 'Export', note: 'Only the export uses these.', fields: [
-    { key: '_lightmap_jpg', label: 'Lightmaps as .jpg when they fit', dflt: 0, min: 0, max: 1, step: 1, int: true, hint: '1 = pages whose light is nothing above 1 and survives 8 bits are written as lm_NNNN.jpg, grouped apart from the .exr pages (the engine has to find .jpg pages)' },
+    { key: '_lightmap_jpg', label: 'Lightmaps as .jpg when they fit', dflt: 1, min: 0, max: 1, step: 1, int: true, hint: '1 (default) = pages whose light is nothing above 1 and survives 8 bits are written as lm_NNNN.jpg, grouped apart from the .exr pages (the engine has to find .jpg pages)' },
     { key: '_lightmap_jpg_quality', label: '.jpg quality', dflt: 95, min: 50, max: 100, step: 1, int: true, hint: 'JPEG quality of the lightmap pages' },
   ] },
   { title: 'Optimisation', note: 'Empty = the Core\'s lighting.json value.', fields: [

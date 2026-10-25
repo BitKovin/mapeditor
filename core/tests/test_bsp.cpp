@@ -272,6 +272,7 @@ TEST_CASE("bsp lightmaps and light grid: base pages as baked, style layers re-pa
     Document d = twoRooms(true);
     std::shared_ptr<SolidSet> solids;
     BspInput in = inputFor(d, solids);
+    in.settings.lightmapJpeg = false;  // this test is about the style layers
     in.settings.visibility = false;
     LightmapSettings ls;
     ls.texelsPerMeter = 2;
@@ -1295,4 +1296,31 @@ TEST_CASE("bsp lightmaps: with lightmapJpeg the charts that fit 8 bits go to .jp
     }
     CHECK(!fs::exists(lm / "lm_0007.exr"));
     CHECK(fs::exists(lm / "keep.txt"));
+}
+
+TEST_CASE("bsp compile: triangles without area are not written (the engine's physics mesh refuses them)") {
+    Document d = twoRooms();
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visibility = false;
+    // a square with an extra corner in the middle of one side, listed so that the fan from the first stored vertex starts with three collinear corners
+    LightSurface extra = in.surfaces.front();
+    extra.verts = {{3, 5, 3}, {2, 5, 3}, {2, 5, 2}, {2.5, 5, 2}, {3, 5, 2}};
+    extra.normal = {0, -1, 0};
+    in.surfaces.push_back(extra);
+    const BspOutput out = compileBsp(in);
+    CHECK(out.stats.degenerateTriangles >= 1);
+    BspView v;
+    REQUIRE(v.open(out.bsp));
+    const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto verts = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    const auto idx = v.lump<int32_t>(rbsp::kDrawIndexes);
+    size_t tris = 0;
+    for (const auto& s : surfaces)
+        for (int t = 0; t + 2 < s.numIndexes; t += 3) {
+            auto p = [&](int k) { const auto& dv = verts[static_cast<size_t>(s.firstVert + idx[static_cast<size_t>(s.firstIndex + t + k)])]; return Vec3{dv.xyz[0], dv.xyz[1], dv.xyz[2]}; };
+            CHECK((p(1) - p(0)).cross(p(2) - p(0)).length() > 1e-3);
+            ++tris;
+        }
+    CHECK(tris > 0);
 }
