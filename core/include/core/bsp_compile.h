@@ -109,7 +109,12 @@ struct BspSettings {
     // The error a chart may have in a .jpg (sRGB levels after the exposure, same measure as lightmapTolerance; 99% of the texels within it, all within twice it).
     // Looser than the fit's: a byte of linear light is 12 levels next to black, so near-black texels always differ by that much; the engine reads no sRGB lightmaps.
     double lightmapJpegTolerance = 8;
-    bool repackLightmaps = true;           // pack all lightmap charts again by size (fewer, fuller pages) when that takes fewer pages than the live layout
+    bool repackLightmaps = true;
+    // Surfaces further than this (m) from the playable area (BspInput::playable) get no texture relief: they are laid out flat. 0 = relief everywhere. A relief
+    // is hundreds of thousands of triangles on a big level, and nobody gets close enough to see it.
+    double reliefDistance = 0;
+    // Identical vertices of one triangle-soup surface (relief, texture layouts) are written once and shared by the triangles.
+    bool weldVertices = true;           // pack all lightmap charts again by size (fewer, fuller pages) when that takes fewer pages than the live layout
     SkySettings sky;                       // the automatic sky (its texture "" = env/sky_cube with a warning)
     double engineFarPlane = 3000;          // m: the engine's Camera::FarPlane; a sky box larger than that across is clipped (warning)
 };
@@ -124,6 +129,7 @@ struct BspInput {
     texplan::InfoFn texInfo;
     texplan::GroupFn texGroups;
     LightingClasses classes;
+    std::shared_ptr<const PlayableArea> playable;  // the playable area (playable.h); null / empty = none (BspSettings::reliefDistance does nothing)
     const LightmapLayout* layout = nullptr;  // the layout the bake used (all charts, their style lists); null = no lightmaps
     std::map<int, LightmapPages> pages;      // per style: the baked pages, every layer at the base layout's page / rectangle
     std::map<int, LightvolGrid> lightvol;    // per style, same geometry (empty: no light grid)
@@ -144,7 +150,7 @@ struct BspOutput {
     std::vector<BspLightmapPage> lightmaps;  // lm_0000.exr, lm_0001.exr, ...
     std::vector<std::string> warnings;
     struct Stats {
-        size_t surfaces = 0, decals = 0, skySurfaces = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, lightmapTexelsBefore = 0, lightmapTexelsAfter = 0, lightmapJpegPages = 0, lightmapJpegRejected = 0, degenerateTriangles = 0, gridPoints = 0, palette = 0;
+        size_t surfaces = 0, decals = 0, skySurfaces = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, lightmapTexelsBefore = 0, lightmapTexelsAfter = 0, lightmapJpegPages = 0, lightmapJpegRejected = 0, degenerateTriangles = 0, reliefSkipped = 0, weldedVertices = 0, gridPoints = 0, palette = 0;
         double visCell = 0, visSeconds = 0;
     } stats;
 };

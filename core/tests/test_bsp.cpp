@@ -1324,3 +1324,73 @@ TEST_CASE("bsp compile: triangles without area are not written (the engine's phy
         }
     CHECK(tris > 0);
 }
+
+TEST_CASE("bsp export: identical vertices of a triangle soup are written once, and surfaces far from the playable area get no relief") {
+    auto run = [&](bool weld, bool withArea, double areaX, const char* reliefDistance, BspExportResult* out, std::vector<uint8_t>* bytes) {
+        TempDir dir;
+        writeTga(dir.path / "textures/t/bump.tga", 32, 32);
+        std::ofstream(dir.path / "textures/t/bump.tga.json") << R"({"pixelsPerMeter": 32, "relief": {"vertices": [[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0.25,0.25,0.1],[0.75,0.25,0.1],[0.75,0.75,0.1],[0.25,0.75,0.1]],
+            "faces": [[4,5,6,7],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]]}})";
+        Brush box = Brush::makeBox("box", {0, 0, 0}, {5, 3, 4}, "t/bump");
+        json w = entityJson("w", "worldspawn", {});
+        w["brushes"] = json::array({brushJson(box)});
+        if (reliefDistance) w["keyvalues"]["_relief_distance"] = reliefDistance;
+        std::vector<json> ents = {w};
+        if (withArea) {
+            json p = entityJson("p", "editor_playable_area", {});
+            p["brushes"] = json::array({brushJson(Brush::makeBox("vol", {areaX, 0, 0}, {areaX + 2, 2, 2}))});
+            ents.push_back(p);
+        }
+        dir.write("maps/t.map.json", docJson(ents));
+        BspExportRequest req;
+        req.assetsRoot = dir.path;
+        req.mapPath = "maps/t.map.json";
+        req.outPath = "maps/t.bsp";
+        req.bake = false;
+        req.settings.weldVertices = weld;
+        {
+            Scene scene(dir.path);
+            scene.loadGameProfile();
+            scene.openDocument(req.mapPath);
+            req.document = scene.documentSyncJson()["doc"];
+        }
+        *out = exportBsp(req);
+        REQUIRE(out->ok);
+        std::ifstream f(dir.path / "maps/t.bsp", std::ios::binary);
+        *bytes = std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    };
+    auto numVerts = [](const std::vector<uint8_t>& bytes) {
+        BspView v;
+        REQUIRE(v.open(bytes));
+        return v.lump<rbsp::DrawVert>(rbsp::kDrawVerts).size();
+    };
+    auto raised = [](const std::vector<uint8_t>& bytes) {
+        BspView v;
+        REQUIRE(v.open(bytes));
+        bool any = false;
+        for (const auto& dv : v.lump<rbsp::DrawVert>(rbsp::kDrawVerts)) any |= std::fabs(dv.xyz[0] - (160 + 3.2f)) < 1e-2f;  // 0.1 m off the +X face
+        return any;
+    };
+    BspExportResult rw, rn, rnear, rfar, rdefault;
+    std::vector<uint8_t> welded, loose, near, far, dflt;
+    run(true, false, 0, nullptr, &rw, &welded);
+    run(false, false, 0, nullptr, &rn, &loose);
+    CHECK(numVerts(welded) < numVerts(loose));
+    CHECK(rw.stats.weldedVertices > 0);
+    CHECK(numVerts(welded) + rw.stats.weldedVertices == numVerts(loose));
+    // the playable area right next to the box: the relief stays; 200 m away with the distance at 48 (the default) or 10: flat
+    run(true, true, 6, "10", &rnear, &near);
+    CHECK(raised(near));
+    CHECK(rnear.stats.reliefSkipped == 0);
+    run(true, true, 200, "10", &rfar, &far);
+    CHECK(!raised(far));
+    CHECK(rfar.stats.reliefSkipped > 0);
+    CHECK(numVerts(far) < numVerts(near));
+    run(true, true, 200, nullptr, &rdefault, &dflt);
+    CHECK(!raised(dflt));
+    // 0 = relief everywhere; and without a playable area nothing is limited
+    run(true, true, 200, "0", &rdefault, &dflt);
+    CHECK(raised(dflt));
+    run(true, false, 0, "10", &rdefault, &dflt);
+    CHECK(raised(dflt));
+}

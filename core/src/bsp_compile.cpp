@@ -555,6 +555,21 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                 stageIdx.push_back(base); stageIdx.push_back(base + 1); stageIdx.push_back(base + 2);
             }
             if (stageVerts.size() == vFirst) return;  // nothing but degenerate triangles
+            if (cfg.weldVertices) {
+                // the triangles of a soup own three vertices each; the ones that are equal in every byte (position, texture and lightmap coordinates, normal) are one
+                std::unordered_map<std::string, int32_t> seen;
+                std::vector<rbsp::DrawVert> kept;
+                std::vector<int32_t> remap(stageVerts.size() - vFirst);
+                for (size_t i = vFirst; i < stageVerts.size(); ++i) {
+                    const auto ins = seen.emplace(std::string(reinterpret_cast<const char*>(&stageVerts[i]), sizeof(rbsp::DrawVert)), static_cast<int32_t>(kept.size()));
+                    if (ins.second) kept.push_back(stageVerts[i]);
+                    remap[i - vFirst] = ins.first->second;
+                }
+                res.stats.weldedVertices += remap.size() - kept.size();
+                stageVerts.resize(vFirst);
+                stageVerts.insert(stageVerts.end(), kept.begin(), kept.end());
+                for (size_t i = iFirst; i < stageIdx.size(); ++i) stageIdx[i] = remap[static_cast<size_t>(stageIdx[i])];
+            }
             out.numVerts = static_cast<int32_t>(stageVerts.size() - vFirst);
             out.numIndexes = static_cast<int32_t>(stageIdx.size() - iFirst);
             (s.decal ? modelDecals : modelSurfaces)[static_cast<size_t>(s.model)].push_back(static_cast<int>(unordered.size()));
@@ -612,6 +627,16 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         for (const Vec3& v : s.verts) poly.push_back(texplan::v3(v));
         outlines.add(s.instance + '|' + s.entityId + '|' + s.brushInstance + '|' + s.brushId + '|' + std::to_string(s.faceId) + (s.side == FaceSide::Back ? 'B' : 'F'), std::move(poly));
     }
+    // the texture info without reliefs, for the surfaces too far from the playable area to show one (BspSettings::reliefDistance)
+    std::map<std::string, std::unique_ptr<texplan::TexInfo>> flatInfos;
+    const texplan::InfoFn flatInfo = [&](const std::string& path) -> const texplan::TexInfo* {
+        const texplan::TexInfo* i = in.texInfo ? in.texInfo(path) : nullptr;
+        if (!i || !i->props.relief) return i;
+        auto& slot = flatInfos[path];
+        if (!slot) { slot = std::make_unique<texplan::TexInfo>(*i); slot->props.relief = nullptr; }
+        return slot.get();
+    };
+    const bool limitRelief = cfg.reliefDistance > 0 && in.playable && !in.playable->empty();
     for (const LightSurface& s : in.surfaces) {
         const auto mit = modelOf.find(entityKey(s.instance, s.entityId));
         if (mit == modelOf.end() || s.verts.size() < 3) continue;
@@ -627,15 +652,20 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         // the texture as the editor lays it (texplan.h): the authored face's UV map; repeat modes, texture group layouts and reliefs as triangles
         const auto parent = in.parentFace ? in.parentFace(s.brushInstance, s.brushId, s.faceId) : std::pair<const Brush*, const BrushFace*>{nullptr, nullptr};
         if (parent.first && parent.second) {
-            const auto key = std::make_pair(parent.first, parent.second->id);
+            const bool farRelief = limitRelief && in.playable->distance(s.verts, cfg.reliefDistance + 1) > cfg.reliefDistance;
+            const texplan::InfoFn& info = farRelief ? flatInfo : in.texInfo;
+            const auto key = std::make_pair(parent.first, parent.second->id | (farRelief ? 0x80000000u : 0u));
             auto pit = faceTexturing.find(key);
             if (pit == faceTexturing.end()) {
                 FaceTexturing ft;
-                ft.plain = !texplan::planForFace(*parent.first, *parent.second, in.texInfo, in.texGroups) &&
-                           !texplan::reliefOf(in.texInfo, parent.second->texture.empty() ? std::string("dev/grey") : parent.second->texture);
-                ft.uvAt = texplan::faceUvAt(*parent.first, *parent.second, in.texInfo);
+                ft.plain = !texplan::planForFace(*parent.first, *parent.second, info, in.texGroups) &&
+                           !texplan::reliefOf(info, parent.second->texture.empty() ? std::string("dev/grey") : parent.second->texture);
+                ft.uvAt = texplan::faceUvAt(*parent.first, *parent.second, info);
                 pit = faceTexturing.emplace(key, std::move(ft)).first;
             }
+            if (farRelief && !texplan::planForFace(*parent.first, *parent.second, in.texInfo, in.texGroups) &&
+                texplan::reliefOf(in.texInfo, parent.second->texture.empty() ? std::string("dev/grey") : parent.second->texture))
+                ++res.stats.reliefSkipped;
             if (pit->second.plain) {
                 const auto uvAt = pit->second.uvAt;
                 p.st = [uvAt](size_t, const Vec3& q) { const texplan::V2 uv = uvAt(texplan::v3(q)); return Vec2{uv[0], uv[1]}; };

@@ -38,6 +38,7 @@ export const LEVEL_SECTIONS: LevelSection[] = [
     { key: '_lod_range', label: 'Range factor', dflt: 2, min: 1.1, max: 8, step: 0.1, hint: 'Each cascade reaches this many times further than the previous one (cascade k ends at Radius x Range^k)' },
     { key: '_lod_density', label: 'Density per cascade', dflt: 0.5, min: 0.05, max: 1, step: 0.05, hint: 'Lightmap texels per metre of a cascade relative to the one before (0.5 = half, so a quarter in the second)' },
     { key: '_lod_cull_unseen', label: 'Cull unseen surfaces', dflt: 1, min: 0, max: 1, step: 1, int: true, hint: '1 = surfaces that nothing in the playable area can see (inside far closed buildings, backs of far walls) get the lowest cascade straight away' },
+    { key: '_relief_distance', label: 'Texture relief distance (m)', dflt: 48, min: 0, max: 100000, step: 1, hint: 'Export only: surfaces further than this from the playable area are written flat, without their texture relief (hundreds of thousands of triangles on a big level); 0 = relief everywhere. Needs a playable area' },
     { key: '_lightvol_margin', label: 'Light volume margin (m)', dflt: 2, min: 0, max: 256, step: 0.5, hint: 'The light volume covers the playable area grown by this much' },
   ] },
   { title: 'Export', note: 'Only the export uses these.', fields: [
