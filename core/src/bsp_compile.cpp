@@ -76,7 +76,7 @@ struct ShaderSet {
     std::string root;
     // One entry per (texture, contents, surface flags): the same texture on a trigger brush and on a wall are two shaders, as in Quake 3.
     int add(const std::string& texture, uint32_t contents, uint32_t surface) {
-        const std::string key = texture + '' + std::to_string(contents) + '' + std::to_string(surface);
+        const std::string key = texture + '|' + std::to_string(contents) + '|' + std::to_string(surface);
         if (const auto it = index.find(key); it != index.end()) return it->second;
         rbsp::Shader s{};
         copyName(s.name, sizeof(s.name), root.empty() ? texture : root + "/" + texture);
@@ -605,6 +605,13 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         surfaceBounds.push_back(bb);
         surfaceSky.push_back(sky);
     };
+    // which polygon edges are the outline of their authored face: a relief is closed there by connecting walls (texplan.h)
+    texplan::OutlineIndex outlines;
+    for (const LightSurface& s : in.surfaces) {
+        std::vector<texplan::V3> poly;
+        for (const Vec3& v : s.verts) poly.push_back(texplan::v3(v));
+        outlines.add(s.instance + '|' + s.entityId + '|' + s.brushInstance + '|' + s.brushId + '|' + std::to_string(s.faceId) + (s.side == FaceSide::Back ? 'B' : 'F'), std::move(poly));
+    }
     for (const LightSurface& s : in.surfaces) {
         const auto mit = modelOf.find(entityKey(s.instance, s.entityId));
         if (mit == modelOf.end() || s.verts.size() < 3) continue;
@@ -637,7 +644,8 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             }
             std::vector<texplan::V3> poly;
             for (const Vec3& v : s.verts) poly.push_back(texplan::v3(v));
-            const auto tris = texplan::texturePolygon(poly, texplan::v3(s.normal), parent.first, parent.second, in.texInfo, in.texGroups, &reliefBudget);
+            const auto tris = texplan::texturePolygon(poly, texplan::v3(s.normal), parent.first, parent.second, in.texInfo, in.texGroups, &reliefBudget, "dev/grey",
+                                                     &outlines.of(static_cast<size_t>(&s - in.surfaces.data())));
             std::map<std::string, Poly> byTexture;  // one surface per texture the face samples
             for (const auto& t : tris) {
                 Poly& q = byTexture[t.texture];

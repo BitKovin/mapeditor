@@ -203,6 +203,63 @@ TEST_CASE("texplan: a relief laid over a triangle matches the Shell (reliefTrian
     }
 }
 
+TEST_CASE("texplan: the connecting walls of a relief match the Shell (reliefTriangle with borders)") {
+    const ojson v = loadVectors();
+    REQUIRE(v["reliefs"].contains("walls"));
+    std::map<std::string, std::shared_ptr<const Relief>> reliefs;
+    for (const auto& c : v["reliefs"]["walls"]) {
+        auto& relief = reliefs[c["relief"].dump()];  // one object per relief: the triangle cache is keyed by its address
+        if (!relief) relief = parseRelief(nlohmann::json::parse(c["relief"].dump()));
+        REQUIRE(relief);
+        std::array<V3, 3> tri;
+        std::array<V2, 3> uv;
+        for (int k = 0; k < 3; ++k) {
+            tri[static_cast<size_t>(k)] = {c["tri"][k][0], c["tri"][k][1], c["tri"][k][2]};
+            uv[static_cast<size_t>(k)] = {c["uv"][k][0], c["uv"][k][1]};
+        }
+        const V3 n{c["n"][0], c["n"][1], c["n"][2]};
+        // a face with a relief of its own 0.05 high, lying behind the plane x = 0 (a convex corner there)
+        const NeighbourFn nbrAt = [](const V3& a, const V3& b) -> std::optional<Neighbour> {
+            if (std::fabs(a[0]) < 1e-9 && std::fabs(b[0]) < 1e-9) return Neighbour{{-1, 0, 0}, {{0, 1, 0.05, 0.05}, {1, 1.5, 0.05, 0.05}}};
+            return std::nullopt;
+        };
+        const auto out = reliefTriangle(tri, uv, n, *relief, "t", nullptr, c["border"].get<int>(), c["nbr"].get<bool>() ? &nbrAt : nullptr);
+        if (c["out"].is_null()) { CHECK_FALSE(out); continue; }
+        REQUIRE(out);
+        std::vector<double> flat;
+        for (const auto& t : *out)
+            for (int k = 0; k < 3; ++k) {
+                for (int m = 0; m < 3; ++m) flat.push_back(t.pos[static_cast<size_t>(k)][static_cast<size_t>(m)]);
+                for (int m = 0; m < 3; ++m) flat.push_back(t.normal[static_cast<size_t>(k)][static_cast<size_t>(m)]);
+                flat.push_back(t.uv[static_cast<size_t>(k)][0]);
+                flat.push_back(t.uv[static_cast<size_t>(k)][1]);
+            }
+        REQUIRE(flat.size() == c["out"].size());
+        for (size_t i = 0; i < flat.size(); ++i) CHECK(near(flat[i], c["out"][i]));
+    }
+}
+
+TEST_CASE("texplan: polygon outlines, fan and piece border bits") {
+    const std::vector<V3> A = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, B = {{1, 0, 0}, {2, 0, 0}, {2, 1, 0}, {1, 1, 0}};
+    const auto two = polygonBorders({A, B});
+    CHECK(two[0] == std::vector<char>{1, 0, 1, 1});
+    CHECK(two[1] == std::vector<char>{1, 1, 1, 0});
+    const std::vector<V3> C = {{1, 0, 0}, {2, 0, 0}, {2, 0.5, 0}, {1, 0.5, 0}}, D = {{1, 0.5, 0}, {2, 0.5, 0}, {2, 1, 0}, {1, 1, 0}};
+    CHECK(polygonBorders({A, C, D})[0] == std::vector<char>{1, 0, 1, 1});  // a neighbour that splits the shared edge still matches it
+    const std::vector<char> e = {1, 0, 1, 1};
+    CHECK(fanBorder(1, 4, e) == 1);
+    CHECK(fanBorder(2, 4, e) == 6);
+    std::vector<PieceVert> piece(3);
+    piece[0].w = {1, 0, 0}; piece[1].w = {0, 1, 0}; piece[2].w = {0.5, 0.25, 0.25};
+    CHECK(pieceBorder(piece, 1) == 1);
+    CHECK(pieceBorder(piece, 0) == 0);
+    OutlineIndex idx;
+    const size_t a = idx.add("f", A), b = idx.add("f", B), c = idx.add("g", A);
+    CHECK(idx.of(a) == std::vector<char>{1, 0, 1, 1});
+    CHECK(idx.of(b) == std::vector<char>{1, 1, 1, 0});
+    CHECK(idx.of(c) == std::vector<char>{1, 1, 1, 1});  // another face: nothing to share an edge with
+}
+
 TEST_CASE("texplan: seamless edge analysis (seamless.ts) and the seeded random numbers (rng.ts)") {
     // a 16 x 16 image whose rows run dark to light: the top and bottom rows do not continue each other, the columns do
     std::vector<uint8_t> img(16 * 16 * 4);

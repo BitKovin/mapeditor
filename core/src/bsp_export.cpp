@@ -117,6 +117,12 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
             std::map<std::string, std::vector<float>> trisOf;
             texplan::ReliefBudget budget;
             budget.left = 400000;
+            texplan::OutlineIndex outlines;  // which polygon edges are the outline of their authored face (the relief is closed there by connecting walls)
+            for (const LightSurface& sf : in.surfaces) {
+                std::vector<texplan::V3> poly;
+                for (const Vec3& v : sf.verts) poly.push_back(texplan::v3(v));
+                outlines.add(sf.instance + '|' + sf.entityId + '|' + sf.brushInstance + '|' + sf.brushId + '|' + std::to_string(sf.faceId) + (sf.side == FaceSide::Back ? 'B' : 'F'), std::move(poly));
+            }
             for (const LightSurface& sf : in.surfaces) {
                 const auto parent = in.parentFace(sf.brushInstance, sf.brushId, sf.faceId);
                 if (!parent.first || !parent.second) continue;
@@ -127,7 +133,8 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                 if (!relief) continue;
                 std::vector<texplan::V3> poly;
                 for (const Vec3& v : sf.verts) poly.push_back(texplan::v3(v));
-                const auto tris = texplan::texturePolygon(poly, texplan::v3(sf.normal), parent.first, parent.second, in.texInfo, in.texGroups, &budget);
+                const auto tris = texplan::texturePolygon(poly, texplan::v3(sf.normal), parent.first, parent.second, in.texInfo, in.texGroups, &budget, "dev/grey",
+                                                     &outlines.of(static_cast<size_t>(&sf - in.surfaces.data())));
                 const std::string key = reliefKey(sf.instance, sf.entityId, sf.brushInstance, sf.brushId, sf.faceId, sf.side);
                 if (!faces.count(key))
                     faces[key] = json{{"i", sf.instance}, {"e", sf.entityId}, {"bi", sf.brushInstance}, {"b", sf.brushId}, {"f", sf.faceId}, {"s", sf.side == FaceSide::Back ? 1 : 0},

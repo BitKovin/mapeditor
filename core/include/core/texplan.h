@@ -196,17 +196,51 @@ PlanPtr planForFace(const Brush& b, const BrushFace& f, const InfoFn& info, cons
 // ---- relief (reliefApply.ts) -----------------------------------------------------------------------------------------------------------------------
 struct TexturedTri { std::string texture; std::array<V3, 3> pos; std::array<V2, 3> uv; std::array<V3, 3> normal; };
 inline constexpr int kMaxReliefCells = 4096;
+/// The height of a relief along a line: from parameter t0 to t1 of the line it runs linearly from z0 to z1.
+struct ReliefSpan { double t0, t1, z0, z1; };
+/// The face next to an outline edge of a face, when it stands at a convex corner with it and shows a relief: its outward normal and its relief's heights (along
+/// that normal) along the edge, over t = 0..1 from the edge's first end to its second. The wall that closes the outline then runs from the relief of the face
+/// to the relief of the neighbour (a bevel across the corner) instead of down to the surface.
+struct Neighbour { V3 n; std::vector<ReliefSpan> spans; };
+using NeighbourFn = std::function<std::optional<Neighbour>(const V3& a, const V3& b)>;
+/// What stands next to the outline edges of `face` of `brush`: the other face with the edge that lies behind the face's plane and shows a relief of its own laid
+/// out by its UV map alone (a face with repeat behaviour keeps the wall down to the surface).
+NeighbourFn neighbourFn(const Brush& brush, const BrushFace& face, const InfoFn& info, const GroupFn& groups);
 struct ReliefBudget { long long left = 300000; };
 /// The relief over one triangle: whole triangles (position, normal, uv), or nullopt when the triangle stays flat (degenerate, too many repeats, budget).
+/// `border`: bit k set = the triangle's edge k (corner k to k + 1) is on the outline of the face, so the relief is closed there by a wall down to the surface;
+/// walls also close the gaps between repeats whose borders have different heights.
+/// `neighbour` tells what stands next to such an outline edge (see Neighbour).
 std::optional<std::vector<TexturedTri>> reliefTriangle(const std::array<V3, 3>& tri, const std::array<V2, 3>& uv, const V3& n, const Relief& relief,
-                                                       const std::string& texture, ReliefBudget* budget);
+                                                       const std::string& texture, ReliefBudget* budget, int border = 0, const NeighbourFn* neighbour = nullptr);
+/// For the polygons that make up one face (the fragments a cut leaves of it): which edge of which polygon (edge k: vertex k to k + 1) is on the outline of
+/// their union (1) and which is shared with another of them (0). An edge a neighbour only partly shares counts as outline.
+std::vector<std::vector<char>> polygonBorders(const std::vector<std::vector<V3>>& polys);
+/// The outline flags (polygonBorders) of the polygons of many authored faces, worked out one face at a time when first asked: `add` every polygon with the
+/// key of the face it lies on, then ask `of`.
+class OutlineIndex {
+public:
+    size_t add(const std::string& faceKey, std::vector<V3> poly);
+    const std::vector<char>& of(size_t polygon);
+private:
+    std::vector<std::vector<V3>> polys_;
+    std::vector<std::string> keys_;
+    std::map<std::string, std::vector<size_t>> groups_;
+    std::map<size_t, std::vector<char>> done_;
+};
+/// The border bits of the fan triangle (0, i, i + 1) of a polygon with n corners, given which of its edges are on the outline.
+int fanBorder(size_t i, size_t n, const std::vector<char>& edge);
+/// The border bits of a piece of a source triangle (`w` = its corners' weights in it).
+int pieceBorder(const std::vector<PieceVert>& verts, int triBorder);
 /// The relief of a texture when it changes anything.
 std::shared_ptr<const Relief> reliefOf(const InfoFn& info, const std::string& texture);
 
 /// Everything the editor draws for one convex polygon of a face (a whole face, a carved fragment): textured triangles in the face's plane or on its
-/// relief. `parentBrush` / `parentFace` = the authored face it lies on (null: plain, default projection); `normal` = the polygon's own (outward) normal.
+/// relief. `parentBrush` / `parentFace` = the authored face it lies on (null: plain, default projection); `normal` = the polygon's own (outward) normal;
+/// `border[k]` = edge k of `poly` is on the outline of the face (see polygonBorders; null: none is).
 std::vector<TexturedTri> texturePolygon(const std::vector<V3>& poly, const V3& normal, const Brush* parentBrush, const BrushFace* parentFace, const InfoFn& info,
-                                        const GroupFn& groups, ReliefBudget* budget, const std::string& defaultTexture = "dev/grey");
+                                        const GroupFn& groups, ReliefBudget* budget, const std::string& defaultTexture = "dev/grey",
+                                        const std::vector<char>* border = nullptr);
 
 // ---- the environment: textures and groups from the assets folder -----------------------------------------------------------------------------------
 class TexEnvironment {

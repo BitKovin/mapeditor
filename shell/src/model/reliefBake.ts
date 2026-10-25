@@ -16,7 +16,7 @@ import type { DerivedEntry, World } from './derived'
 import { brushIndex, carvedKey, instanceOf } from './derived'
 import { faceNormal } from './geometry'
 import type { Vec3 } from './math'
-import { newBudget, planHasRelief, reliefOf, reliefTriangle } from './reliefApply'
+import { fanBorder, neighbourFn, newBudget, planHasRelief, pieceBorder, polygonBorders, reliefOf, reliefTriangle } from './reliefApply'
 import { faceUvAt, lerpVec3, planForFace, retexture } from './uvmesh'
 
 /** Most triangles of relief one send holds (beyond it the remaining faces stay flat in the bake, like in the drawing's own budget). */
@@ -46,7 +46,8 @@ function polygonNormal(v: readonly Vec3[]): Vec3 {
   return l < 1e-12 ? [0, 0, 0] : [s[0] / l, s[1] / l, s[2] / l]
 }
 
-interface Piece { brushInstance: string; brushId: string; faceId: number; verts: Vec3[] }
+/** `border()[k]`: edge k of `verts` (corner k to k + 1) is the outline of the authored face (the relief is closed there by connecting walls); computed when needed. */
+interface Piece { brushInstance: string; brushId: string; faceId: number; verts: Vec3[]; border: () => boolean[] }
 
 /** Does the face show any relief: its own texture's, or (repeat modes) an alternate texture's of the plan? */
 function faceHasRelief(brush: Brush, face: Face): boolean {
@@ -55,7 +56,8 @@ function faceHasRelief(brush: Brush, face: Face): boolean {
 }
 
 /** The displayed triangles of one polygon piece of a face with relief (9 floats each; a triangle that stays flat in the drawing stays flat). */
-function pieceTriangles(brush: Brush, face: Face, verts: readonly Vec3[], normal: Vec3, budget: { left: number }, out: number[]): void {
+function pieceTriangles(brush: Brush, face: Face, verts: readonly Vec3[], border: readonly boolean[], normal: Vec3, budget: { left: number }, out: number[]): void {
+  const nb = neighbourFn(brush, face)
   const plan = planForFace(brush, face)
   const relief = reliefOf(face.texture)
   const uv = plan ? [] : (verts as Vec3[]).map(faceUvAt(brush, face)) // the face's own UVs (stored before projection), see faceUvAt
@@ -63,17 +65,18 @@ function pieceTriangles(brush: Brush, face: Face, verts: readonly Vec3[], normal
   const take = (got: number[]): void => { for (let i = 0; i + 7 < got.length; i += 8) out.push(got[i], got[i + 1], got[i + 2]) }
   for (let i = 1; i + 1 < verts.length; i++) {
     const tri: [Vec3, Vec3, Vec3] = [verts[0], verts[i], verts[i + 1]]
+    const edges = fanBorder(i, verts.length, border)
     if (plan) {
       // every piece of the repetition plan takes the relief of the texture it samples, placed by its own uv (reliefApply.ts planWithRelief)
       for (const o of retexture(plan, [tri])) {
         const pos = o.verts.map((v) => lerpVec3(tri, v.w)) as [Vec3, Vec3, Vec3]
         const r = reliefOf(o.texture)
-        const got = r ? reliefTriangle(pos, o.verts.map((v) => v.uv) as [[number, number], [number, number], [number, number]], normal, r, budget) : null
+        const got = r ? reliefTriangle(pos, o.verts.map((v) => v.uv) as [[number, number], [number, number], [number, number]], normal, r, budget, pieceBorder(o.verts, edges), nb) : null
         if (got) take(got); else flat(pos)
       }
       continue
     }
-    const got = relief ? reliefTriangle(tri, [uv[0], uv[i], uv[i + 1]], normal, relief, budget) : null
+    const got = relief ? reliefTriangle(tri, [uv[0], uv[i], uv[i + 1]], normal, relief, budget, edges, nb) : null
     if (got) take(got); else flat(tri)
   }
 }
@@ -100,7 +103,7 @@ export function reliefFaces(world: World, entries: readonly DerivedEntry[], know
     const key = `${instance}|${entityId}|${p.brushInstance}|${p.brushId}|${p.faceId}|${back ? 'B' : 'F'}`
     let f = out.get(key)
     if (!f) { f = { instance, entityId, brushInstance: p.brushInstance, brushId: p.brushId, faceId: p.faceId, back, normal, offset: dot(normal, p.verts[0]), tris: [] }; out.set(key, f) }
-    pieceTriangles(parentBrush, face, p.verts, normal, budget, f.tris)
+    pieceTriangles(parentBrush, face, p.verts, p.border(), normal, budget, f.tris)
   }
 
   const visit = (entityId: string, instance: string, brushes: readonly Brush[] | undefined): void => {
@@ -109,13 +112,22 @@ export function reliefFaces(world: World, entries: readonly DerivedEntry[], know
       const key = carvedKey(entityId, b.id, instance)
       const entry = byKey.get(key)
       if (entry) {
-        for (const fr of entry.fragments) {
+        const polys = entry.fragments.map((fr) => {
           const verts: Vec3[] = []
           for (let i = 0; i + 2 < fr.v.length; i += 3) verts.push([fr.v[i], fr.v[i + 1], fr.v[i + 2]])
-          add(entityId, instance, { brushInstance: fr.instance ?? entry.instance, brushId: fr.brush, faceId: fr.face, verts })
+          return verts
+        })
+        // the fragments of one authored face close their relief along the outline of their union only
+        const groups = new Map<string, number[]>()
+        entry.fragments.forEach((fr, k) => { const g = groups.get(`${fr.brush}#${fr.face}`) ?? []; groups.set(`${fr.brush}#${fr.face}`, g); g.push(k) })
+        const border: boolean[][] = []
+        const borderOf = (k: number): boolean[] => {
+          if (!border[k]) { const g = groups.get(`${entry.fragments[k].brush}#${entry.fragments[k].face}`)!; polygonBorders(g.map((m) => polys[m])).forEach((b, m) => { border[g[m]] = b }) }
+          return border[k]
         }
+        entry.fragments.forEach((fr, k) => add(entityId, instance, { brushInstance: fr.instance ?? entry.instance, brushId: fr.brush, faceId: fr.face, verts: polys[k], border: () => borderOf(k) }))
       } else if (!known.has(key)) {
-        for (const f of b.faces) add(entityId, instance, { brushInstance: instance, brushId: b.id, faceId: f.id, verts: f.loop.map((i) => b.vertices[i]) })
+        for (const f of b.faces) add(entityId, instance, { brushInstance: instance, brushId: b.id, faceId: f.id, verts: f.loop.map((i) => b.vertices[i]), border: () => f.loop.map(() => true) })
       }
     }
   }

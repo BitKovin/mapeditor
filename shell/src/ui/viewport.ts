@@ -418,10 +418,11 @@ export class ViewportPanel implements IContentRenderer {
   private entityHandles(): { entity: Entity; origin: Vec3; angle: { base: Vec3; tip: Vec3 } | null } | null {
     const st = this.store.state, sel = st.selection
     if (st.tool !== 'select' || st.editMode !== 'object' || this.modal || this.clip || st.pipette || this.drawing || !this.store.canEdit) return null
-    if (!sel || sel.instanceId !== undefined || sel.brushId !== undefined || st.multi.length > 1) return null
+    if (!sel || sel.instanceId !== undefined || sel.faceId !== undefined || st.multi.length > 1) return null
     const entity = findEntity(st.doc, sel.entityId)
     if (!entity || classOf(entity) === 'worldspawn' || (isBrushEntity(entity) && !showsCustomOrigin(entity))) return null
-    return { entity, origin: originOf(entity), angle: hasAngleHandle(entity) ? angleHandle(entity, (c) => this.store.entityBox(c)) : null }
+    // one brush of a brush entity still shows the entity's origin (to edit it), but not its angle: that turns the entity as a whole
+    return { entity, origin: originOf(entity), angle: sel.brushId === undefined && hasAngleHandle(entity) ? angleHandle(entity, (c) => this.store.entityBox(c)) : null }
   }
   private entityHandleHit(e: { clientX: number; clientY: number }): 'origin' | 'angle' | null {
     const hs = this.entityHandles()
@@ -494,7 +495,7 @@ export class ViewportPanel implements IContentRenderer {
   private pivotNow(): Vec3 | null {
     const st = this.store.state
     if (st.tool !== 'select' || this.modal) return null
-    if (st.editMode === 'object') return this.faceGizmo() ? null : gizmoPivot(st.doc, selectedList(this.store))
+    if (st.editMode === 'object') return this.faceGizmo() ? null : this.originSelected() ? this.entityHandles()!.origin : gizmoPivot(st.doc, selectedList(this.store))
     if (st.editMode === 'mesh') {
       const t = this.store.meshTarget()
       return t && st.meshSel.verts.length ? centroid(t.brush, st.meshSel.verts) : null

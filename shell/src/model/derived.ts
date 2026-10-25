@@ -15,7 +15,8 @@ import { Vec3, cross, normalize, sub } from './math'
 import { planarCoordsProjected } from './uv'
 import { brushTextureSignature, faceUvAt, lerpVec3, planForFace, retexture } from './uvmesh'
 import { texEnv } from './texprops'
-import { newBudget, planHasRelief, planWithRelief, reliefOf, reliefTriangle } from './reliefApply'
+import type { NeighbourFn } from './reliefApply'
+import { fanBorder, neighbourFn, newBudget, planHasRelief, planWithRelief, polygonBorders, reliefOf, reliefTriangle } from './reliefApply'
 
 /** `instance` = the instance that owns `brush` (a prefab's subtractor may cut the world, so it differs from the carved brush's own). Absent = the entry's instance. */
 export interface DerivedFragment { brush: string; instance?: string; face: number; v: number[] }
@@ -74,6 +75,21 @@ export function buildCarvedMesh(entry: DerivedEntry, w: World): CarvedMesh {
   const pickTris: PickTri[] = []
   const budget = newBudget()
   const uvFns = new Map<Face, (p: Vec3) => [number, number]>()
+  // which fragment edges are the outline of their authored face: a relief is closed there by connecting walls (reliefApply.ts), not over the seams
+  const groups = new Map<string, DerivedFragment[]>()
+  for (const f of entry.fragments) { const k = `${f.brush}#${f.face}`; const g = groups.get(k) ?? []; groups.set(k, g); g.push(f) }
+  const borders = new Map<DerivedFragment, boolean[]>()
+  const neighbours = new Map<Face, NeighbourFn>() // what stands next to each authored face's edges (reliefApply.ts neighbourFn)
+  const bordersOf = (f: DerivedFragment): boolean[] => {
+    let b = borders.get(f)
+    if (!b) {
+      const g = groups.get(`${f.brush}#${f.face}`) ?? [f]
+      const per = polygonBorders(g.map((x) => Array.from({ length: x.v.length / 3 }, (_, i) => vert(x.v, i))))
+      g.forEach((x, i) => borders.set(x, per[i]))
+      b = borders.get(f)!
+    }
+    return b
+  }
   for (const f of entry.fragments) {
     const n = f.v.length / 3
     if (n < 3) continue
@@ -91,14 +107,18 @@ export function buildCarvedMesh(entry: DerivedEntry, w: World): CarvedMesh {
     const tex = parent?.texture ?? 'dev/grey'
     const list = textures.get(tex) ?? []
     textures.set(tex, list)
+    const edgeB = relief || (plan && planHasRelief(plan)) ? bordersOf(f) : undefined
+    let nb: NeighbourFn | undefined
+    if (edgeB && parent && owned) { nb = neighbours.get(parent); if (!nb) { nb = neighbourFn(owned.brush, parent); neighbours.set(parent, nb) } }
     for (let i = 1; i + 1 < n; i++) {
+      const border = edgeB ? fanBorder(i, n, edgeB) : 0
       if (relief && !plan) {
-        const got = reliefTriangle([pts[0], pts[i], pts[i + 1]], [uv[0], uv[i], uv[i + 1]], normal, relief, budget)
+        const got = reliefTriangle([pts[0], pts[i], pts[i + 1]], [uv[0], uv[i], uv[i + 1]], normal, relief, budget, border, nb)
         if (got) { for (const x of got) list.push(x); pickTris.push({ a: pts[0], b: pts[i], c: pts[i + 1], normal, entityId: owned?.entityId ?? entry.entityId, instance, brushId: f.brush, faceId: f.face }); continue }
       }
       if (plan) {
         const tri: [Vec3, Vec3, Vec3] = [pts[0], pts[i], pts[i + 1]]
-        if (planHasRelief(plan)) planWithRelief(plan, [tri], normal, textures, budget) // every piece takes the relief of the texture it samples
+        if (planHasRelief(plan)) planWithRelief(plan, [tri], normal, textures, budget, [border], nb) // every piece takes the relief of the texture it samples
         else for (const o of retexture(plan, [tri])) {
           const l = textures.get(o.texture) ?? []
           textures.set(o.texture, l)

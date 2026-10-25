@@ -7,9 +7,10 @@
 import type { Vec3 } from './math'
 import { Relief, isFlatRelief, reliefToBrush } from './relief'
 import { texEnv } from './texprops'
-import { triangulateFace } from './geometry'
+import { faceNormal, triangulateFace } from './geometry'
+import type { Brush, Face } from './document'
 import type { FacePlan } from './uvmesh'
-import { lerpVec3, retexture } from './uvmesh'
+import { faceUvAt, lerpVec3, planForFace, retexture } from './uvmesh'
 
 type V2 = [number, number]
 interface P { u: number; v: number }
@@ -64,11 +65,166 @@ function clip(poly: P[], a: number, b: number, c: number): P[] {
   return out
 }
 
+// ---- connecting walls ------------------------------------------------------------------------------------------------------------------------------
+// The surface of a relief ends at the border of its repeat and at the outline of the face. Where the height there is not 0, the neighbouring repeat does
+// not continue it (a different height, or none at all): the gap between the two edges is closed by a wall standing on the line, from one height to the other
+// (between repeats) or down to the surface (the face's outline). Heights come from the relief's own surface triangles, sampled along the line.
+/** The relief's height along a line: from parameter t0 to t1 (0..1 of the line) the height runs linearly from z0 to z1. */
+export interface Span { t0: number; t1: number; z0: number; z1: number }
+/**
+ * The face next to an outline edge of a face, when it stands at a convex corner with it and shows a relief: its outward normal and its relief's heights
+ * (along that normal) along the edge, as spans over t = 0..1 from the edge's first end to its second. The wall that closes the outline then runs from the
+ * relief of the face to the relief of the neighbour (a bevel across the corner) instead of down to the surface.
+ */
+export interface Neighbour { n: Vec3; spans: Span[] }
+export type NeighbourFn = (a: Vec3, b: Vec3) => Neighbour | null
+/** The relief tile's triangles that have area seen from the front (walls have none). */
+const surfaceTris = (rts: readonly RTri[]): RTri[] => rts.filter((r) => !r.wall)
+const SIDE_SHIFT = 1e-7
+
+/**
+ * The heights of the relief along the UV line a -> b as seen from its `side` (a unit UV vector pointing off the line): the line is moved a hair to that
+ * side, so a line along a tile border or a relief edge reads the repeat / face on that side of it.
+ */
+function profile(surface: readonly RTri[], a: V2, b: V2, side: V2): Span[] {
+  const ax = a[0] + side[0] * SIDE_SHIFT, ay = a[1] + side[1] * SIDE_SHIFT, bx = b[0] + side[0] * SIDE_SHIFT, by = b[1] + side[1] * SIDE_SHIFT
+  const dx = bx - ax, dy = by - ay
+  const out: Span[] = []
+  const i0 = Math.floor(Math.min(ax, bx)), i1 = Math.ceil(Math.max(ax, bx)) - 1, j0 = Math.floor(Math.min(ay, by)), j1 = Math.ceil(Math.max(ay, by)) - 1
+  // t range of x0 + t * d >= lo (kind 1) / <= hi (kind 2) on an axis; false when the line misses
+  const range = (p: number, d: number, lo: number, hi: number, r: [number, number]): boolean => {
+    if (Math.abs(d) < 1e-15) return p >= lo && p <= hi
+    let t0 = (lo - p) / d, t1 = (hi - p) / d
+    if (t0 > t1) { const s = t0; t0 = t1; t1 = s }
+    r[0] = Math.max(r[0], t0); r[1] = Math.min(r[1], t1)
+    return r[0] < r[1]
+  }
+  for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+    const cell: [number, number] = [0, 1]
+    if (!range(ax, dx, i, i + 1, cell) || !range(ay, dy, j, j + 1, cell)) continue
+    for (const rt of surface) {
+      const Q = rt.v.map((p) => [i + p[0], j + 1 - p[1], p[2]] as Vec3)
+      const so = ((Q[1][0] - Q[0][0]) * (Q[2][1] - Q[0][1]) - (Q[2][0] - Q[0][0]) * (Q[1][1] - Q[0][1])) > 0 ? 1 : -1
+      const r: [number, number] = [cell[0], cell[1]]
+      let hit = true
+      for (let k = 0; k < 3 && hit; k++) {
+        const p = Q[k], q = Q[(k + 1) % 3]
+        const ex = q[0] - p[0], ey = q[1] - p[1]
+        const ha = -ey * so, hb = ex * so, hc = (ey * p[0] - ex * p[1]) * so
+        const f0 = ha * ax + hb * ay + hc, f1 = ha * bx + hb * by + hc
+        if (f0 < 0 && f1 < 0) { hit = false; break }
+        if (f0 < 0) r[0] = Math.max(r[0], f0 / (f0 - f1))
+        else if (f1 < 0) r[1] = Math.min(r[1], f0 / (f0 - f1))
+        if (r[1] - r[0] < 1e-9) hit = false
+      }
+      if (!hit) continue
+      const d = (Q[1][0] - Q[0][0]) * (Q[2][1] - Q[0][1]) - (Q[2][0] - Q[0][0]) * (Q[1][1] - Q[0][1])
+      const zAt = (t: number): number => {
+        const x = ax + dx * t - Q[0][0], y = ay + dy * t - Q[0][1]
+        const s = (x * (Q[2][1] - Q[0][1]) - y * (Q[2][0] - Q[0][0])) / d, u = ((Q[1][0] - Q[0][0]) * y - (Q[1][1] - Q[0][1]) * x) / d
+        return Q[0][2] + (Q[1][2] - Q[0][2]) * s + (Q[2][2] - Q[0][2]) * u
+      }
+      out.push({ t0: r[0], t1: r[1], z0: zAt(r[0]), z1: zAt(r[1]) })
+    }
+  }
+  return out.sort((x, y) => x.t0 - y.t0)
+}
+
+/** The height of `spans` at the interval ta..tb (inside one span), as [at ta, at tb]; null where the relief has no surface. */
+function heightsOver(spans: readonly Span[], ta: number, tb: number): [number, number] | null {
+  for (const s of spans) {
+    if (s.t0 > ta + 1e-9 || s.t1 < tb - 1e-9) continue
+    const k = (s.z1 - s.z0) / (s.t1 - s.t0)
+    return [s.z0 + k * (ta - s.t0), s.z0 + k * (tb - s.t0)]
+  }
+  return null
+}
+
+/** Pieces over t where the height of `f` runs from `f0` to `f1` and that of `g` (0 when null) from `g0` to `g1`, one of them above the other throughout. */
+interface Band { ta: number; tb: number; f0: number; f1: number; g0: number; g1: number }
+function bands(f: readonly Span[], g: readonly Span[] | null, bridge = false): Band[] {
+  const cuts = new Set<number>()
+  for (const s of f) { cuts.add(s.t0); cuts.add(s.t1) }
+  if (g) for (const s of g) { cuts.add(s.t0); cuts.add(s.t1) }
+  const ts = [...cuts].sort((a, b) => a - b)
+  const out: Band[] = []
+  const add = (ta: number, tb: number, f0: number, f1: number, g0: number, g1: number): void => {
+    if (bridge ? Math.max(Math.abs(f0), Math.abs(g0), Math.abs(f1), Math.abs(g1)) < 1e-6 : Math.abs(f0 - g0) < 1e-6 && Math.abs(f1 - g1) < 1e-6) return
+    out.push({ ta, tb, f0, f1, g0, g1 })
+  }
+  for (let k = 0; k + 1 < ts.length; k++) {
+    const ta = ts[k], tb = ts[k + 1]
+    if (tb - ta < 1e-9) continue
+    const hf = heightsOver(f, ta, tb)
+    const hg = g ? heightsOver(g, ta, tb) ?? (bridge ? [0, 0] as [number, number] : null) : [0, 0] as [number, number]
+    if (!hf || !hg) continue
+    const d0 = hf[0] - hg[0], d1 = hf[1] - hg[1]
+    if (!bridge && d0 * d1 < 0) { // the two heights cross: two bands, each with one of them on top
+      const s = d0 / (d0 - d1), tm = ta + (tb - ta) * s, fm = hf[0] + (hf[1] - hf[0]) * s
+      add(ta, tm, hf[0], fm, hg[0], fm)
+      add(tm, tb, fm, hf[1], fm, hg[1])
+    } else add(ta, tb, hf[0], hf[1], hg[0], hg[1])
+  }
+  return out
+}
+
+/**
+ * What stands next to the outline edges of `face` of `brush` (reliefTriangle's `neighbour`): the other face of the brush that has the edge, when it lies
+ * behind the face's plane (a convex corner) and shows a relief of its own that is laid out by its UV map alone (no repeat behaviour: such a face keeps the
+ * wall down to the surface).
+ */
+export function neighbourFn(brush: Brush, face: Face): NeighbourFn {
+  const nA = faceNormal(brush, face)
+  const base = brush.vertices[face.loop[0]]
+  interface Other { n: Vec3; loop: Vec3[]; uvAt: (p: Vec3) => V2; centre: Vec3; surface: RTri[] }
+  let others: Other[] | null = null
+  const load = (): Other[] => {
+    const out: Other[] = []
+    for (const o of brush.faces) {
+      if (o.id === face.id) continue
+      const r = reliefOf(o.texture)
+      if (!r || planForFace(brush, o)) continue
+      const loop = o.loop.map((i) => brush.vertices[i])
+      const centre: Vec3 = [0, 0, 0]
+      for (const v of loop) for (let k = 0; k < 3; k++) centre[k] += v[k] / loop.length
+      if (dot(nA, sub(centre, base)) > -1e-9) continue // not behind the face: a flat or concave corner
+      out.push({ n: faceNormal(brush, o), loop, uvAt: faceUvAt(brush, o), centre, surface: surfaceTris(reliefTris(r)) })
+    }
+    return out
+  }
+  const onSegment = (p: Vec3, a: Vec3, b: Vec3): boolean => {
+    const d = sub(b, a), len2 = dot(d, d)
+    if (len2 < 1e-12) return false
+    const t = dot(sub(p, a), d) / len2
+    if (t < -1e-6 || t > 1 + 1e-6) return false
+    const c = sub([a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t], p)
+    return dot(c, c) < 1e-10
+  }
+  return (a, b) => {
+    others ??= load()
+    for (const o of others) for (let k = 0; k < o.loop.length; k++) {
+      const p = o.loop[k], q = o.loop[(k + 1) % o.loop.length]
+      if (!onSegment(a, p, q) || !onSegment(b, p, q)) continue
+      const uv0 = o.uvAt(a), uv1 = o.uvAt(b), c = o.uvAt(o.centre)
+      const dx = uv1[0] - uv0[0], dy = uv1[1] - uv0[1], len = Math.hypot(dx, dy)
+      if (len < 1e-12) return null
+      // the side of the edge the neighbour's face is on, in its UV
+      let side: V2 = [-dy / len, dx / len]
+      if ((c[0] - uv0[0]) * side[0] + (c[1] - uv0[1]) * side[1] < 0) side = [-side[0], -side[1]]
+      return { n: o.n, spans: profile(o.surface, uv0, uv1, side) }
+    }
+    return null
+  }
+}
+
 /**
  * The relief laid over one triangle: `tri` world corners, `uv` their UV (repeats), `n` the face's outward normal. Returns interleaved vertices (position,
  * normal, uv) of whole triangles, or null when the triangle should stay flat (degenerate UV, too many repeats, budget used up).
+ * `border`: bit k set = the triangle's edge k (corner k to corner k + 1) lies on the outline of the face, so the relief there is closed by a wall down to
+ * the surface (a triangle cut out of the middle of a face has no border bits: its neighbours carry on the relief). `neighbour` tells what stands next to such
+ * an edge: at a corner with a face that has a relief of its own, the wall reaches across to that relief instead (see Neighbour).
  */
-export function reliefTriangle(tri: readonly [Vec3, Vec3, Vec3], uv: readonly [V2, V2, V2], n: Vec3, relief: Relief, budget?: ReliefBudget): number[] | null {
+export function reliefTriangle(tri: readonly [Vec3, Vec3, Vec3], uv: readonly [V2, V2, V2], n: Vec3, relief: Relief, budget?: ReliefBudget, border = 0, neighbour?: NeighbourFn): number[] | null {
   const [a0, a1, a2] = uv
   const det = (a1[0] - a0[0]) * (a2[1] - a0[1]) - (a2[0] - a0[0]) * (a1[1] - a0[1])
   if (Math.abs(det) < EPS) return null
@@ -167,7 +323,134 @@ export function reliefTriangle(tri: readonly [Vec3, Vec3, Vec3], uv: readonly [V
       }
     }
   }
+
+  // connecting walls: along the borders between repeats inside the triangle, and along the triangle's edges that are the face's outline
+  const surface = surfaceTris(rts)
+  let over = false
+  /** A wall standing on the UV line a -> b between the heights of `f` (seen from `sideF`, a UV direction) and `g` (the other side of the line; null: the surface, 0). */
+  const wall = (a: V2, b: V2, f: Span[], g: Span[] | null, sideF: V2, nb: Neighbour | null = null): void => {
+    for (const band of bands(f, g ?? nb?.spans ?? null, nb !== null)) {
+      if (over) return
+      // the wall belongs to the higher edge and looks at the lower one's side (the outline: the open air outside the face)
+      const higherF = band.f0 + band.f1 >= band.g0 + band.g1
+      const fd: V2 = g ? (higherF ? [-sideF[0], -sideF[1]] : sideF) : [-sideF[0], -sideF[1]]
+      const lp = (t: number): V2 => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+      const mid = lp(0.5), m0 = world(mid[0], mid[1]), m1 = world(mid[0] + fd[0], mid[1] + fd[1])
+      // at a corner the wall looks away from both faces
+      const facing = nb ? [n[0] + nb.n[0], n[1] + nb.n[1], n[2] + nb.n[2]] as Vec3 : sub(m1, m0)
+      const corner = (t: number, z: number, along: Vec3 = n): { w: Vec3; uv: V2 } => { const p = lp(t), e = at(p[0], p[1], 0); return { w: [e[0] + along[0] * z, e[1] + along[1] * z, e[2] + along[2] * z], uv: p } }
+      const low = nb ? nb.n : n // the second edge of the wall stands on the surface (g = 0) or on the neighbour's relief
+      const ring = [corner(band.ta, band.f0), corner(band.ta, band.g0, low), corner(band.tb, band.g1, low), corner(band.tb, band.f1)]
+      if (!nb) { // the two edges stand on one line: they meet where the heights do
+        if (Math.abs(band.f0 - band.g0) < 1e-6) ring.splice(1, 1)
+        if (Math.abs(band.f1 - band.g1) < 1e-6) ring.splice(ring.length - 1, 1)
+      } else { // a bevel: it shrinks to a triangle where an end of the wall lies on the edge itself
+        if (Math.hypot(band.f0, band.g0) < 1e-6) ring.splice(1, 1)
+        if (Math.hypot(band.f1, band.g1) < 1e-6) ring.splice(ring.length - 1, 1)
+      }
+      if (ring.length < 3) continue
+      const tris = ring.length - 2
+      if (budget) { if (budget.left < tris) { over = true; return } budget.left -= tris }
+      for (let k = 1; k + 1 < ring.length; k++) {
+        let t3 = [ring[0], ring[k], ring[k + 1]]
+        let nn = unit(cross(sub(t3[1].w, t3[0].w), sub(t3[2].w, t3[0].w)))
+        if (!nn) continue
+        if (dot(nn, facing) < 0) { t3 = [t3[0], t3[2], t3[1]]; nn = [-nn[0], -nn[1], -nn[2]] }
+        for (const c of t3) push(c.w, nn, c.uv[0], c.uv[1])
+      }
+    }
+  }
+  /** Part of the UV line a -> b (as t) that lies inside the base triangle. */
+  const inside = (a: V2, b: V2): [number, number] => {
+    let lo = 0, hi = 1
+    for (const [ea, eb, ec] of edges) {
+      const f0 = ea * a[0] + eb * a[1] + ec, f1 = ea * b[0] + eb * b[1] + ec
+      if (Math.abs(f1 - f0) < 1e-12) { if (f0 < 0) { lo = 1; hi = 0 } continue }
+      const s = -f0 / (f1 - f0)
+      if (f1 > f0) lo = Math.max(lo, s); else hi = Math.min(hi, s)
+    }
+    return [lo, hi]
+  }
+  const seam = (a: V2, b: V2, side: V2): void => {
+    const [lo, hi] = inside(a, b)
+    if (hi - lo < 1e-9) return
+    const p: V2 = [a[0] + (b[0] - a[0]) * lo, a[1] + (b[1] - a[1]) * lo], q: V2 = [a[0] + (b[0] - a[0]) * hi, a[1] + (b[1] - a[1]) * hi]
+    wall(p, q, profile(surface, p, q, side), profile(surface, p, q, [-side[0], -side[1]]), side)
+  }
+  for (let i = i0 + 1; i <= i1; i++) seam([i, j0], [i, j1 + 1], [-1, 0])
+  for (let j = j0 + 1; j <= j1; j++) seam([i0, j], [i1 + 1, j], [0, -1])
+  for (let k = 0; k < 3 && !over; k++) {
+    if (!(border & (1 << k))) continue
+    const p = U[k], q = U[(k + 1) % 3]
+    const len = Math.hypot(edges[k][0], edges[k][1])
+    if (len < 1e-12) continue
+    const inward: V2 = [edges[k][0] / len, edges[k][1] / len] // the edge's half-plane points into the triangle
+    wall(p, q, profile(surface, p, q, inward), null, inward, neighbour?.(tri[k], tri[(k + 1) % 3]) ?? null)
+  }
+  if (over) return null
   return out
+}
+
+/**
+ * For the polygons that make up one face (the fragments a cut leaves of it): which edge of which polygon is on the outline of their union (true), and which
+ * is shared with another of them (false: the relief goes on over it). `edge k` of a polygon runs from its vertex k to k + 1. An edge a neighbour only
+ * partly shares counts as outline.
+ */
+export function polygonBorders(polys: readonly (readonly Vec3[])[]): boolean[][] {
+  const Q = 1e4
+  const key = (p: Vec3): string => `${Math.round(p[0] * Q)},${Math.round(p[1] * Q)},${Math.round(p[2] * Q)}`
+  const all = new Map<string, Vec3>()
+  for (const p of polys) for (const v of p) all.set(key(v), v)
+  const verts = [...all.values()]
+  // every directed edge, cut at the vertices lying on it, so a neighbour that splits an edge in two still matches it
+  const pieces = (a: Vec3, b: Vec3): [string, string][] => {
+    const d = sub(b, a), len2 = dot(d, d)
+    const on: { t: number; p: Vec3 }[] = []
+    if (len2 > 1e-12) for (const p of verts) {
+      const t = dot(sub(p, a), d) / len2
+      if (t <= 1e-6 || t >= 1 - 1e-6) continue
+      const c = sub([a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t] as Vec3, p)
+      if (dot(c, c) < 1e-10) on.push({ t, p })
+    }
+    on.sort((x, y) => x.t - y.t)
+    const out: [string, string][] = []
+    let prev = a
+    for (const { p } of on) { out.push([key(prev), key(p)]); prev = p }
+    out.push([key(prev), key(b)])
+    return out
+  }
+  const have = new Set<string>()
+  const cut = polys.map((p) => p.map((a, k) => pieces(a, p[(k + 1) % p.length])))
+  for (const edges of cut) for (const e of edges) for (const [x, y] of e) if (x !== y) have.add(`${x}>${y}`)
+  return cut.map((edges) => edges.map((e) => e.some(([x, y]) => x !== y && !have.has(`${y}>${x}`))))
+}
+
+/** The border bits of the fan triangle (0, i, i + 1) of a polygon with `n` corners, given which of the polygon's edges are on the outline (edge k: corner k to k + 1). */
+export function fanBorder(i: number, n: number, edge: readonly boolean[]): number {
+  return (i === 1 && edge[0] ? 1 : 0) | (edge[i] ? 2 : 0) | (i + 2 === n && edge[n - 1] ? 4 : 0)
+}
+
+/** The border bits of a triangle of vertex indices cut out of a face's `loop`: an edge between neighbours of the loop is the face's outline. */
+export function loopBorder(loop: readonly number[], t: readonly [number, number, number]): number {
+  const at = t.map((i) => loop.indexOf(i)), n = loop.length
+  let bits = 0
+  for (let k = 0; k < 3; k++) {
+    const d = (at[(k + 1) % 3] - at[k] + n) % n
+    if (at[k] >= 0 && at[(k + 1) % 3] >= 0 && (d === 1 || d === n - 1)) bits |= 1 << k
+  }
+  return bits
+}
+
+/** The border bits of a piece of a source triangle (`w` = its corners' weights in it): a piece edge is on the outline when it lies along a border edge of the triangle. */
+export function pieceBorder(verts: readonly { w: readonly number[] }[], triBorder: number): number {
+  if (!triBorder) return 0
+  let bits = 0
+  for (let m = 0; m < verts.length; m++) {
+    const a = verts[m].w, b = verts[(m + 1) % verts.length].w
+    // the triangle's edge k runs from corner k to k + 1: the weight of corner k + 2 is 0 all along it
+    for (let k = 0; k < 3; k++) if ((triBorder & (1 << k)) && Math.abs(a[(k + 2) % 3]) < 1e-9 && Math.abs(b[(k + 2) % 3]) < 1e-9) bits |= 1 << m
+  }
+  return bits
 }
 
 /** True when the face's repetition plan can sample a texture that has a relief (its own, or an alternate of an axis). */
@@ -181,7 +464,7 @@ export const planHasRelief = (plan: FacePlan): boolean => plan.textures.some((t)
  * the relief of a clamped tile is cut where the tile's inset is. Output per texture: interleaved vertices (position, normal, uv), RELIEF_FLOATS each.
  * A piece that cannot be expanded (see reliefTriangle) is drawn flat.
  */
-export function planWithRelief(plan: FacePlan, tris: readonly (readonly [Vec3, Vec3, Vec3])[], normal: Vec3, out: Map<string, number[]>, budget?: ReliefBudget): void {
+export function planWithRelief(plan: FacePlan, tris: readonly (readonly [Vec3, Vec3, Vec3])[], normal: Vec3, out: Map<string, number[]>, budget?: ReliefBudget, borders?: readonly number[], neighbour?: NeighbourFn): void {
   for (const o of retexture(plan, tris)) {
     const tri = tris[o.src]
     const pos = o.verts.map((v) => lerpVec3(tri, v.w)) as [Vec3, Vec3, Vec3]
@@ -189,7 +472,7 @@ export function planWithRelief(plan: FacePlan, tris: readonly (readonly [Vec3, V
     const list = out.get(o.texture) ?? []
     out.set(o.texture, list)
     const relief = reliefOf(o.texture)
-    const got = relief ? reliefTriangle(pos, uv, normal, relief, budget) : null
+    const got = relief ? reliefTriangle(pos, uv, normal, relief, budget, pieceBorder(o.verts, borders?.[o.src] ?? 0), neighbour) : null
     if (got) { for (const x of got) list.push(x); continue }
     for (let k = 0; k < 3; k++) list.push(...pos[k], ...normal, uv[k][0], uv[k][1])
   }

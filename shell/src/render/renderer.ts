@@ -10,7 +10,7 @@ import { classOf, isBrushEntity, isEditorOnly, originOf, showsCustomOrigin } fro
 import { faceNormal, triangulateFace } from '../model/geometry'
 import { uvsForDraw } from '../model/uv'
 import { drawTransparency, texEnv } from '../model/texprops'
-import { newBudget, planHasRelief, planWithRelief, reliefOf, reliefTriangle } from '../model/reliefApply'
+import { loopBorder, neighbourFn, newBudget, planHasRelief, planWithRelief, reliefOf, reliefTriangle } from '../model/reliefApply'
 import { HEAT_BUCKETS, bucketColor, faceHeat, heatBucket } from '../model/texelDensity'
 import { brushTextureSignature, lerpVec3, planForFace, retexture } from '../model/uvmesh'
 import type { TextureCache } from '../state/textures'
@@ -426,7 +426,7 @@ export class Renderer {
       const relief = reliefOf(f.texture) // texture relief: repeated over the face, pushed along its normal (model/reliefApply.ts)
       if (plan) {
         const pts = tris.map(([a, c, d]) => [b.vertices[a], b.vertices[c], b.vertices[d]] as [Vec3, Vec3, Vec3])
-        if (planHasRelief(plan)) planWithRelief(plan, pts, n, byTex, budget) // every piece takes the relief of the texture it samples, placed by the piece's own uv
+        if (planHasRelief(plan)) planWithRelief(plan, pts, n, byTex, budget, tris.map((t) => loopBorder(f.loop, t)), neighbourFn(b, f)) // every piece takes the relief of the texture it samples, placed by the piece's own uv
         else for (const o of retexture(plan, pts)) {
           const list = byTex.get(o.texture) ?? []
           byTex.set(o.texture, list)
@@ -434,11 +434,12 @@ export class Renderer {
         }
       } else if (relief) {
         const uv = uvsForDraw(b, f)
+        const nb = neighbourFn(b, f) // at a corner with a face that has a relief too, the relief's outline wall bevels across to it
         const list = byTex.get(f.texture ?? 'dev/grey') ?? []
         byTex.set(f.texture ?? 'dev/grey', list)
         for (const [a, c, d] of tris) {
           const k = [a, c, d].map((i) => f.loop.indexOf(i))
-          const got = reliefTriangle([b.vertices[a], b.vertices[c], b.vertices[d]], [uv[k[0]], uv[k[1]], uv[k[2]]], n, relief, budget)
+          const got = reliefTriangle([b.vertices[a], b.vertices[c], b.vertices[d]], [uv[k[0]], uv[k[1]], uv[k[2]]], n, relief, budget, loopBorder(f.loop, [a, c, d]), nb)
           if (got) { for (const x of got) list.push(x); continue }
           for (const i of [a, c, d]) { const q = f.loop.indexOf(i); list.push(...b.vertices[i], ...n, uv[q][0], uv[q][1]) }
         }
@@ -992,6 +993,7 @@ export class Renderer {
     gl.uniform1i(gl.getUniformLocation(this.mesh, 'uTex'), 0)
     gl.activeTexture(gl.TEXTURE0)
     const subtractive: { g: GpuBrush }[] = []
+    const volumes: { g: GpuBrush; color: [number, number, number] }[] = []  // editor-only volumes (editor_*): no texture, tinted with the class colour
     // translucent faces (REQUIREMENTS §23) are drawn after everything opaque, blended, without writing depth
     const translucent: (() => void)[] = []
     const uTransp = gl.getUniformLocation(this.mesh, 'uTransp')
@@ -1014,9 +1016,9 @@ export class Renderer {
       for (const b of entity.brushes ?? []) {
         const carved = b.op !== 'subtract' ? frame.carved?.get(carvedKey(entity.id, b.id, instance)) : undefined
         const g = carved ? this.uploadCarved(carved) : this.upload(b)
+        if (isEditorOnly(classOf(entity))) { volumes.push({ g, color: frame.entityColor?.(classOf(entity)) ?? DEFAULT_MARKER }); continue }
         if (b.op === 'subtract') { subtractive.push({ g }); continue }
         for (const grp of g.groups) if (isSkyTexture(grp.texture)) skyDraws.push({ vao: g.vao, grp })
-        if (isEditorOnly(classOf(entity))) { volumes.push({ g, color: frame.entityColor?.(classOf(entity)) ?? DEFAULT_MARKER }); continue }
         if (!boxInFrustum(planes, g.box)) continue
         if (litMode) {
           // lightmapped entities come from the Core's lit mesh below; the others are lit from the light volume; without it (not baked yet)
@@ -1241,9 +1243,9 @@ export class Renderer {
     gl.uniform1f(uHasTex, 0)
     gl.uniform4f(uColor, 0.95, 0.25, 0.25, 0.28)
     if (frame.settings.showSubtractive) for (const { g } of subtractive) { gl.bindVertexArray(g.vao); gl.drawArrays(gl.TRIANGLES, 0, g.count) }
+    if (frame.settings.showVolumes) for (const { g, color } of volumes) { gl.uniform4f(uColor, color[0], color[1], color[2], 0.2); gl.bindVertexArray(g.vao); gl.drawArrays(gl.TRIANGLES, 0, g.count) }
     gl.depthMask(true)
     gl.disable(gl.POLYGON_OFFSET_FILL)
-    if (frame.settings.showVolumes) for (const { g, color } of volumes) { gl.uniform4f(uColor, color[0], color[1], color[2], 0.2); gl.bindVertexArray(g.vao); gl.drawArrays(gl.TRIANGLES, 0, g.count) }
 
     // edges
     gl.useProgram(this.line)
@@ -1264,6 +1266,7 @@ export class Renderer {
         if (volume && !frame.settings.showVolumes) continue
         if (!volume && !brushSel && !frame.settings.showOutlines && !wire) continue
         if (brushSel) gl.uniform4f(lColor, 1, 0.62, 0.15, 1)
+        else if (volume) { const c = frame.entityColor?.(classOf(entity)) ?? DEFAULT_MARKER; gl.uniform4f(lColor, c[0], c[1], c[2], 0.95) }
         else if (b.op === 'subtract') gl.uniform4f(lColor, 1, 0.4, 0.4, 0.9)
         else if (wire) { const c = classOf(entity) === 'worldspawn' ? [0.78, 0.82, 0.88] : frame.entityColor?.(classOf(entity)) ?? DEFAULT_MARKER; gl.uniform4f(lColor, c[0], c[1], c[2], 0.95) }
         else gl.uniform4f(lColor, 0, 0, 0, 0.55)

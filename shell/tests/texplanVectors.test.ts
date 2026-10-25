@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import type { Brush } from '../src/model/document'
 import { makeBox, triangulateFace } from '../src/model/geometry'
 import { solveLayout } from '../src/model/layout'
-import { buildPreset, reliefToJson } from '../src/model/relief'
+import { buildPreset, parseRelief, reliefToJson } from '../src/model/relief'
 import { reliefTriangle } from '../src/model/reliefApply'
 import { groupEnv, parseGroup } from '../src/model/texgroup'
 import { TexInfo, parseProps, texEnv } from '../src/model/texprops'
@@ -136,7 +136,18 @@ function compute(): Record<string, unknown> {
     const out = reliefTriangle(t.tri as never, t.uv as never, t.n, relief)
     reliefs.push({ tri: t.tri, uv: t.uv, n: t.n, out: out ? out.map(r9) : null })
   }
-  return { format: 1, textures, groups, brushes: brushes(), axis, faces, layouts, reliefs: { relief: reliefRaise, cases: reliefs } }
+  // connecting walls: a ramp (its borders do not join) and a twist (the heights across a seam cross each other), with and without the face's outline closed
+  const ramp = { vertices: [[0, 0, 0.1], [1, 0, 0], [1, 1, -0.05], [0, 1, 0.05]], faces: [[0, 1, 2, 3]] }
+  const twist = { vertices: [[0, 0, 0.1], [1, 0, 0], [1, 1, 0.1], [0, 1, 0]], faces: [[0, 1, 2], [0, 2, 3]] }
+  const wallCases: { relief: unknown; tri: [number, number, number][]; uv: [number, number][]; n: [number, number, number]; border: number; nbr: boolean }[] = []
+  for (const r of [ramp, twist, reliefRaise]) for (const t of triCases) for (const border of [0, 7, 3, 4]) for (const nbr of [false, true]) wallCases.push({ relief: r, ...t, border, nbr })
+  // a face with a relief of its own 0.05 high, lying behind the plane x = 0 (a convex corner there)
+  const nbrAt = (a: number[], b: number[]) => (Math.abs(a[0]) < 1e-9 && Math.abs(b[0]) < 1e-9 ? { n: [-1, 0, 0] as [number, number, number], spans: [{ t0: 0, t1: 1, z0: 0.05, z1: 0.05 }, { t0: 1, t1: 1.5, z0: 0.05, z1: 0.05 }] } : null)
+  const walls = wallCases.map((c) => {
+    const out = reliefTriangle(c.tri as never, c.uv as never, c.n, parseRelief(c.relief)!, undefined, c.border, c.nbr ? nbrAt as never : undefined)
+    return { relief: c.relief, tri: c.tri, uv: c.uv, n: c.n, border: c.border, nbr: c.nbr, out: out ? out.map(r9) : null }
+  })
+  return { format: 1, textures, groups, brushes: brushes(), axis, faces, layouts, reliefs: { relief: reliefRaise, cases: reliefs, walls } }
 }
 
 describe('texture layout vectors (shared with the Core)', () => {

@@ -11,7 +11,8 @@ import { planarCoordsProjected } from '../model/uv'
 import type { FacePlan } from '../model/uvmesh'
 import { faceUvAt, planForFace, retexture } from '../model/uvmesh'
 import type { Relief } from '../model/relief'
-import { newBudget, planHasRelief, reliefOf } from '../model/reliefApply'
+import type { NeighbourFn } from '../model/reliefApply'
+import { neighbourFn, newBudget, pieceBorder, planHasRelief, polygonBorders, reliefOf } from '../model/reliefApply'
 import type { ReliefBudget } from '../model/reliefApply'
 import { reliefTriangle } from '../model/reliefApply'
 import type { LitAnalysis } from './litStale'
@@ -30,15 +31,16 @@ export const LIT_TEX_FLOATS = 14
 * The normal slot carries the unit relief normal (the lit shaders read `length(normal)` as a brightness factor, 1 here): the light of a relief is the bake's,
  * which sees the relief (relief_geometry in the Core: it casts shadows, and every texel is lit where the relief really is). `uv[k]` is the albedo coordinate of vertex k of the run. A triangle that cannot be expanded stays flat.
  * Returns LIT_TEX_FLOATS per vertex (position, normal, lightmap u, v, page, style mask, albedo u, v).
+ * `borders[t]` = the border bits of triangle t of the run (reliefApply.ts reliefTriangle: which of its edges are the outline of the face).
  */
-export function displaceLit(core: ArrayLike<number>, first: number, count: number, uv: ReadonlyArray<readonly [number, number]>, relief: Relief, budget: ReliefBudget): number[] {
+export function displaceLit(core: ArrayLike<number>, first: number, count: number, uv: ReadonlyArray<readonly [number, number]>, relief: Relief, budget: ReliefBudget, borders?: readonly number[], neighbour?: NeighbourFn): number[] {
   const out: number[] = []
   for (let t = 0; t + 2 < count; t += 3) {
     const o = [(first + t) * CORE_FLOATS, (first + t + 1) * CORE_FLOATS, (first + t + 2) * CORE_FLOATS]
     const pos = o.map((i) => [core[i], core[i + 1], core[i + 2]] as Vec3) as [Vec3, Vec3, Vec3]
     const nF: Vec3 = [core[o[0] + 3], core[o[0] + 4], core[o[0] + 5]]
     const tuv: [[number, number], [number, number], [number, number]] = [[uv[t][0], uv[t][1]], [uv[t + 1][0], uv[t + 1][1]], [uv[t + 2][0], uv[t + 2][1]]]
-    const got = reliefTriangle(pos, tuv, nF, relief, budget)
+    const got = reliefTriangle(pos, tuv, nF, relief, budget, borders?.[t / 3] ?? 0, neighbour)
     if (!got) { for (let c = 0; c < 3; c++) { for (let k = 0; k < CORE_FLOATS; k++) out.push(core[o[c] + k]); out.push(tuv[c][0], tuv[c][1]) } continue }
     const [a0, a1, a2] = tuv
     const det = (a1[0] - a0[0]) * (a2[1] - a0[1]) - (a2[0] - a0[0]) * (a1[1] - a0[1])
@@ -51,6 +53,43 @@ export function displaceLit(core: ArrayLike<number>, first: number, count: numbe
         core[o[0] + 6] * w0 + core[o[1] + 6] * w1 + core[o[2] + 6] * w2, core[o[0] + 7] * w0 + core[o[1] + 7] * w1 + core[o[2] + 7] * w2,
         core[o[0] + 8], core[o[0] + 9], core[o[0] + 10], core[o[0] + 11], u, v)
     }
+  }
+  return out
+}
+
+/** The border bits of a triangle from the outline flags of its three edges (reliefApply.ts polygonBorders). */
+const triangleBits = (flags: readonly (readonly boolean[])[]): number[] => flags.map((e) => (e[0] ? 1 : 0) | (e[1] ? 2 : 0) | (e[2] ? 4 : 0))
+const runTriangles = (core: ArrayLike<number>, first: number, count: number): Vec3[][] => {
+  const out: Vec3[][] = []
+  for (let t = 0; t + 2 < count; t += 3) out.push([0, 1, 2].map((c) => { const o = (first + t + c) * CORE_FLOATS; return [core[o], core[o + 1], core[o + 2]] as Vec3 }))
+  return out
+}
+
+/**
+ * The border bits per triangle of every piece of the faces that show a relief (`wanted`): the pieces that lie on one authored face (and side) are one
+ * face, whose outline closes the relief with connecting walls (reliefApply.ts); the seams between its pieces do not. Keyed by the piece.
+ */
+function pieceBorders(mesh: ArrayLike<number>, faces: readonly LitFace[], stale: LitAnalysis | null | undefined, wanted: (f: LitFace) => boolean): Map<LitFace, number[]> {
+  const total = Math.floor(mesh.length / CORE_FLOATS)
+  const groups = new Map<string, { tris: Vec3[][]; slots: { face: LitFace; k: number }[] }>()
+  let at = 0
+  for (const f of faces) {
+    const verts = f.n * 3
+    if (at + verts > total) break
+    if (!stale?.stale.has(staleKey(f.bi, f.b)) && wanted(f)) {
+      const tris = runTriangles(mesh, at, verts)
+      const o = at * CORE_FLOATS
+      const key = `${f.i}|${f.e}|${f.bi}|${f.b}|${f.f}|${Math.round(mesh[o + 3] * 100)},${Math.round(mesh[o + 4] * 100)},${Math.round(mesh[o + 5] * 100)}` // the normal tells a cut wall from the face's front
+      let g = groups.get(key)
+      if (!g) { g = { tris: [], slots: [] }; groups.set(key, g) }
+      tris.forEach((t, k) => { g!.tris.push(t); g!.slots.push({ face: f, k }) })
+    }
+    at += verts
+  }
+  const out = new Map<LitFace, number[]>()
+  for (const g of groups.values()) {
+    const bits = triangleBits(polygonBorders(g.tris))
+    g.slots.forEach((slot, m) => { const list = out.get(slot.face) ?? []; out.set(slot.face, list); list[slot.k] = bits[m] })
   }
   return out
 }
@@ -68,7 +107,7 @@ function pieceUv(mesh: ArrayLike<number>, first: number, count: number, uvAt: ((
  * vertices (the lightmap coordinates interpolated by the barycentric weights: the lightmap uv is affine in the position; page and style mask from the
  * source triangle's first vertex) with the albedo coordinates and the texture the piece samples.
  */
-function planTriangles(mesh: ArrayLike<number>, at: number, nTris: number, plan: FacePlan): { texture: string; core: number[]; uv: [number, number][] }[] {
+function planTriangles(mesh: ArrayLike<number>, at: number, nTris: number, plan: FacePlan, borders?: readonly number[]): { texture: string; core: number[]; uv: [number, number][]; border: number }[] {
   const tris: [Vec3, Vec3, Vec3][] = []
   for (let t = 0; t < nTris; t++) tris.push([0, 1, 2].map((c) => { const o = (at + t * 3 + c) * CORE_FLOATS; return [mesh[o], mesh[o + 1], mesh[o + 2]] as Vec3 }) as [Vec3, Vec3, Vec3])
   return retexture(plan, tris).map((o) => {
@@ -81,7 +120,7 @@ function planTriangles(mesh: ArrayLike<number>, at: number, nTris: number, plan:
         core.push(interpolated ? mesh[base + c] * w[0] + mesh[base + CORE_FLOATS + c] * w[1] + mesh[base + 2 * CORE_FLOATS + c] * w[2] : mesh[base + c])
       }
     }
-    return { texture: o.texture, core, uv: o.verts.map((v) => [v.uv[0], v.uv[1]] as [number, number]) }
+    return { texture: o.texture, core, uv: o.verts.map((v) => [v.uv[0], v.uv[1]] as [number, number]), border: pieceBorder(o.verts, borders?.[o.src] ?? 0) }
   })
 }
 
@@ -102,8 +141,9 @@ export function buildReliefPlainMesh(mesh: Float32Array, faces: readonly LitFace
   const budget = newBudget()
   const out: number[] = []
   const total = Math.floor(mesh.length / CORE_FLOATS)
-  const pushRelief = (core: ArrayLike<number>, first: number, count: number, uv: [number, number][], relief: Relief): void => {
-    const d = displaceLit(core, first, count, uv, relief, budget)
+  const borders = pieceBorders(mesh, faces, stale, (f) => !!reliefOf(f.t) || (() => { const { plan } = infoOf(f); return plan !== null && planHasRelief(plan) })())
+  const pushRelief = (core: ArrayLike<number>, first: number, count: number, uv: [number, number][], relief: Relief, border?: readonly number[], nb?: NeighbourFn): void => {
+    const d = displaceLit(core, first, count, uv, relief, budget, border, nb)
     for (let i = 0; i < d.length; i += LIT_TEX_FLOATS) for (let k = 0; k < CORE_FLOATS; k++) out.push(d[i + k]) // the albedo coordinates are not needed here
   }
   let at = 0
@@ -113,21 +153,22 @@ export function buildReliefPlainMesh(mesh: Float32Array, faces: readonly LitFace
     if (!stale?.stale.has(staleKey(f.bi, f.b))) {
       const relief = reliefOf(f.t)
       const { brush, parent, plan } = infoOf(f)
+      const nb = brush && parent ? neighbourFn(brush, parent) : undefined
       if (plan && planHasRelief(plan)) {
         // repetition behaviour decides where each tile of the relief goes: the pieces carry the uv (and texture) the relief is placed by
-        for (const piece of planTriangles(mesh, at, f.n, plan)) {
+        for (const piece of planTriangles(mesh, at, f.n, plan, borders.get(f))) {
           const r = reliefOf(piece.texture)
-          if (r) pushRelief(piece.core, 0, 3, piece.uv, r)
+          if (r) pushRelief(piece.core, 0, 3, piece.uv, r, [piece.border], nb)
           else out.push(...piece.core)
         }
-      } else if (relief && !plan) pushRelief(mesh, at, verts, pieceUv(mesh, at, verts, brush && parent ? faceUvAt(brush, parent) : undefined), relief)
+      } else if (relief && !plan) pushRelief(mesh, at, verts, pieceUv(mesh, at, verts, brush && parent ? faceUvAt(brush, parent) : undefined), relief, borders.get(f), nb)
       else for (let i = at * CORE_FLOATS; i < (at + verts) * CORE_FLOATS; i++) out.push(mesh[i])
     }
     at += verts
   }
   for (const o of stale?.overlay ?? []) {
     const relief = reliefOf(o.texture)
-    if (relief) pushRelief(o.core, 0, o.vertexCount, Array.from({ length: o.vertexCount }, (_, k) => [o.uv[k * 2], o.uv[k * 2 + 1]] as [number, number]), relief)
+    if (relief) pushRelief(o.core, 0, o.vertexCount, Array.from({ length: o.vertexCount }, (_, k) => [o.uv[k * 2], o.uv[k * 2 + 1]] as [number, number]), relief, triangleBits(polygonBorders(runTriangles(o.core, 0, o.vertexCount))))
     else for (const v of o.core) out.push(v)
   }
   return Float32Array.from(out)
@@ -145,6 +186,11 @@ export function buildLitDraw(mesh: Float32Array, faces: readonly LitFace[], worl
   const owner = (instance: string) => { let m = indexes.get(instance); if (!m) { m = brushIndex(world, instance); indexes.set(instance, m) } return m }
   const byTexture = new Map<string, number[]>()
   const budget = newBudget()
+  const borders = pieceBorders(mesh, faces, stale, (f) => {
+    if (reliefOf(f.t)) return true
+    const b = owner(f.bi).get(f.b)?.brush, p = b?.faces.find((x) => x.id === f.f), plan = b && p ? planForFace(b, p) : null
+    return plan !== null && planHasRelief(plan)
+  })
   let at = 0 // vertex cursor
   const total = Math.floor(mesh.length / CORE_FLOATS)
   for (const f of faces) {
@@ -155,15 +201,16 @@ export function buildLitDraw(mesh: Float32Array, faces: readonly LitFace[], worl
     const parent = ownerBrush?.faces.find((x) => x.id === f.f)
     const relief = reliefOf(f.t) // texture relief laid over the piece (displaceLit)
     const plan = ownerBrush && parent ? planForFace(ownerBrush, parent) : null
+    const nb = ownerBrush && parent && (relief || plan) ? neighbourFn(ownerBrush, parent) : undefined
     if (plan) {
       // repetition behaviour: every triangle is cut along the fold lines; the new vertices (invisible: same plane) take the lightmap coordinates by
       // interpolation (the lightmap uv is affine in the position), page and style mask from the triangle. A piece takes the relief of the texture it
       // samples (the face's own or an alternate), placed by the piece's own uv: mirrored, anchored and clamped tiles carry their relief with them
-      for (const piece of planTriangles(mesh, at, f.n, plan)) {
+      for (const piece of planTriangles(mesh, at, f.n, plan, borders.get(f))) {
         const list = byTexture.get(piece.texture) ?? []
         byTexture.set(piece.texture, list)
         const r = reliefOf(piece.texture)
-        if (r) { for (const x of displaceLit(piece.core, 0, 3, piece.uv, r, budget)) list.push(x); continue }
+        if (r) { for (const x of displaceLit(piece.core, 0, 3, piece.uv, r, budget, [piece.border], nb)) list.push(x); continue }
         for (let k = 0; k < 3; k++) { for (let c = 0; c < CORE_FLOATS; c++) list.push(piece.core[k * CORE_FLOATS + c]); list.push(piece.uv[k][0], piece.uv[k][1]) }
       }
       at += verts
@@ -172,7 +219,7 @@ export function buildLitDraw(mesh: Float32Array, faces: readonly LitFace[], worl
     if (relief) {
       const list = byTexture.get(f.t) ?? []
       byTexture.set(f.t, list)
-      for (const x of displaceLit(mesh, at, verts, pieceUv(mesh, at, verts, ownerBrush && parent ? faceUvAt(ownerBrush, parent) : undefined), relief, budget)) list.push(x)
+      for (const x of displaceLit(mesh, at, verts, pieceUv(mesh, at, verts, ownerBrush && parent ? faceUvAt(ownerBrush, parent) : undefined), relief, budget, borders.get(f), nb)) list.push(x)
       at += verts
       continue
     }
@@ -196,7 +243,7 @@ export function buildLitDraw(mesh: Float32Array, faces: readonly LitFace[], worl
     byTexture.set(o.texture, list)
     const oRelief = reliefOf(o.texture)
     if (oRelief) {
-      for (const x of displaceLit(o.core, 0, o.vertexCount, Array.from({ length: o.vertexCount }, (_, k) => [o.uv[k * 2], o.uv[k * 2 + 1]] as [number, number]), oRelief, budget)) list.push(x)
+      for (const x of displaceLit(o.core, 0, o.vertexCount, Array.from({ length: o.vertexCount }, (_, k) => [o.uv[k * 2], o.uv[k * 2 + 1]] as [number, number]), oRelief, budget, triangleBits(polygonBorders(runTriangles(o.core, 0, o.vertexCount))))) list.push(x)
       continue
     }
     for (let k = 0; k < o.vertexCount; k++) { for (let c = 0; c < CORE_FLOATS; c++) list.push(o.core[k * CORE_FLOATS + c]); list.push(o.uv[k * 2], o.uv[k * 2 + 1]) }

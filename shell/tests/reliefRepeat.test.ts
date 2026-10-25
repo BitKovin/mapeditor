@@ -39,9 +39,10 @@ function carved(x0: number, x1: number, texture: string): Map<string, number[]> 
   return buildCarvedMesh(entry, world).textures
 }
 interface V { x: number; d: number; u: number }
+/** The relief surface (what faces up): the connecting walls at the face's outline and between repeats (reliefApply.ts) stand upright and are left out. */
 const verts = (a: number[] | undefined, z0 = 1): V[] => {
   const o: V[] = []
-  for (let i = 0; a && i < a.length; i += 8) o.push({ x: a[i], d: a[i + 2] - z0, u: a[i + 6] })
+  for (let i = 0; a && i < a.length; i += 8) if (a[i + 5] > 1e-6) o.push({ x: a[i], d: a[i + 2] - z0, u: a[i + 6] })
   return o
 }
 const near = (v: V[], x: number): V[] => v.filter((p) => Math.abs(p.x - x) < 1e-6)
@@ -143,17 +144,23 @@ describe('relief follows the repeat behaviour in the lit views', () => {
     const s = litStore(b, 't')
     const draw = buildLitDraw(s.mesh!, s.faces, worldOf(b))
     expect(draw.vertexCount).toBeGreaterThan(6)
+    // the outline of the face is closed down to the surface (depth 0 at the ends of the ramp's high side)
+    const walls: number[] = []
+    for (let i = 0; i < draw.vertexCount; i++) if (Math.abs(draw.data[i * LIT_TEX_FLOATS + 5]) < 1e-6) walls.push(draw.data[i * LIT_TEX_FLOATS + 2] - 1)
+    expect(walls.length).toBeGreaterThan(0)
+    expect(Math.min(...walls)).toBeCloseTo(0, 6); expect(Math.max(...walls)).toBeCloseTo(H, 6)
     const d = (o: number) => draw.data[o + 2] - 1
     for (let i = 0; i < draw.vertexCount; i++) {
       const o = i * LIT_TEX_FLOATS, x = draw.data[o], y = draw.data[o + 1]
       expect(draw.data[o + 6]).toBeCloseTo(x / 10, 5)
       expect(draw.data[o + 7]).toBeCloseTo(0.1 + y / 100, 5) // v = z / 10 + y / 100 on the flat face z = 1
       expect(draw.data[o + 8]).toBe(3); expect(draw.data[o + 9]).toBe(5)
-      if (Math.abs(x - 1) < 1e-6) expect(d(o)).toBeCloseTo(H, 6) // continuous at the mirror joint
+      const wall = Math.abs(draw.data[o + 5]) < 1e-6 // connecting walls at the face's outline stand upright and reach down to the surface
+      if (Math.abs(x - 1) < 1e-6 && !wall) expect(d(o)).toBeCloseTo(H, 6) // continuous at the mirror joint
     }
     // one of the two ends sits at depth 0 (mirrored), plain repeat would put H at both
     const ends: number[] = []
-    for (let i = 0; i < draw.vertexCount; i++) { const o = i * LIT_TEX_FLOATS; if (Math.abs(draw.data[o]) < 1e-6 || Math.abs(draw.data[o] - 2) < 1e-6) ends.push(Math.round(d(o) * 1e6) / 1e6) }
+    for (let i = 0; i < draw.vertexCount; i++) { const o = i * LIT_TEX_FLOATS; if ((Math.abs(draw.data[o]) < 1e-6 || Math.abs(draw.data[o] - 2) < 1e-6) && Math.abs(draw.data[o + 5]) > 1e-6) ends.push(Math.round(d(o) * 1e6) / 1e6) }
     expect(Math.min(...ends)).toBe(0)
   })
 
@@ -165,7 +172,7 @@ describe('relief follows the repeat behaviour in the lit views', () => {
     expect(plain).not.toBe(s.mesh)
     let joint = 0
     for (let i = 0; i < plain.length; i += LIT_VERTEX_FLOATS) {
-      if (Math.abs(plain[i] - 1) < 1e-6) { expect(plain[i + 2] - 1).toBeCloseTo(H, 6); joint++ }
+      if (Math.abs(plain[i] - 1) < 1e-6 && Math.abs(plain[i + 5]) > 1e-6) { expect(plain[i + 2] - 1).toBeCloseTo(H, 6); joint++ }
       expect(plain[i + 8]).toBe(3)
     }
     expect(joint).toBeGreaterThan(0)

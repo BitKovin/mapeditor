@@ -47,6 +47,28 @@ export function wholeEntityIfSole(doc: MapDocument, sel: Selection): Selection {
   const e = findEntity(doc, sel.entityId)
   return e && classOf(e) !== 'worldspawn' && e.brushes?.length === 1 && e.brushes[0].id === sel.brushId ? { entityId: sel.entityId } : sel
 }
+/**
+ * Selecting every brush of a brush entity with several IS selecting the entity (what a double-click does): its brushes collapse into one `{ entityId }` entry, put
+ * where the entity's last brush stood so the primary selection stays the last of the list. Worldspawn stays a bag of separate brushes; a face selection is left alone.
+ */
+export function wholeEntitiesIfAll(doc: MapDocument, list: Selection[]): Selection[] {
+  const picked = new Map<string, Set<string>>()
+  for (const s of list) if (s.brushId !== undefined && s.faceId === undefined && s.instanceId === undefined) (picked.get(s.entityId) ?? picked.set(s.entityId, new Set()).get(s.entityId)!).add(s.brushId)
+  const whole = new Set<string>()
+  for (const [id, brushes] of picked) {
+    const e = findEntity(doc, id)
+    if (e && classOf(e) !== 'worldspawn' && e.brushes && e.brushes.length > 1 && e.brushes.every((b) => brushes.has(b.id))) whole.add(id)
+  }
+  if (!whole.size) return list
+  const last = new Map<string, number>()
+  list.forEach((s, i) => { if (s.brushId !== undefined && s.faceId === undefined && s.instanceId === undefined && whole.has(s.entityId)) last.set(s.entityId, i) })
+  const out: Selection[] = []
+  list.forEach((s, i) => {
+    if (s.brushId === undefined || s.faceId !== undefined || s.instanceId !== undefined || !whole.has(s.entityId)) out.push(s)
+    else if (last.get(s.entityId) === i && !out.some((o) => o.entityId === s.entityId && o.brushId === undefined && o.instanceId === undefined)) out.push({ entityId: s.entityId })
+  })
+  return out
+}
 /** The reverse, for what needs a brush (mesh editing): an entity selected as a whole whose only brush is meant. */
 export function soleBrushOf(doc: MapDocument, sel: Selection): Selection {
   if (sel.brushId !== undefined || sel.instanceId !== undefined) return sel
@@ -205,10 +227,13 @@ export class Store {
   toggleSelect(sel: Selection): void {
     const same = (a: Selection) => a.entityId === sel.entityId && a.brushId === sel.brushId && a.faceId === sel.faceId && a.instanceId === sel.instanceId
     const has = this.s.multi.some(same)
-    const multi = has ? this.s.multi.filter((a) => !same(a)) : [...this.s.multi, sel]
-    this.set({ multi, selection: multi.length ? (has ? multi[multi.length - 1] : sel) : null })
+    const multi = has ? this.s.multi.filter((a) => !same(a)) : wholeEntitiesIfAll(this.s.doc, [...this.s.multi, sel])
+    this.set({ multi, selection: multi.length ? multi[multi.length - 1] : null })
   }
-  selectMany(list: Selection[]): void { this.set({ multi: list, selection: list.length ? list[list.length - 1] : null, meshSel: emptySel() }) }
+  selectMany(list: Selection[]): void {
+    const multi = wholeEntitiesIfAll(this.s.doc, list)
+    this.set({ multi, selection: multi.length ? multi[multi.length - 1] : null, meshSel: emptySel() })
+  }
   setTool(tool: Tool): void { this.set({ tool }) }
   setAutoDetail(autoDetail: boolean): void { this.set({ autoDetail }) }
   setHidden(hidden: string[]): void { this.set({ hidden }) }
