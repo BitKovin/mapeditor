@@ -79,6 +79,10 @@ std::vector<LightSurface> collectSurfaces(const Document& doc, const std::vector
 class SolidSet {
 public:
     bool inside(const Vec3& p, double margin = 0.0) const;
+    bool insideExcept(const Vec3& p, const Brush* ignoredBrush, double margin = 0.0) const;
+    // True only when the complete triangle lies strictly inside one convex solid volume, excluding the owning
+    // brush. Unlike a point/sample majority test, this cannot discard a triangle that crosses an exposed gap.
+    bool triangleInsideExcept(const Vec3& a, const Vec3& b, const Vec3& c, const Brush* ignoredBrush, double margin = 0.0) const;
     // Same answer as inside(), for a run of nearby queries: remembers the grid cell of the previous one (texels of a surface are queried one after
     // the other), which saves the hash lookup that otherwise dominates.
     struct Probe {
@@ -86,6 +90,7 @@ public:
         const std::vector<int>* volumes = nullptr;
     };
     bool inside(const Vec3& p, Probe& probe, double margin = 0.0) const;
+    bool insideExcept(const Vec3& p, const Brush* ignoredBrush, Probe& probe, double margin = 0.0) const;
     size_t volumeCount() const { return volumes_.size(); }
     uint64_t fingerprint() const;  // hash of every volume (box, planes, kind): equal sets give equal values
     // The volumes of a brush stay the same until the brush changes, and finding them is expensive for a concave brush (its convex pieces): a Cache keeps
@@ -102,6 +107,7 @@ private:
         Vec3 mn, mx;
         std::vector<std::pair<Vec3, double>> planes;  // outward normal, offset: n . x = d on the face
         bool subtractive = false;
+        const Brush* source = nullptr;  // owning authored brush (restored when cached volumes are reused)
     };
     std::vector<Volume> volumes_;
     std::unordered_map<int64_t, std::vector<int>> grid_;

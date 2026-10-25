@@ -33,6 +33,88 @@ Document longFloor(bool withVolume) {
 }
 }  // namespace
 
+TEST_CASE("playable: a visible patch between sparse face samples keeps the whole face") {
+    Document doc;
+    // The wall at z=5 blocks the centre and the near-corner samples of the target face. Its small opening lets
+    // a ray through to an interior grid point (x=1, y=0) on the target at z=10. The old sparse point set misses it.
+    std::vector<Brush> world;
+    world.push_back(Brush::makeBox("screen_left", {-8, -5, 5}, {0.4, 5, 5.2}));
+    world.push_back(Brush::makeBox("screen_right", {0.6, -5, 5}, {8, 5, 5.2}));
+    world.push_back(Brush::makeBox("screen_bottom", {0.4, -5, 5}, {0.6, -0.25, 5.2}));
+    world.push_back(Brush::makeBox("screen_top", {0.4, 0.25, 5}, {0.6, 5, 5.2}));
+    world.push_back(Brush::makeBox("target", {-1.5, -1.5, 10}, {1.5, 1.5, 10.5}));
+    doc.entities.push_back(ent("w", "worldspawn", std::move(world)));
+    doc.entities.push_back(ent("p", "editor_playable_area", {Brush::makeBox("vol", {-0.1, -0.1, -0.1}, {0.1, 0.2, 0.1})}));
+
+    const auto surfaces = collectSurfaces(doc, {});
+    const auto area = collectPlayableArea(doc, {});
+    REQUIRE(!area->empty());
+    PlayableVisibility vis(*area, surfaces, LightingClasses::defaults(), 1);
+    REQUIRE(vis.viewpointCount() == 1);
+    const LightSurface* targetFace = nullptr;
+    for (const LightSurface& s : surfaces) {
+        if (s.brushId != "target" || s.verts.size() < 3) continue;
+        bool atFront = true;
+        for (const Vec3& p : s.verts) atFront = atFront && std::abs(p.z - 10.0) < 1e-5;
+        if (atFront) { targetFace = &s; break; }
+    }
+    REQUIRE(targetFace != nullptr);
+    CHECK(vis.seen(targetFace->verts, targetFace->normal));
+
+    // This larger polygon extends around the four blocking panels, so it is still visible from the playable point.
+    const std::vector<Vec3> aroundScreen{{-40, -40, 10}, {40, -40, 10}, {40, 40, 10}, {-40, 40, 10}};
+    CHECK(vis.seen(aroundScreen, Vec3{0, 0, -1}));
+}
+
+TEST_CASE("playable: culls large fully hidden faces but preserves small authored details") {
+    Document doc;
+    std::vector<Brush> world;
+    // This screen covers every ray from the tiny playable volume to either target.
+    world.push_back(Brush::makeBox("screen", {-100, -100, 5}, {100, 100, 5.2}));
+    world.push_back(Brush::makeBox("large_hidden", {-40, -40, 10}, {40, 40, 10.5}));
+    world.push_back(Brush::makeBox("small_hidden_detail", {45, 45, 10}, {45.2, 45.2, 10.2}));
+    doc.entities.push_back(ent("w", "worldspawn", std::move(world)));
+    doc.entities.push_back(ent("p", "editor_playable_area", {Brush::makeBox("vol", {-0.1, -0.1, -0.1}, {0.1, 0.1, 0.1})}));
+
+    const auto surfaces = collectSurfaces(doc, {});
+    const auto area = collectPlayableArea(doc, {});
+    PlayableVisibility vis(*area, surfaces, LightingClasses::defaults(), 1);
+    // A large concave face is also eligible for culling; concavity alone must not make it permanently visible.
+    const std::vector<Vec3> concaveHidden{{-40, -40, 10}, {40, -40, 10}, {40, 0, 10}, {0, 0, 10}, {0, 40, 10}, {-40, 40, 10}};
+    CHECK_FALSE(vis.seen(concaveHidden, Vec3{0, 0, -1}));
+
+    bool testedLarge = false, testedSmall = false;
+    for (const LightSurface& s : surfaces) {
+        if (s.brushId == "large_hidden" && s.verts.size() >= 3) {
+            CHECK_FALSE(vis.seen(s.verts, s.normal));
+            testedLarge = true;
+        }
+        if (s.brushId == "small_hidden_detail" && s.verts.size() >= 3) {
+            CHECK_FALSE(vis.seen(s.verts, s.normal));
+            testedSmall = true;
+        }
+    }
+    CHECK(testedLarge);
+    CHECK(testedSmall);
+
+    LightmapSettings cfg;
+    cfg.texelsPerMeter = 4;
+    cfg.playable = area;
+    cfg.lod.radius = 1;
+    cfg.lod.removeUnseen = true;
+    cfg.seen = [&](const std::vector<Vec3>& poly, const Vec3& normal) { return vis.seen(poly, normal); };
+    const LightmapLayout layout = buildLightmapLayout(surfaces, LightingClasses::defaults(), cfg);
+
+    bool largeWasCulled = false;
+    for (const LightSurface& s : surfaces) {
+        if (s.brushId == "large_hidden" && s.side == FaceSide::Front)
+            largeWasCulled = largeWasCulled || layout.culledFace(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, s.side);
+        if (s.brushId == "small_hidden_detail")
+            CHECK_FALSE(layout.culledFace(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, s.side));
+    }
+    CHECK(largeWasCulled);
+}
+
 TEST_CASE("playable: the volume has no surfaces, no solids and does not reach the compiler") {
     const Document doc = longFloor(true);
     const auto surfaces = collectSurfaces(doc, {});

@@ -241,9 +241,26 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
                 for (const auto& piece : faces[i].pieces) d = std::min(d, cfg.playable->distance(piece, d));
                 int k = cfg.lod.cascade(d);
                 if (k > 0 && cfg.lod.cullUnseen && cfg.seen && (cfg.lod.removeUnseen || k < cfg.lod.levels)) {
-                    bool seen = false;
-                    for (const auto& piece : faces[i].pieces) if (cfg.seen(piece, faces[i].out.normal)) { seen = true; break; }
-                    if (!seen) {  // nobody in the area sees this surface
+                    // Whole-face removal is destructive: a tiny authored face is often a trim, a narrow board edge,
+                    // or another intentional detail. Sparse viewpoint/face samples cannot establish that such a
+                    // feature is truly invisible, so keep its normal distance-based LOD and never remove it solely
+                    // because a visibility ray missed it. Large structural faces still use the visibility test below.
+                    bool preserveSmallDetail = faces[i].out.area <= 1.5;
+                    if (!preserveSmallDetail) {
+                        Vec3 mn{1e300, 1e300, 1e300}, mx{-1e300, -1e300, -1e300};
+                        for (const auto& piece : faces[i].pieces) for (const Vec3& p : piece) {
+                            mn = {std::min(mn.x, p.x), std::min(mn.y, p.y), std::min(mn.z, p.z)};
+                            mx = {std::max(mx.x, p.x), std::max(mx.y, p.y), std::max(mx.z, p.z)};
+                        }
+                        const Vec3 ext = mx - mn;
+                        preserveSmallDetail = std::max({ext.x, ext.y, ext.z}) <= 1.5;
+                    }
+                    bool seen = preserveSmallDetail;
+                    if (!seen) {
+                        for (const auto& piece : faces[i].pieces)
+                            if (cfg.seen(piece, faces[i].out.normal)) { seen = true; break; }
+                    }
+                    if (!seen) {  // no sampled point of the area sees this large surface
                         if (cfg.lod.removeUnseen && faces[i].world) { faces[i].culled = true; continue; }  // no chart at all
                         k = cfg.lod.levels;                                                // the cheapest cascade
                     }

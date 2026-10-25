@@ -248,6 +248,31 @@ TEST_CASE("bsp compile: a face partly under another brush is kept (only faces bu
     CHECK(out.stats.droppedSurfaces >= 1);
 }
 
+TEST_CASE("bsp compile: large face with a narrow uncovered strip is not falsely classified as buried") {
+    // The floor top is almost entirely inside the two cover brushes. Its only exposed strip is narrower than the
+    // old 256-step cap's sample spacing and sits between sample columns. The compiler must not drop the entire face
+    // just because its maximum safe sampling density would exceed the budget.
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", {
+        Brush::makeBox("floor", {0, -0.5, 0}, {100, 0, 100}, "dev/floor"),
+        Brush::makeBox("cover_left", {0, 0, 0}, {50.12, 4, 100}, "dev/wall"),
+        Brush::makeBox("cover_right", {50.18, 0, 0}, {100, 4, 100}, "dev/wall"),
+    }));
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visibility = false;
+    const BspOutput out = compileBsp(in);
+    BspView v;
+    REQUIRE(v.open(out.bsp));
+    const auto shaders = v.lump<rbsp::Shader>(rbsp::kShaders);
+    int floorTops = 0;
+    for (const auto& surface : v.lump<rbsp::Surface>(rbsp::kSurfaces)) {
+        if (std::string(shaders[static_cast<size_t>(surface.shader)].name) == "textures/dev/floor" && surface.normal[2] > 0.99f)
+            ++floorTops;
+    }
+    CHECK(floorTops == 1);
+}
+
 TEST_CASE("bsp visibility: closed rooms do not see each other, a doorway lets them, open space sees far") {
     for (const bool door : {false, true}) {
         CAPTURE(door);
@@ -1404,6 +1429,92 @@ TEST_CASE("bsp export: relief floors under walls leave no triangle the engine's 
             }
     }
     CHECK(checked > 1000);
+}
+
+TEST_CASE("bsp export: relief culling requires one solid to contain the whole displaced triangle") {
+    auto inspectReliefUnderCover = [&](double coverHeight, bool splitCover = false) {
+        TempDir dir;
+        writeTga(dir.path / "textures/t/bump.tga", 32, 32);
+        std::ofstream(dir.path / "textures/t/bump.tga.json") << R"({"pixelsPerMeter": 32, "relief": {"vertices": [[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0.25,0.25,0.1],[0.75,0.25,0.1],[0.75,0.75,0.1],[0.25,0.75,0.1]],
+            "faces": [[4,5,6,7],[0,1,5,4],[1,2,6,5],[2,3,7,6],[3,0,4,7]]}})";
+
+        // The floor's flat top is entirely inside the cover's volume, but its relief centre reaches y = 0.1.
+        json w = entityJson("w", "worldspawn", {});
+        w["brushes"] = json::array({
+            brushJson(Brush::makeBox("floor", {0, -0.5, 0}, {2, 0, 2}, "t/bump"))
+        });
+        // Extend cover past the floor to avoid boundary points being mistaken for a visible gap. The split case
+        // leaves a narrow opening between the sampler's usual sample columns.
+        if (splitCover) {
+            w["brushes"].push_back(brushJson(Brush::makeBox("cover_left", {-0.5, 0, -0.5}, {0.512, coverHeight, 2.5}, "dev/wall")));
+            w["brushes"].push_back(brushJson(Brush::makeBox("cover_right", {0.528, 0, -0.5}, {2.5, coverHeight, 2.5}, "dev/wall")));
+        } else {
+            w["brushes"].push_back(brushJson(Brush::makeBox("cover", {-0.5, 0, -0.5}, {2.5, coverHeight, 2.5}, "dev/wall")));
+        }
+        dir.write("maps/relief_cover.map.json", docJson({w}));
+
+        BspExportRequest req;
+        req.assetsRoot = dir.path;
+        req.mapPath = "maps/relief_cover.map.json";
+        req.outPath = "maps/relief_cover.bsp";
+        req.bake = false;
+        req.settings.visibility = false;
+        req.settings.optimizeMesh = false;
+        req.settings.weldVertices = false;
+        {
+            Scene scene(dir.path);
+            scene.loadGameProfile();
+            scene.openDocument(req.mapPath);
+            req.document = scene.documentSyncJson()["doc"];
+        }
+        const BspExportResult result = exportBsp(req);
+        REQUIRE(result.ok);
+        std::ifstream f(dir.path / "maps/relief_cover.bsp", std::ios::binary);
+        const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        BspView view;
+        REQUIRE(view.open(bytes));
+
+        const auto shaders = view.lump<rbsp::Shader>(rbsp::kShaders);
+        const auto surfaces = view.lump<rbsp::Surface>(rbsp::kSurfaces);
+        const auto drawVerts = view.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+        const auto indexes = view.lump<int32_t>(rbsp::kDrawIndexes);
+        double highest = -1e9;
+        bool raisedTriangleSpansGap = false;
+        for (const auto& surface : surfaces) {
+            if (surface.shader < 0 || static_cast<size_t>(surface.shader) >= shaders.size()) continue;
+            const std::string shaderName(shaders[static_cast<size_t>(surface.shader)].name);
+            if (shaderName.find("t/bump") == std::string::npos) continue;
+            for (int i = 0; i + 2 < surface.numIndexes; i += 3) {
+                Vec3 p[3];
+                bool upward = true;
+                for (int k = 0; k < 3; ++k) {
+                    const int32_t local = indexes[static_cast<size_t>(surface.firstIndex + i + k)];
+                    const auto& dv = drawVerts[static_cast<size_t>(surface.firstVert + local)];
+                    upward = upward && dv.normal[2] >= 0.75f; // Quake Z = editor Y
+                    p[k] = fromQuake({dv.xyz[0], dv.xyz[1], dv.xyz[2]});
+                }
+                if (!upward) continue;
+                for (const Vec3& v : p) {
+                    if (v.x < 0.05 || v.x > 1.95 || v.z < 0.05 || v.z > 1.95) continue;
+                    highest = std::max(highest, v.y);
+                }
+                const double minX = std::min({p[0].x, p[1].x, p[2].x});
+                const double maxX = std::max({p[0].x, p[1].x, p[2].x});
+                const double maxY = std::max({p[0].y, p[1].y, p[2].y});
+                const double minZ = std::min({p[0].z, p[1].z, p[2].z});
+                const double maxZ = std::max({p[0].z, p[1].z, p[2].z});
+                if (minX <= 0.512 && maxX >= 0.528 && maxY > 0.06 && maxZ > 0.05 && minZ < 1.95)
+                    raisedTriangleSpansGap = true;
+            }
+        }
+        return std::make_pair(highest, raisedTriangleSpansGap);
+    };
+
+    // Relief above a shallow cover survives; a thick cover hides it. A narrow gap between separate cover brushes
+    // must preserve any triangle crossing the gap even when none of the old sparse sample points land inside it.
+    CHECK(inspectReliefUnderCover(0.04).first > 0.06);
+    CHECK(inspectReliefUnderCover(0.20).first < 0.04);
+    CHECK(inspectReliefUnderCover(0.20, true).second);
 }
 
 TEST_CASE("bsp export: identical vertices of a triangle soup are written once, and surfaces far from the playable area get no relief") {

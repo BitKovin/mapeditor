@@ -48,6 +48,30 @@ const json* findCarved(const json& j, const std::string& instance, const std::st
 }
 }  // namespace
 
+TEST_CASE("solid set: relief triangle culling requires one solid to cover the whole triangle") {
+    const Vec3 a{1.0, 0.0, 0.25};
+    const Vec3 b{2.0, 0.0, 0.25};
+    const Vec3 c{1.0, 0.0, 0.75};
+
+    // Each endpoint belongs to a different brush, but a narrow open gap separates them. The union of sample
+    // points must not be mistaken for a single solid covering the triangle.
+    Brush left = Brush::makeBox("left", {0.0, -1.0, 0.0}, {1.49, 1.0, 1.0});
+    Brush right = Brush::makeBox("right", {1.51, -1.0, 0.0}, {3.0, 1.0, 1.0});
+    SolidSet separated;
+    separated.add(left, false);
+    separated.add(right, false);
+    separated.finish();
+    CHECK_FALSE(separated.triangleInsideExcept(a, b, c, nullptr, 0.001));
+
+    // A single convex occluder containing all three displaced vertices proves the entire triangle is buried.
+    Brush cover = Brush::makeBox("cover", {0.0, -1.0, 0.0}, {3.0, 1.0, 1.0});
+    SolidSet covered;
+    covered.add(cover, false);
+    covered.finish();
+    CHECK(covered.triangleInsideExcept(a, b, c, nullptr, 0.001));
+    CHECK_FALSE(covered.triangleInsideExcept(a, b, c, &cover, 0.001));
+}
+
 TEST_CASE("derive: only overlapped brushes are listed; authored data is untouched") {
     Document doc;
     Entity world = ent("w", "worldspawn", {Brush::makeBox("wall", {0, 0, 0}, {4, 4, 4}), Brush::makeBox("elsewhere", {20, 0, 0}, {24, 4, 4}), sub("hole", {1, 1, -1}, {3, 3, 5})});

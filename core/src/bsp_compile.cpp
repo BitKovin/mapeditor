@@ -551,7 +551,12 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         for (size_t i = 1; i + 1 < s.verts.size(); ++i) {
             const Vec3 &b = s.verts[i], &c = s.verts[i + 1];
             const double len = std::max({(b - a).length(), (c - a).length(), (c - b).length()});
-            const int steps = std::clamp(static_cast<int>(std::ceil(len / 0.125)), 1, 256);
+            const double requestedSteps = std::ceil(len / 0.125);
+            // A step cap silently increases the sampling spacing on large faces and can miss a narrow exposed
+            // region, causing the whole authored face to be discarded. We cannot prove the face is buried when
+            // the requested sampling density exceeds the budget, so conservatively keep it.
+            if (!std::isfinite(requestedSteps) || requestedSteps > 256.0) return false;
+            const int steps = std::max(1, static_cast<int>(requestedSteps));
             for (int u = 0; u <= steps; ++u)
                 for (int v = 0; u + v <= steps; ++v) {
                     // pulled a hair towards the triangle's centre: edges shared with the wall's own face are not "in the open"
@@ -860,8 +865,30 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     for (const LightSurface& s : in.surfaces) {
         const auto mit = modelOf.find(entityKey(s.instance, s.entityId));
         if (mit == modelOf.end() || s.verts.size() < 3) continue;
-        // buried in a static solid: never seen (a moving entity keeps all its faces); sky faces are always kept
-        if (mit->second == 0 && in.solids && !cfg.contents.isSky(s.texture) && buried(s)) { ++res.stats.droppedSurfaces; continue; }
+        // Resolve texturing before the buried-face test. A flat face can be fully covered by another brush while
+        // its displaced relief rises above that brush; discarding the authored face here would discard those
+        // exposed relief triangles before they are even generated.
+        const auto parent = in.parentFace ? in.parentFace(s.brushInstance, s.brushId, s.faceId) : std::pair<const Brush*, const BrushFace*>{nullptr, nullptr};
+        const bool farRelief = parent.first && parent.second && limitRelief &&
+                               in.playable->distance(s.verts, cfg.reliefDistance + 1) > cfg.reliefDistance;
+        const texplan::InfoFn& info = farRelief ? flatInfo : in.texInfo;
+        bool faceHasRelief = false;
+        if (parent.first && parent.second) {
+            const auto plan = texplan::planForFace(*parent.first, *parent.second, info, in.texGroups);
+            if (plan) {
+                faceHasRelief = std::any_of(plan->textures.begin(), plan->textures.end(), [&](const std::string& texture) {
+                    return static_cast<bool>(texplan::reliefOf(info, texture));
+                });
+            } else {
+                faceHasRelief = static_cast<bool>(texplan::reliefOf(
+                    info, parent.second->texture.empty() ? std::string("dev/grey") : parent.second->texture));
+            }
+        }
+        // Buried flat faces can be discarded, but not before relief generation: a raised relief may protrude
+        // above the occluding solid even when every sample of the original plane is inside that solid.
+        if (mit->second == 0 && in.solids && !cfg.contents.isSky(s.texture) && !faceHasRelief && buried(s)) {
+            ++res.stats.droppedSurfaces; continue;
+        }
         // no point of the playable area sees it: it has no lightmap chart either (LightmapLayout::culled)
         if (mit->second == 0 && layout && layout->culledFace(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, s.side)) { ++res.stats.droppedSurfaces; continue; }
         Poly p;
@@ -872,10 +899,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         p.shading = s.shading;
         p.verts = &s.verts;
         // the texture as the editor lays it (texplan.h): the authored face's UV map; repeat modes, texture group layouts and reliefs as triangles
-        const auto parent = in.parentFace ? in.parentFace(s.brushInstance, s.brushId, s.faceId) : std::pair<const Brush*, const BrushFace*>{nullptr, nullptr};
         if (parent.first && parent.second) {
-            const bool farRelief = limitRelief && in.playable->distance(s.verts, cfg.reliefDistance + 1) > cfg.reliefDistance;
-            const texplan::InfoFn& info = farRelief ? flatInfo : in.texInfo;
             const auto key = std::make_pair(parent.first, parent.second->id | (farRelief ? 0x80000000u : 0u));
             auto pit = faceTexturing.find(key);
             if (pit == faceTexturing.end()) {
@@ -898,19 +922,26 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             for (const Vec3& v : s.verts) poly.push_back(texplan::v3(v));
             auto tris = texplan::texturePolygon(poly, texplan::v3(s.normal), parent.first, parent.second, info, in.texGroups, &reliefBudget, "dev/grey",
                                                 &outlines.of(static_cast<size_t>(&s - in.surfaces.data())));
-            // A piece that runs under a wall is kept whole (buried() above only drops pieces that are buried everywhere), and its relief with it: the relief
-            // triangles of the part inside the wall are never seen. Same test as buried(), on the point of the flat plane under each triangle.
+            // Relief must be tested at its displaced world positions, not projected back onto the original
+            // plane: a relief vertex can rise above a wall even though its footprint lies inside the wall's volume.
+            // Also ignore the additive brush that owns this face. Its volume is the support behind the face, not
+            // an occluder of its own relief (this matters for relief with negative height as well as raised peaks).
+            // A triangle is removed only when the sampled *actual* triangle is buried by other solids everywhere.
             if (mit->second == 0 && in.solids && !cfg.contents.isSky(s.texture) && !tris.empty()) {
-                SolidSet::Probe probe;
-                const Vec3 nrm = s.normal, org = s.verts[0];
-                const auto openAbove = [&](const Vec3& w) { return !in.solids->inside(w - nrm * nrm.dot(w - org) + nrm * 0.02, probe); };
+                const Vec3 nrm = s.normal;
+                const Brush* ignoredOwner = parent.first && parent.first->op == BrushOp::Add ? parent.first : nullptr;
                 const size_t before = tris.size();
                 tris.erase(std::remove_if(tris.begin(), tris.end(), [&](const texplan::TexturedTri& t) {
-                    Vec3 c{0, 0, 0};
-                    for (int k = 0; k < 3; ++k) c = c + texplan::vec(t.pos[static_cast<size_t>(k)]) * (1.0 / 3.0);
-                    if (openAbove(c)) return false;
-                    for (int k = 0; k < 3; ++k) if (openAbove(c * 0.8 + texplan::vec(t.pos[static_cast<size_t>(k)]) * 0.2)) return false;  // any part in the open keeps it
-                    return true;
+                    const Vec3 a = texplan::vec(t.pos[0]) + nrm * 0.02;
+                    const Vec3 b = texplan::vec(t.pos[1]) + nrm * 0.02;
+                    const Vec3 c = texplan::vec(t.pos[2]) + nrm * 0.02;
+                    const double longest = std::max({(b - a).length(), (c - b).length(), (a - c).length()});
+                    // Keep exceptionally large triangles rather than spending an unbounded amount of time on their bounds.
+                    if (!std::isfinite(longest) || longest > 32.0) return false;
+                    // A triangle is culled only when one convex solid contains all its displaced vertices. Sampling
+                    // a grid was unsafe: every sample could hit a different overlapping brush while an exposed
+                    // sliver between samples remained, deleting the entire triangle and leaving a hole.
+                    return in.solids->triangleInsideExcept(a, b, c, ignoredOwner, 0.001);
                 }), tris.end());
                 res.stats.reliefBuried += before - tris.size();
             }

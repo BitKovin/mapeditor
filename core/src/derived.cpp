@@ -161,6 +161,9 @@ void SolidSet::addAll(const std::vector<std::pair<const Brush*, bool>>& list, Ca
     });
     for (size_t i = 0; i < list.size(); ++i) {
         if (cache && !have[i]) cache->volumes[keys[i]] = per[i];
+        // Cache entries contain geometry only. Restore the identity of the brush that this copy belongs to,
+        // otherwise an ignore-owner query can accidentally ignore the wrong brush (or none at all).
+        for (Volume& v : per[i]) v.source = list[i].first;
         volumes_.insert(volumes_.end(), per[i].begin(), per[i].end());
     }
 }
@@ -170,7 +173,12 @@ void SolidSet::add(const Brush& b, bool subtractive, Cache* cache) {
         const uint64_t key = brushShapeHash(b, subtractive);
         cache->used.insert(key);
         const auto hit = cache->volumes.find(key);
-        if (hit != cache->volumes.end()) { volumes_.insert(volumes_.end(), hit->second.begin(), hit->second.end()); return; }
+        if (hit != cache->volumes.end()) {
+            const size_t before = volumes_.size();
+            volumes_.insert(volumes_.end(), hit->second.begin(), hit->second.end());
+            for (size_t i = before; i < volumes_.size(); ++i) volumes_[i].source = &b;
+            return;
+        }
         const size_t before = volumes_.size();
         add(b, subtractive, nullptr);
         cache->volumes[key] = std::vector<Volume>(volumes_.begin() + static_cast<std::ptrdiff_t>(before), volumes_.end());
@@ -183,6 +191,7 @@ void SolidSet::add(const Brush& b, bool subtractive, Cache* cache) {
     auto fresh = [&] {
         Volume v;
         v.subtractive = subtractive;
+        v.source = &b;
         v.mn = {1e300, 1e300, 1e300};
         v.mx = {-1e300, -1e300, -1e300};
         return v;
@@ -239,6 +248,10 @@ bool SolidSet::contains(const Volume& v, const Vec3& p, double margin) const {
 }
 
 bool SolidSet::inside(const Vec3& p, Probe& probe, double margin) const {
+    return insideExcept(p, nullptr, probe, margin);
+}
+
+bool SolidSet::insideExcept(const Vec3& p, const Brush* ignoredBrush, Probe& probe, double margin) const {
     const int64_t cx = static_cast<int64_t>(std::floor(p.x / kCell)), cy = static_cast<int64_t>(std::floor(p.y / kCell)), cz = static_cast<int64_t>(std::floor(p.z / kCell));
     if (probe.cell[0] != cx || probe.cell[1] != cy || probe.cell[2] != cz || probe.cell[0] == INT64_MIN) {
         probe.cell[0] = cx; probe.cell[1] = cy; probe.cell[2] = cz;
@@ -249,6 +262,7 @@ bool SolidSet::inside(const Vec3& p, Probe& probe, double margin) const {
     bool solid = false;
     for (int i : *probe.volumes) {
         const Volume& v = volumes_[static_cast<size_t>(i)];
+        if (ignoredBrush && v.source == ignoredBrush) continue;
         if (v.subtractive) {
             if (contains(v, p, -margin)) return false;
         } else if (!solid && contains(v, p, margin)) {
@@ -256,6 +270,70 @@ bool SolidSet::inside(const Vec3& p, Probe& probe, double margin) const {
         }
     }
     return solid;
+}
+
+bool SolidSet::insideExcept(const Vec3& p, const Brush* ignoredBrush, double margin) const {
+    const int64_t cx = static_cast<int64_t>(std::floor(p.x / kCell)), cy = static_cast<int64_t>(std::floor(p.y / kCell)), cz = static_cast<int64_t>(std::floor(p.z / kCell));
+    const auto it = grid_.find(cellKey(cx, cy, cz));
+    if (it == grid_.end()) return false;
+    bool solid = false;
+    for (int i : it->second) {
+        const Volume& v = volumes_[static_cast<size_t>(i)];
+        if (ignoredBrush && v.source == ignoredBrush) continue;
+        if (v.subtractive) {
+            if (contains(v, p, -margin)) return false;
+        } else if (!solid && contains(v, p, margin)) {
+            solid = true;
+        }
+    }
+    return solid;
+}
+
+bool SolidSet::triangleInsideExcept(const Vec3& a, const Vec3& b, const Vec3& c, const Brush* ignoredBrush, double margin) const {
+    // A convex volume contains a triangle iff it contains all three vertices. We deliberately require one volume
+    // to contain the whole triangle: union-of-samples tests can remove a triangle whose samples are covered by
+    // different brushes while a thin exposed gap lies between those samples.
+    const Vec3 center = (a + b + c) * (1.0 / 3.0);
+    const auto cell = [](double x) { return static_cast<int64_t>(std::floor(x / kCell)); };
+    const auto it = grid_.find(cellKey(cell(center.x), cell(center.y), cell(center.z)));
+    if (it == grid_.end()) return false;
+
+    const Vec3 mn{std::min({a.x, b.x, c.x}), std::min({a.y, b.y, c.y}), std::min({a.z, b.z, c.z})};
+    const Vec3 mx{std::max({a.x, b.x, c.x}), std::max({a.y, b.y, c.y}), std::max({a.z, b.z, c.z})};
+    for (int idx : it->second) {
+        const Volume& solid = volumes_[static_cast<size_t>(idx)];
+        if (solid.subtractive || (ignoredBrush && solid.source == ignoredBrush)) continue;
+        if (!contains(solid, a, margin) || !contains(solid, b, margin) || !contains(solid, c, margin)) continue;
+
+        // A subtractive brush may open a hole through an otherwise containing additive brush. If any cutter's
+        // bounds touch the triangle bounds, the solid-state proof is inconclusive, so retain the triangle. This
+        // is intentionally conservative; an AABB false positive costs culling, never geometry.
+        const int64_t x0 = cell(mn.x - margin), x1 = cell(mx.x + margin);
+        const int64_t y0 = cell(mn.y - margin), y1 = cell(mx.y + margin);
+        const int64_t z0 = cell(mn.z - margin), z1 = cell(mx.z + margin);
+        bool cutterMayIntersect = false;
+        std::unordered_set<int> checked;
+        for (int64_t x = x0; x <= x1 && !cutterMayIntersect; ++x) {
+            for (int64_t y = y0; y <= y1 && !cutterMayIntersect; ++y) {
+                for (int64_t z = z0; z <= z1 && !cutterMayIntersect; ++z) {
+                    const auto bucket = grid_.find(cellKey(x, y, z));
+                    if (bucket == grid_.end()) continue;
+                    for (int otherIdx : bucket->second) {
+                        if (!checked.insert(otherIdx).second) continue;
+                        const Volume& other = volumes_[static_cast<size_t>(otherIdx)];
+                        if (!other.subtractive) continue;
+                        if (other.mx.x < mn.x - margin || other.mn.x > mx.x + margin ||
+                            other.mx.y < mn.y - margin || other.mn.y > mx.y + margin ||
+                            other.mx.z < mn.z - margin || other.mn.z > mx.z + margin) continue;
+                        cutterMayIntersect = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!cutterMayIntersect) return true;
+    }
+    return false;
 }
 
 bool SolidSet::inside(const Vec3& p, double margin) const {
