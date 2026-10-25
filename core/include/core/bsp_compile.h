@@ -97,6 +97,10 @@ struct BspSettings {
     int visSamples = 16;                   // sample points per cell
     int visRays = 256;                     // rays per sample point
     bool visibility = true;                // false: every cluster sees every cluster
+    // Fit every lightmap chart to the fewest texels that look the same (lightmap_fit.h): the allowed error in 8-bit sRGB levels after `lightmapExposure`
+    // (the level's _cc_exposure); 0 = store the charts as baked.
+    double lightmapTolerance = 2.5;
+    double lightmapExposure = 1;
     bool repackLightmaps = true;           // pack all lightmap charts again by size (fewer, fuller pages) when that takes fewer pages than the live layout
     SkySettings sky;                       // the automatic sky (its texture "" = env/sky_cube with a warning)
     double engineFarPlane = 3000;          // m: the engine's Camera::FarPlane; a sky box larger than that across is clipped (warning)
@@ -130,7 +134,7 @@ struct BspOutput {
     std::vector<BspLightmapPage> lightmaps;  // lm_0000.exr, lm_0001.exr, ...
     std::vector<std::string> warnings;
     struct Stats {
-        size_t surfaces = 0, decals = 0, skySurfaces = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, gridPoints = 0, palette = 0;
+        size_t surfaces = 0, decals = 0, skySurfaces = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, lightmapTexelsBefore = 0, lightmapTexelsAfter = 0, gridPoints = 0, palette = 0;
         double visCell = 0, visSeconds = 0;
     } stats;
 };

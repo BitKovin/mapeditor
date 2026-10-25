@@ -153,6 +153,8 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                     try { const double c = std::stod(it->second); if (c > 0) in.settings.visCell = c; } catch (...) { r.warnings.push_back("_vis_cell is not a number"); }
                 }
             }
+                const LevelSettings lv = levelSettingsOf(e);  // the exposure the lightmap fit judges by (the level's, else lighting.json's)
+                in.settings.lightmapExposure = lv.exposure > 0 ? lv.exposure : req.lighting.exposure;
 
         // final bake: the live pipeline, synchronously, at the level's bake quality
         std::unique_ptr<LightingService> svc;

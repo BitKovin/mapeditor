@@ -1,6 +1,14 @@
 ﻿// rBSP export (REQUIREMENTS В§25, DESIGN В§12): EXR lightmaps, convex collision pieces, the compiler.
 #include "core/bsp_compile.h"
+#include "core/parallel.h"
+#include <tuple>
+#include <filesystem>
+#include <cstdlib>
+#include <cstdio>
+#include <chrono>
+#include <array>
 #include "core/exr.h"
+#include "core/lightmap_fit.h"
 #include "core/lightmap_pack.h"
 #include "core/lighting_classes.h"
 #include "doctest.h"
@@ -931,6 +939,7 @@ TEST_CASE("bsp lightmaps: the base charts are packed again into fewer pages and 
     std::shared_ptr<SolidSet> solids;
     BspInput in = inputFor(d, solids);
     in.settings.visibility = false;
+    in.settings.lightmapTolerance = 0;  // this test is about the packing, not the fitting
     LightmapSettings ls;
     ls.atlasSize = 64;  // small pages: the live layout (buckets stay together) needs several, the repack fewer
     // a density at which packing all charts by size saves a page (found by trying: the layouts are deterministic)
@@ -994,4 +1003,173 @@ TEST_CASE("bsp lightmaps: the base charts are packed again into fewer pages and 
         }
     }
     CHECK(checked > 0);
+}
+
+TEST_CASE("lightmap fit: flat and gradient charts need a few texels, noise needs them all, and the error is what the engine would show") {
+    constexpr int A = 64;
+    std::vector<float> page(A * A * 3, 0.0f);
+    std::vector<uint8_t> valid(A * A, 1);
+    auto fill = [&](auto f) { for (int y = 0; y < A; ++y) for (int x = 0; x < A; ++x) for (int c = 0; c < 3; ++c) page[(static_cast<size_t>(y) * A + x) * 3 + c] = f(x, y, c); };
+    FitLayer l;
+    l.rgb = page.data(); l.valid = valid.data(); l.atlas = A; l.x0 = 8; l.y0 = 8; l.w = 32; l.h = 24;
+    FitSettings fs;
+    fs.exposure = 1.8;
+    fill([](int, int, int c) { return 0.04f + 0.001f * c; });
+    ChartFit flat = fitChart({l}, fs);
+    CHECK(flat.w == 1);
+    CHECK(flat.h == 1);
+    fill([](int x, int y, int) { return 0.05f + 0.002f * x + 0.001f * y; });  // a plain ramp
+    ChartFit ramp = fitChart({l}, fs);
+    CHECK(ramp.w <= 4);
+    CHECK(ramp.h <= 4);
+    uint32_t seed = 7;
+    fill([&](int, int, int) { seed = seed * 1664525u + 1013904223u; return 0.05f + 0.04f * ((seed >> 8) & 255) / 255.0f; });  // noise
+    ChartFit noise = fitChart({l}, fs);
+    CHECK(noise.w == 32);
+    CHECK(noise.h == 24);
+    // identity resampling copies; a smaller one keeps the mean
+    const auto same = resampleLayer(l, 32, 24);
+    CHECK(same[0] == page[(8 * A + 8) * 3]);
+    fill([](int x, int, int) { return x < 24 ? 0.1f : 0.3f; });
+    const auto half = resampleLayer(l, 2, 1);
+    CHECK(half[0] == doctest::Approx(0.1f));
+    CHECK(half[3] == doctest::Approx(0.3f));
+    // the same light stored twice hashes the same, other light does not
+    fill([](int, int, int) { return 0.2f; });
+    const ChartFit a = fitChart({l}, fs);
+    l.x0 = 20;
+    const ChartFit b = fitChart({l}, fs);
+    CHECK(a.hash == b.hash);
+    fill([](int, int, int) { return 0.21f; });
+    CHECK(fitChart({l}, fs).hash != a.hash);
+    // a step edge does not survive 2 x 1 texels
+    l.x0 = 8;
+    fill([](int x, int, int) { return x < 24 ? 0.1f : 0.5f; });
+    const auto two = resampleLayer(l, 2, 1);
+    CHECK(fitError(l, two, 2, 1, 1.0, 2.5).over > 0.01);
+}
+
+TEST_CASE("bsp lightmaps: smooth charts are stored with fewer texels and every vertex still reads the same light") {
+    Document d = twoRooms(true);
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visibility = false;
+    LightmapSettings ls;
+    ls.texelsPerMeter = 6;
+    ls.atlasSize = 128;
+    LightmapLayout layout = buildLightmapLayout(in.surfaces, in.classes, ls);
+    REQUIRE(layout.charts.size() > 2);
+    in.layout = &layout;
+    LightmapPages p;
+    p.atlas = 128;
+    p.pageCount = layout.pageCount;
+    for (int k = 0; k < p.pageCount; ++k) {
+        p.rgb.push_back(std::vector<float>(128 * 128 * 3, 0.0f));
+        p.valid.push_back(std::vector<uint8_t>(128 * 128, 1));
+    }
+    // a ramp across every chart (the chart's own number as the base level)
+    for (size_t c = 0; c < layout.charts.size(); ++c) {
+        const auto& ch = layout.charts[c];
+        for (int y = 0; y < ch.h; ++y)
+            for (int x = 0; x < ch.w; ++x)
+                for (int q = 0; q < 3; ++q) p.rgb[static_cast<size_t>(ch.page)][(static_cast<size_t>(ch.y + y) * 128 + ch.x + x) * 3 + q] = 0.05f + 0.01f * float(c % 5) + 0.001f * x;
+    }
+    in.pages[0] = p;
+    BspInput off = in;
+    off.settings.lightmapTolerance = 0;
+    const BspOutput kept = compileBsp(off);
+    const BspOutput out = compileBsp(in);
+    CHECK(out.stats.lightmapTexelsAfter < out.stats.lightmapTexelsBefore / 2);
+    CHECK(out.lightmaps.size() <= kept.lightmaps.size());
+    BspView v, v2;
+    REQUIRE(v.open(out.bsp));
+    REQUIRE(v2.open(kept.bsp));
+    const auto s1 = v.lump<rbsp::Surface>(rbsp::kSurfaces), s2 = v2.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto d1 = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts), d2 = v2.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    REQUIRE(s1.size() == s2.size());
+    auto bilinear = [&](const BspOutput& o, int page, float u, float vv) {
+        const float fx = u * 128 - 0.5f, fy = vv * 128 - 0.5f;
+        const int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
+        const float tx = fx - x0, ty = fy - y0;
+        auto px = [&](int x, int y) { return o.lightmaps[static_cast<size_t>(page)].rgb[(static_cast<size_t>(std::clamp(y, 0, 127)) * 128 + std::clamp(x, 0, 127)) * 3]; };
+        return (px(x0, y0) * (1 - tx) + px(x0 + 1, y0) * tx) * (1 - ty) + (px(x0, y0 + 1) * (1 - tx) + px(x0 + 1, y0 + 1) * tx) * ty;
+    };
+    size_t checked = 0;
+    for (size_t i = 0; i < s1.size(); ++i) {
+        if (s1[i].lightmapNum[0] < 0) continue;
+        for (int k = 0; k < s1[i].numVerts; ++k) {
+            const auto& a = d1[static_cast<size_t>(s1[i].firstVert + k)];
+            const auto& b = d2[static_cast<size_t>(s2[i].firstVert + k)];
+            // inset a little from the chart edge (vertices lie on it): bilinear there reads the gutter
+            CHECK(bilinear(out, s1[i].lightmapNum[0], a.lightmap[0][0], a.lightmap[0][1]) == doctest::Approx(bilinear(kept, s2[i].lightmapNum[0], b.lightmap[0][0], b.lightmap[0][1])).epsilon(0.1));
+            ++checked;
+        }
+    }
+    CHECK(checked > 0);
+}
+
+// Measurement on an exported level (not a regression test): MAPEDITOR_FIT_BSP=<map.bsp> (its lm_NNNN.exr pages beside it, in <map>/), MAPEDITOR_FIT_EXPOSURE
+TEST_CASE("lightmap fit: measure an exported level" * doctest::skip(std::getenv("MAPEDITOR_FIT_BSP") == nullptr)) {
+    namespace fs = std::filesystem;
+    const fs::path bspPath = std::getenv("MAPEDITOR_FIT_BSP");
+    std::ifstream f(bspPath, std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    BspView v;
+    REQUIRE(v.open(bytes));
+    const double exposure = std::getenv("MAPEDITOR_FIT_EXPOSURE") ? std::atof(std::getenv("MAPEDITOR_FIT_EXPOSURE")) : 1.8;
+    const double tolerance = std::getenv("MAPEDITOR_FIT_TOLERANCE") ? std::atof(std::getenv("MAPEDITOR_FIT_TOLERANCE")) : 2.5;
+    std::map<int, ExrImage> pages;
+    std::set<std::array<int, 5>> charts;  // page, x, y, w, h
+    for (const auto& s : v.lump<rbsp::Surface>(rbsp::kSurfaces)) {
+        if (s.lightmapNum[0] < 0 || s.lightmapStyles[0] != 0) continue;
+        charts.insert({s.lightmapNum[0], s.lightmapCorner[0][0], s.lightmapCorner[0][1], s.lightmapSize[0], s.lightmapSize[1]});
+    }
+    for (const auto& c : charts) {
+        if (pages.count(c[0])) continue;
+        char name[32];
+        std::snprintf(name, sizeof name, "lm_%04d.exr", c[0]);
+        REQUIRE(readExr((bspPath.parent_path() / bspPath.stem() / name).string(), pages[c[0]]));
+    }
+    const std::vector<std::array<int, 5>> list(charts.begin(), charts.end());
+    std::vector<ChartFit> fits(list.size());
+    const auto t0 = std::chrono::steady_clock::now();
+    parallelFor(list.size(), 8, [&](size_t b, size_t e) {
+        for (size_t i = b; i < e; ++i) {
+            const auto& c = list[i];
+            const ExrImage& img = pages.at(c[0]);
+            FitLayer l;
+            l.rgb = img.rgb.data(); l.atlas = img.width; l.x0 = c[1] + 2; l.y0 = c[2] + 2; l.w = c[3] - 4; l.h = c[4] - 4;
+            if (l.w < 1 || l.h < 1) { fits[i].w = std::max(1, l.w); fits[i].h = std::max(1, l.h); continue; }
+            FitSettings fs;
+            fs.exposure = exposure;
+            fs.tolerance = tolerance;
+            fits[i] = fitChart({l}, fs);
+        }
+    });
+    long long before = 0, after = 0, flat = 0;
+    std::set<std::tuple<int, int, uint64_t>> distinct;
+    for (size_t i = 0; i < list.size(); ++i) {
+        before += static_cast<long long>(list[i][3]) * list[i][4];
+        after += static_cast<long long>(fits[i].w + 4) * (fits[i].h + 4);
+        flat += fits[i].w * fits[i].h <= 1;
+        distinct.insert({fits[i].w, fits[i].h, fits[i].hash});
+    }
+    {
+        const int edges[] = {16, 32, 64, 128, 100000};
+        long long b[5] = {0}, a2[5] = {0}, n[5] = {0};
+        for (size_t i = 0; i < list.size(); ++i) {
+            const int m = std::max(list[i][3], list[i][4]);
+            int k = 0;
+            while (m > edges[k]) ++k;
+            b[k] += static_cast<long long>(list[i][3]) * list[i][4];
+            a2[k] += static_cast<long long>(fits[i].w + 4) * (fits[i].h + 4);
+            ++n[k];
+        }
+        for (int k = 0; k < 5; ++k) std::printf("  charts up to %6d: %6lld, texels %.2f M -> %.2f M\n", edges[k], n[k], b[k] / 1e6, a2[k] / 1e6);
+    }
+    long long shared = 0;
+    for (const auto& d : distinct) shared += static_cast<long long>(std::get<0>(d) + 4) * (std::get<1>(d) + 4);
+    std::printf("charts %zu | texels %.2f M -> %.2f M (%.1f%%), with identical charts shared %.2f M (%.1f%%) | 1x1 charts %lld | tolerance %.1f levels, exposure %.2f | %.1f s\n", list.size(),
+                before / 1e6, after / 1e6, 100.0 * after / before, shared / 1e6, 100.0 * shared / before, flat, tolerance, exposure,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
 }

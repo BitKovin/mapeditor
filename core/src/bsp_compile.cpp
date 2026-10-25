@@ -1,5 +1,6 @@
 ﻿// The rBSP compiler (REQUIREMENTS В§25, DESIGN В§12).
 #include "core/bsp_compile.h"
+#include "core/lightmap_fit.h"
 #include "core/lightmap_pack.h"
 #include "core/csg.h"
 #include "core/parallel.h"
@@ -145,6 +146,87 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     // that has one. The engine's vertex has 4 lightmap UV sets, so slots 1 and 2 are packed densely on their own (UV sets 1, 2) and slots 3..7
     // share ONE placement (UV set 3, computed for the charts with a 4th layer), each slot in its own pages.
     const LightmapLayout* layout = in.layout;
+        const size_t nCharts = layout->charts.size();
+        outSize.resize(nCharts);
+        repOf.resize(nCharts);
+        for (size_t c = 0; c < nCharts; ++c) { outSize[c] = {layout->charts[c].w, layout->charts[c].h}; repOf[c] = static_cast<int>(c); }
+        // The layer of a chart (style slot k) as the fit sees it
+        auto layerOf = [&](const LightmapChart& ch, size_t k, FitLayer& l) {
+            if (k >= ch.styles.size()) return false;
+            const auto pit = in.pages.find(ch.styles[k]);
+            if (pit == in.pages.end() || ch.page >= pit->second.pageCount || pit->second.atlas != atlas) return false;
+            l.rgb = pit->second.rgb[static_cast<size_t>(ch.page)].data();
+            l.valid = static_cast<size_t>(ch.page) < pit->second.valid.size() && !pit->second.valid[static_cast<size_t>(ch.page)].empty()
+                          ? pit->second.valid[static_cast<size_t>(ch.page)].data() : nullptr;
+            l.atlas = atlas;
+            l.x0 = ch.x + lmPad; l.y0 = ch.y + lmPad;
+            l.w = ch.w - 2 * lmPad; l.h = ch.h - 2 * lmPad;
+            return l.w > 0 && l.h > 0 && ch.x + ch.w <= atlas && ch.y + ch.h <= atlas;
+        };
+        bool shrunk = false;
+        if (cfg.lightmapTolerance > 0 && nCharts > 0) {
+            // Fit every chart to the fewest texels that look the same (lightmap_fit.h), all layers of a chart together; identical charts share one rectangle.
+            FitSettings fs;
+            fs.exposure = cfg.lightmapExposure;
+            fs.tolerance = cfg.lightmapTolerance;
+            std::vector<ChartFit> fits(nCharts);
+            std::vector<char> fitted(nCharts, 0);
+            parallelFor(nCharts, 16, [&](size_t b, size_t e) {
+                for (size_t c = b; c < e; ++c) {
+                    const LightmapChart& ch = layout->charts[c];
+                    std::vector<FitLayer> layers;
+                    for (size_t k = 0; k < ch.styles.size() && k < static_cast<size_t>(rbsp::kStyles); ++k) {
+                        FitLayer l;
+                        if (layerOf(ch, k, l)) layers.push_back(l);
+                    }
+                    if (layers.empty()) continue;
+                    fits[c] = fitChart(layers, fs);
+                    fitted[c] = 1;
+                }
+            });
+            std::map<std::tuple<int, int, uint64_t, size_t>, int> seen;
+            size_t shared = 0;
+            for (size_t c = 0; c < nCharts; ++c) {
+                if (!fitted[c]) continue;
+                const LightmapChart& ch = layout->charts[c];
+                outSize[c] = {fits[c].w + 2 * lmPad, fits[c].h + 2 * lmPad};
+                if (outSize[c].first < ch.w || outSize[c].second < ch.h) shrunk = true;
+                const auto key = std::make_tuple(fits[c].w, fits[c].h, fits[c].hash, ch.styles.size());
+                const auto it = seen.emplace(key, static_cast<int>(c));
+                if (!it.second) { repOf[c] = it.first->second; ++shared; shrunk = true; }
+            }
+            long long before = 0, after = 0;
+            for (size_t c = 0; c < nCharts; ++c) {
+                before += static_cast<long long>(layout->charts[c].w) * layout->charts[c].h;
+                if (repOf[c] == static_cast<int>(c)) after += static_cast<long long>(outSize[c].first) * outSize[c].second;
+            }
+            res.stats.lightmapTexelsBefore = before;
+            res.stats.lightmapTexelsAfter = after;
+            if (shrunk) res.warnings.push_back("lightmaps fitted: " + std::to_string(before / 1000) + "k -> " + std::to_string(after / 1000) + "k texels (" +
+                                               std::to_string(shared) + " charts share the light of another)");
+        }
+        // Where a chart's layer k goes: copied as it is when its size is unchanged (the baked gutter stays), else resampled with a replicated gutter
+        auto store = [&](const LightmapChart& ch, int c, size_t k, const Placement& dst, BspLightmapPage& page) {
+            FitLayer l;
+            if (!layerOf(ch, k, l)) return;
+            const int nw = outSize[static_cast<size_t>(c)].first - 2 * lmPad, nh = outSize[static_cast<size_t>(c)].second - 2 * lmPad;
+            auto& out = page.rgb;
+            if (nw == l.w && nh == l.h) {
+                const auto& src = in.pages.find(ch.styles[k])->second.rgb[static_cast<size_t>(ch.page)];
+                for (int y = 0; y < ch.h && dst.y + y < atlas; ++y) {
+                    const int w = std::min({ch.w, atlas - dst.x});
+                    if (w <= 0) break;
+                    std::copy_n(src.begin() + (static_cast<size_t>(ch.y + y) * atlas + ch.x) * 3, static_cast<size_t>(w) * 3, out.begin() + (static_cast<size_t>(dst.y + y) * atlas + dst.x) * 3);
+                }
+                return;
+            }
+            const std::vector<float> small = resampleLayer(l, nw, nh);
+            const int ow = outSize[static_cast<size_t>(c)].first, oh = outSize[static_cast<size_t>(c)].second;
+            for (int y = 0; y < oh && dst.y + y < atlas; ++y)
+                for (int x = 0; x < ow && dst.x + x < atlas; ++x) {
+                    for (int q = 0; q < 3; ++q) out[(static_cast<size_t>(dst.y + y) * atlas + dst.x + x) * 3 + q] = fitTap(small, nw, nh, x - lmPad, y - lmPad, q);  // the gutter continues the gradient
+                }
+        };
     const auto basePages = in.pages.find(0);
     const bool lit = layout && basePages != in.pages.end() && basePages->second.atlas > 0;
     const int atlas = lit ? basePages->second.atlas : 0;
@@ -152,9 +234,10 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     if (lit) {
         const LightmapPages& bp = basePages->second;
         // The base layer: the charts as the live layout placed them (pages are 20-60% full: buckets of one texture / entity stay together there), or, when
-        // packing them all again by size takes fewer pages, repacked (cfg.repackLightmaps). A texel moves with its chart, gutter included.
+        // packing them all again by size takes fewer pages (or they were fitted to fewer texels), packed again (cfg.repackLightmaps).
         bool repacked = false;
-        if (cfg.repackLightmaps && !layout->charts.empty()) {
+        if ((cfg.repackLightmaps || shrunk) && nCharts > 0) {
+            std::vector<int> reps;
             std::vector<std::pair<int, int>> sizes;
             for (const auto& ch : layout->charts) sizes.push_back({ch.w, ch.h});
             int pages = 0;
@@ -162,19 +245,9 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             if (pages < bp.pageCount) {
                 repacked = true;
                 for (int p = 0; p < pages; ++p) res.lightmaps.push_back({atlas, std::vector<float>(static_cast<size_t>(atlas) * atlas * 3, 0.0f)});
-                for (size_t c = 0; c < layout->charts.size(); ++c) {
-                    const auto& ch = layout->charts[c];
-                    const Placement dst = where[c];
-                    placed[0][static_cast<int>(c)] = dst;
-                    if (ch.page >= bp.pageCount) continue;
-                    const auto& src = bp.rgb[static_cast<size_t>(ch.page)];
-                    auto& out = res.lightmaps[static_cast<size_t>(dst.page)].rgb;
-                    for (int y = 0; y < ch.h && dst.y + y < atlas && ch.y + y < atlas; ++y) {
-                        const int w = std::min({ch.w, atlas - dst.x, atlas - ch.x});
-                        if (w <= 0) break;
-                        std::copy_n(src.begin() + (static_cast<size_t>(ch.y + y) * atlas + ch.x) * 3, static_cast<size_t>(w) * 3,
-                                    out.begin() + (static_cast<size_t>(dst.y + y) * atlas + dst.x) * 3);
-                    }
+                for (size_t i = 0; i < reps.size(); ++i) {
+                    placed[0][reps[i]] = where[i];
+                    store(layout->charts[static_cast<size_t>(reps[i])], reps[i], 0, where[i], res.lightmaps[static_cast<size_t>(where[i].page)]);
                 }
                 res.warnings.push_back("lightmaps repacked: " + std::to_string(bp.pageCount) + " -> " + std::to_string(pages) + " pages");
             }
@@ -215,16 +288,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                 }
                 const Placement dst{op->second, rel.x, rel.y};
                 placed[static_cast<size_t>(k)][c] = dst;
-                const auto pit = in.pages.find(ch.styles[static_cast<size_t>(k)]);
-                if (pit == in.pages.end()) continue;
-                const LightmapPages& pg = pit->second;
-                if (ch.page >= pg.pageCount || pg.atlas != atlas) continue;
-                const auto& src = pg.rgb[static_cast<size_t>(ch.page)];
-                auto& out = res.lightmaps[static_cast<size_t>(dst.page)].rgb;
-                for (int y = 0; y < ch.h && dst.y + y < atlas && ch.y + y < atlas; ++y)
-                    for (int x = 0; x < ch.w && dst.x + x < atlas && ch.x + x < atlas; ++x)
-                        for (int q = 0; q < 3; ++q)
-                            out[((static_cast<size_t>(dst.y + y)) * atlas + dst.x + x) * 3 + q] = src[((static_cast<size_t>(ch.y + y)) * atlas + ch.x + x) * 3 + q];
+                store(ch, c, static_cast<size_t>(k), dst, res.lightmaps[static_cast<size_t>(dst.page)]);
             }
         }
     }
@@ -308,23 +372,27 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         std::array<Vec2, rbsp::kStyles> shift{};
         int slots = 0;
         if (chart) {
+        double fitX = 1, fitY = 1;
             for (int k = 0; k < rbsp::kStyles && k < static_cast<int>(chart->styles.size()); ++k) {
                 const auto cit = placed[static_cast<size_t>(k)].find(lf->chart);
+            const auto& osz = outSize[static_cast<size_t>(lf->chart)];
+            fitX = double(osz.first - 2 * lmPad) / std::max(1, chart->w - 2 * lmPad);
+            fitY = double(osz.second - 2 * lmPad) / std::max(1, chart->h - 2 * lmPad);
                 if (cit == placed[static_cast<size_t>(k)].end()) break;
                 out.lightmapStyles[k] = static_cast<uint8_t>(chart->styles[static_cast<size_t>(k)]);
                 out.lightmapNum[k] = cit->second.page;
                 out.lightmapCorner[k][0] = cit->second.x;
                 out.lightmapCorner[k][1] = cit->second.y;
-                shift[static_cast<size_t>(k)] = {double(cit->second.x - chart->x), double(cit->second.y - chart->y)};
+                shift[static_cast<size_t>(k)] = {cit->second.x + lmPad - (chart->x + lmPad) * fitX, cit->second.y + lmPad - (chart->y + lmPad) * fitY};
                 slots = k + 1;
             }
-            out.lightmapSize[0] = chart->w;
-            out.lightmapSize[1] = chart->h;
+            out.lightmapSize[0] = osz.first;
+            out.lightmapSize[1] = osz.second;
             // the chart's world axes in texels per Quake unit, and the world point of texel (0, 0) on the face plane
-            put3(out.lightmapVecs[0], toQuakeDir(lf->su) * (1.0 / rbsp::kUnitsPerMeter));
-            put3(out.lightmapVecs[1], toQuakeDir(lf->sv) * (1.0 / rbsp::kUnitsPerMeter));
-            const Vec3 n = s.normal, a = lf->su, b = lf->sv;
-            const double rhs[3] = {-lf->so, -lf->to, n.dot(pv[0])};
+            put3(out.lightmapVecs[0], toQuakeDir(lf->su * fitX) * (1.0 / rbsp::kUnitsPerMeter));
+            put3(out.lightmapVecs[1], toQuakeDir(lf->sv * fitY) * (1.0 / rbsp::kUnitsPerMeter));
+            const Vec3 n = s.normal, a = lf->su * fitX, b = lf->sv * fitY;
+            const double rhs[3] = {-(shift[0].u + fitX * lf->so), -(shift[0].v + fitY * lf->to), n.dot(pv[0])};
             const double m[3][3] = {{a.x, a.y, a.z}, {b.x, b.y, b.z}, {n.x, n.y, n.z}};
             const double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
                                m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
@@ -356,8 +424,8 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     const Vec3 foot = p - s.normal * (s.normal.dot(p) - planeD);  // a relief point takes the lightmap of the flat point under it
                     const Vec2 uv = layout->uv(*lf, foot);
                     for (int k2 = 0; k2 < slots; ++k2) {
-                        dv.lightmap[k2][0] = float(uv.u + shift[static_cast<size_t>(k2)].u / atlas);
-                        dv.lightmap[k2][1] = float(uv.v + shift[static_cast<size_t>(k2)].v / atlas);
+                        dv.lightmap[k2][0] = float(uv.u * fitX + shift[static_cast<size_t>(k2)].u / atlas);
+                        dv.lightmap[k2][1] = float(uv.v * fitY + shift[static_cast<size_t>(k2)].v / atlas);
                     }
                 }
                 // a flat triangle of a smoothed face takes the smooth normal; a relief keeps its own
@@ -394,8 +462,8 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             if (chart) {
                 const Vec2 uv = layout->uv(*lf, p);
                 for (int k = 0; k < slots; ++k) {
-                    dv.lightmap[k][0] = float(uv.u + shift[static_cast<size_t>(k)].u / atlas);
-                    dv.lightmap[k][1] = float(uv.v + shift[static_cast<size_t>(k)].v / atlas);
+                    dv.lightmap[k][0] = float(uv.u * fitX + shift[static_cast<size_t>(k)].u / atlas);
+                    dv.lightmap[k][1] = float(uv.v * fitY + shift[static_cast<size_t>(k)].v / atlas);
                 }
             }
             put3(dv.normal, toQuakeDir(s.shading ? shadingNormalAt(*s.shading, p, s.normal) : s.normal));
