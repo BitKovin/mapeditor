@@ -18,9 +18,10 @@ struct PlayableLod {
     double density = 0.5;       // lightmap texel density multiplier per cascade (cascade k: density^k)
     double lightvolMargin = 2;  // m: the light volume covers the area grown by this
     bool cullUnseen = true;     // surfaces beyond the full-detail radius that no point of the area can see go straight to the last cascade
+    bool removeUnseen = true;   // with cullUnseen: such surfaces are removed instead (no lightmap chart, not in the exported map; they still occlude light)
     bool operator==(const PlayableLod& o) const {
         return radius == o.radius && levels == o.levels && range == o.range && density == o.density && lightvolMargin == o.lightvolMargin &&
-               cullUnseen == o.cullUnseen;
+               cullUnseen == o.cullUnseen && removeUnseen == o.removeUnseen;
     }
     // cascade of a surface `d` metres from the area: 0 = full density
     int cascade(double d) const;

@@ -2,6 +2,7 @@
 #include "core/derived.h"
 #include "core/lighting_classes.h"
 #include "core/playable.h"
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -11,7 +12,10 @@ namespace core {
 // geometry. Used to send what nobody can see (inside far closed buildings, the backs of far walls) to the last quality cascade (PlayableLod).
 class PlayableVisibility {
 public:
-    PlayableVisibility(const PlayableArea& area, const std::vector<LightSurface>& surfaces, const LightingClasses& classes, size_t maxViewpoints = 96);
+    // `blocks`: which surfaces block the view (null = every surface of a light-blocking class, which is how it used to be). Pass the static world's opaque
+    // surfaces: glass, water and cutouts are see-through, and a door or a trigger volume is not a wall.
+    PlayableVisibility(const PlayableArea& area, const std::vector<LightSurface>& surfaces, const LightingClasses& classes, size_t maxViewpoints = 96,
+                       std::function<bool(const LightSurface&)> blocks = {});
     ~PlayableVisibility();
     size_t viewpointCount() const;
     // True when some viewpoint sees some sample point of the convex polygon (`normal`: its unit normal).

@@ -97,7 +97,9 @@ ExportResult exportObj(const ExportRequest& req, const ProgressFn& progress, con
     try {
         const std::string out = sandboxedExportPath(req.outPath, ".obj");
         PreparedExport p;
-        if (!prepareExport(req, progress, cancelled, r, p)) return r;
+        ExportRequest plain = req;
+        plain.rbspLightmapEncoding = false;  // an OBJ has no vertex scale and its readers expect .exr pages
+        if (!prepareExport(plain, progress, cancelled, r, p)) return r;
         if (progress) progress("writing files", 0.99);
         BspView v;
         std::string error;

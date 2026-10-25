@@ -76,6 +76,7 @@ export interface Span { t0: number; t1: number; z0: number; z1: number }
  * (along that normal) along the edge, as spans over t = 0..1 from the edge's first end to its second. The wall that closes the outline then runs from the
  * relief of the face to the relief of the neighbour (a bevel across the corner) instead of down to the surface.
  */
+/** Adjacent relief surface coverage. Missing spans mean there is no neighbour surface there, not a flat surface to bridge to. */
 export interface Neighbour { n: Vec3; spans: Span[] }
 export type NeighbourFn = (a: Vec3, b: Vec3) => Neighbour | null
 /** The relief tile's triangles that have area seen from the front (walls have none). */
@@ -140,7 +141,7 @@ function heightsOver(spans: readonly Span[], ta: number, tb: number): [number, n
   return null
 }
 
-/** Pieces over t where the height of `f` runs from `f0` to `f1` and that of `g` (0 when null) from `g0` to `g1`, one of them above the other throughout. */
+/** Pieces over t where the height of `f` runs from `f0` to `f1` and that of `g` (0 when null, used for internal repeat seams) runs from `g0` to `g1`. */
 interface Band { ta: number; tb: number; f0: number; f1: number; g0: number; g1: number }
 function bands(f: readonly Span[], g: readonly Span[] | null, bridge = false): Band[] {
   const cuts = new Set<number>()
@@ -156,7 +157,10 @@ function bands(f: readonly Span[], g: readonly Span[] | null, bridge = false): B
     const ta = ts[k], tb = ts[k + 1]
     if (tb - ta < 1e-9) continue
     const hf = heightsOver(f, ta, tb)
-    const hg = g ? heightsOver(g, ta, tb) ?? (bridge ? [0, 0] as [number, number] : null) : [0, 0] as [number, number]
+    // A missing span means there is no relief surface on that side of this interval.
+    // Do not invent a zero-height span: it creates a fake connector to the underlying
+    // brush wall at every end of a disconnected relief segment.
+    const hg = g ? heightsOver(g, ta, tb) : [0, 0] as [number, number]
     if (!hf || !hg) continue
     const d0 = hf[0] - hg[0], d1 = hf[1] - hg[1]
     if (!bridge && d0 * d1 < 0) { // the two heights cross: two bands, each with one of them on top
@@ -220,9 +224,9 @@ export function neighbourFn(brush: Brush, face: Face): NeighbourFn {
 /**
  * The relief laid over one triangle: `tri` world corners, `uv` their UV (repeats), `n` the face's outward normal. Returns interleaved vertices (position,
  * normal, uv) of whole triangles, or null when the triangle should stay flat (degenerate UV, too many repeats, budget used up).
- * `border`: bit k set = the triangle's edge k (corner k to corner k + 1) lies on the outline of the face, so the relief there is closed by a wall down to
- * the surface (a triangle cut out of the middle of a face has no border bits: its neighbours carry on the relief). `neighbour` tells what stands next to such
- * an edge: at a corner with a face that has a relief of its own, the wall reaches across to that relief instead (see Neighbour).
+ * `border`: bit k set = the triangle's edge k (corner k to corner k + 1) lies on the outline of the face (a triangle cut out of the middle of a face has no
+ * border bits: its neighbours carry on the relief). An outline connector is generated only if `neighbour` finds actual relief geometry on the adjacent face; the
+ * face carrying this relief is never used as the other side of a connector.
  */
 export function reliefTriangle(tri: readonly [Vec3, Vec3, Vec3], uv: readonly [V2, V2, V2], n: Vec3, relief: Relief, budget?: ReliefBudget, border = 0, neighbour?: NeighbourFn): number[] | null {
   const [a0, a1, a2] = uv
@@ -297,6 +301,11 @@ export function reliefTriangle(tri: readonly [Vec3, Vec3, Vec3], uv: readonly [V
         for (let x = 0; x < 3; x++) for (let y = x + 1; y < 3; y++) { const l = Math.hypot(Q[x][0] - Q[y][0], Q[x][1] - Q[y][1]); if (l > best) { best = l; L0 = x; L1 = y } }
         if (best < 1e-9) continue
         const P0 = Q[L0], P1 = Q[L1]
+        // A relief-data wall on an integer UV line is a tile-boundary side face. Never
+        // emit it independently for every repeat: the seam pass below compares the
+        // actual relief surfaces on both sides and creates a connector only when needed.
+        const onGridLine = (x: number, y: number): boolean => Math.abs(x - y) < 1e-9 && Math.abs(x - Math.round(x)) < 1e-9
+        if (onGridLine(P0[0], P1[0]) || onGridLine(P0[1], P1[1])) continue
         let slo = 0, shi = 1
         for (const [ea, eb, ec] of edges) {
           const f0 = ea * P0[0] + eb * P0[1] + ec, f1 = ea * P1[0] + eb * P1[1] + ec
@@ -384,8 +393,12 @@ export function reliefTriangle(tri: readonly [Vec3, Vec3, Vec3], uv: readonly [V
     const p = U[k], q = U[(k + 1) % 3]
     const len = Math.hypot(edges[k][0], edges[k][1])
     if (len < 1e-12) continue
+    const nb = neighbour?.(tri[k], tri[(k + 1) % 3]) ?? null
+    // Do not close relief ends against the host brush face. Outline connectors are only
+    // meaningful at an edge backed by another relief surface.
+    if (!nb || nb.spans.length === 0) continue
     const inward: V2 = [edges[k][0] / len, edges[k][1] / len] // the edge's half-plane points into the triangle
-    wall(p, q, profile(surface, p, q, inward), null, inward, neighbour?.(tri[k], tri[(k + 1) % 3]) ?? null)
+    wall(p, q, profile(surface, p, q, inward), null, inward, nb)
   }
   if (over) return null
   return out

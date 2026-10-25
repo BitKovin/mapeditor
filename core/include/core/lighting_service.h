@@ -158,6 +158,7 @@ private:
         std::shared_ptr<SolidSet> solids;
         LightScene lights;
         AlbedoLoader albedoLoader;   // made on the thread that owns the Scene (it reads the game profile)
+        AlbedoLoader visibilityLoader;  // the same, but made whether or not the live view uses textures: their transparency decides what blocks the view
         std::set<std::string> changedTextures;  // textures whose properties changed since the last snapshot
     };
     std::mutex texM_;
@@ -298,7 +299,7 @@ private:
     std::string volGpuError_;
     std::shared_ptr<AlbedoLibrary> albedoLib_;   // decoded textures of the bounce colours (rebuilt when the game profile changes; caller thread only)
     std::string albedoKey_;
-    AlbedoLoader albedoLoader();
+    AlbedoLoader albedoLoader(bool force = false);
     bool volPending() const { return opt_.lightvolEnabled && built_ && (volStale_ || volRunning_ || volSendDue_ || entityLightDue_); }
     // Returns true while there is more to do. Sends the grid / entity light messages when they are due and nothing is held back.
     bool workLightvol(double budgetSeconds, std::chrono::steady_clock::time_point t0, const Emit& emit, const Interrupted& interrupted);

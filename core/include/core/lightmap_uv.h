@@ -3,6 +3,7 @@
 #include "core/lighting_classes.h"
 #include "core/math3.h"
 #include "core/playable.h"
+#include <set>
 #include <functional>
 #include <map>
 #include <memory>
@@ -83,6 +84,10 @@ struct LightmapLayout {
     int pageCount = 0;
     std::vector<double> pageFill;      // used texel fraction per page (chart rectangles, padding included)
     std::vector<std::string> warnings;
+    // Keys (LightmapFace::key()) of the faces left out because no point of the playable area can see them (PlayableLod::removeUnseen): they have no chart.
+    std::set<std::string> culled;
+    bool culledFace(const std::string& instance, const std::string& entityId, const std::string& brushInstance, const std::string& brushId, uint32_t faceId,
+                    FaceSide side) const;
 
     const LightmapFace* find(const std::string& instance, const std::string& entityId, const std::string& brushInstance,
                              const std::string& brushId, uint32_t faceId, FaceSide side) const;

@@ -11,9 +11,22 @@ struct PlayableVisibility::Impl {
     std::vector<Vec3> eyes;
 };
 
-PlayableVisibility::PlayableVisibility(const PlayableArea& area, const std::vector<LightSurface>& surfaces, const LightingClasses& classes, size_t maxViewpoints)
+PlayableVisibility::PlayableVisibility(const PlayableArea& area, const std::vector<LightSurface>& surfaces, const LightingClasses& classes, size_t maxViewpoints,
+                                     std::function<bool(const LightSurface&)> blocks)
     : d_(new Impl) {
-    d_->mesh = buildOccluders(surfaces, classes);
+    if (blocks) {
+        std::vector<LightSurface> occ;
+        for (const LightSurface& s : surfaces) {
+            if (!blocks(s)) continue;
+            occ.push_back(s);
+            occ.back().classname = "worldspawn";
+        }
+        LightingClasses only;
+        only.castShadows = {"worldspawn"};
+        d_->mesh = buildOccluders(occ, only);
+    } else {
+        d_->mesh = buildOccluders(surfaces, classes);
+    }
     if (!d_->mesh.empty()) d_->bvh = std::make_unique<TriangleBvh>(d_->mesh);
     if (area.empty()) return;
     // Viewpoints: a regular grid through the bounds of the area, the points inside it, thinned evenly to `maxViewpoints`.

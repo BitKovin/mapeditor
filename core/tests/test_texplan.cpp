@@ -239,6 +239,76 @@ TEST_CASE("texplan: the connecting walls of a relief match the Shell (reliefTria
     }
 }
 
+TEST_CASE("texplan: tile-boundary relief walls are suppressed when the next relief continues") {
+    Relief relief;
+    relief.vertices = {
+        {0, 0, 0.2}, {1, 0, 0.2}, {1, 1, 0.2}, {0, 1, 0.2},
+        {0, 0, 0}, {0, 1, 0}, {0, 1, 0.2}, {0, 0, 0.2},
+        {1, 0, 0}, {1, 1, 0}, {1, 1, 0.2}, {1, 0, 0.2},
+    };
+    relief.faces = {{0, 1, 2, 3}, {4, 5, 6, 7}, {8, 9, 10, 11}};
+    const std::array<V3, 4> p = {{{0, 0, 0}, {2, 0, 0}, {2, 1, 0}, {0, 1, 0}}};
+    const auto uv = [](const V3& x) -> V2 { return {x[0], 1 - x[1]}; };
+    const std::array<std::array<int, 3>, 2> tri = {{{0, 1, 2}, {0, 2, 3}}};
+    size_t connectingTriangles = 0;
+    for (const auto& ids : tri) {
+        const std::array<V3, 3> t = {p[static_cast<size_t>(ids[0])], p[static_cast<size_t>(ids[1])], p[static_cast<size_t>(ids[2])]};
+        const std::array<V2, 3> u = {uv(t[0]), uv(t[1]), uv(t[2])};
+        const auto out = reliefTriangle(t, u, V3{0, 0, 1}, relief, "t", nullptr, 0, nullptr);
+        REQUIRE(out);
+        for (const TexturedTri& face : *out) if (std::fabs(face.normal[0][2]) < 0.99) ++connectingTriangles;
+    }
+    CHECK(connectingTriangles == 0);
+}
+
+TEST_CASE("texplan: relief outline without a relief neighbour does not connect to the host face") {
+    Relief relief;
+    relief.vertices = {{0, 0, 0.2}, {1, 0, 0.2}, {1, 1, 0.2}, {0, 1, 0.2}};
+    relief.faces = {{0, 1, 2, 3}};
+    const std::array<V3, 3> tri = {{{0, 0, 0}, {2, 0, 0}, {0, 1, 0}}};
+    const std::array<V2, 3> uv = {{{0, 1}, {2, 1}, {0, 0}}};
+    const V3 n{0, 0, 1};
+
+    // All three edges are outlines. They must not be closed back to the underlying
+    // brush face just because the relief surface ends there.
+    const auto out = reliefTriangle(tri, uv, n, relief, "t", nullptr, 0b111, nullptr);
+    REQUIRE(out);
+    size_t connectingTriangles = 0;
+    for (const TexturedTri& t : *out) {
+        if (std::fabs(t.normal[0][2]) < 0.99) ++connectingTriangles;
+    }
+    CHECK(connectingTriangles == 0);
+}
+
+TEST_CASE("texplan: connecting walls only bridge spans with neighbouring relief surface") {
+    Relief relief;
+    relief.vertices = {{0, 0, 0.2}, {1, 0, 0.2}, {1, 1, 0.2}, {0, 1, 0.2}};
+    relief.faces = {{0, 1, 2, 3}};
+    const std::array<V3, 3> tri = {{{0, 0, 0}, {2, 1, 0}, {0, 1, 0}}};
+    const std::array<V2, 3> uv = {{{0, 1}, {2, 0}, {0, 0}}};
+    const V3 n{0, 0, 1};
+    const NeighbourFn nbr = [](const V3& a, const V3& b) -> std::optional<Neighbour> {
+        if (std::fabs(a[0]) < 1e-9 && std::fabs(b[0]) < 1e-9)
+            return Neighbour{{-1, 0, 0}, {{0, 0.5, 0.1, 0.1}}};
+        return std::nullopt;
+    };
+
+    const auto out = reliefTriangle(tri, uv, n, relief, "t", nullptr, 0b100, &nbr);
+    REQUIRE(out);
+    size_t connectingTriangles = 0;
+    bool reachesNeighbourRelief = false;
+    for (const TexturedTri& t : *out) {
+        if (std::fabs(t.normal[0][2]) >= 0.99) continue; // ignore the horizontal relief surface
+        ++connectingTriangles;
+        for (const V3& p : t.pos) {
+            CHECK(p[1] >= 0.5 - 1e-6); // the unoccupied half of the neighbour has no connector
+            if (p[0] < -1e-6) reachesNeighbourRelief = true;
+        }
+    }
+    CHECK(connectingTriangles > 0);
+    CHECK(reachesNeighbourRelief);
+}
+
 TEST_CASE("texplan: polygon outlines, fan and piece border bits") {
     const std::vector<V3> A = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, B = {{1, 0, 0}, {2, 0, 0}, {2, 1, 0}, {1, 1, 0}};
     const auto two = polygonBorders({A, B});
@@ -257,7 +327,7 @@ TEST_CASE("texplan: polygon outlines, fan and piece border bits") {
     const size_t a = idx.add("f", A), b = idx.add("f", B), c = idx.add("g", A);
     CHECK(idx.of(a) == std::vector<char>{1, 0, 1, 1});
     CHECK(idx.of(b) == std::vector<char>{1, 1, 1, 0});
-    CHECK(idx.of(c) == std::vector<char>{1, 1, 1, 1});  // another face: nothing to share an edge with
+    CHECK(idx.of(c) == std::vector<char>{1, 0, 1, 1});  // another face ("g", polygon A) continues the surface across A's shared edge with B (face "f"): no outline there
 }
 
 TEST_CASE("texplan: seamless edge analysis (seamless.ts) and the seeded random numbers (rng.ts)") {

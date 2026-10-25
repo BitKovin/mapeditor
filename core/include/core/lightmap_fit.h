@@ -15,6 +15,9 @@ struct FitLayer {
     int atlas = 0;
     int x0 = 0, y0 = 0;              // first interior texel
     int w = 0, h = 0;                // interior size
+    // The page holds light / scale (light_scale.h: a chart's texels are stored divided by its vertex colour). Everything the fit judges is the light the
+    // engine shows, so the original texels and every `small` image compared with them are multiplied by it first. 1 = the page holds the light itself.
+    float scale[3] = {1, 1, 1};
 };
 
 struct FitSettings {
@@ -33,7 +36,8 @@ ChartFit fitChart(const std::vector<FitLayer>& layers, const FitSettings& settin
 
 // Whether every layer, stored at w x h texels (as from resampleLayer) in 8 bits (linear: the byte is the light, byte / 255 - the engine reads no sRGB
 // lightmaps), still looks the same by the fit's measure, and none of it is brighter than 1 (what a JPEG page can hold).
-bool fitsEightBits(const std::vector<FitLayer>& layers, int w, int h, const FitSettings& settings);
+// `scale` (optional, rgb): the chart's light scale (light_scale.h). The layers hold the light itself; what is stored (and tested against 1) is light / scale.
+bool fitsEightBits(const std::vector<FitLayer>& layers, int w, int h, const FitSettings& settings, const float* scale = nullptr);
 
 // The 8-bit value of a light value (clamped to 0..1) and back.
 uint8_t lightToByte(float v);
@@ -52,6 +56,7 @@ struct FitError {
     double over = 0;   // fraction of baked texels whose error exceeds `tolerance`
     double worst = 0;  // largest error in levels
 };
-FitError fitError(const FitLayer& layer, const std::vector<float>& small, int w, int h, double exposure, double tolerance);
+// `smallScale` (rgb, optional): what `small` is divided by when that is not the layer's own scale (the layer holding the light itself, `small` normalised).
+FitError fitError(const FitLayer& layer, const std::vector<float>& small, int w, int h, double exposure, double tolerance, const float* smallScale = nullptr);
 
 }  // namespace core

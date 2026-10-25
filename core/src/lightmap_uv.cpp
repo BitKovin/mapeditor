@@ -44,6 +44,8 @@ struct Face {
     std::string group;  // instance + entity: faces only merge inside one group
     std::vector<int> styles;  // non-base styles touching the face (LightmapSettings::faceStyles)
     double scale = 1;   // density multiplier
+    bool culled = false;  // nothing of the playable area sees it: left out (PlayableLod::removeUnseen)
+    bool world = false;   // part of the static world (worldspawn, func_group, func_detail): the only faces that are ever left out
     const BrushSmoothing* smooth = nullptr;  // smooth edges of the owning brush (a face joined by one is unfolded whatever the angle)
     Vec3 mn, mx;       // world bounds
     Vec3 u, v;         // root frame when this face is an island root
@@ -148,6 +150,14 @@ const LightmapFace* LightmapLayout::find(const std::string& instance, const std:
     return lo < faces.size() && faces[lo].key() == key ? &faces[lo] : nullptr;
 }
 
+bool LightmapLayout::culledFace(const std::string& instance, const std::string& entityId, const std::string& brushInstance, const std::string& brushId,
+                                uint32_t faceId, FaceSide side) const {
+    if (culled.empty()) return false;
+    LightmapFace probe;
+    probe.instance = instance; probe.entityId = entityId; probe.brushInstance = brushInstance; probe.brushId = brushId; probe.faceId = faceId; probe.side = side;
+    return culled.count(probe.key()) != 0;
+}
+
 const LightmapFace* LightmapLayout::findForFragment(const std::string& instance, const std::string& entityId,
                                                     const std::string& brushInstance, const std::string& brushId, uint32_t faceId,
                                                     const std::vector<Vec3>& verts) const {
@@ -197,6 +207,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
             f.out = probe;
             f.out.texture = s.texture;
             f.group = s.instance + "|" + s.entityId;
+            f.world = s.classname == "worldspawn" || s.classname == "func_group" || s.classname == "func_detail";
             f.smooth = s.smoothing.get();
             const auto sc = cfg.densityScale.find(key);
             // the face's own scale (authored in the document) times the settings' override for this face key, if any
@@ -221,7 +232,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
     }
     std::sort(sorted.begin(), sorted.end(), [](const Face& a, const Face& b) { return a.out.key() < b.out.key(); });
     faces = std::move(sorted);
-    const int N = static_cast<int>(faces.size());
+    int N = static_cast<int>(faces.size());
     if (cfg.playable && !cfg.playable->empty() && cfg.lod.levels > 0) {
         // quality falloff: the density of a face follows its distance from the playable area, in cascades (PlayableLod)
         parallelFor(faces.size(), 64, [&](size_t b, size_t e) {
@@ -229,14 +240,23 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
                 double d = 1e300;
                 for (const auto& piece : faces[i].pieces) d = std::min(d, cfg.playable->distance(piece, d));
                 int k = cfg.lod.cascade(d);
-                if (k > 0 && k < cfg.lod.levels && cfg.lod.cullUnseen && cfg.seen) {
+                if (k > 0 && cfg.lod.cullUnseen && cfg.seen && (cfg.lod.removeUnseen || k < cfg.lod.levels)) {
                     bool seen = false;
                     for (const auto& piece : faces[i].pieces) if (cfg.seen(piece, faces[i].out.normal)) { seen = true; break; }
-                    if (!seen) k = cfg.lod.levels;  // nobody in the area sees this surface: the cheapest cascade
+                    if (!seen) {  // nobody in the area sees this surface
+                        if (cfg.lod.removeUnseen && faces[i].world) { faces[i].culled = true; continue; }  // no chart at all
+                        k = cfg.lod.levels;                                                // the cheapest cascade
+                    }
                 }
                 faces[i].scale *= k == 0 ? 1.0 : std::pow(std::clamp(cfg.lod.density, 0.05, 1.0), k);
             }
         });
+        // the culled faces leave the layout before charts are built; the compiler leaves them out of the map by their keys
+        for (const Face& f : faces) if (f.culled) out.culled.insert(f.out.key());
+        if (!out.culled.empty()) {
+            faces.erase(std::remove_if(faces.begin(), faces.end(), [](const Face& f) { return f.culled; }), faces.end());
+            N = static_cast<int>(faces.size());
+        }
     }
     for (auto& f : faces) {
         frameFor(f.out.normal, f.u, f.v);

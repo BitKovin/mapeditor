@@ -462,8 +462,8 @@ bool LightingService::sameLightLists(const std::vector<Light>& a, const std::vec
     return true;
 }
 
-AlbedoLoader LightingService::albedoLoader() {
-    if (!opt_.live.useTextures) return {};
+AlbedoLoader LightingService::albedoLoader(bool force) {
+    if (!force && !opt_.live.useTextures) return {};
     const GameProfile& pr = scene_.profile();
     std::string key = scene_.assetsRoot().string() + "|" + pr.textureRoot;
     for (const auto& e : pr.textureExtensions) key += "|" + e;
@@ -671,6 +671,7 @@ LightingService::Inputs LightingService::captureInputs() {
     in.solids = scene_.lightSolids();
     in.lights = scene_.lightScene();
     in.albedoLoader = albedoLoader();
+    in.visibilityLoader = albedoLoader(true);
     {
         std::lock_guard<std::mutex> lock(texM_);
         in.changedTextures.swap(changedTextures_);
@@ -718,8 +719,17 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
             layoutSettings.playable = in.lights.playable;
             layoutSettings.lod = in.lights.level.lod;
             std::unique_ptr<PlayableVisibility> visibility;
-            if (in.lights.playable && !in.lights.playable->empty() && layoutSettings.lod.levels > 1 && layoutSettings.lod.cullUnseen) {
-                visibility = std::make_unique<PlayableVisibility>(*in.lights.playable, in.surfaces, in.classes);
+            if (in.lights.playable && !in.lights.playable->empty() && (layoutSettings.lod.levels > 1 || layoutSettings.lod.removeUnseen) && layoutSettings.lod.cullUnseen) {
+                // removing a surface needs a surer "nobody sees it" than choosing a density: many more viewpoints
+                // what blocks the view is what the compiler's own visibility uses: the static world, and only its opaque textures
+                const AlbedoLoader& texLoader = in.visibilityLoader;
+                const auto blocks = [&texLoader](const LightSurface& s) {
+                    if (s.classname != "worldspawn" && s.classname != "func_group" && s.classname != "func_detail") return false;  // doors, triggers: not walls
+                    if (!texLoader) return true;
+                    const auto img = texLoader(s.texture);
+                    return !img || img->transparency.mode == TransparencyMode::Opaque;  // glass, water, cutouts: see-through
+                };
+                visibility = std::make_unique<PlayableVisibility>(*in.lights.playable, in.surfaces, in.classes, layoutSettings.lod.removeUnseen ? 768 : 96, blocks);
                 layoutSettings.seen = [&visibility](const std::vector<Vec3>& poly, const Vec3& n) { return visibility->seen(poly, n); };
             }
             styleWarnings_.clear();

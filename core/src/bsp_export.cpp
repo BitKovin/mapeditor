@@ -54,7 +54,7 @@ bool isStatic(const std::string& c, const LightingClasses& classes) {
 }  // namespace
 
 json BspExportResult::toJson() const {
-    json s = {{"surfaces", stats.surfaces}, {"decals", stats.decals}, {"sky", stats.skySurfaces}, {"laidOut", stats.laidOutSurfaces}, {"droppedSurfaces", stats.droppedSurfaces}, {"degenerateTriangles", stats.degenerateTriangles}, {"reliefSkipped", stats.reliefSkipped}, {"weldedVertices", stats.weldedVertices}, {"lightmapJpegPages", stats.lightmapJpegPages}, {"lightmapJpegRejected", stats.lightmapJpegRejected}, {"lightmapPages", stats.lightmapPages}, {"brushes", stats.brushes}, {"models", stats.models},
+    json s = {{"surfaces", stats.surfaces}, {"decals", stats.decals}, {"sky", stats.skySurfaces}, {"laidOut", stats.laidOutSurfaces}, {"droppedSurfaces", stats.droppedSurfaces}, {"degenerateTriangles", stats.degenerateTriangles}, {"reliefSkipped", stats.reliefSkipped}, {"reliefBuried", stats.reliefBuried}, {"weldedVertices", stats.weldedVertices}, {"meshSurfaces", stats.meshSurfaces}, {"meshWelded", stats.meshWelded}, {"meshRemovedVertices", stats.meshRemovedVertices}, {"meshRemovedTriangles", stats.meshRemovedTriangles}, {"meshSharedVertices", stats.meshSharedVertices}, {"drawVertsBefore", stats.drawVertsBefore}, {"drawVertsAfter", stats.drawVertsAfter}, {"lightmapJpegPages", stats.lightmapJpegPages}, {"lightmapJpegRejected", stats.lightmapJpegRejected}, {"scaledCharts", stats.scaledCharts}, {"clippedCharts", stats.clippedCharts}, {"vertexLitCharts", stats.vertexLitCharts}, {"vertexLitSurfaces", stats.vertexLitSurfaces}, {"lightmapPages", stats.lightmapPages}, {"brushes", stats.brushes}, {"models", stats.models},
               {"leafs", stats.leafs}, {"clusters", stats.clusters}, {"lightmapPages", stats.lightmapPages}, {"gridPoints", stats.gridPoints},
               {"palette", stats.palette}, {"visCell", stats.visCell}, {"visSeconds", stats.visSeconds}};
     return {{"type", "export_result"}, {"ok", ok}, {"cancelled", cancelled}, {"error", error}, {"warnings", warnings}, {"stats", s},
@@ -122,7 +122,7 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
             for (const LightSurface& sf : in.surfaces) {
                 std::vector<texplan::V3> poly;
                 for (const Vec3& v : sf.verts) poly.push_back(texplan::v3(v));
-                outlines.add(sf.instance + '|' + sf.entityId + '|' + sf.brushInstance + '|' + sf.brushId + '|' + std::to_string(sf.faceId) + (sf.side == FaceSide::Back ? 'B' : 'F'), std::move(poly));
+                outlines.add(sf.instance + '|' + sf.entityId + '|' + sf.brushInstance + '|' + sf.brushId + '|' + std::to_string(sf.faceId) + (sf.side == FaceSide::Back ? 'B' : 'F'), std::move(poly), sf.texture);
             }
             for (const LightSurface& sf : in.surfaces) {
                 const auto parent = in.parentFace(sf.brushInstance, sf.brushId, sf.faceId);
@@ -171,9 +171,20 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                 } else {
                     in.settings.reliefDistance = 48;
                 }
+                {  // vertex reduction of relief / layout surfaces (mesh_optimize.h): on unless _mesh_optimize is 0; _mesh_tolerance in millimetres (0 = lossless merges only)
+                    if (const auto o = e.keyvalues.find("_mesh_optimize"); o != e.keyvalues.end() && !o->second.empty()) in.settings.optimizeMesh = o->second != "0";
+                    if (const auto t = e.keyvalues.find("_mesh_tolerance"); t != e.keyvalues.end() && !t->second.empty()) {
+                        try { in.settings.meshOptimize.tolerance = std::clamp(std::stod(t->second), 0.0, 100.0) / 1000.0 * rbsp::kUnitsPerMeter; }
+                        catch (...) { r.warnings.push_back("_mesh_tolerance is not a number"); }
+                    }
+                }
                 {  // 8 bit lightmap pages as .jpg (bsp_compile.h): on unless _lightmap_jpg is 0; _lightmap_jpg_quality
                     auto flag = [&](const char* key, bool dflt) { const auto k = e.keyvalues.find(key); return k == e.keyvalues.end() || k->second.empty() ? dflt : k->second != "0"; };
                     in.settings.lightmapJpeg = flag("_lightmap_jpg", true);
+                    in.settings.lightmapScale = flag("_lightmap_scale", true);  // HDR from 8 bit pages: texels divided by a per-chart colour in the vertices (light_scale.h)
+                    if (const auto a = e.keyvalues.find("_vertex_lit_area"); a != e.keyvalues.end() && !a->second.empty()) {  // m2: smaller charts keep no texels (vertex lit)
+                        try { in.settings.vertexLitMaxArea = std::clamp(std::stod(a->second), 0.0, 1000.0); } catch (...) { r.warnings.push_back("_vertex_lit_area is not a number"); }
+                    }
                     if (const auto t = e.keyvalues.find("_lightmap_jpg_tolerance"); t != e.keyvalues.end()) {
                         try { in.settings.lightmapJpegTolerance = std::clamp(std::stod(t->second), 0.5, 64.0); } catch (...) { r.warnings.push_back("_lightmap_jpg_tolerance is not a number"); }
                     }
@@ -181,6 +192,7 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                         try { in.settings.lightmapJpegQuality = std::clamp(std::stoi(q->second), 50, 100); } catch (...) { r.warnings.push_back("_lightmap_jpg_quality is not a number"); }
                     }
                 }
+                if (!req.rbspLightmapEncoding) { in.settings.lightmapJpeg = false; in.settings.lightmapScale = false; }
                 if (const auto it = e.keyvalues.find("_vis_cell"); it != e.keyvalues.end()) {
                     try { const double c = std::stod(it->second); if (c > 0) in.settings.visCell = c; } catch (...) { r.warnings.push_back("_vis_cell is not a number"); }
                 }

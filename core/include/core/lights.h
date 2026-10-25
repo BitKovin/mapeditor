@@ -70,6 +70,7 @@ struct Light {
 //   _lod_range       every cascade reaches this many times further than the previous one (cascade k ends at radius * range^k)   (default 2)
 //   _lod_density     texel density multiplier per cascade (0.5 = half the texels per metre in cascade 1, a quarter in 2, ...)     (default 0.5)
 //   _lod_cull_unseen 1 = surfaces no point of the playable area can see go to the last cascade                                                 (default 1)
+//   _lod_remove_unseen 1 = with _lod_cull_unseen, those surfaces are removed (no chart, not exported) instead of going to the last cascade    (default 1)
 //   _lightvol_margin the light volume covers the playable area grown by this many m                                              (default 2)
 //   _bake_quality    multiplier of the ray counts for the final bake (M6 export); the live bake uses x1 (default 2)
 struct AoSettings {

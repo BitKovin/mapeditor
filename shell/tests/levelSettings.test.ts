@@ -11,7 +11,7 @@ const field = (key: string) => LEVEL_FIELDS.find((f) => f.key === key)!
 
 describe('level settings model', () => {
   it('every key the Core reads has a field (core/lights.h levelSettingsOf)', () => {
-    expect(LEVEL_FIELDS.map((f) => f.key).sort()).toEqual(['_ao_falloff', '_ao_intensity', '_ao_power', '_ao_radius', '_ao_rays', '_ao_strength', '_bake_quality', '_cc_brightness', '_cc_exposure', '_light_scale', '_lightmap_jpg', '_lightmap_jpg_quality', '_lightmap_jpg_tolerance', '_lightvol_grid', '_lightvol_margin', '_lod_cull_unseen', '_lod_density', '_lod_levels', '_lod_radius', '_lod_range', '_rays_per_probe', '_rays_per_texel', '_relief_distance', '_supersample'])
+    expect(LEVEL_FIELDS.map((f) => f.key).sort()).toEqual(['_ao_falloff', '_ao_intensity', '_ao_power', '_ao_radius', '_ao_rays', '_ao_strength', '_bake_quality', '_cc_brightness', '_cc_exposure', '_light_scale', '_lightmap_jpg', '_lightmap_jpg_quality', '_lightmap_jpg_tolerance', '_lightmap_scale', '_lightvol_grid', '_lightvol_margin', '_lod_cull_unseen', '_lod_density', '_lod_levels', '_lod_radius', '_lod_range', '_mesh_optimize', '_mesh_tolerance', '_rays_per_probe', '_rays_per_texel', '_relief_distance', '_supersample', '_vertex_lit_area'])
   })
   it('typed values are clamped; empty or the default removes the key; whole numbers where needed', () => {
     expect(levelKeyFor(field('_light_scale'), '2.5')).toBe('2.5')

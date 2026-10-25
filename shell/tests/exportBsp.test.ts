@@ -7,7 +7,7 @@ import { makeApp } from './helpers'
 const result = {
   type: 'export_result', ok: true, cancelled: false, error: '', warnings: ['a surface has more than 8 light styles; the rest are dropped'], bsp: 'maps/room.bsp', lightmaps: 'maps/room',
   seconds: 12.34, bakeSeconds: 11, device: 'cpu',
-  stats: { surfaces: 120, droppedSurfaces: 4, brushes: 30, models: 2, leafs: 64, clusters: 40, lightmapPages: 2, gridPoints: 900, palette: 300, visCell: 4, visSeconds: 0.5 },
+  stats: { surfaces: 120, droppedSurfaces: 4, brushes: 30, models: 2, leafs: 64, clusters: 40, lightmapPages: 2, gridPoints: 900, palette: 300, visCell: 4, visSeconds: 0.5, drawVertsBefore: 5000, drawVertsAfter: 1200 },
 }
 
 describe('export_bsp messages', () => {
@@ -27,6 +27,7 @@ describe('export_bsp messages', () => {
     expect(ok).toContain('Exported maps/room.bsp (lightmaps in maps/room/)')
     expect(ok).toContain('2 lightmap pages')
     expect(ok).toContain('40 vis cells of 4 m')
+    expect(ok).toContain('1200 draw vertices (3800 fewer after reduction)')
     expect(ok).toContain('1 warning')
     expect(resultMessage({ ...result, ok: false, error: 'boom' } as never)).toBe('BSP export failed: boom')
     expect(resultMessage({ ...result, cancelled: true } as never)).toBe('BSP export cancelled')

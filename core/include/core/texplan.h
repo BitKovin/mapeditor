@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace core {
@@ -199,8 +200,9 @@ inline constexpr int kMaxReliefCells = 4096;
 /// The height of a relief along a line: from parameter t0 to t1 of the line it runs linearly from z0 to z1.
 struct ReliefSpan { double t0, t1, z0, z1; };
 /// The face next to an outline edge of a face, when it stands at a convex corner with it and shows a relief: its outward normal and its relief's heights (along
-/// that normal) along the edge, over t = 0..1 from the edge's first end to its second. The wall that closes the outline then runs from the relief of the face
-/// to the relief of the neighbour (a bevel across the corner) instead of down to the surface.
+/// that normal) along the edge, over t = 0..1 from the edge's first end to its second. `spans` only cover intervals where the neighbour has actual relief
+/// surface; a missing interval is not a zero-height surface and must not be bridged to the underlying brush wall. Where both relief surfaces exist, the wall
+/// that closes the outline runs between them (a bevel across the corner) instead of down to the surface.
 struct Neighbour { V3 n; std::vector<ReliefSpan> spans; };
 using NeighbourFn = std::function<std::optional<Neighbour>(const V3& a, const V3& b)>;
 /// What stands next to the outline edges of `face` of `brush`: the other face with the edge that lies behind the face's plane and shows a relief of its own laid
@@ -217,14 +219,21 @@ std::optional<std::vector<TexturedTri>> reliefTriangle(const std::array<V3, 3>& 
 /// their union (1) and which is shared with another of them (0). An edge a neighbour only partly shares counts as outline.
 std::vector<std::vector<char>> polygonBorders(const std::vector<std::vector<V3>>& polys);
 /// The outline flags (polygonBorders) of the polygons of many authored faces, worked out one face at a time when first asked: `add` every polygon with the
-/// key of the face it lies on, then ask `of`.
+/// key of the face it lies on (and its texture), then ask `of`. An edge is an outline only when no other face continues the surface across it: a coplanar
+/// polygon of the same texture that runs the edge the other way (a wall built from several brushes has no outline at the joints between them).
 class OutlineIndex {
 public:
-    size_t add(const std::string& faceKey, std::vector<V3> poly);
+    size_t add(const std::string& faceKey, std::vector<V3> poly, const std::string& texture = std::string());
     const std::vector<char>& of(size_t polygon);
 private:
+    bool continued(size_t polygon, const V3& a, const V3& b);
+    void buildGrid();
     std::vector<std::vector<V3>> polys_;
-    std::vector<std::string> keys_;
+    std::vector<std::string> keys_, textures_;
+    std::vector<V3> normals_;
+    std::unordered_map<long long, std::vector<size_t>> grid_;  // 4 m cells -> polygons whose bounds touch them
+    std::vector<size_t> big_;                                  // polygons too large for the grid: always candidates
+    bool gridBuilt_ = false;
     std::map<std::string, std::vector<size_t>> groups_;
     std::map<size_t, std::vector<char>> done_;
 };

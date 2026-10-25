@@ -145,7 +145,8 @@ std::vector<Band> bands(const std::vector<Span>& f, const std::vector<Span>* g, 
     ts.erase(std::unique(ts.begin(), ts.end()), ts.end());
     std::vector<Band> out;
     auto add = [&](double ta, double tb, double f0, double f1, double g0, double g1) {
-        if (bridge ? std::max({std::fabs(f0), std::fabs(g0), std::fabs(f1), std::fabs(g1)}) < 1e-6 : std::fabs(f0 - g0) < 1e-6 && std::fabs(f1 - g1) < 1e-6) return;
+        if (bridge ? std::max({std::fabs(f0), std::fabs(g0), std::fabs(f1), std::fabs(g1)}) < 1e-6
+                   : std::fabs(f0 - g0) < 1e-6 && std::fabs(f1 - g1) < 1e-6) return;
         out.push_back({ta, tb, f0, f1, g0, g1});
     };
     for (size_t k = 0; k + 1 < ts.size(); ++k) {
@@ -153,7 +154,10 @@ std::vector<Band> bands(const std::vector<Span>& f, const std::vector<Span>* g, 
         if (tb - ta < 1e-9) continue;
         double hf[2], hg[2] = {0, 0};
         if (!heightsOver(f, ta, tb, hf)) continue;
-        if (g && !heightsOver(*g, ta, tb, hg) && !bridge) continue;
+        // A missing span means there is no relief surface on that side of this interval.
+        // Do not substitute z=0 here: doing so creates a fake connector to the underlying
+        // brush wall at every end of a disconnected relief segment.
+        if (g && !heightsOver(*g, ta, tb, hg)) continue;
         const double d0 = hf[0] - hg[0], d1 = hf[1] - hg[1];
         if (!bridge && d0 * d1 < 0) {  // the two heights cross: two bands, each with one of them on top
             const double s = d0 / (d0 - d1), tm = ta + (tb - ta) * s, fm = hf[0] + (hf[1] - hf[0]) * s;
@@ -257,6 +261,11 @@ std::optional<std::vector<TexturedTri>> reliefTriangle(const std::array<V3, 3>& 
                         }
                     if (best < 1e-9) continue;
                     const V3 P0 = Q[static_cast<size_t>(L0)], P1 = Q[static_cast<size_t>(L1)];
+                    // A relief-data wall on an integer UV line is a tile-boundary side face. Never
+                    // emit it independently for every repeat: the seam pass below compares the
+                    // actual relief surfaces on both sides and creates a connector only when needed.
+                    const auto onGridLine = [](double x, double y) { return std::fabs(x - y) < 1e-9 && std::fabs(x - std::round(x)) < 1e-9; };
+                    if (onGridLine(P0[0], P1[0]) || onGridLine(P0[1], P1[1])) continue;
                     double slo = 0, shi = 1;
                     for (const auto& e : edges) {
                         const double f0 = e[0] * P0[0] + e[1] * P0[1] + e[2], f1 = e[0] * P1[0] + e[1] * P1[1] + e[2];
@@ -349,8 +358,12 @@ std::optional<std::vector<TexturedTri>> reliefTriangle(const std::array<V3, 3>& 
         const V2 p = U[k], q = U[(k + 1) % 3];
         const double len = std::hypot(edges[k][0], edges[k][1]);
         if (len < 1e-12) continue;
+        const auto nb = neighbour && *neighbour ? (*neighbour)(tri[k], tri[(k + 1) % 3]) : std::nullopt;
+        // Do not close relief ends against the host brush face. Outline connectors are only
+        // meaningful at an edge backed by another relief surface.
+        if (!nb || nb->spans.empty()) continue;
         const V2 inward{edges[k][0] / len, edges[k][1] / len};  // the edge's half-plane points into the triangle
-        wall(p, q, profile(surface, p, q, inward), nullptr, inward, neighbour && *neighbour ? (*neighbour)(tri[k], tri[(k + 1) % 3]) : std::nullopt);
+        wall(p, q, profile(surface, p, q, inward), nullptr, inward, nb);
     }
     if (over) return std::nullopt;
     return out;
@@ -451,7 +464,15 @@ std::vector<std::vector<char>> polygonBorders(const std::vector<std::vector<V3>>
     return out;
 }
 
-size_t OutlineIndex::add(const std::string& faceKey, std::vector<V3> poly) {
+size_t OutlineIndex::add(const std::string& faceKey, std::vector<V3> poly, const std::string& texture) {
+    V3 nrm{0, 0, 0};  // Newell
+    for (size_t i = 0; i < poly.size(); ++i) {
+        const V3 c = cross(poly[i], poly[(i + 1) % poly.size()]);
+        nrm = {nrm[0] + c[0], nrm[1] + c[1], nrm[2] + c[2]};
+    }
+    normals_.push_back(unit(nrm).value_or(V3{0, 0, 0}));
+    textures_.push_back(texture);
+    gridBuilt_ = false;
     polys_.push_back(std::move(poly));
     keys_.push_back(faceKey);
     groups_[faceKey].push_back(polys_.size() - 1);
@@ -465,7 +486,12 @@ const std::vector<char>& OutlineIndex::of(size_t polygon) {
     std::vector<std::vector<V3>> face;
     for (size_t k : g) face.push_back(polys_[k]);
     auto flags = polygonBorders(face);
-    for (size_t m = 0; m < g.size(); ++m) done_[g[m]] = std::move(flags[m]);
+    for (size_t m = 0; m < g.size(); ++m) {
+        const std::vector<V3>& p = polys_[g[m]];
+        for (size_t k = 0; k < flags[m].size(); ++k)
+            if (flags[m][k] && continued(g[m], p[k], p[(k + 1) % p.size()])) flags[m][k] = 0;
+        done_[g[m]] = std::move(flags[m]);
+    }
     return done_[polygon];
 }
 
@@ -606,6 +632,75 @@ void TexEnvironment::setGroup(const std::string& name, GroupPtr g) {
     std::lock_guard<std::mutex> lock(d_->m);
     d_->groups[name] = std::move(g);
     d_->groupTried[name] = true;
+}
+
+// ---- coplanar neighbours of other faces --------------------------------------------------------------------------------------------------------------
+namespace {
+constexpr double kOutlineCell = 4.0;
+long long outlineCell(long long x, long long y, long long z) { return (x * 73856093LL) ^ (y * 19349663LL) ^ (z * 83492791LL); }
+}  // namespace
+
+void OutlineIndex::buildGrid() {
+    grid_.clear();
+    big_.clear();
+    for (size_t i = 0; i < polys_.size(); ++i) {
+        V3 mn{1e300, 1e300, 1e300}, mx{-1e300, -1e300, -1e300};
+        for (const V3& v : polys_[i]) for (int k = 0; k < 3; ++k) { mn[static_cast<size_t>(k)] = std::min(mn[static_cast<size_t>(k)], v[static_cast<size_t>(k)]); mx[static_cast<size_t>(k)] = std::max(mx[static_cast<size_t>(k)], v[static_cast<size_t>(k)]); }
+        long long lo[3], hi[3];
+        for (size_t k = 0; k < 3; ++k) { lo[k] = static_cast<long long>(std::floor((mn[k] - 1e-3) / kOutlineCell)); hi[k] = static_cast<long long>(std::floor((mx[k] + 1e-3) / kOutlineCell)); }
+        if ((hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1) > 4096) { big_.push_back(i); continue; }
+        for (long long x = lo[0]; x <= hi[0]; ++x) for (long long y = lo[1]; y <= hi[1]; ++y) for (long long z = lo[2]; z <= hi[2]; ++z) grid_[outlineCell(x, y, z)].push_back(i);
+    }
+    gridBuilt_ = true;
+}
+
+// Is the edge a -> b of `polygon` carried on by other faces: polygons of the same texture in the same plane, facing the same way, that run along the edge in the
+// opposite direction and together cover all of it? Then the surface goes on there and a relief needs no wall (the neighbour's relief meets it).
+bool OutlineIndex::continued(size_t polygon, const V3& a, const V3& b) {
+    if (!gridBuilt_) buildGrid();
+    const V3 n = normals_[polygon];
+    const V3 d = sub(b, a);
+    const double len2 = dot(d, d);
+    if (len2 < 1e-12 || dot(n, n) < 0.5) return false;
+    std::vector<std::pair<double, double>> cover;
+    auto consider = [&](size_t q) {
+        if (q == polygon || keys_[q] == keys_[polygon] || textures_[q] != textures_[polygon]) return;
+        if (dot(normals_[q], n) < 0.9998) return;                          // about 1 degree
+        if (std::fabs(dot(sub(polys_[q][0], a), n)) > 1e-4) return;       // the same plane
+        const std::vector<V3>& P = polys_[q];
+        for (size_t k = 0; k < P.size(); ++k) {
+            double t[2], off[2];
+            for (size_t e = 0; e < 2; ++e) {
+                const V3 c = sub(P[(k + e) % P.size()], a);
+                t[e] = dot(c, d) / len2;
+                const V3 r = sub(c, V3{d[0] * t[e], d[1] * t[e], d[2] * t[e]});
+                off[e] = dot(r, r);
+            }
+            if (off[0] > 1e-8 || off[1] > 1e-8 || t[1] >= t[0]) continue;  // on the line, and running the other way
+            const double lo = std::max(0.0, t[1]), hi = std::min(1.0, t[0]);
+            if (hi > lo) cover.push_back({lo, hi});
+        }
+    };
+    const V3 lo{std::min(a[0], b[0]) - 1e-3, std::min(a[1], b[1]) - 1e-3, std::min(a[2], b[2]) - 1e-3};
+    const V3 hi{std::max(a[0], b[0]) + 1e-3, std::max(a[1], b[1]) + 1e-3, std::max(a[2], b[2]) + 1e-3};
+    long long c0[3], c1[3];
+    for (size_t k = 0; k < 3; ++k) { c0[k] = static_cast<long long>(std::floor(lo[k] / kOutlineCell)); c1[k] = static_cast<long long>(std::floor(hi[k] / kOutlineCell)); }
+    if ((c1[0] - c0[0] + 1) * (c1[1] - c0[1] + 1) * (c1[2] - c0[2] + 1) > 4096) {
+        for (size_t q = 0; q < polys_.size(); ++q) consider(q);
+    } else {
+        for (size_t q : big_) consider(q);
+        for (long long x = c0[0]; x <= c1[0]; ++x) for (long long y = c0[1]; y <= c1[1]; ++y) for (long long z = c0[2]; z <= c1[2]; ++z) {
+            const auto it = grid_.find(outlineCell(x, y, z));
+            if (it != grid_.end()) for (size_t q : it->second) consider(q);
+        }
+    }
+    std::sort(cover.begin(), cover.end());
+    double reach = 0;
+    for (const auto& [lo2, hi2] : cover) {
+        if (lo2 > reach + 1e-6) return false;  // a gap: part of the edge is still open
+        reach = std::max(reach, hi2);
+    }
+    return reach >= 1 - 1e-6;
 }
 
 }  // namespace core::texplan

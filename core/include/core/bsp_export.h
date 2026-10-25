@@ -26,6 +26,7 @@ struct BspExportRequest {
     bool bake = true;              // false: geometry only (no lightmaps, no light grid)
     double maxBakeSeconds = 0;     // 0 = until converged
     BspSettings settings;
+    bool rbspLightmapEncoding = true;  // false (the OBJ exporter): pages as plain .exr light, no 8 bit .jpg pages and no per-chart light scale in the vertex colours
 };
 
 struct BspExportResult {

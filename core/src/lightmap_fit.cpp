@@ -57,7 +57,7 @@ Reference referenceOf(const FitLayer& l, double exposure) {
     Reference r;
     const std::vector<float> shown = splineAtCentres(copyLayer(l), l.w, l.h);
     r.levels.resize(shown.size());
-    for (size_t i = 0; i < shown.size(); ++i) r.levels[i] = level(shown[i], exposure);
+    for (size_t i = 0; i < shown.size(); ++i) r.levels[i] = level(shown[i] * l.scale[i % 3], exposure);
     r.counts.assign(static_cast<size_t>(l.w) * l.h, 0);
     for (int y = 0; y < l.h; ++y)
         for (int x = 0; x < l.w; ++x)
@@ -65,8 +65,10 @@ Reference referenceOf(const FitLayer& l, double exposure) {
     return r;
 }
 
-FitError compare(const FitLayer& l, const Reference& ref, const std::vector<float>& small, int nw, int nh, double exposure, double tolerance) {
+// `smallScale` (rgb, null = the layer's own): what `small` is divided by, when that differs from the original's (fitsEightBits: absolute original, normalised small)
+FitError compare(const FitLayer& l, const Reference& ref, const std::vector<float>& small, int nw, int nh, double exposure, double tolerance, const float* smallScale = nullptr) {
     FitError e;
+    const float* sc = smallScale ? smallScale : l.scale;
     if (ref.judged == 0) return e;
     size_t over = 0;
     auto tap = [&](int x, int y, int c) { return fitTap(small, nw, nh, x, y, c); };
@@ -94,7 +96,7 @@ FitError compare(const FitLayer& l, const Reference& ref, const std::vector<floa
                     for (int k = 0; k < 4; ++k) row += wx[static_cast<size_t>(x) * 4 + k] * tap(ix[x] - 1 + k, iy[y] - 1 + j, c);
                     s += wy[static_cast<size_t>(y) * 4 + j] * row;
                 }
-                worst = std::max(worst, std::fabs(static_cast<double>(level(static_cast<float>(s), exposure)) - ref.levels[i * 3 + c]));
+                worst = std::max(worst, std::fabs(static_cast<double>(level(static_cast<float>(s * sc[c]), exposure)) - ref.levels[i * 3 + c]));
             }
             e.worst = std::max(e.worst, worst);
             if (worst > tolerance) ++over;
@@ -189,18 +191,21 @@ uint8_t lightToByte(float v) { return static_cast<uint8_t>(std::lround(std::clam
 
 float byteToLight(uint8_t b) { return static_cast<float>(b / 255.0); }
 
-bool fitsEightBits(const std::vector<FitLayer>& layers, int w, int h, const FitSettings& st) {
-    for (const FitLayer& l : layers) {
-        std::vector<float> small = resampleLayer(l, w, h);
-        for (float v : small) if (!(v <= 1.0f)) return false;
+bool fitsEightBits(const std::vector<FitLayer>& layers, int w, int h, const FitSettings& st, const float* scale) {
+    for (const FitLayer& orig : layers) {
+        // the page holds light / scale: the stored image is the resampled light divided by it, the judged one multiplies it back
+        std::vector<float> small = resampleLayer(orig, w, h);
+        if (scale)
+            for (size_t i = 0; i < small.size(); ++i) small[i] = scale[i % 3] > 0 ? small[i] / scale[i % 3] : 0.0f;
+        for (float v : small) if (!(v <= 1.0f + 1e-4f)) return false;
         for (float& v : small) v = byteToLight(lightToByte(v));
-        if (!acceptable(fitError(l, small, w, h, st.exposure, st.tolerance), st.tolerance)) return false;
+        if (!acceptable(fitError(orig, small, w, h, st.exposure, st.tolerance, scale), st.tolerance)) return false;
     }
     return true;
 }
 
-FitError fitError(const FitLayer& layer, const std::vector<float>& small, int w, int h, double exposure, double tolerance) {
-    return compare(layer, referenceOf(layer, exposure), small, w, h, exposure, tolerance);
+FitError fitError(const FitLayer& layer, const std::vector<float>& small, int w, int h, double exposure, double tolerance, const float* smallScale) {
+    return compare(layer, referenceOf(layer, exposure), small, w, h, exposure, tolerance, smallScale);
 }
 
 ChartFit fitChart(const std::vector<FitLayer>& layers, const FitSettings& st) {

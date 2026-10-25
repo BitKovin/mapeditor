@@ -103,7 +103,7 @@ double hash01(uint32_t a, uint32_t b, uint32_t c) {
 
 // A triangle whose corners, as the file stores them (floats, Quake units), span less than this (length of the cross product, units^2) is dropped: the engine
 // builds its physics mesh from the same triangles and refuses degenerate ones (relief walls of height 0, slivers that collapse when rounded to floats).
-constexpr double kMinTriangleCross = 1e-3;
+constexpr double kMinTriangleCross = 0.01;
 Vec3 asStored(const Vec3& quake) { return {double(float(quake.x)), double(float(quake.y)), double(float(quake.z))}; }
 
 // Shelf packing of rectangles into square pages: (page, x, y) per rectangle.
@@ -153,6 +153,9 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     std::vector<int> repOf;
     std::vector<char> ldrOf;  // per chart: its light fits an 8 bit page
     const bool jpg = cfg.lightmapJpeg && cfg.lightmapTolerance > 0 && atlas % 8 == 0;
+    std::vector<lightscale::Scale> chartScale;  // per chart: the colour its vertices carry and its texels are divided by (light_scale.h); neutral when off
+    std::vector<uint8_t> vertexLitAlpha;        // per vertex lit chart: the exponent its vertices share with the rest of their smooth group (peak of the group's style 0 texels)
+    std::vector<char> vertexLitChart;           // per chart: no texels in the file, the light is read at the vertices (BspSettings::vertexLitMaxArea)
     if (lit) {
         const LightmapPages& bp = basePages->second;
         const size_t nCharts = layout->charts.size();
@@ -174,6 +177,105 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         };
         auto blockUp = [](int v) { return (v + 7) / 8 * 8; };
         bool shrunk = jpg;  // 8 bit pages are always packed afresh
+
+        // ---- smooth groups: charts that touch along a smooth edge of a brush share their vertices' corners; the GPU interpolates the vertex colour across a
+        // surface and the lightmap is read bilinearly across them, so such charts must agree on everything the colour carries (light scale, vertex lit or not)
+        std::vector<int> parent(nCharts);
+        for (size_t c = 0; c < nCharts; ++c) parent[c] = static_cast<int>(c);
+        std::function<int(int)> root = [&](int c) { while (parent[static_cast<size_t>(c)] != c) { parent[static_cast<size_t>(c)] = parent[static_cast<size_t>(parent[static_cast<size_t>(c)])]; c = parent[static_cast<size_t>(c)]; } return c; };
+        std::map<std::tuple<const BrushSmoothing*, long long, long long, long long>, int> corners;
+        for (const LightSurface& s : in.surfaces) {
+            if (!s.smoothing || !in.classes.isLightmapped(s.classname)) continue;
+            const LightmapFace* lf = layout->findForFragment(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, s.verts);
+            if (!lf || lf->chart < 0) continue;
+            for (const Vec3& v : s.verts) {
+                const auto key = std::make_tuple(s.smoothing.get(), std::llround(v.x / layout->settings.edgeEps), std::llround(v.y / layout->settings.edgeEps), std::llround(v.z / layout->settings.edgeEps));
+                const auto ins = corners.emplace(key, lf->chart);
+                if (!ins.second) { const int a = root(lf->chart), b = root(ins.first->second); if (a != b) parent[static_cast<size_t>(a)] = b; }
+            }
+        }
+        std::vector<double> groupArea(nCharts, 0.0);
+        for (size_t c = 0; c < nCharts; ++c) { double a = 0; for (int f : layout->charts[c].faces) a += layout->faces[static_cast<size_t>(f)].area; groupArea[static_cast<size_t>(root(static_cast<int>(c)))] += a; }
+
+        // ---- vertex lit charts: an entity with `_vertex_lit` 1, or a chart whose faces add up to at most vertexLitMaxArea (they keep no texels)
+        vertexLitChart.assign(nCharts, 0);
+        {
+            std::set<std::string> flagged;
+            for (const auto& fe : in.entities) {
+                const auto kv = fe.entity.keyvalues.find("_vertex_lit");
+                if (kv != fe.entity.keyvalues.end() && !kv->second.empty() && kv->second != "0" && kv->second != "false")
+                    flagged.insert(entityKey(instanceString(fe.instancePath), fe.entity.id));
+            }
+            size_t droppedStyles = 0;
+            for (size_t c = 0; c < nCharts; ++c) {
+                const LightmapChart& ch = layout->charts[c];
+                double area = 0;
+                for (int f : ch.faces) area += layout->faces[static_cast<size_t>(f)].area;
+                if (flagged.count(entityKey(ch.instance, ch.entityId)) || (cfg.vertexLitMaxArea > 0 && area <= cfg.vertexLitMaxArea)) {
+                    vertexLitChart[c] = 1;
+                    outSize[c] = {0, 0};
+                    ++res.stats.vertexLitCharts;
+                    droppedStyles += ch.styles.size() > 1;
+                    shrunk = true;  // their texels leave the pages: always pack afresh
+                }
+            }
+            if (droppedStyles) res.warnings.push_back(std::to_string(droppedStyles) + " vertex lit chart(s) are touched by light styles other than 0; a vertex has one colour, so only style 0 is kept");
+        }
+
+        // ---- light scale per chart (light_scale.h): the peak of every channel over all style layers and texels, one colour for every layer, and the same colour
+        // for charts that touch along a smooth edge of a brush (their vertices share corners; the GPU would interpolate two different colours across them)
+        chartScale.assign(nCharts, lightscale::Scale{});
+        vertexLitAlpha.assign(nCharts, lightscale::kNeutralAlpha);
+        {   // vertex lit smooth groups share ONE exponent (the GPU interpolates rgb and A separately; two exponents on a shared corner would differ): from the group's brightest texel
+            std::vector<double> gp(nCharts, 0.0);
+            for (size_t c = 0; c < nCharts; ++c) {
+                if (!vertexLitChart[c]) continue;
+                FitLayer l;
+                if (!layerOf(layout->charts[c], 0, l)) continue;
+                double top = 0;
+                for (int y = 0; y < l.h; ++y)
+                    for (int x = 0; x < l.w; ++x) {
+                        if (l.valid && l.valid[static_cast<size_t>(l.y0 + y) * l.atlas + (l.x0 + x)] == 0) continue;
+                        const float* p = l.rgb + (static_cast<size_t>(l.y0 + y) * l.atlas + (l.x0 + x)) * 3;
+                        top = std::max({top, double(p[0]), double(p[1]), double(p[2])});
+                    }
+                double& g = gp[static_cast<size_t>(root(static_cast<int>(c)))];
+                g = std::max(g, top);
+            }
+            for (size_t c = 0; c < nCharts; ++c) if (vertexLitChart[c]) vertexLitAlpha[c] = lightscale::alphaFor(gp[static_cast<size_t>(root(static_cast<int>(c)))]);
+        }
+        if (cfg.lightmapScale && nCharts > 0) {
+            std::vector<std::array<double, 3>> peak(nCharts, {0, 0, 0});
+            parallelFor(nCharts, 16, [&](size_t b, size_t e) {
+                for (size_t c = b; c < e; ++c) {
+                    if (vertexLitChart[c]) continue;
+                    const LightmapChart& ch = layout->charts[c];
+                    for (size_t k = 0; k < ch.styles.size() && k < static_cast<size_t>(rbsp::kStyles); ++k) {
+                        FitLayer l;
+                        if (!layerOf(ch, k, l)) continue;
+                        for (int y = 0; y < l.h; ++y)
+                            for (int x = 0; x < l.w; ++x) {
+                                if (l.valid && l.valid[static_cast<size_t>(l.y0 + y) * l.atlas + (l.x0 + x)] == 0) continue;
+                                const float* p = l.rgb + (static_cast<size_t>(l.y0 + y) * l.atlas + (l.x0 + x)) * 3;
+                                for (int q = 0; q < 3; ++q) if (p[q] > peak[c][q]) peak[c][q] = p[q];
+                            }
+                    }
+                }
+            });
+            std::vector<std::array<double, 3>> groupPeak(nCharts, {0, 0, 0});
+            for (size_t c = 0; c < nCharts; ++c)
+                for (int q = 0; q < 3; ++q) { double& g = groupPeak[static_cast<size_t>(root(static_cast<int>(c)))][q]; g = std::max(g, peak[c][q]); }
+            size_t clippedCharts = 0;
+            for (size_t c = 0; c < nCharts; ++c) {
+                if (vertexLitChart[c]) continue;
+                chartScale[c] = lightscale::encodePeak(groupPeak[static_cast<size_t>(root(static_cast<int>(c)))].data());
+                ++res.stats.scaledCharts;
+                clippedCharts += chartScale[c].clipped;
+            }
+            res.stats.clippedCharts = clippedCharts;
+            if (clippedCharts) res.warnings.push_back(std::to_string(clippedCharts) + " lightmap chart(s) are brighter than 32 (the light scale's maximum); their brightest texels are clipped");
+        }
+        auto invScale = [&](int c, float inv[3]) { for (int q = 0; q < 3; ++q) { const double v = chartScale[static_cast<size_t>(c)].value[q]; inv[q] = v > 0 ? static_cast<float>(1.0 / v) : 0.0f; } };
         if (cfg.lightmapTolerance > 0 && nCharts > 0) {
             // Fit every chart to the fewest texels that look the same (lightmap_fit.h), all layers of a chart together; identical charts share one rectangle.
             FitSettings fs;
@@ -186,6 +288,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             ldrOf.assign(nCharts, 0);
             parallelFor(nCharts, 16, [&](size_t b, size_t e) {
                 for (size_t c = b; c < e; ++c) {
+                    if (vertexLitChart[c]) continue;
                     const LightmapChart& ch = layout->charts[c];
                     std::vector<FitLayer> layers;
                     for (size_t k = 0; k < ch.styles.size() && k < static_cast<size_t>(rbsp::kStyles); ++k) {
@@ -195,22 +298,26 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     if (layers.empty()) continue;
                     fits[c] = fitChart(layers, fs);
                     fitted[c] = 1;
-                    if (jpg) ldrOf[c] = fitsEightBits(layers, fits[c].w, fits[c].h, jpgFs) ? 1 : 0;
+                    if (jpg) {
+                        const float sc[3] = {static_cast<float>(chartScale[c].value[0]), static_cast<float>(chartScale[c].value[1]), static_cast<float>(chartScale[c].value[2])};
+                        ldrOf[c] = fitsEightBits(layers, fits[c].w, fits[c].h, jpgFs, cfg.lightmapScale ? sc : nullptr) ? 1 : 0;  // the stored texels are light / scale
+                    }
                 }
             });
-            std::map<std::tuple<int, int, uint64_t, size_t>, int> seen;
+            std::map<std::tuple<int, int, uint64_t, size_t, uint32_t>, int> seen;  // ... and the light scale: the texels are stored divided by it
             size_t shared = 0;
             for (size_t c = 0; c < nCharts; ++c) {
                 if (!fitted[c]) continue;
                 const LightmapChart& ch = layout->charts[c];
                 outSize[c] = {fits[c].w + 2 * lmPad, fits[c].h + 2 * lmPad};
                 if (outSize[c].first < ch.w || outSize[c].second < ch.h) shrunk = true;
-                const auto key = std::make_tuple(fits[c].w, fits[c].h, fits[c].hash, ch.styles.size());
+                const auto key = std::make_tuple(fits[c].w, fits[c].h, fits[c].hash, ch.styles.size(), chartScale[c].code());
                 const auto it = seen.emplace(key, static_cast<int>(c));
                 if (!it.second) { repOf[c] = it.first->second; ++shared; shrunk = true; }
             }
             long long before = 0, after = 0;
             for (size_t c = 0; c < nCharts; ++c) {
+                if (vertexLitChart[c]) continue;
                 before += static_cast<long long>(layout->charts[c].w) * layout->charts[c].h;
                 if (repOf[c] == static_cast<int>(c)) after += static_cast<long long>(outSize[c].first) * outSize[c].second;
             }
@@ -226,12 +333,16 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             if (!layerOf(ch, k, l)) return;
             const int nw = outSize[static_cast<size_t>(c)].first - 2 * lmPad, nh = outSize[static_cast<size_t>(c)].second - 2 * lmPad;
             auto& out = page.rgb;
+            float inv[3];
+            invScale(c, inv);  // the page holds light / the chart's scale (1 with the scale off)
             if (nw == l.w && nh == l.h && !page.ldr) {
                 const auto& src = in.pages.find(ch.styles[k])->second.rgb[static_cast<size_t>(ch.page)];
                 for (int y = 0; y < ch.h && dst.y + y < atlas; ++y) {
                     const int w = std::min({ch.w, atlas - dst.x});
                     if (w <= 0) break;
-                    std::copy_n(src.begin() + (static_cast<size_t>(ch.y + y) * atlas + ch.x) * 3, static_cast<size_t>(w) * 3, out.begin() + (static_cast<size_t>(dst.y + y) * atlas + dst.x) * 3);
+                    const float* from = src.data() + (static_cast<size_t>(ch.y + y) * atlas + ch.x) * 3;
+                    float* to = out.data() + (static_cast<size_t>(dst.y + y) * atlas + dst.x) * 3;
+                    for (int i = 0; i < w * 3; ++i) to[i] = from[i] * inv[i % 3];
                 }
                 return;
             }
@@ -240,7 +351,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             const int oh = page.ldr ? blockUp(outSize[static_cast<size_t>(c)].second) : outSize[static_cast<size_t>(c)].second;
             for (int y = 0; y < oh && dst.y + y < atlas; ++y)
                 for (int x = 0; x < ow && dst.x + x < atlas; ++x) {
-                    for (int q = 0; q < 3; ++q) out[(static_cast<size_t>(dst.y + y) * atlas + dst.x + x) * 3 + q] = fitTap(small, nw, nh, x - lmPad, y - lmPad, q);  // the gutter continues the gradient
+                    for (int q = 0; q < 3; ++q) out[(static_cast<size_t>(dst.y + y) * atlas + dst.x + x) * 3 + q] = fitTap(small, nw, nh, x - lmPad, y - lmPad, q) * inv[q];  // the gutter continues the gradient
                 }
         };
         std::vector<std::vector<std::array<int, 7>>> pageRects;  // per output page: where charts were stored (the rest of the page is empty): x, y, w, h of the (block) rectangle, the interior size, the chart
@@ -297,7 +408,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         bool repacked = false;
         if ((cfg.repackLightmaps || shrunk) && nCharts > 0) {
             std::vector<int> reps;
-            for (size_t c = 0; c < nCharts; ++c) if (repOf[c] == static_cast<int>(c)) reps.push_back(static_cast<int>(c));
+            for (size_t c = 0; c < nCharts; ++c) if (repOf[c] == static_cast<int>(c) && !vertexLitChart[c]) reps.push_back(static_cast<int>(c));
             const std::map<int, Placement> where = packGroups(reps);
             std::set<int> distinctPages;
             for (const auto& kv : where) distinctPages.insert(kv.second.page);
@@ -312,7 +423,18 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         }
         if (!repacked) {
             for (int p = 0; p < bp.pageCount; ++p) res.lightmaps.push_back({atlas, bp.rgb[static_cast<size_t>(p)]});
+            pageRects.resize(res.lightmaps.size());  // pageRects runs parallel to the pages (the layers put later push into it)
             for (size_t c = 0; c < nCharts; ++c) placed[0][static_cast<int>(c)] = {layout->charts[c].page, layout->charts[c].x, layout->charts[c].y};
+            if (cfg.lightmapScale)  // the pages were copied as baked: divide every chart's rectangle by its light scale
+                for (size_t c = 0; c < nCharts; ++c) {
+                    const LightmapChart& ch = layout->charts[c];
+                    float inv[3];
+                    invScale(static_cast<int>(c), inv);
+                    auto& rgb = res.lightmaps[static_cast<size_t>(ch.page)].rgb;
+                    for (int y = ch.y; y < ch.y + ch.h && y < atlas; ++y)
+                        for (int x = ch.x; x < ch.x + ch.w && x < atlas; ++x)
+                            for (int q = 0; q < 3; ++q) rgb[(static_cast<size_t>(y) * atlas + x) * 3 + q] *= inv[q];
+                }
         }
         size_t dropped = 0;
         for (const auto& ch : layout->charts) dropped += ch.styles.size() > static_cast<size_t>(rbsp::kStyles);
@@ -321,7 +443,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         for (int k = 1; k < rbsp::kStyles; ++k) {
             std::vector<int> charts;  // the charts with a layer k that keep their own rectangle
             for (size_t c = 0; c < nCharts; ++c)
-                if (layout->charts[c].styles.size() > static_cast<size_t>(k) && repOf[c] == static_cast<int>(c)) charts.push_back(static_cast<int>(c));
+                if (layout->charts[c].styles.size() > static_cast<size_t>(k) && repOf[c] == static_cast<int>(c) && !vertexLitChart[c]) charts.push_back(static_cast<int>(c));
             if (charts.empty()) break;
             std::map<int, Placement> where;  // chart -> placement inside this slot's (relative) pages
             if (k <= 3) {
@@ -378,6 +500,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     if (iw <= 0 || ih <= 0) continue;
                     FitLayer l;
                     l.rgb = pg.rgb.data(); l.atlas = atlas; l.x0 = r[0] + lmPad; l.y0 = r[1] + lmPad; l.w = iw; l.h = ih;
+                    for (int q = 0; q < 3; ++q) l.scale[q] = static_cast<float>(chartScale[static_cast<size_t>(r[6])].value[q]);  // the page holds light / scale
                     std::vector<float> small(static_cast<size_t>(iw) * ih * 3);
                     for (int y = 0; y < ih; ++y)
                         std::copy_n(decoded.begin() + (static_cast<size_t>(l.y0 + y) * atlas + l.x0) * 3, static_cast<size_t>(iw) * 3, small.begin() + static_cast<size_t>(y) * iw * 3);
@@ -416,6 +539,8 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     std::vector<std::pair<size_t, size_t>> unorderedVerts, unorderedIdx;  // ranges into the staging arrays
     std::vector<rbsp::DrawVert> stageVerts;
     std::vector<int32_t> stageIdx;
+    struct SoupInfo { bool soup = false; double stTolerance = 1.0 / 4096; };  // per staged surface: a triangle soup the optimizer may reduce, and what counts as a visible change of its texture coordinate
+    std::vector<SoupInfo> surfaceSoup;
     // A piece is dropped only when every part of it lies inside matter: pieces are not clipped against other additive brushes, so a floor piece that
     // runs under a wall is partly buried and partly seen (testing its centre alone opened holes beside walls). Samples on a grid of ~1/8 m over
     // the fan triangles, lifted off the surface; any sample in the open keeps the piece.
@@ -458,6 +583,43 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         std::vector<Vec3> triPos, triNrm;
         std::vector<Vec2> triSt;
     };
+    // The baked light (style 0, linear) at a point of a chart's face: bilinear over the baked texels of the original page (gutter texels count, empty ones do not).
+    // Vertex lit surfaces read their vertices from it. Points of one smoothed brush that coincide read the same value (cached), so connected surfaces share a colour.
+    std::map<std::string, std::array<double, 3>> vertexLightCache;
+    auto bakedLightAt = [&](const LightmapFace& f, const Vec3& p) -> std::array<double, 3> {
+        const auto pit = in.pages.find(0);
+        const LightmapChart& ch = layout->charts[static_cast<size_t>(f.chart)];
+        if (pit == in.pages.end() || ch.page >= pit->second.pageCount || pit->second.atlas != atlas) return {0, 0, 0};
+        const LightmapPages& pg = pit->second;
+        const std::vector<float>& rgb = pg.rgb[static_cast<size_t>(ch.page)];
+        const std::vector<uint8_t>* valid = static_cast<size_t>(ch.page) < pg.valid.size() && !pg.valid[static_cast<size_t>(ch.page)].empty() ? &pg.valid[static_cast<size_t>(ch.page)] : nullptr;
+        const Vec2 t = f.texel(p);
+        const double fx = t.u - 0.5, fy = t.v - 0.5;
+        const int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
+        const double ax = fx - x0, ay = fy - y0;
+        double sum[3] = {0, 0, 0}, wsum = 0;
+        for (int j = 0; j < 2; ++j)
+            for (int i = 0; i < 2; ++i) {
+                const int x = std::clamp(x0 + i, 0, atlas - 1), y = std::clamp(y0 + j, 0, atlas - 1);
+                const size_t idx = static_cast<size_t>(y) * atlas + x;
+                if (valid && (*valid)[idx] == 0) continue;
+                const double w = (i ? ax : 1 - ax) * (j ? ay : 1 - ay);
+                for (int q = 0; q < 3; ++q) sum[q] += w * rgb[idx * 3 + q];
+                wsum += w;
+            }
+        if (wsum <= 1e-9) {  // nothing baked in the four texels: the nearest baked one
+            double best = 1e300;
+            for (int j = -2; j <= 2; ++j) for (int i = -2; i <= 2; ++i) {
+                const int x = std::clamp(x0 + i, 0, atlas - 1), y = std::clamp(y0 + j, 0, atlas - 1);
+                const size_t idx = static_cast<size_t>(y) * atlas + x;
+                if (valid && (*valid)[idx] == 0) continue;
+                const double d = double(i) * i + double(j) * j;
+                if (d < best) { best = d; for (int q = 0; q < 3; ++q) sum[q] = rgb[idx * 3 + q]; wsum = 1; }
+            }
+            if (wsum <= 0) return {0, 0, 0};
+        }
+        return {sum[0] / wsum, sum[1] / wsum, sum[2] / wsum};
+    };
     auto emit = [&](const Poly& s) {
         rbsp::Surface out{};
         const bool sky = cfg.contents.isSky(s.texture);  // no lightmap, no contents, seen from every cluster (REQUIREMENTS §28 K4)
@@ -474,10 +636,53 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
 
         const LightmapFace* lf = nullptr;
         const LightmapChart* chart = nullptr;
+        bool vlit = false;  // vertex lit: the chart is baked but not stored; the light is read at the vertices
         if (lit && !sky && in.classes.isLightmapped(s.classname)) {
             lf = layout->findForFragment(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, pv);
-            if (lf && lf->chart >= 0) chart = &layout->charts[static_cast<size_t>(lf->chart)];
+            if (lf && lf->chart >= 0) {
+                chart = &layout->charts[static_cast<size_t>(lf->chart)];
+                if (vertexLitChart[static_cast<size_t>(lf->chart)]) { vlit = true; chart = nullptr; out.vertexStyles[0] = 0; }
+            }
         }
+        // The colour of every vertex of a lightmapped surface: its chart's light scale (white = 1 without one)
+        const lightscale::Scale* scaleOfChart = chart && cfg.lightmapScale ? &chartScale[static_cast<size_t>(lf->chart)] : nullptr;
+        auto paint = [&](rbsp::DrawVert& dv) {
+            for (int k = 0; k < rbsp::kStyles; ++k) {
+                if (scaleOfChart) std::memcpy(dv.color[k], scaleOfChart->rgba, 4);
+                else std::memset(dv.color[k], 255, 4);
+            }
+        };
+        std::vector<std::array<double, 3>> vlValues;  // vertex lit: the baked light per vertex written (same order as stageVerts from vFirst)
+        auto vertexValue = [&](const Vec3& p) {
+            std::array<double, 3> v;
+            if (s.shading) {  // smooth brush: coinciding points share one value
+                char key[160];
+                std::snprintf(key, sizeof key, "%lld,%lld,%lld", std::llround(p.x * 1e4), std::llround(p.y * 1e4), std::llround(p.z * 1e4));
+                const std::string k = entityKey(s.instance, s.entityId) + '|' + s.brushInstance + '|' + s.brushId + '|' + key;
+                const auto it = vertexLightCache.find(k);
+                if (it != vertexLightCache.end()) return it->second;
+                v = bakedLightAt(*lf, p);
+                vertexLightCache.emplace(k, v);
+                return v;
+            }
+            return bakedLightAt(*lf, p);
+        };
+        // One exponent for the whole surface (the GPU interpolates rgb and A separately), each vertex its own rgb
+        auto paintVertexLit = [&](size_t vFirst) {
+            double top = 0;
+            for (const auto& v : vlValues) top = std::max({top, v[0], v[1], v[2]});
+            bool clipped = false;
+            uint8_t alpha = lightscale::sharedAlpha(top, &clipped);
+            if (s.shading && lf && lf->chart >= 0) {  // smooth: the whole group shares the exponent (at least what this surface needs)
+                alpha = std::min(alpha, vertexLitAlpha[static_cast<size_t>(lf->chart)]);  // a smaller byte is a larger multiplier
+            }
+            if (clipped) res.warnings.push_back("a vertex lit surface is brighter than 32 (the light scale's maximum); it clips");
+            for (size_t i = 0; i < vlValues.size() && vFirst + i < stageVerts.size(); ++i) {
+                uint8_t rgba[4];
+                lightscale::encodeVertex(vlValues[i].data(), alpha, rgba);
+                for (int k = 0; k < rbsp::kStyles; ++k) std::memcpy(stageVerts[vFirst + i].color[k], rgba, 4);
+            }
+        };
         // per slot: u' = ax + u * sx in texels (the placement of the slot's rectangle; sx / sy: the chart was fitted to fewer texels)
         std::array<Vec2, rbsp::kStyles> shift{};
         double fitX = 1, fitY = 1;
@@ -541,7 +746,8 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                 // a flat triangle of a smoothed face takes the smooth normal; a relief keeps its own
                 const bool flat = (s.triNrm[k] - s.normal).length() < 1e-6;
                 put3(dv.normal, toQuakeDir(s.shading && flat ? shadingNormalAt(*s.shading, p, s.normal) : s.triNrm[k]));
-                std::memset(dv.color, 255, sizeof(dv.color));
+                paint(dv);
+                if (vlit) vlValues.push_back(vertexValue(p - s.normal * (s.normal.dot(p) - planeD)));  // a relief point reads the light of the flat point under it
                 stageVerts.push_back(dv);
             };
             for (size_t t = 0; t + 2 < s.triPos.size(); t += 3) {
@@ -555,6 +761,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                 stageIdx.push_back(base); stageIdx.push_back(base + 1); stageIdx.push_back(base + 2);
             }
             if (stageVerts.size() == vFirst) return;  // nothing but degenerate triangles
+            if (vlit) paintVertexLit(vFirst);  // before the welding: the colour is part of a vertex
             if (cfg.weldVertices) {
                 // the triangles of a soup own three vertices each; the ones that are equal in every byte (position, texture and lightmap coordinates, normal) are one
                 std::unordered_map<std::string, int32_t> seen;
@@ -573,11 +780,20 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             out.numVerts = static_cast<int32_t>(stageVerts.size() - vFirst);
             out.numIndexes = static_cast<int32_t>(stageIdx.size() - iFirst);
             (s.decal ? modelDecals : modelSurfaces)[static_cast<size_t>(s.model)].push_back(static_cast<int>(unordered.size()));
+            res.stats.vertexLitSurfaces += vlit;
             unordered.push_back(out);
             unorderedVerts.push_back({vFirst, stageVerts.size() - vFirst});
             unorderedIdx.push_back({iFirst, stageIdx.size() - iFirst});
             surfaceBounds.push_back(bb);
             surfaceSky.push_back(sky);
+            {
+                SoupInfo si;
+                si.soup = !s.decal && !sky;  // decals sit on top of other surfaces and sky is a handful of quads: they only count as neighbours
+                // a quarter of a texel of the texture is what the eye can tell apart in the texture coordinate
+                const texplan::TexInfo* ti = in.texInfo ? in.texInfo(s.texture) : nullptr;
+                if (ti && ti->width > 0 && ti->height > 0) si.stTolerance = 0.25 / std::max(ti->width, ti->height);
+                surfaceSoup.push_back(si);
+            }
             return;
         }
         const size_t n = pv.size();
@@ -598,9 +814,11 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                 }
             }
             put3(dv.normal, toQuakeDir(s.shading ? shadingNormalAt(*s.shading, p, s.normal) : s.normal));
-            std::memset(dv.color, 255, sizeof(dv.color));
+            paint(dv);
+            if (vlit) vlValues.push_back(vertexValue(p));
             stageVerts.push_back(dv);
         }
+        if (vlit) paintVertexLit(vFirst);
         for (size_t i = 1; i + 1 < n; ++i) {
             {  // collinear corners
                 const Vec3 a = asStored(toQuake(pv[n - 1]) + lift), b = asStored(toQuake(pv[n - 1 - i]) + lift), c = asStored(toQuake(pv[n - 2 - i]) + lift);
@@ -614,18 +832,20 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         out.numVerts = static_cast<int32_t>(n);
         out.numIndexes = static_cast<int32_t>(stageIdx.size() - iFirst);
         (s.decal ? modelDecals : modelSurfaces)[static_cast<size_t>(s.model)].push_back(static_cast<int>(unordered.size()));
+        res.stats.vertexLitSurfaces += vlit;
         unordered.push_back(out);
         unorderedVerts.push_back({vFirst, n});
         unorderedIdx.push_back({iFirst, stageIdx.size() - iFirst});
         surfaceBounds.push_back(bb);
         surfaceSky.push_back(sky);
+        surfaceSoup.push_back({});
     };
     // which polygon edges are the outline of their authored face: a relief is closed there by connecting walls (texplan.h)
     texplan::OutlineIndex outlines;
     for (const LightSurface& s : in.surfaces) {
         std::vector<texplan::V3> poly;
         for (const Vec3& v : s.verts) poly.push_back(texplan::v3(v));
-        outlines.add(s.instance + '|' + s.entityId + '|' + s.brushInstance + '|' + s.brushId + '|' + std::to_string(s.faceId) + (s.side == FaceSide::Back ? 'B' : 'F'), std::move(poly));
+        outlines.add(s.instance + '|' + s.entityId + '|' + s.brushInstance + '|' + s.brushId + '|' + std::to_string(s.faceId) + (s.side == FaceSide::Back ? 'B' : 'F'), std::move(poly), s.texture);
     }
     // the texture info without reliefs, for the surfaces too far from the playable area to show one (BspSettings::reliefDistance)
     std::map<std::string, std::unique_ptr<texplan::TexInfo>> flatInfos;
@@ -642,6 +862,8 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         if (mit == modelOf.end() || s.verts.size() < 3) continue;
         // buried in a static solid: never seen (a moving entity keeps all its faces); sky faces are always kept
         if (mit->second == 0 && in.solids && !cfg.contents.isSky(s.texture) && buried(s)) { ++res.stats.droppedSurfaces; continue; }
+        // no point of the playable area sees it: it has no lightmap chart either (LightmapLayout::culled)
+        if (mit->second == 0 && layout && layout->culledFace(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, s.side)) { ++res.stats.droppedSurfaces; continue; }
         Poly p;
         p.model = mit->second;
         p.texture = s.texture; p.classname = s.classname; p.instance = s.instance; p.entityId = s.entityId;
@@ -674,8 +896,24 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             }
             std::vector<texplan::V3> poly;
             for (const Vec3& v : s.verts) poly.push_back(texplan::v3(v));
-            const auto tris = texplan::texturePolygon(poly, texplan::v3(s.normal), parent.first, parent.second, info, in.texGroups, &reliefBudget, "dev/grey",
-                                                     &outlines.of(static_cast<size_t>(&s - in.surfaces.data())));
+            auto tris = texplan::texturePolygon(poly, texplan::v3(s.normal), parent.first, parent.second, info, in.texGroups, &reliefBudget, "dev/grey",
+                                                &outlines.of(static_cast<size_t>(&s - in.surfaces.data())));
+            // A piece that runs under a wall is kept whole (buried() above only drops pieces that are buried everywhere), and its relief with it: the relief
+            // triangles of the part inside the wall are never seen. Same test as buried(), on the point of the flat plane under each triangle.
+            if (mit->second == 0 && in.solids && !cfg.contents.isSky(s.texture) && !tris.empty()) {
+                SolidSet::Probe probe;
+                const Vec3 nrm = s.normal, org = s.verts[0];
+                const auto openAbove = [&](const Vec3& w) { return !in.solids->inside(w - nrm * nrm.dot(w - org) + nrm * 0.02, probe); };
+                const size_t before = tris.size();
+                tris.erase(std::remove_if(tris.begin(), tris.end(), [&](const texplan::TexturedTri& t) {
+                    Vec3 c{0, 0, 0};
+                    for (int k = 0; k < 3; ++k) c = c + texplan::vec(t.pos[static_cast<size_t>(k)]) * (1.0 / 3.0);
+                    if (openAbove(c)) return false;
+                    for (int k = 0; k < 3; ++k) if (openAbove(c * 0.8 + texplan::vec(t.pos[static_cast<size_t>(k)]) * 0.2)) return false;  // any part in the open keeps it
+                    return true;
+                }), tris.end());
+                res.stats.reliefBuried += before - tris.size();
+            }
             std::map<std::string, Poly> byTexture;  // one surface per texture the face samples
             for (const auto& t : tris) {
                 Poly& q = byTexture[t.texture];
@@ -697,6 +935,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     for (const DecalFragment& d : in.decals) {
         const auto mit = modelOf.find(entityKey(d.instance, d.entityId));
         if (mit == modelOf.end() || d.verts.size() < 3 || d.uv.size() != d.verts.size()) continue;
+        if (layout && layout->culledFace(d.instance, d.entityId, d.brushInstance, d.brushId, d.faceId, FaceSide::Front)) continue;  // its face is left out
         Poly p;
         p.model = mit->second;
         p.texture = d.texture; p.classname = d.classname; p.instance = d.instance; p.entityId = d.entityId;
@@ -748,6 +987,67 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         }
     }
     for (const auto& t : flatSky) res.warnings.push_back("sky texture " + t + " is not a skybox (env/<name>_cube): the engine draws it as a flat texture");
+    // vertex reduction of the triangle soups (mesh_optimize.h): every staged surface takes part (the others as neighbours whose outline vertices stay),
+    // then the staging arrays are rebuilt from the reduced surfaces
+    {
+        size_t before = 0;
+        for (const auto& r : unorderedVerts) before += r.second;
+        res.stats.drawVertsBefore = before;
+        bool any = false;
+        for (const SoupInfo& si : surfaceSoup) any = any || si.soup;
+        if (cfg.optimizeMesh && any) {
+            stage("optimizing surfaces", 0.12);
+            std::vector<MeshItem> items(unordered.size());
+            for (size_t u = 0; u < items.size(); ++u) {
+                const auto [vf, vn] = unorderedVerts[u];
+                const auto [xf, xn] = unorderedIdx[u];
+                MeshItem& it = items[u];
+                it.verts.assign(stageVerts.begin() + static_cast<std::ptrdiff_t>(vf), stageVerts.begin() + static_cast<std::ptrdiff_t>(vf + vn));
+                it.indexes.assign(stageIdx.begin() + static_cast<std::ptrdiff_t>(xf), stageIdx.begin() + static_cast<std::ptrdiff_t>(xf + xn));
+                it.optimize = surfaceSoup[u].soup;
+                int slots = 0;
+                for (int k = 0; k < rbsp::kStyles; ++k) if (unordered[u].lightmapStyles[k] != rbsp::kNoStyle) slots = k + 1;
+                it.lightmapSlots = slots;
+                it.vertexLit = unordered[u].vertexStyles[0] != rbsp::kNoStyle;
+                it.stTolerance = surfaceSoup[u].stTolerance;
+                it.lightmapTolerance = atlas > 0 ? 0.25 / atlas : 1.0 / 4096;  // a quarter of a lightmap texel (page fractions)
+            }
+            MeshOptimizeStats ms;
+            MeshOptimizeParams mp = cfg.meshOptimize;
+            mp.minTriangleCross = kMinTriangleCross;  // the optimizer's output must pass the same test as its input did
+            optimizeSurfaces(items, mp, &ms);
+            res.stats.meshSurfaces = ms.surfaces;
+            res.stats.meshWelded = ms.weldedVertices;
+            res.stats.meshRemovedVertices = ms.removedVertices;
+            res.stats.meshRemovedTriangles = ms.removedTriangles;
+            res.stats.meshSharedVertices = ms.sharedVertices;
+            std::vector<rbsp::DrawVert> newVerts;
+            std::vector<int32_t> newIdx;
+            newVerts.reserve(before);
+            newIdx.reserve(stageIdx.size());
+            for (size_t u = 0; u < items.size(); ++u) {
+                MeshItem& it = items[u];
+                unorderedVerts[u] = {newVerts.size(), it.verts.size()};
+                unorderedIdx[u] = {newIdx.size(), it.indexes.size()};
+                unordered[u].numVerts = static_cast<int32_t>(it.verts.size());
+                unordered[u].numIndexes = static_cast<int32_t>(it.indexes.size());
+                if (it.optimize) {  // the vertices moved a little (and some are gone): the bounds follow
+                    Bounds bb;
+                    for (const rbsp::DrawVert& dv : it.verts) bb.add(Vec3{dv.xyz[0], dv.xyz[1], dv.xyz[2]});
+                    if (!it.verts.empty()) surfaceBounds[u] = bb;
+                }
+                newVerts.insert(newVerts.end(), it.verts.begin(), it.verts.end());
+                newIdx.insert(newIdx.end(), it.indexes.begin(), it.indexes.end());
+                std::vector<rbsp::DrawVert>().swap(it.verts);
+                std::vector<int32_t>().swap(it.indexes);
+            }
+            stageVerts = std::move(newVerts);
+            stageIdx = std::move(newIdx);
+        }
+        size_t after = 0;
+        for (const auto& r : unorderedVerts) after += r.second;
+        res.stats.drawVertsAfter = after;
+    }
     // emit model by model (a model's surfaces are one contiguous range): its decals first
     std::vector<Bounds> modelBounds(modelCount);
     std::vector<std::pair<int, int>> modelSurfRange(modelCount);
@@ -757,6 +1057,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         std::vector<int> order = modelDecals[m];
         order.insert(order.end(), modelSurfaces[m].begin(), modelSurfaces[m].end());
         for (int u : order) {
+            if (unordered[static_cast<size_t>(u)].numIndexes == 0) continue;  // the optimizer's welding closed every triangle of it
             rbsp::Surface s = unordered[static_cast<size_t>(u)];
             s.firstVert = static_cast<int32_t>(verts.size());
             s.firstIndex = static_cast<int32_t>(indexes.size());

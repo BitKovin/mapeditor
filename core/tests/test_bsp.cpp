@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <random>
 #include <set>
 #include <thread>
 #include "core/router.h"
@@ -304,6 +305,7 @@ TEST_CASE("bsp lightmaps and light grid: base pages as baked, style layers re-pa
     g.probes.resize(g.nx * g.ny * g.nz);
     for (size_t i = 0; i < g.probes.size(); ++i) { g.probes[i].valid = true; g.probes[i].ambient = {i / 100.0, 0, 0}; g.probes[i].dir = {0, 1, 0}; }
     in.lightvol[0] = g;
+    in.settings.lightmapScale = false;  // this test reads the pages as baked (the light scale has its own tests)
     const BspOutput out = compileBsp(in);
     BspView v;
     REQUIRE(v.open(out.bsp));
@@ -413,20 +415,36 @@ TEST_CASE("bsp export (router): export_bsp bakes, writes <name>.bsp and <name>/l
     const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     BspView v;
     REQUIRE(v.open(bytes));
-    ExrImage page;
-    std::string err;
-    REQUIRE(readExr((dir.path / "maps/room/lm_0000.exr").string(), page, &err));
-    CHECK(page.width == opt.layout.atlasSize);
+    // page 0 is a .jpg (8 bit, normalised by the light scale) or an .exr; either way page x vertex colour is the light
+    int pw = 0, ph = 0;
+    std::vector<float> prgb;
+    const std::filesystem::path jpgPath = dir.path / "maps/room/lm_0000.jpg";
+    if (std::filesystem::exists(jpgPath)) {
+        std::ifstream jf(jpgPath, std::ios::binary);
+        const std::vector<unsigned char> jb((std::istreambuf_iterator<char>(jf)), std::istreambuf_iterator<char>());
+        const auto img = decodeJpeg(jb);
+        REQUIRE(img);
+        pw = img->width; ph = img->height;
+        for (size_t i = 0; i < static_cast<size_t>(pw) * ph; ++i) for (int q = 0; q < 3; ++q) prgb.push_back(img->rgba[i * 4 + q] / 255.0f);
+    } else {
+        ExrImage page;
+        std::string err;
+        REQUIRE(readExr((dir.path / "maps/room/lm_0000.exr").string(), page, &err));
+        pw = page.width; ph = page.height; prgb = page.rgb;
+    }
+    CHECK(pw == opt.layout.atlasSize);
     // the floor under the lamp is lit: find its surface and read the page at its first vertex's lightmap coordinate
     const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
     const auto verts = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
     double best = 0;
     for (const auto& s : surfaces) {
-        if (s.lightmapStyles[0] != 0 || s.normal[2] < 0.9) continue;  // the floor's top faces Quake +Z
+        if (s.lightmapStyles[0] != 0 || s.normal[2] < 0.9 || s.lightmapNum[0] != 0) continue;  // the floor's top faces Quake +Z
         Vec2 c{0, 0};
         for (int k = 0; k < s.numVerts; ++k) { c.u += verts[static_cast<size_t>(s.firstVert + k)].lightmap[0][0]; c.v += verts[static_cast<size_t>(s.firstVert + k)].lightmap[0][1]; }
-        const int x = static_cast<int>(c.u / s.numVerts * page.width), y = static_cast<int>(c.v / s.numVerts * page.height);
-        best = std::max(best, double(page.rgb[(static_cast<size_t>(y) * page.width + x) * 3]));
+        const int x = static_cast<int>(c.u / s.numVerts * pw), y = static_cast<int>(c.v / s.numVerts * ph);
+        double sc[3];
+        lightscale::decode(verts[static_cast<size_t>(s.firstVert)].color[0], sc);
+        best = std::max(best, double(prgb[(static_cast<size_t>(y) * pw + x) * 3]) * sc[0]);
     }
     CHECK(best > 0.1);
     CHECK(v.entities().find("light_point") != std::string::npos);
@@ -453,6 +471,7 @@ TEST_CASE("bsp lightmaps: 8 slots in at most 4 UV sets (slots 3..7 share one pla
         for (int k = 0; k < p.pageCount; ++k) p.rgb.push_back(std::vector<float>(256 * 256 * 3, float(style) + 0.5f));
         in.pages[style] = p;
     }
+    in.settings.lightmapScale = false;  // the pages are compared with the baked values
     const BspOutput out = compileBsp(in);
     BspView v;
     REQUIRE(v.open(out.bsp));
@@ -1247,6 +1266,7 @@ TEST_CASE("bsp lightmaps: with lightmapJpeg the charts that fit 8 bits go to .jp
     in.pages[0] = p;
     in.settings.lightmapJpeg = true;
     in.settings.lightmapExposure = 1.0;
+    in.settings.lightmapScale = false;  // the plain split: charts above 1 stay .exr (with the scale they fit .jpg: see the light scale tests)
     const BspOutput out = compileBsp(in);
     MESSAGE("jpeg pages ", out.stats.lightmapJpegPages, " rejected ", out.stats.lightmapJpegRejected, " pages ", out.lightmaps.size());
     CHECK(out.stats.lightmapJpegPages >= 1);
@@ -1325,6 +1345,67 @@ TEST_CASE("bsp compile: triangles without area are not written (the engine's phy
     CHECK(tris > 0);
 }
 
+TEST_CASE("bsp export: relief floors under walls leave no triangle the engine's physics mesh would refuse (no sliver, no short edge)") {
+    // The relief of a floor is clipped at every repeat border and at the walls standing on it (reliefBuried), then welded and thinned by the mesh optimizer. The
+    // physics mesh welds close vertices and refuses triangles without area, so no exported triangle may have an edge below the optimizer's minEdge or a cross
+    // product below the compiler's limit.
+    const MeshOptimizeParams limits;
+    size_t checked = 0;
+    for (int seed = 0; seed < 8; ++seed) {
+        std::mt19937 rng(static_cast<unsigned>(seed));
+        std::uniform_real_distribution<double> U(0, 1);
+        TempDir dir;
+        writeTga(dir.path / "textures/t/bump.tga", 32, 32);
+        const int N = 3;
+        json verts = json::array(), faces = json::array();
+        for (int j = 0; j <= N; ++j)
+            for (int i = 0; i <= N; ++i) {
+                const bool edge = i == 0 || j == 0 || i == N || j == N;
+                verts.push_back({double(i) / N, double(j) / N, edge ? 0.0 : (U(rng) < 0.4 ? 0.0 : U(rng) * 0.12)});  // some flat parts, some bumps
+            }
+        for (int j = 0; j < N; ++j)
+            for (int i = 0; i < N; ++i) faces.push_back({j * (N + 1) + i, j * (N + 1) + i + 1, (j + 1) * (N + 1) + i + 1, (j + 1) * (N + 1) + i});
+        std::ofstream(dir.path / "textures/t/bump.tga.json") << json{{"pixelsPerMeter", 32}, {"relief", {{"vertices", verts}, {"faces", faces}}}}.dump();
+        const double fw = 3 + U(rng) * 4, fd = 3 + U(rng) * 4, wx = 0.37 + U(rng), wz = 0.21 + U(rng);
+        json w = entityJson("w", "worldspawn", {});
+        w["brushes"] = json::array({brushJson(Brush::makeBox("floor", {0, -0.5, 0}, {fw, 0, fd}, "t/bump")),
+                                    brushJson(Brush::makeBox("wall", {wx, 0, wz}, {wx + 0.8 + U(rng) * 2, 2, wz + 0.5 + U(rng)}, "t/bump")),
+                                    brushJson(Brush::makeBox("side", {fw, -0.5, 0}, {fw + 1.3, 2, fd}, "t/bump"))});
+        dir.write("maps/t.map.json", docJson({w}));
+        BspExportRequest req;
+        req.assetsRoot = dir.path;
+        req.mapPath = "maps/t.map.json";
+        req.outPath = "maps/t.bsp";
+        req.bake = false;
+        {
+            Scene scene(dir.path);
+            scene.loadGameProfile();
+            scene.openDocument(req.mapPath);
+            req.document = scene.documentSyncJson()["doc"];
+        }
+        const BspExportResult r = exportBsp(req);
+        REQUIRE(r.ok);
+        std::ifstream f(dir.path / "maps/t.bsp", std::ios::binary);
+        const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        BspView v;
+        REQUIRE(v.open(bytes));
+        const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+        const auto verts2 = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+        const auto idx = v.lump<int32_t>(rbsp::kDrawIndexes);
+        for (const auto& s : surfaces)
+            for (int t = 0; t + 2 < s.numIndexes; t += 3) {
+                const rbsp::DrawVert* c[3];
+                for (int k = 0; k < 3; ++k) c[k] = &verts2[static_cast<size_t>(s.firstVert + idx[static_cast<size_t>(s.firstIndex + t + k)])];
+                auto sub = [](const rbsp::DrawVert* a, const rbsp::DrawVert* b) { return Vec3{double(b->xyz[0]) - a->xyz[0], double(b->xyz[1]) - a->xyz[1], double(b->xyz[2]) - a->xyz[2]}; };
+                INFO("seed " << seed << " surface triangle " << t / 3);
+                CHECK(sub(c[0], c[1]).cross(sub(c[0], c[2])).length() >= limits.minTriangleCross);
+                for (int k = 0; k < 3; ++k) CHECK(sub(c[k], c[(k + 1) % 3]).length() >= limits.minEdge - 1e-6);
+                ++checked;
+            }
+    }
+    CHECK(checked > 1000);
+}
+
 TEST_CASE("bsp export: identical vertices of a triangle soup are written once, and surfaces far from the playable area get no relief") {
     auto run = [&](bool weld, bool withArea, double areaX, const char* reliefDistance, BspExportResult* out, std::vector<uint8_t>* bytes) {
         TempDir dir;
@@ -1348,6 +1429,7 @@ TEST_CASE("bsp export: identical vertices of a triangle soup are written once, a
         req.outPath = "maps/t.bsp";
         req.bake = false;
         req.settings.weldVertices = weld;
+        req.settings.optimizeMesh = false;  // this case counts the exact welding only (the next one the optimizer)
         {
             Scene scene(dir.path);
             scene.loadGameProfile();
@@ -1393,4 +1475,383 @@ TEST_CASE("bsp export: identical vertices of a triangle soup are written once, a
     CHECK(raised(dflt));
     run(true, false, 0, "10", &rdefault, &dflt);
     CHECK(raised(dflt));
+}
+
+// ---- HDR light from 8 bit pages: the light scale in the vertex colour (light_scale.h, DESIGN §12 "Light scale") ------------------------------------
+
+namespace {
+
+// Pages for `layout` (atlas 128): every chart filled by value(chart, x, y) (x, y inside the chart rectangle, padding included), one channel value for all three
+LightmapPages scalePages(const LightmapLayout& layout, const std::function<float(size_t, int, int)>& value) {
+    LightmapPages p;
+    p.atlas = 128;
+    p.pageCount = layout.pageCount;
+    for (int k = 0; k < p.pageCount; ++k) {
+        p.rgb.push_back(std::vector<float>(128 * 128 * 3, 0.0f));
+        p.valid.push_back(std::vector<uint8_t>(128 * 128, 1));
+    }
+    for (size_t c = 0; c < layout.charts.size(); ++c) {
+        const auto& ch = layout.charts[c];
+        for (int y = 0; y < ch.h; ++y)
+            for (int x = 0; x < ch.w; ++x)
+                for (int q = 0; q < 3; ++q) p.rgb[static_cast<size_t>(ch.page)][(static_cast<size_t>(ch.y + y) * 128 + ch.x + x) * 3 + q] = value(c, x, y);
+    }
+    return p;
+}
+
+double scaledAt(const BspOutput& o, int page, float u, float v, int channel, const uint8_t rgba[4]) {  // page texel nearest (u, v) x decoded vertex colour
+    const int x = std::clamp(static_cast<int>(u * 128), 0, 127), y = std::clamp(static_cast<int>(v * 128), 0, 127);
+    double sc[3];
+    lightscale::decode(rgba, sc);
+    return o.lightmaps[static_cast<size_t>(page)].rgb[(static_cast<size_t>(y) * 128 + x) * 3 + channel] * sc[channel];
+}
+
+}  // namespace
+
+TEST_CASE("light scale: rgb mantissa x shared exponent, 1..32, opaque white is the neutral scale, and the colour never decodes below the peak") {
+    const uint8_t white[4] = {255, 255, 255, 255};
+    double v[3];
+    lightscale::decode(white, v);
+    CHECK(v[0] == doctest::Approx(1.0));
+    CHECK(v[1] == doctest::Approx(1.0));
+    CHECK(v[2] == doctest::Approx(1.0));
+    CHECK(lightscale::multiplierOf(255) == doctest::Approx(1.0));
+    CHECK(lightscale::multiplierOf(0) == doctest::Approx(32.0));
+    // dark: multiplier 1, a small rgb that decodes to at least the peak and at most one byte above it
+    const double dark[3] = {0.02, 0.01, 0.0};
+    const auto d = lightscale::encodePeak(dark);
+    CHECK(d.rgba[3] == 255);
+    CHECK(d.value[0] >= 0.02);
+    CHECK(d.value[0] < 0.02 + 1.0 / 255);
+    CHECK(d.value[2] == 0.0);
+    CHECK(!d.clipped);
+    // bright: the multiplier takes the peak, rgb stays within a byte
+    const double bright[3] = {3.0, 1.0, 0.5};
+    const auto b = lightscale::encodePeak(bright);
+    CHECK(b.rgba[3] < 255);
+    CHECK(b.value[0] >= 3.0);
+    CHECK(b.value[0] < 3.0 * 1.02);
+    CHECK(b.value[1] >= 1.0);
+    CHECK(b.value[2] >= 0.5);
+    // a peak above 32 clips and says so
+    const double huge[3] = {100.0, 1.0, 1.0};
+    const auto h = lightscale::encodePeak(huge);
+    CHECK(h.clipped);
+    CHECK(h.value[0] == doctest::Approx(32.0));
+    // 1 + a little needs a multiplier above 1; a channel with any light never gets byte 0
+    const double faint[3] = {1.0e-6, 0.0, 0.0};
+    CHECK(lightscale::encodePeak(faint).rgba[0] == 1);
+    // vertex lit: one exponent, each vertex its own rgb, the decode is the value to within a byte of the exponent's range
+    const double a[3] = {6.0, 2.0, 0.1}, c[3] = {0.5, 0.25, 0.0};
+    const uint8_t alpha = lightscale::sharedAlpha(6.0);
+    uint8_t ra[4], rc[4];
+    lightscale::encodeVertex(a, alpha, ra);
+    lightscale::encodeVertex(c, alpha, rc);
+    CHECK(ra[3] == rc[3]);
+    double da[3], dc[3];
+    lightscale::decode(ra, da);
+    lightscale::decode(rc, dc);
+    CHECK(da[0] == doctest::Approx(6.0).epsilon(0.02));
+    CHECK(dc[0] == doctest::Approx(0.5).epsilon(0.05));
+    CHECK(dc[2] == 0.0);
+}
+
+TEST_CASE("bsp lightmaps: charts are stored divided by their light scale, dark and HDR charts both fit .jpg pages, every vertex carries its chart's colour") {
+    Document d = twoRooms(true);
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visibility = false;
+    LightmapSettings ls;
+    ls.texelsPerMeter = 6;
+    ls.atlasSize = 128;
+    LightmapLayout layout = buildLightmapLayout(in.surfaces, in.classes, ls);
+    REQUIRE(layout.charts.size() > 3);
+    in.layout = &layout;
+    // even charts: very dark (0.004 .. 0.03, a ramp); odd charts: bright (4..9, a ramp). A page stores neither in 8 bits as it is.
+    auto light = [](size_t c, int x, int) { return c % 2 ? 4.0f + 0.4f * float(c % 5) + 0.01f * float(x) : 0.004f + 0.002f * float(c % 4) + 0.0005f * float(x); };
+    in.pages[0] = scalePages(layout, light);
+    in.settings.lightmapExposure = 1.0;
+    const BspOutput out = compileBsp(in);
+    CHECK(out.stats.scaledCharts == layout.charts.size());
+    CHECK(out.stats.clippedCharts == 0);
+    CHECK(out.stats.lightmapJpegRejected == 0);
+    REQUIRE(!out.lightmaps.empty());
+    for (const auto& pg : out.lightmaps) {
+        CHECK(pg.ldr);  // everything is <= 1 now
+        for (float v : pg.rgb) CHECK(v <= 1.0f);
+    }
+    BspView v;
+    REQUIRE(v.open(out.bsp));
+    const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto verts = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    size_t darkSeen = 0, brightSeen = 0;
+    double darkestPeak = 1e9;
+    for (const auto& s : surfaces) {
+        if (s.lightmapNum[0] < 0) continue;
+        const auto& first = verts[static_cast<size_t>(s.firstVert)];
+        for (int k = 0; k < s.numVerts; ++k) {
+            const auto& dv = verts[static_cast<size_t>(s.firstVert + k)];
+            // one colour per surface, in every slot
+            for (int q = 0; q < 4; ++q) { CHECK(dv.color[0][q] == first.color[0][q]); CHECK(dv.color[7][q] == first.color[0][q]); }
+            double sc[3];
+            lightscale::decode(dv.color[0], sc);
+            // the page times the colour is the light the bake had at that point: dark charts decode to a small colour, bright ones above 3.5
+            const double shown = scaledAt(out, s.lightmapNum[0], dv.lightmap[0][0], dv.lightmap[0][1], 0, dv.color[0]);
+            if (sc[0] > 3.5) { ++brightSeen; CHECK(shown >= 3.5); CHECK(shown < 12.0); }
+            else { ++darkSeen; darkestPeak = std::min(darkestPeak, sc[0]); CHECK(shown >= 0.0035); CHECK(shown < 0.12); }
+        }
+    }
+    CHECK(darkSeen > 0);
+    CHECK(brightSeen > 0);
+    CHECK(darkestPeak < 0.12);  // a dark chart's colour is dark: its page uses the whole range
+    // the same level without the scale: pages hold the light as baked (the bright ones stay .exr) and the vertex colour is white
+    BspInput off = in;
+    off.settings.lightmapScale = false;
+    const BspOutput plain = compileBsp(off);
+    size_t exr = 0;
+    for (const auto& pg : plain.lightmaps) exr += !pg.ldr;
+    CHECK(exr > 0);
+    CHECK(plain.stats.scaledCharts == 0);
+    BspView pv;
+    REQUIRE(pv.open(plain.bsp));
+    for (const auto& dv : pv.lump<rbsp::DrawVert>(rbsp::kDrawVerts))
+        for (int k = 0; k < 8; ++k) for (int q = 0; q < 4; ++q) CHECK(dv.color[k][q] == 255);
+}
+
+TEST_CASE("bsp lightmaps: one colour covers every style layer of a chart (the peak over all layers)") {
+    Document d = twoRooms(false);
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visibility = false;
+    in.settings.lightmapTolerance = 0;  // pages exactly as baked: the numbers can be compared
+    LightmapSettings ls;
+    ls.texelsPerMeter = 6;
+    ls.atlasSize = 128;
+    // every face touched by style 5 as well
+    LightmapLayout probe = buildLightmapLayout(in.surfaces, in.classes, ls);
+    for (const auto& f : probe.faces) ls.faceStyles[f.key()] = {5};
+    LightmapLayout layout = buildLightmapLayout(in.surfaces, in.classes, ls);
+    REQUIRE(!layout.charts.empty());
+    for (const auto& ch : layout.charts) REQUIRE(ch.styles == std::vector<int>{0, 5});
+    in.layout = &layout;
+    in.pages[0] = scalePages(layout, [](size_t, int, int) { return 0.5f; });      // base layer: 0.5 everywhere
+    in.pages[5] = scalePages(layout, [](size_t, int, int) { return 6.0f; });      // style 5: 6.0 everywhere (the colour has to hold it)
+    const BspOutput out = compileBsp(in);
+    BspView v;
+    REQUIRE(v.open(out.bsp));
+    const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto verts = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    size_t checked = 0;
+    for (const auto& s : surfaces) {
+        if (s.lightmapNum[0] < 0) continue;
+        REQUIRE(s.lightmapNum[1] >= 0);
+        const auto& dv = verts[static_cast<size_t>(s.firstVert)];
+        double sc[3];
+        lightscale::decode(dv.color[0], sc);
+        CHECK(sc[0] >= 6.0);
+        CHECK(sc[0] < 6.0 * 1.02);
+        const double base = out.lightmaps[static_cast<size_t>(s.lightmapNum[0])].rgb[(static_cast<size_t>(std::clamp(static_cast<int>(dv.lightmap[0][1] * 128), 0, 127)) * 128 + std::clamp(static_cast<int>(dv.lightmap[0][0] * 128), 0, 127)) * 3] * sc[0];
+        const double layer5 = out.lightmaps[static_cast<size_t>(s.lightmapNum[1])].rgb[(static_cast<size_t>(std::clamp(static_cast<int>(dv.lightmap[1][1] * 128), 0, 127)) * 128 + std::clamp(static_cast<int>(dv.lightmap[1][0] * 128), 0, 127)) * 3] * sc[0];
+        CHECK(base == doctest::Approx(0.5).epsilon(0.02));
+        CHECK(layer5 == doctest::Approx(6.0).epsilon(0.02));
+        ++checked;
+    }
+    CHECK(checked > 0);
+}
+
+TEST_CASE("bsp lightmaps: vertex lit charts keep no texels, no lightmap slot and one exponent per surface; the colour is the baked light at the vertex") {
+    Document d = twoRooms(false);
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visibility = false;
+    LightmapSettings ls;
+    ls.texelsPerMeter = 6;
+    ls.atlasSize = 128;
+    LightmapLayout layout = buildLightmapLayout(in.surfaces, in.classes, ls);
+    REQUIRE(layout.charts.size() > 3);
+    in.layout = &layout;
+    // a ramp along the page's x (0.5 at texel 0 .. 8 at texel 127): vertices of one surface read different values, up to HDR
+    in.pages[0] = scalePages(layout, [&](size_t c, int x, int) { return 0.5f + 7.5f * float(layout.charts[c].x + x) / 127.0f; });
+    in.settings.vertexLitMaxArea = 1e6;  // everything is vertex lit
+    const BspOutput out = compileBsp(in);
+    CHECK(out.stats.vertexLitCharts == layout.charts.size());
+    CHECK(out.stats.vertexLitSurfaces > 0);
+    CHECK(out.lightmaps.empty());  // no texel is stored
+    BspView v;
+    REQUIRE(v.open(out.bsp));
+    const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto verts = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    size_t lit = 0, varying = 0;
+    for (const auto& s : surfaces) {
+        if (s.vertexStyles[0] != 0) continue;  // sky etc.
+        ++lit;
+        for (int k = 0; k < rbsp::kStyles; ++k) { CHECK(s.lightmapStyles[k] == rbsp::kNoStyle); CHECK(s.lightmapNum[k] == -1); }
+        double lo = 1e9, hi = -1e9;
+        const auto& first = verts[static_cast<size_t>(s.firstVert)];
+        for (int k = 0; k < s.numVerts; ++k) {
+            const auto& dv = verts[static_cast<size_t>(s.firstVert + k)];
+            CHECK(dv.color[0][3] == first.color[0][3]);  // one exponent: the GPU interpolates rgb and A separately
+            for (int q = 0; q < 4; ++q) CHECK(dv.color[7][q] == dv.color[0][q]);
+            double c[3];
+            lightscale::decode(dv.color[0], c);
+            CHECK(c[0] >= 0.45);
+            CHECK(c[0] <= 8.2);
+            lo = std::min(lo, c[0]); hi = std::max(hi, c[0]);
+        }
+        if (hi - lo > 0.3) ++varying;
+    }
+    CHECK(lit > 0);
+    CHECK(varying > 0);
+    // an entity opts in with `_vertex_lit` 1; the rest keeps its lightmap
+    Document d2 = twoRooms(false);
+    d2.entities.push_back(ent("detail", "func_detail", {Brush::makeBox("db", {2, 0, 2}, {2.5, 1, 2.5}, "dev/wall")}));
+    d2.entities.back().keyvalues["_vertex_lit"] = "1";
+    std::shared_ptr<SolidSet> solids2;
+    BspInput in2 = inputFor(d2, solids2);
+    in2.settings.visibility = false;
+    LightmapLayout layout2 = buildLightmapLayout(in2.surfaces, in2.classes, ls);
+    in2.layout = &layout2;
+    in2.pages[0] = scalePages(layout2, [](size_t, int, int) { return 0.25f; });
+    const BspOutput out2 = compileBsp(in2);
+    CHECK(out2.stats.vertexLitCharts > 0);
+    CHECK(out2.stats.vertexLitCharts < layout2.charts.size());
+    BspView v2;
+    REQUIRE(v2.open(out2.bsp));
+    size_t vl = 0, lm = 0;
+    for (const auto& s : v2.lump<rbsp::Surface>(rbsp::kSurfaces)) { vl += s.vertexStyles[0] == 0; lm += s.lightmapNum[0] >= 0; }
+    CHECK(vl > 0);
+    CHECK(lm > 0);
+    CHECK(!out2.lightmaps.empty());
+}
+
+TEST_CASE("bsp lightmaps: charts joined by smooth edges of one brush carry the same colour, whatever their own peaks") {
+    // an octagonal prism with smooth sides; every other side gets another density, so the sides cannot share a chart
+    Brush b;
+    b.id = "oct";
+    for (int k = 0; k < 2; ++k)
+        for (int i = 0; i < 8; ++i) { const double a = 2 * 3.14159265358979323846 * i / 8; b.vertices.push_back({std::cos(a) * 2, k * 2.0, std::sin(a) * 2}); }
+    uint32_t id = 0;
+    for (uint32_t i = 0; i < 8; ++i) { BrushFace f; f.id = id++; f.loop = {i, 8 + i, 8 + (i + 1) % 8, (i + 1) % 8}; f.texture = "dev/wall"; b.faces.push_back(f); }
+    BrushFace bottom, top;
+    bottom.id = id++; top.id = id++;
+    bottom.texture = top.texture = "dev/wall";
+    for (uint32_t i = 0; i < 8; ++i) { bottom.loop.push_back(i); top.loop.push_back(15 - i); }
+    b.faces.push_back(bottom); b.faces.push_back(top);
+    if (b.signedVolume() < 0) for (auto& f : b.faces) std::reverse(f.loop.begin(), f.loop.end());
+    for (uint32_t i = 0; i < 8; ++i) b.smoothEdges.push_back({i, (i + 1) % 8});
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", {b}));
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visibility = false;
+    LightmapSettings ls;
+    ls.texelsPerMeter = 6;
+    ls.atlasSize = 128;
+    {
+        LightmapLayout probe = buildLightmapLayout(in.surfaces, in.classes, ls);
+        size_t n = 0;
+        for (const auto& f : probe.faces) if (n++ % 2) ls.densityScale[f.key()] = 0.5;
+    }
+    LightmapLayout layout = buildLightmapLayout(in.surfaces, in.classes, ls);
+    REQUIRE(layout.charts.size() > 2);
+    in.layout = &layout;
+    in.pages[0] = scalePages(layout, [](size_t c, int, int) { return c % 2 ? 7.0f : 0.05f; });
+    const BspOutput out = compileBsp(in);
+    BspView v;
+    REQUIRE(v.open(out.bsp));
+    const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto verts = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    std::set<uint32_t> colours;
+    size_t sides = 0;
+    for (const auto& s : surfaces) {
+        if (s.lightmapNum[0] < 0) continue;
+        const auto& dv = verts[static_cast<size_t>(s.firstVert)];
+        colours.insert(uint32_t(dv.color[0][0]) | uint32_t(dv.color[0][1]) << 8 | uint32_t(dv.color[0][2]) << 16 | uint32_t(dv.color[0][3]) << 24);
+        ++sides;
+    }
+    CHECK(sides >= 8);
+    // the sides are one smooth group: they all share the colour of the brightest of them (the caps join no smooth edge and keep their own, so up to 2 more)
+    CHECK(colours.size() <= 3);
+    double c0[3];
+    for (const auto& s : surfaces) {
+        if (s.lightmapNum[0] < 0 || verts[static_cast<size_t>(s.firstVert)].color[0][3] == 255) continue;
+        lightscale::decode(verts[static_cast<size_t>(s.firstVert)].color[0], c0);
+        CHECK(c0[0] >= 7.0);
+    }
+}
+
+namespace {
+
+// A smooth sided prism (`sides` sides, radius 2, height 2) as one brush; its side faces are joined by smooth edges, like the editor's cylinder
+Document smoothCylinder(int sides) {
+    Brush b;
+    b.id = "cyl";
+    for (int k = 0; k < 2; ++k)
+        for (int i = 0; i < sides; ++i) { const double a = 2 * 3.14159265358979323846 * i / sides; b.vertices.push_back({std::cos(a) * 2, k * 2.0, std::sin(a) * 2}); }
+    uint32_t id = 0;
+    const uint32_t n = static_cast<uint32_t>(sides);
+    for (uint32_t i = 0; i < n; ++i) { BrushFace f; f.id = id++; f.loop = {i, n + i, n + (i + 1) % n, (i + 1) % n}; f.texture = "dev/wall"; b.faces.push_back(f); }
+    BrushFace bottom, top;
+    bottom.id = id++; top.id = id++;
+    bottom.texture = top.texture = "dev/wall";
+    for (uint32_t i = 0; i < n; ++i) { bottom.loop.push_back(i); top.loop.push_back(2 * n - 1 - i); }
+    b.faces.push_back(bottom); b.faces.push_back(top);
+    if (b.signedVolume() < 0) for (auto& f : b.faces) std::reverse(f.loop.begin(), f.loop.end());
+    for (uint32_t i = 0; i < n; ++i) b.smoothEdges.push_back({i, (i + 1) % n});
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", {b}));
+    return d;
+}
+
+// Every vertex of the cylinder's side surfaces, keyed by its position: the colours (rgba) found there
+std::map<std::tuple<long long, long long, long long>, std::set<uint32_t>> coloursByCorner(const BspOutput& out) {
+    std::map<std::tuple<long long, long long, long long>, std::set<uint32_t>> m;
+    BspView v;
+    if (!v.open(out.bsp)) return m;
+    const auto verts = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    for (const auto& s : v.lump<rbsp::Surface>(rbsp::kSurfaces)) {
+        if (std::fabs(s.normal[2]) > 0.5) continue;  // the caps (Quake Z is up): they join no smooth edge
+        for (int k = 0; k < s.numVerts; ++k) {
+            const auto& dv = verts[static_cast<size_t>(s.firstVert + k)];
+            m[{std::llround(dv.xyz[0] * 10), std::llround(dv.xyz[1] * 10), std::llround(dv.xyz[2] * 10)}].insert(uint32_t(dv.color[0][0]) | uint32_t(dv.color[0][1]) << 8 | uint32_t(dv.color[0][2]) << 16 | uint32_t(dv.color[0][3]) << 24);
+        }
+    }
+    return m;
+}
+
+}  // namespace
+
+TEST_CASE("light scale: a smooth cylinder shows one colour at every corner its sides share, lightmapped (any mix of dark and bright charts) and vertex lit") {
+    for (int vertexLit = 0; vertexLit < 2; ++vertexLit) {
+        for (int sides : {12, 24}) {
+            Document d = smoothCylinder(sides);
+            std::shared_ptr<SolidSet> solids;
+            BspInput in = inputFor(d, solids);
+            in.settings.visibility = false;
+            LightmapSettings ls;
+            ls.texelsPerMeter = 6;
+            ls.atlasSize = 128;
+            {
+                LightmapLayout probe = buildLightmapLayout(in.surfaces, in.classes, ls);
+                size_t n = 0;
+                for (const auto& f : probe.faces) if (n++ % 3 == 1) ls.densityScale[f.key()] = 0.5;
+            }
+            LightmapLayout layout = buildLightmapLayout(in.surfaces, in.classes, ls);
+            in.layout = &layout;
+            // a ramp around the cylinder: some charts dark, some very bright
+            in.pages[0] = scalePages(layout, [](size_t c, int x, int) { return (c % 3 == 0 ? 0.02f : c % 3 == 1 ? 9.0f : 1.5f) * (1.0f + 0.01f * float(x)); });
+            if (vertexLit) in.settings.vertexLitMaxArea = 1e6;
+            const BspOutput out = compileBsp(in);
+            INFO("sides ", sides, " vertexLit ", vertexLit);
+            const auto corners = coloursByCorner(out);
+            REQUIRE(!corners.empty());
+            size_t shared = 0, differing = 0;
+            for (const auto& kv : corners) {
+                ++shared;
+                if (kv.second.size() > 1) ++differing;
+            }
+            CHECK(shared >= static_cast<size_t>(sides));
+            CHECK(differing == 0);
+        }
+    }
 }

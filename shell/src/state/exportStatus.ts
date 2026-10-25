@@ -12,6 +12,7 @@ export function resultMessage(m: ExportResult): string {
   const s = m.stats
   const parts = [`${s.surfaces} surfaces`, `${s.brushes} brushes`, `${s.lightmapPages} lightmap page${s.lightmapPages === 1 ? '' : 's'}`, `${s.clusters} vis cells of ${fmt(s.visCell)} m`]
   if (s.gridPoints) parts.push(`light grid ${s.gridPoints} points`)
+  if (s.drawVertsBefore > s.drawVertsAfter) parts.push(`${s.drawVertsAfter} draw vertices (${s.drawVertsBefore - s.drawVertsAfter} fewer after reduction)`)
   const warn = m.warnings.length ? ` · ${m.warnings.length} warning${m.warnings.length === 1 ? '' : 's'}: ${m.warnings.slice(0, 3).join('; ')}${m.warnings.length > 3 ? '; …' : ''}` : ''
   return `Exported ${m.bsp} (lightmaps in ${m.lightmaps}/) in ${fmt(m.seconds)} s: ${parts.join(', ')}${warn}`
 }

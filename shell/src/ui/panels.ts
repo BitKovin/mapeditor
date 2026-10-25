@@ -283,6 +283,15 @@ export class InspectorPanel extends Panel {
       }
     }
 
+    if (isBrushEntity(e) && classOf(e) !== 'worldspawn') {  // `_vertex_lit` (Core, bsp_compile): the entity keeps no lightmap texels in the export; its light is only in the vertex colour
+      const vl = h('input', { type: 'checkbox', title: 'Export without lightmaps: the light is read at the vertices and stored in the vertex colour (smaller files, coarser light; only light style 0). Good for small detail geometry.' }) as HTMLInputElement
+      const kv = e.keyvalues?._vertex_lit
+      vl.checked = kv !== undefined && kv !== '' && kv !== '0' && kv !== 'false'
+      if (ro) vl.setAttribute('disabled', '')
+      vl.addEventListener('change', () => setKeyvalue(this.store, e.id, '_vertex_lit', vl.checked ? '1' : null))
+      root.append(h('div', { class: 'checks' }, h('label', { class: 'check', title: vl.title }, vl, 'Vertex lit only (no lightmap)')))
+    }
+
     if (def?.flags.length) this.flagBoxes(root, e, def, ro)
 
     const vec3 = (label: string, cur: [number, number, number], step: string, set: (i: 0 | 1 | 2, v: number) => boolean) => {
@@ -301,7 +310,7 @@ export class InspectorPanel extends Panel {
 
     // every key the class defines, in .ent order, with a widget chosen by its type (properties.ts); a target key is the entity picker with its pipette.
     // Keys the form edits elsewhere are left out: targetname (top), angle / angles (the angles row), modelscale_vec (the scale row), spawnflags (the checkboxes)
-    const hidden = new Set(['classname', 'targetname', 'origin', 'angle', 'angles'])
+    const hidden = new Set(['classname', 'targetname', 'origin', 'angle', 'angles', '_vertex_lit'])
     if (!isBrushEntity(e) && e.classname !== 'decal') hidden.add('modelscale_vec')
     if (def?.flags.length) hidden.add('spawnflags')
     const typed = propertyKeys(def, hidden)

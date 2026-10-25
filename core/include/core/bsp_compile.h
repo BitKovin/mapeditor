@@ -1,9 +1,11 @@
 #pragma once
 #include "core/bsp_format.h"
+#include "core/mesh_optimize.h"
 #include "core/derived.h"
 #include "core/lightbake.h"
 #include "core/lighting_classes.h"
 #include "core/lightmap_uv.h"
+#include "core/light_scale.h"
 #include "core/lightvol.h"
 #include "core/prefab.h"
 #include "core/texplan.h"
@@ -109,12 +111,26 @@ struct BspSettings {
     // The error a chart may have in a .jpg (sRGB levels after the exposure, same measure as lightmapTolerance; 99% of the texels within it, all within twice it).
     // Looser than the fit's: a byte of linear light is 12 levels next to black, so near-black texels always differ by that much; the engine reads no sRGB lightmaps.
     double lightmapJpegTolerance = 8;
+    // HDR light from 8 bit pages (light_scale.h, DESIGN §12 "Light scale"): every chart is stored divided by one colour (the peak of all its style layers),
+    // which goes into the colour of its vertices (rgb mantissa, A shared exponent, multiplier 1..32). Dark charts then use the page's whole range and
+    // bright ones fit a .jpg. Off = pages hold the light itself and the vertex colour is white.
+    bool lightmapScale = true;
+    // Vertex lit surfaces (no lightmap texels in the file; the engine binds a white lightmap and the light is only in the vertex colour): the lightmap
+    // charts of an entity with the keyvalue `_vertex_lit` 1 and the charts whose faces add up to at most `vertexLitMaxArea` m2 (worldspawn `_vertex_lit_area`,
+    // 0 = off). They are still baked (same lights, shadows, bounces); the compiler reads the baked light at their vertices and drops the texels. The light of
+    // style 0 only: a vertex has one colour, so the other styles' layers of such a chart are dropped (warning).
+    double vertexLitMaxArea = 0;
+    // Pack all lightmap charts again by size (fewer, fuller pages) when that takes fewer pages than the live layout.
     bool repackLightmaps = true;
     // Surfaces further than this (m) from the playable area (BspInput::playable) get no texture relief: they are laid out flat. 0 = relief everywhere. A relief
     // is hundreds of thousands of triangles on a big level, and nobody gets close enough to see it.
     double reliefDistance = 0;
-    // Identical vertices of one triangle-soup surface (relief, texture layouts) are written once and shared by the triangles.
-    bool weldVertices = true;           // pack all lightmap charts again by size (fewer, fuller pages) when that takes fewer pages than the live layout
+    // Export-time vertex reduction of the triangle-soup surfaces (relief, texture layouts; mesh_optimize.h): near-equal vertices are welded, coplanar and
+    // collinear vertices that carry nothing are collapsed and, with a tolerance, detail below `meshOptimize.tolerance` is thinned. Runs after the exact weld.
+    bool optimizeMesh = true;
+    MeshOptimizeParams meshOptimize;
+    // Identical vertices of one triangle-soup surface are written once and shared by the triangles.
+    bool weldVertices = true;
     SkySettings sky;                       // the automatic sky (its texture "" = env/sky_cube with a warning)
     double engineFarPlane = 3000;          // m: the engine's Camera::FarPlane; a sky box larger than that across is clipped (warning)
 };
@@ -150,7 +166,7 @@ struct BspOutput {
     std::vector<BspLightmapPage> lightmaps;  // lm_0000.exr, lm_0001.exr, ...
     std::vector<std::string> warnings;
     struct Stats {
-        size_t surfaces = 0, decals = 0, skySurfaces = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, lightmapTexelsBefore = 0, lightmapTexelsAfter = 0, lightmapJpegPages = 0, lightmapJpegRejected = 0, degenerateTriangles = 0, reliefSkipped = 0, weldedVertices = 0, gridPoints = 0, palette = 0;
+        size_t surfaces = 0, decals = 0, skySurfaces = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, lightmapTexelsBefore = 0, lightmapTexelsAfter = 0, lightmapJpegPages = 0, lightmapJpegRejected = 0, scaledCharts = 0, clippedCharts = 0, vertexLitCharts = 0, vertexLitSurfaces = 0, degenerateTriangles = 0, reliefSkipped = 0, reliefBuried = 0, weldedVertices = 0, meshSurfaces = 0, meshWelded = 0, meshRemovedVertices = 0, meshRemovedTriangles = 0, meshSharedVertices = 0, drawVertsBefore = 0, drawVertsAfter = 0, gridPoints = 0, palette = 0;
         double visCell = 0, visSeconds = 0;
     } stats;
 };

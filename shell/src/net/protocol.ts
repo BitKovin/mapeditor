@@ -79,7 +79,7 @@ export type Inbound =
   /** BSP export (REQUIREMENTS §25): progress about once a second, then the result. */
   | { type: 'export_progress'; stage: string; fraction: number }
   | { type: 'export_result'; ok: boolean; cancelled: boolean; error: string; warnings: string[]; bsp: string; lightmaps: string; seconds: number; bakeSeconds: number; device: string
-      stats: { surfaces: number; droppedSurfaces: number; brushes: number; models: number; leafs: number; clusters: number; lightmapPages: number; gridPoints: number; palette: number; visCell: number; visSeconds: number } }
+      stats: { surfaces: number; droppedSurfaces: number; brushes: number; models: number; leafs: number; clusters: number; lightmapPages: number; gridPoints: number; palette: number; visCell: number; visSeconds: number; drawVertsBefore: number; drawVertsAfter: number } }
 
 function isClassDef(c: any): c is EntityClassDef {
   return !!c && typeof c.name === 'string' && (c.kind === 'point' || c.kind === 'group') && Array.isArray(c.color) && c.color.length === 3
@@ -173,7 +173,7 @@ export function parseInbound(text: string): Inbound | null {
       if (typeof m.ok !== 'boolean') return null
       const st = m.stats && typeof m.stats === 'object' ? m.stats : {}
       const num = (k: string) => (Number.isFinite(st[k]) ? st[k] : 0)
-      const stats = { surfaces: num('surfaces'), droppedSurfaces: num('droppedSurfaces'), brushes: num('brushes'), models: num('models'), leafs: num('leafs'), clusters: num('clusters'), lightmapPages: num('lightmapPages'), gridPoints: num('gridPoints'), palette: num('palette'), visCell: num('visCell'), visSeconds: num('visSeconds') }
+      const stats = { surfaces: num('surfaces'), droppedSurfaces: num('droppedSurfaces'), brushes: num('brushes'), models: num('models'), leafs: num('leafs'), clusters: num('clusters'), lightmapPages: num('lightmapPages'), gridPoints: num('gridPoints'), palette: num('palette'), visCell: num('visCell'), visSeconds: num('visSeconds'), drawVertsBefore: num('drawVertsBefore'), drawVertsAfter: num('drawVertsAfter') }
       const str = (v: any) => (typeof v === 'string' ? v : '')
       return { type: 'export_result', ok: m.ok, cancelled: m.cancelled === true, error: str(m.error), warnings: Array.isArray(m.warnings) ? m.warnings.filter((w: any) => typeof w === 'string') : [], bsp: str(m.bsp), lightmaps: str(m.lightmaps), seconds: Number.isFinite(m.seconds) ? m.seconds : 0, bakeSeconds: Number.isFinite(m.bakeSeconds) ? m.bakeSeconds : 0, device: str(m.device), stats }
     }
