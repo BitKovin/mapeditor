@@ -102,10 +102,9 @@ struct BspSettings {
     double lightmapTolerance = 2.5;
     double lightmapExposure = 1;
     // Pages whose light fits 8 bits (nothing above 1, within the tolerance above) are stored as .jpg instead of .exr, in pages of their own: the charts are
-    // grouped by that. The engine has to find lm_NNNN.jpg. `lightmapSrgb`: the bytes hold the sRGB curve of the light, else the light itself (byte / 255).
+    // grouped by that. The engine has to find lm_NNNN.jpg. The bytes are the light itself (byte / 255): the engine reads no sRGB lightmaps.
     // Needs lightmapTolerance > 0 (its error budget is also the JPEG's).
     bool lightmapJpeg = false;
-    bool lightmapSrgb = false;
     int lightmapJpegQuality = 95;
     bool repackLightmaps = true;           // pack all lightmap charts again by size (fewer, fuller pages) when that takes fewer pages than the live layout
     SkySettings sky;                       // the automatic sky (its texture "" = env/sky_cube with a warning)

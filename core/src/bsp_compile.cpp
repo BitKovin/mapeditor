@@ -19,6 +19,7 @@
 #include <cstring>
 #include <functional>
 #include <set>
+#include <tuple>
 #include <unordered_map>
 
 namespace core {
@@ -105,18 +106,7 @@ struct Placement { int page = 0, x = 0, y = 0; };
 std::vector<Placement> shelfPack(const std::vector<std::pair<int, int>>& sizes, int pageSize, int& pages) {
     const std::vector<PackPlacement> packed = packRects(sizes, pageSize, pages);  // MaxRects (lightmap_pack.h)
     std::vector<Placement> out(sizes.size());
-    pages = 0;
-    int x = 0, y = 0, shelf = 0;
-    bool open = false;
-    for (size_t i : order) {
-        const int w = std::min(sizes[i].first, pageSize), h = std::min(sizes[i].second, pageSize);
-        if (!open) { pages = 1; open = true; }
-        if (x + w > pageSize) { x = 0; y += shelf; shelf = 0; }
-        if (y + h > pageSize) { ++pages; x = 0; y = 0; shelf = 0; }
-        out[i] = {pages - 1, x, y};
-        x += w;
-        shelf = std::max(shelf, h);
-    }
+    for (size_t i = 0; i < out.size(); ++i) out[i] = {packed[i].page, packed[i].x, packed[i].y};
     return out;
 }
 
@@ -138,6 +128,16 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         if (isWorldClass(fe.entity.classname)) modelOf[key] = 0;
         else if (!fe.entity.brushes.empty()) { modelOf[key] = static_cast<int>(modelEntity.size()); modelEntity.push_back(&fe); }
     }
+    const size_t modelCount = modelEntity.size();
+
+    ShaderSet shaders;
+    shaders.root = cfg.textureRoot;
+    PlaneSet planes;
+
+    // ---- lightmap pages (DESIGN §12 "8 lightmaps, 4 UV sets"): slot 0 = the base pages as baked; slot k = the k-th style layer of every chart
+    // that has one. The engine's vertex has 4 lightmap UV sets, so slots 1 and 2 are packed densely on their own (UV sets 1, 2) and slots 3..7
+    // share ONE placement (UV set 3, computed for the charts with a 4th layer), each slot in its own pages.
+    const LightmapLayout* layout = in.layout;
     const auto basePages = in.pages.find(0);
     const bool lit = layout && basePages != in.pages.end() && basePages->second.atlas > 0;
     const int atlas = lit ? basePages->second.atlas : 0;
@@ -150,16 +150,6 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     const bool jpg = cfg.lightmapJpeg && cfg.lightmapTolerance > 0 && atlas % 8 == 0;
     if (lit) {
         const LightmapPages& bp = basePages->second;
-    const size_t modelCount = modelEntity.size();
-
-    ShaderSet shaders;
-    shaders.root = cfg.textureRoot;
-    PlaneSet planes;
-
-    // ---- lightmap pages (DESIGN §12 "8 lightmaps, 4 UV sets"): slot 0 = the base pages as baked; slot k = the k-th style layer of every chart
-    // that has one. The engine's vertex has 4 lightmap UV sets, so slots 1 and 2 are packed densely on their own (UV sets 1, 2) and slots 3..7
-    // share ONE placement (UV set 3, computed for the charts with a 4th layer), each slot in its own pages.
-    const LightmapLayout* layout = in.layout;
         const size_t nCharts = layout->charts.size();
         outSize.resize(nCharts);
         repOf.resize(nCharts);
@@ -186,9 +176,9 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             fs.tolerance = cfg.lightmapTolerance;
             std::vector<ChartFit> fits(nCharts);
             std::vector<char> fitted(nCharts, 0);
+            ldrOf.assign(nCharts, 0);
             parallelFor(nCharts, 16, [&](size_t b, size_t e) {
                 for (size_t c = b; c < e; ++c) {
-                    if (jpg) ldrOf[c] = fitsEightBits(layers, fits[c].w, fits[c].h, fs, cfg.lightmapSrgb) ? 1 : 0;
                     const LightmapChart& ch = layout->charts[c];
                     std::vector<FitLayer> layers;
                     for (size_t k = 0; k < ch.styles.size() && k < static_cast<size_t>(rbsp::kStyles); ++k) {
@@ -198,6 +188,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     if (layers.empty()) continue;
                     fits[c] = fitChart(layers, fs);
                     fitted[c] = 1;
+                    if (jpg) ldrOf[c] = fitsEightBits(layers, fits[c].w, fits[c].h, fs) ? 1 : 0;
                 }
             });
             std::map<std::tuple<int, int, uint64_t, size_t>, int> seen;
@@ -213,7 +204,6 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             }
             long long before = 0, after = 0;
             for (size_t c = 0; c < nCharts; ++c) {
-        // (8 bit pages hold their charts in whole 8x8 blocks, see packGroups: the rectangle is filled up to the block edge with the continued gradient)
                 before += static_cast<long long>(layout->charts[c].w) * layout->charts[c].h;
                 if (repOf[c] == static_cast<int>(c)) after += static_cast<long long>(outSize[c].first) * outSize[c].second;
             }
@@ -223,12 +213,13 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                                                std::to_string(shared) + " charts share the light of another)");
         }
         // Where a chart's layer k goes: copied as it is when its size is unchanged (the baked gutter stays), else resampled with a replicated gutter
+        // (8 bit pages hold their charts in whole 8x8 blocks, see packGroups: the rectangle is filled up to the block edge with the continued gradient)
         auto store = [&](const LightmapChart& ch, int c, size_t k, const Placement& dst, BspLightmapPage& page) {
             FitLayer l;
             if (!layerOf(ch, k, l)) return;
             const int nw = outSize[static_cast<size_t>(c)].first - 2 * lmPad, nh = outSize[static_cast<size_t>(c)].second - 2 * lmPad;
             auto& out = page.rgb;
-            if (nw == l.w && nh == l.h) {
+            if (nw == l.w && nh == l.h && !page.ldr) {
                 const auto& src = in.pages.find(ch.styles[k])->second.rgb[static_cast<size_t>(ch.page)];
                 for (int y = 0; y < ch.h && dst.y + y < atlas; ++y) {
                     const int w = std::min({ch.w, atlas - dst.x});
@@ -305,24 +296,23 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         }
         if (!repacked) {
             for (int p = 0; p < bp.pageCount; ++p) res.lightmaps.push_back({atlas, bp.rgb[static_cast<size_t>(p)]});
-            for (size_t c = 0; c < layout->charts.size(); ++c) placed[0][static_cast<int>(c)] = {layout->charts[c].page, layout->charts[c].x, layout->charts[c].y};
+            for (size_t c = 0; c < nCharts; ++c) placed[0][static_cast<int>(c)] = {layout->charts[c].page, layout->charts[c].x, layout->charts[c].y};
         }
         size_t dropped = 0;
         for (const auto& ch : layout->charts) dropped += ch.styles.size() > static_cast<size_t>(rbsp::kStyles);
         if (dropped) res.warnings.push_back(std::to_string(dropped) + " lightmap chart(s) have more than 8 light styles; the rest are dropped");
-        std::vector<Placement> shared;   // slots 3..7: placement per chart index (page relative to the shared set)
-        std::vector<int> sharedCharts;
+        std::map<int, Placement> shared;  // slots 3..7: placement per chart (page: relative to the shared set)
         for (int k = 1; k < rbsp::kStyles; ++k) {
-            std::vector<int> charts;
-            for (size_t c = 0; c < layout->charts.size(); ++c)
-                if (layout->charts[c].styles.size() > static_cast<size_t>(k)) charts.push_back(static_cast<int>(c));
+            std::vector<int> charts;  // the charts with a layer k that keep their own rectangle
+            for (size_t c = 0; c < nCharts; ++c)
+                if (layout->charts[c].styles.size() > static_cast<size_t>(k) && repOf[c] == static_cast<int>(c)) charts.push_back(static_cast<int>(c));
             if (charts.empty()) break;
             std::map<int, Placement> where;  // chart -> placement inside this slot's (relative) pages
             if (k <= 3) {
                 where = packGroups(charts);
                 if (k == 3) shared = where;
             } else {
-                for (size_t i = 0; i < sharedCharts.size(); ++i) where[sharedCharts[i]] = shared[i];  // the same positions as slot 3
+                where = shared;  // the same positions as slot 3
             }
             std::map<int, int> outPage;  // relative page -> output page (only pages that hold a chart of this slot)
             for (int c : charts) {
@@ -354,7 +344,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             std::vector<uint8_t> bytes(static_cast<size_t>(atlas) * atlas * 3);
             for (size_t i = 0; i < used.size(); ++i)
                 for (int q = 0; q < 3; ++q)
-                    bytes[i * 3 + q] = lightToByte(used[i] ? pg.rgb[i * 3 + q] : (n ? static_cast<float>(mean[q] / n) : 0.0f), cfg.lightmapSrgb);
+                    bytes[i * 3 + q] = lightToByte(used[i] ? pg.rgb[i * 3 + q] : (n ? static_cast<float>(mean[q] / n) : 0.0f));
             const std::vector<uint8_t> file = encodeJpeg(atlas, atlas, bytes.data(), cfg.lightmapJpegQuality);
             const auto back = decodeJpeg(file);
             bool ok = back && back->width == atlas && back->height == atlas;
@@ -369,11 +359,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                 };
                 for (size_t i = 0; i < used.size(); ++i)
                     for (int q = 0; q < 3; ++q) {
-            if (!ok) { pg.ldr = false; ++res.stats.lightmapJpegRejected; continue; }
-            pg.jpg = file;
-            pg.rgb = std::move(decoded);
-            ++res.stats.lightmapJpegPages;
-                        const float v = byteToLight(back->rgba[i * 4 + q], cfg.lightmapSrgb);
+                        const float v = byteToLight(back->rgba[i * 4 + q]);
                         decoded[i * 3 + q] = v;
                         if (!used[i]) continue;
                         const double e = std::fabs(lv(v) - lv(pg.rgb[i * 3 + q]));
@@ -383,6 +369,10 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     }
                 ok = judged == 0 || (over <= judged / 100 && worst <= cfg.lightmapTolerance * 2.4);
             }
+            if (!ok) { pg.ldr = false; ++res.stats.lightmapJpegRejected; continue; }
+            pg.jpg = file;
+            pg.rgb = std::move(decoded);
+            ++res.stats.lightmapJpegPages;
         }
     }
     res.stats.lightmapPages = res.lightmaps.size();
@@ -461,16 +451,16 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             lf = layout->findForFragment(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, pv);
             if (lf && lf->chart >= 0) chart = &layout->charts[static_cast<size_t>(lf->chart)];
         }
-        // per slot: texel offset from the base placement
+        // per slot: u' = ax + u * sx in texels (the placement of the slot's rectangle; sx / sy: the chart was fitted to fewer texels)
         std::array<Vec2, rbsp::kStyles> shift{};
+        double fitX = 1, fitY = 1;
         int slots = 0;
         if (chart) {
-        double fitX = 1, fitY = 1;
-            for (int k = 0; k < rbsp::kStyles && k < static_cast<int>(chart->styles.size()); ++k) {
-                const auto cit = placed[static_cast<size_t>(k)].find(lf->chart);
             const auto& osz = outSize[static_cast<size_t>(lf->chart)];
             fitX = double(osz.first - 2 * lmPad) / std::max(1, chart->w - 2 * lmPad);
             fitY = double(osz.second - 2 * lmPad) / std::max(1, chart->h - 2 * lmPad);
+            for (int k = 0; k < rbsp::kStyles && k < static_cast<int>(chart->styles.size()); ++k) {
+                const auto cit = placed[static_cast<size_t>(k)].find(lf->chart);
                 if (cit == placed[static_cast<size_t>(k)].end()) break;
                 out.lightmapStyles[k] = static_cast<uint8_t>(chart->styles[static_cast<size_t>(k)]);
                 out.lightmapNum[k] = cit->second.page;

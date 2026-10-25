@@ -1148,8 +1148,8 @@ TEST_CASE("lightmap fit: measure an exported level" * doctest::skip(std::getenv(
             fits[i] = fitChart({l}, fs);
         }
     });
-    {  // how much of it fits 8 bits (JPEG pages), stored linearly or through the sRGB curve
-        std::vector<char> okLin(list.size(), 0), okSrgb(list.size(), 0);
+    {  // how much of it fits 8 bits (JPEG pages, linear bytes)
+        std::vector<char> okLin(list.size(), 0);
         parallelFor(list.size(), 8, [&](size_t b, size_t e) {
             for (size_t i = b; i < e; ++i) {
                 const auto& c = list[i];
@@ -1160,18 +1160,16 @@ TEST_CASE("lightmap fit: measure an exported level" * doctest::skip(std::getenv(
                 FitSettings fs;
                 fs.exposure = exposure;
                 fs.tolerance = tolerance;
-                okLin[i] = fitsEightBits({l}, fits[i].w, fits[i].h, fs, false);
-                okSrgb[i] = fitsEightBits({l}, fits[i].w, fits[i].h, fs, true);
+                okLin[i] = fitsEightBits({l}, fits[i].w, fits[i].h, fs);
             }
         });
-        long long lin = 0, srgb = 0, all = 0;
+        long long lin = 0, all = 0;
         for (size_t i = 0; i < list.size(); ++i) {
             const long long t = static_cast<long long>(fits[i].w + 4) * (fits[i].h + 4);
             all += t;
             if (okLin[i]) lin += t;
-            if (okSrgb[i]) srgb += t;
         }
-        std::printf("8 bit pages: %.1f%% of the stored texels fit linear bytes, %.1f%% fit sRGB bytes\n", 100.0 * lin / all, 100.0 * srgb / all);
+        std::printf("8 bit pages: %.1f%% of the stored texels fit linear bytes\n", 100.0 * lin / all);
     }
     long long before = 0, after = 0, flat = 0;
     std::set<std::tuple<int, int, uint64_t>> distinct;

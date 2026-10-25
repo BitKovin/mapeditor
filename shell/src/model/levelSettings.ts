@@ -42,7 +42,6 @@ export const LEVEL_SECTIONS: LevelSection[] = [
   ] },
   { title: 'Export', note: 'Only the export uses these.', fields: [
     { key: '_lightmap_jpg', label: 'Lightmaps as .jpg when they fit', dflt: 0, min: 0, max: 1, step: 1, int: true, hint: '1 = pages whose light is nothing above 1 and survives 8 bits are written as lm_NNNN.jpg, grouped apart from the .exr pages (the engine has to find .jpg pages)' },
-    { key: '_lightmap_jpg_srgb', label: '.jpg stores the sRGB curve', dflt: 0, min: 0, max: 1, step: 1, int: true, hint: '0 = the byte is the light (byte / 255); 1 = the sRGB curve of the light, for an engine that reads the page as an sRGB texture' },
     { key: '_lightmap_jpg_quality', label: '.jpg quality', dflt: 95, min: 50, max: 100, step: 1, int: true, hint: 'JPEG quality of the lightmap pages' },
   ] },
   { title: 'Optimisation', note: 'Empty = the Core\'s lighting.json value.', fields: [

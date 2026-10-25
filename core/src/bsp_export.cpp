@@ -153,24 +153,23 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
         in.settings.contents = BspContentRules::fromJson(scene.profile().bsp, &r.warnings);
         for (const auto& e : doc.entities)
             if (e.classname == "worldspawn") {
+                const LevelSettings lv = levelSettingsOf(e);  // the exposure the lightmap fit judges by (the level's, else lighting.json's)
+                in.settings.lightmapExposure = lv.exposure > 0 ? lv.exposure : req.lighting.exposure;
                 in.settings.sky = skySettingsOf(e, [&]() { return listSkyboxes(req.assetsRoot); }, &r.warnings);  // REQUIREMENTS §28
                 if (in.settings.sky.mode != AutoSky::Off && !in.settings.sky.texture.empty() && !readSkybox(req.assetsRoot, in.settings.sky.texture))
                     r.warnings.push_back("auto sky: " + in.settings.sky.texture + " has no image in env/ (the engine would draw nothing)");
-                if (const auto it = e.keyvalues.find("_vis_cell"); it != e.keyvalues.end()) {
-                    try { const double c = std::stod(it->second); if (c > 0) in.settings.visCell = c; } catch (...) { r.warnings.push_back("_vis_cell is not a number"); }
-                }
-            }
-                const LevelSettings lv = levelSettingsOf(e);  // the exposure the lightmap fit judges by (the level's, else lighting.json's)
-                in.settings.lightmapExposure = lv.exposure > 0 ? lv.exposure : req.lighting.exposure;
-
-                {  // 8 bit lightmap pages as .jpg (bsp_compile.h): _lightmap_jpg 1; _lightmap_jpg_srgb 1 stores the sRGB curve of the light; _lightmap_jpg_quality
+                {  // 8 bit lightmap pages as .jpg (bsp_compile.h): _lightmap_jpg 1; _lightmap_jpg_quality
                     auto flag = [&](const char* key) { const auto k = e.keyvalues.find(key); return k != e.keyvalues.end() && k->second != "0" && !k->second.empty(); };
                     in.settings.lightmapJpeg = flag("_lightmap_jpg");
-                    in.settings.lightmapSrgb = flag("_lightmap_jpg_srgb");
                     if (const auto q = e.keyvalues.find("_lightmap_jpg_quality"); q != e.keyvalues.end()) {
                         try { in.settings.lightmapJpegQuality = std::clamp(std::stoi(q->second), 50, 100); } catch (...) { r.warnings.push_back("_lightmap_jpg_quality is not a number"); }
                     }
                 }
+                if (const auto it = e.keyvalues.find("_vis_cell"); it != e.keyvalues.end()) {
+                    try { const double c = std::stod(it->second); if (c > 0) in.settings.visCell = c; } catch (...) { r.warnings.push_back("_vis_cell is not a number"); }
+                }
+            }
+
         // final bake: the live pipeline, synchronously, at the level's bake quality
         std::unique_ptr<LightingService> svc;
         LightmapLayout layout;
