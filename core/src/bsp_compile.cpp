@@ -179,6 +179,8 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             FitSettings fs;
             fs.exposure = cfg.lightmapExposure;
             fs.tolerance = cfg.lightmapTolerance;
+            FitSettings jpgFs = fs;
+            jpgFs.tolerance = cfg.lightmapJpegTolerance;
             std::vector<ChartFit> fits(nCharts);
             std::vector<char> fitted(nCharts, 0);
             ldrOf.assign(nCharts, 0);
@@ -193,7 +195,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     if (layers.empty()) continue;
                     fits[c] = fitChart(layers, fs);
                     fitted[c] = 1;
-                    if (jpg) ldrOf[c] = fitsEightBits(layers, fits[c].w, fits[c].h, fs) ? 1 : 0;
+                    if (jpg) ldrOf[c] = fitsEightBits(layers, fits[c].w, fits[c].h, jpgFs) ? 1 : 0;
                 }
             });
             std::map<std::tuple<int, int, uint64_t, size_t>, int> seen;
@@ -241,6 +243,15 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     for (int q = 0; q < 3; ++q) out[(static_cast<size_t>(dst.y + y) * atlas + dst.x + x) * 3 + q] = fitTap(small, nw, nh, x - lmPad, y - lmPad, q);  // the gutter continues the gradient
                 }
         };
+        std::vector<std::vector<std::array<int, 7>>> pageRects;  // per output page: where charts were stored (the rest of the page is empty): x, y, w, h of the (block) rectangle, the interior size, the chart
+        const size_t warnMark = res.warnings.size();
+        // The pages are laid out up to twice: charts that do not survive their .jpg (the darks, at 8 bits and JPEG noise) are moved to the .exr pages the second time
+        for (int attempt = 0; attempt < 2; ++attempt) {
+        res.lightmaps.clear();
+        pageRects.clear();
+        for (auto& m : placed) m.clear();
+        res.stats.lightmapJpegPages = res.stats.lightmapJpegRejected = 0;
+        res.warnings.resize(warnMark);
         // Packs charts into pages, 8 bit charts apart from the others (in whole 8x8 blocks at block positions, so no JPEG block mixes two charts) (a page is either a .jpg or an .exr): the placement's page is group * 100000 + page
         auto packGroups = [&](const std::vector<int>& list) {
             std::map<int, Placement> where;
@@ -260,7 +271,6 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             }
             return where;
         };
-        std::vector<std::vector<std::array<int, 4>>> pageRects;  // per output page: where charts were stored (the rest of the page is empty)
         auto newPage = [&](bool ldr) {
             BspLightmapPage pg;
             pg.size = atlas;
@@ -278,7 +288,8 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             store(layout->charts[static_cast<size_t>(c)], c, k, dst, res.lightmaps[static_cast<size_t>(dst.page)]);
             const bool block = res.lightmaps[static_cast<size_t>(dst.page)].ldr;
             pageRects[static_cast<size_t>(dst.page)].push_back({dst.x, dst.y, block ? blockUp(outSize[static_cast<size_t>(c)].first) : outSize[static_cast<size_t>(c)].first,
-                                                                block ? blockUp(outSize[static_cast<size_t>(c)].second) : outSize[static_cast<size_t>(c)].second});
+                                                                block ? blockUp(outSize[static_cast<size_t>(c)].second) : outSize[static_cast<size_t>(c)].second,
+                                                                outSize[static_cast<size_t>(c)].first - 2 * lmPad, outSize[static_cast<size_t>(c)].second - 2 * lmPad, c});
             return dst;
         };
         // The base layer: the charts as the live layout placed them (pages are 20-60% full: buckets of one texture / entity stay together there), or, when
@@ -331,11 +342,13 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                     if (it != placed[static_cast<size_t>(k)].end()) placed[static_cast<size_t>(k)][static_cast<int>(c)] = it->second;
                 }
         }
+        std::vector<int> failing;  // charts whose .jpg is not good enough
         // 8 bit pages: filled between the charts with their mean (the empty black would ring into the gutters), encoded, read back and judged again as pages;
         // a page that does not hold up stays an .exr
         for (size_t pi = 0; pi < res.lightmaps.size(); ++pi) {
             BspLightmapPage& pg = res.lightmaps[pi];
             if (!pg.ldr) continue;
+            const size_t failBefore = failing.size();
             std::vector<char> used(static_cast<size_t>(atlas) * atlas, 0);
             double mean[3] = {0, 0, 0};
             size_t n = 0;
@@ -356,28 +369,37 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             std::vector<float> decoded;
             if (ok) {
                 decoded.resize(pg.rgb.size());
-                size_t over = 0, judged = 0;
-                double worst = 0;
-                auto lv = [&](float x) {
-                    const double c = std::clamp(static_cast<double>(x) * cfg.lightmapExposure, 0.0, 1.0);
-                    return (c <= 0.0031308 ? 12.92 * c : 1.055 * std::pow(c, 1.0 / 2.4) - 0.055) * 255.0;
-                };
                 for (size_t i = 0; i < used.size(); ++i)
-                    for (int q = 0; q < 3; ++q) {
-                        const float v = byteToLight(back->rgba[i * 4 + q]);
-                        decoded[i * 3 + q] = v;
-                        if (!used[i]) continue;
-                        const double e = std::fabs(lv(v) - lv(pg.rgb[i * 3 + q]));
-                        worst = std::max(worst, e);
-                        over += e > cfg.lightmapTolerance;
-                        ++judged;
-                    }
-                ok = judged == 0 || (over <= judged / 100 && worst <= cfg.lightmapTolerance * 2.4);
+                    for (int q = 0; q < 3; ++q) decoded[i * 3 + q] = byteToLight(back->rgba[i * 4 + q]);
+                // judged like the fit: what the engine shows (bicubic read) of each chart's original against that of the decoded page, as sRGB levels
+                double over = 0, judged = 0, worst = 0;
+                for (const auto& r : pageRects[pi]) {
+                    const int iw = r[4], ih = r[5];
+                    if (iw <= 0 || ih <= 0) continue;
+                    FitLayer l;
+                    l.rgb = pg.rgb.data(); l.atlas = atlas; l.x0 = r[0] + lmPad; l.y0 = r[1] + lmPad; l.w = iw; l.h = ih;
+                    std::vector<float> small(static_cast<size_t>(iw) * ih * 3);
+                    for (int y = 0; y < ih; ++y)
+                        std::copy_n(decoded.begin() + (static_cast<size_t>(l.y0 + y) * atlas + l.x0) * 3, static_cast<size_t>(iw) * 3, small.begin() + static_cast<size_t>(y) * iw * 3);
+                    const FitError e = fitError(l, small, iw, ih, cfg.lightmapExposure, cfg.lightmapJpegTolerance);
+                    over += e.over * iw * ih;
+                    judged += static_cast<double>(iw) * ih;
+                    worst = std::max(worst, e.worst);
+                    if (e.over > 0.01 || e.worst > cfg.lightmapJpegTolerance * 2) failing.push_back(r[6]);
+                }
+                ok = judged == 0 || (over <= judged * 0.01 && worst <= cfg.lightmapJpegTolerance * 2);
             }
+            if (attempt > 0 && failing.size() > failBefore) ok = false;  // the second time a page with a chart that is not good enough stays an .exr
             if (!ok) { pg.ldr = false; ++res.stats.lightmapJpegRejected; continue; }
             pg.jpg = file;
             pg.rgb = std::move(decoded);
             ++res.stats.lightmapJpegPages;
+        }
+        if (attempt == 0 && !failing.empty()) {
+            for (int c : failing) ldrOf[static_cast<size_t>(repOf[static_cast<size_t>(c)])] = 0;
+            continue;
+        }
+        break;
         }
     }
     res.stats.lightmapPages = res.lightmaps.size();

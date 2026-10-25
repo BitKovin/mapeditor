@@ -42,7 +42,8 @@ export const LEVEL_SECTIONS: LevelSection[] = [
   ] },
   { title: 'Export', note: 'Only the export uses these.', fields: [
     { key: '_lightmap_jpg', label: 'Lightmaps as .jpg when they fit', dflt: 1, min: 0, max: 1, step: 1, int: true, hint: '1 (default) = pages whose light is nothing above 1 and survives 8 bits are written as lm_NNNN.jpg, grouped apart from the .exr pages (the engine has to find .jpg pages)' },
-    { key: '_lightmap_jpg_quality', label: '.jpg quality', dflt: 95, min: 50, max: 100, step: 1, int: true, hint: 'JPEG quality of the lightmap pages' },
+    { key: '_lightmap_jpg_tolerance', label: '.jpg error allowed (levels)', dflt: 8, min: 0.5, max: 64, step: 0.5, hint: 'How far a chart may differ in a .jpg, in 8-bit display levels after the exposure; a chart that differs more stays in the .exr pages. Near black one byte of linear light is already 12 levels: lower this and the dark charts stay .exr' },
+    { key: '_lightmap_jpg_quality', label: '.jpg quality', dflt: 98, min: 50, max: 100, step: 1, int: true, hint: 'JPEG quality of the lightmap pages' },
   ] },
   { title: 'Optimisation', note: 'Empty = the Core\'s lighting.json value.', fields: [
     { key: '_lightvol_grid', label: 'Lightvol grid size (m)', dflt: null, min: 0.25, max: 64, step: 0.25, hint: 'Spacing of the light volume probes' },

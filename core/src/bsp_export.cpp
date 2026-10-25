@@ -54,7 +54,7 @@ bool isStatic(const std::string& c, const LightingClasses& classes) {
 }  // namespace
 
 json BspExportResult::toJson() const {
-    json s = {{"surfaces", stats.surfaces}, {"decals", stats.decals}, {"sky", stats.skySurfaces}, {"laidOut", stats.laidOutSurfaces}, {"droppedSurfaces", stats.droppedSurfaces}, {"degenerateTriangles", stats.degenerateTriangles}, {"brushes", stats.brushes}, {"models", stats.models},
+    json s = {{"surfaces", stats.surfaces}, {"decals", stats.decals}, {"sky", stats.skySurfaces}, {"laidOut", stats.laidOutSurfaces}, {"droppedSurfaces", stats.droppedSurfaces}, {"degenerateTriangles", stats.degenerateTriangles}, {"lightmapJpegPages", stats.lightmapJpegPages}, {"lightmapJpegRejected", stats.lightmapJpegRejected}, {"lightmapPages", stats.lightmapPages}, {"brushes", stats.brushes}, {"models", stats.models},
               {"leafs", stats.leafs}, {"clusters", stats.clusters}, {"lightmapPages", stats.lightmapPages}, {"gridPoints", stats.gridPoints},
               {"palette", stats.palette}, {"visCell", stats.visCell}, {"visSeconds", stats.visSeconds}};
     return {{"type", "export_result"}, {"ok", ok}, {"cancelled", cancelled}, {"error", error}, {"warnings", warnings}, {"stats", s},
@@ -161,6 +161,9 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                 {  // 8 bit lightmap pages as .jpg (bsp_compile.h): on unless _lightmap_jpg is 0; _lightmap_jpg_quality
                     auto flag = [&](const char* key, bool dflt) { const auto k = e.keyvalues.find(key); return k == e.keyvalues.end() || k->second.empty() ? dflt : k->second != "0"; };
                     in.settings.lightmapJpeg = flag("_lightmap_jpg", true);
+                    if (const auto t = e.keyvalues.find("_lightmap_jpg_tolerance"); t != e.keyvalues.end()) {
+                        try { in.settings.lightmapJpegTolerance = std::clamp(std::stod(t->second), 0.5, 64.0); } catch (...) { r.warnings.push_back("_lightmap_jpg_tolerance is not a number"); }
+                    }
                     if (const auto q = e.keyvalues.find("_lightmap_jpg_quality"); q != e.keyvalues.end()) {
                         try { in.settings.lightmapJpegQuality = std::clamp(std::stoi(q->second), 50, 100); } catch (...) { r.warnings.push_back("_lightmap_jpg_quality is not a number"); }
                     }
