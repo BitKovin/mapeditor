@@ -1,4 +1,5 @@
 #include "core/lightmap_uv.h"
+#include "core/lightmap_pack.h"
 #include "core/parallel.h"
 #include "core/smoothing.h"
 #include <algorithm>
@@ -100,62 +101,9 @@ uint32_t part1by2(uint32_t x) {
     return x;
 }
 
-// ---- MaxRects (best short side fit, no rotation) ---------------------------------------------------------------------
-struct Rect {
-    int x, y, w, h;
-};
-
-struct Page {
-    std::vector<Rect> freeRects;
-    long long used = 0;
-    explicit Page(int size) { freeRects.push_back({0, 0, size, size}); }
-
-    std::optional<Rect> place(int w, int h) {
-        int best = -1;
-        long long bestShort = std::numeric_limits<long long>::max(), bestLong = bestShort;
-        for (size_t i = 0; i < freeRects.size(); ++i) {
-            const Rect& f = freeRects[i];
-            if (f.w < w || f.h < h) continue;
-            const long long dw = f.w - w, dh = f.h - h;
-            const long long sh = std::min(dw, dh), lg = std::max(dw, dh);
-            // ties: lower y, then lower x, for a deterministic and compact result
-            if (sh < bestShort || (sh == bestShort && lg < bestLong) ||
-                (sh == bestShort && lg == bestLong && best >= 0 && std::tie(f.y, f.x) < std::tie(freeRects[best].y, freeRects[best].x))) {
-                best = static_cast<int>(i);
-                bestShort = sh;
-                bestLong = lg;
-            }
-        }
-        if (best < 0) return std::nullopt;
-        const Rect r{freeRects[best].x, freeRects[best].y, w, h};
-        std::vector<Rect> next;
-        std::vector<char> fresh;  // 1 = a piece cut from a rectangle the new one overlapped
-        for (const Rect& f : freeRects) {
-            if (r.x >= f.x + f.w || r.x + r.w <= f.x || r.y >= f.y + f.h || r.y + r.h <= f.y) { next.push_back(f); fresh.push_back(0); continue; }
-            auto add = [&](const Rect& piece) { next.push_back(piece); fresh.push_back(1); };
-            if (r.x > f.x) add({f.x, f.y, r.x - f.x, f.h});
-            if (r.x + r.w < f.x + f.w) add({r.x + r.w, f.y, f.x + f.w - (r.x + r.w), f.h});
-            if (r.y > f.y) add({f.x, f.y, f.w, r.y - f.y});
-            if (r.y + r.h < f.y + f.h) add({f.x, r.y + r.h, f.w, f.y + f.h - (r.y + r.h)});
-        }
-        // prune rectangles contained in another one. The rectangles kept from before are not contained in each other, and a piece lies inside
-        // the rectangle it was cut from, so only the new pieces can be contained: the others are kept without looking (this was quadratic in the
-        // free list for every chart placed, and took seconds on a level with tens of thousands of charts).
-        std::vector<Rect> kept;
-        for (size_t i = 0; i < next.size(); ++i) {
-            bool contained = false;
-            for (size_t j = 0; fresh[i] && j < next.size() && !contained; ++j) {
-                if (i == j) continue;
-                const Rect &a = next[i], &b = next[j];
-                if (a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h && (i > j || !(a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h))) contained = true;
-            }
-            if (!contained) kept.push_back(next[i]);
-        }
-        freeRects = std::move(kept);
-        used += static_cast<long long>(w) * h;
-        return r;
-    }
-};
+// ---- MaxRects: lightmap_pack.h ---------------------------------------------------------------------------------------
+using Rect = PackRect;
+using Page = PackPage;
 
 struct Member {
     int face;

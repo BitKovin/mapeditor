@@ -1014,7 +1014,7 @@ ONE placement (UV set 3, packed for the charts with a 4th layer), each slot in i
 samples slots 4..7 with its 4th UV set.
 
 **Lightmaps.** Page size = the layout's atlas (1024). RGB half float, ZIP, linear: the value is irradiance with pi absorbed (§6.5); displayed
-colour = albedo x value, exactly what the Lit view multiplies. Base pages first; each further style layer is re-packed densely (only the charts
+colour = albedo x value, exactly what the Lit view multiplies. The base layer is packed again by size at export (`lightmap_pack.h` MaxRects over all charts, biggest first; the live layout keeps buckets of one entity / texture together, which leaves pages 20-60% full) whenever that takes fewer pages (`BspSettings::repackLightmaps`); a texel moves with its chart, gutter included, and the vertices' lightmap coordinates follow. Base pages first; each further style layer is re-packed densely (only the charts
 that carry it, same sizes) into its own pages after them. Gutters dilated as in the editor.
 
 **Light grid.** Its bounds are explicit (the lightarray header: origin, cell, counts), NOT derived from the world's bounds as in Quake 3: the user

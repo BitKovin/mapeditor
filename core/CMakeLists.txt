@@ -118,7 +118,7 @@ endif()
 add_library(core_lib STATIC
     src/brush.cpp src/entity_class.cpp src/document.cpp src/prefab.cpp
     src/scene.cpp src/router.cpp src/origin.cpp src/profile.cpp src/textures.cpp src/sky.cpp src/texgroups.cpp
-    src/entdef.cpp src/settings.cpp src/native_dialog.cpp src/csg.cpp src/decal.cpp src/derived.cpp src/playable.cpp
+    src/entdef.cpp src/settings.cpp src/native_dialog.cpp src/csg.cpp src/decal.cpp src/derived.cpp src/playable.cpp src/lightmap_pack.cpp
     src/lighting_classes.cpp src/lightmap_uv.cpp src/lights.cpp src/lightbake.cpp src/parallel.cpp src/gpu_bake.cpp src/raytrace.cpp src/live_bake.cpp src/lighting_service.cpp src/relief_geometry.cpp
     src/albedo.cpp src/lightvol.cpp src/light_styles.cpp src/light_style_analysis.cpp src/denoise.cpp
     src/map_import.cpp src/exr.cpp src/bsp_convex.cpp src/bsp_compile.cpp src/bsp_export.cpp src/exporter.cpp src/smoothing.cpp

@@ -97,6 +97,7 @@ struct BspSettings {
     int visSamples = 16;                   // sample points per cell
     int visRays = 256;                     // rays per sample point
     bool visibility = true;                // false: every cluster sees every cluster
+    bool repackLightmaps = true;           // pack all lightmap charts again by size (fewer, fuller pages) when that takes fewer pages than the live layout
     SkySettings sky;                       // the automatic sky (its texture "" = env/sky_cube with a warning)
     double engineFarPlane = 3000;          // m: the engine's Camera::FarPlane; a sky box larger than that across is clipped (warning)
 };

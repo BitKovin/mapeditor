@@ -1,6 +1,7 @@
 ﻿// rBSP export (REQUIREMENTS В§25, DESIGN В§12): EXR lightmaps, convex collision pieces, the compiler.
 #include "core/bsp_compile.h"
 #include "core/exr.h"
+#include "core/lightmap_pack.h"
 #include "core/lighting_classes.h"
 #include "doctest.h"
 #include "test_util.h"
@@ -923,4 +924,74 @@ TEST_CASE("bsp sky: the lighting never sees sky faces; the sky light takes the l
     BspView v;
     REQUIRE(v.open(bytes));
     CHECK(surfacesWithShader(v, "textures/env/east_cube").size() == 12);  // the lid's 6 faces and the auto box's 6
+}
+
+TEST_CASE("bsp lightmaps: the base charts are packed again into fewer pages and every vertex still reads its own chart's light") {
+    Document d = twoRooms(true);
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visibility = false;
+    LightmapSettings ls;
+    ls.atlasSize = 64;  // small pages: the live layout (buckets stay together) needs several, the repack fewer
+    // a density at which packing all charts by size saves a page (found by trying: the layouts are deterministic)
+    LightmapLayout layout;
+    bool saves = false;
+    for (double tpm : {2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 7.0, 8.0}) {
+        ls.texelsPerMeter = tpm;
+        layout = buildLightmapLayout(in.surfaces, in.classes, ls);
+        std::vector<std::pair<int, int>> sizes;
+        for (const auto& c : layout.charts) sizes.push_back({c.w, c.h});
+        int pages = 0;
+        packRects(sizes, 64, pages);
+        if (pages < layout.pageCount) { saves = true; break; }
+    }
+    REQUIRE(saves);
+    in.layout = &layout;
+    LightmapPages p;
+    p.atlas = 64;
+    p.pageCount = layout.pageCount;
+    // every chart is filled with a value of its own (its index + 1) inside its rectangle, 0 outside: after the repack a vertex must still find that value
+    for (int k = 0; k < p.pageCount; ++k) {
+        p.rgb.push_back(std::vector<float>(64 * 64 * 3, 0.0f));
+        p.valid.push_back(std::vector<uint8_t>(64 * 64, 1));
+    }
+    for (size_t c = 0; c < layout.charts.size(); ++c) {
+        const auto& ch = layout.charts[c];
+        for (int y = 0; y < ch.h; ++y) for (int x = 0; x < ch.w; ++x) for (int q = 0; q < 3; ++q) p.rgb[static_cast<size_t>(ch.page)][(static_cast<size_t>(ch.y + y) * 64 + ch.x + x) * 3 + q] = float(c + 1);
+    }
+    in.pages[0] = p;
+    BspInput off = in;
+    off.settings.repackLightmaps = false;
+    const BspOutput kept = compileBsp(off);
+    const BspOutput out = compileBsp(in);
+    CHECK(kept.lightmaps.size() == static_cast<size_t>(layout.pageCount));
+    CHECK(out.lightmaps.size() < kept.lightmaps.size());
+    BspView v;
+    REQUIRE(v.open(out.bsp));
+    const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto verts = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    const auto idx = v.lump<int32_t>(rbsp::kDrawIndexes);
+    (void)idx;
+    // the same chart value must be read by the vertex in both builds
+    BspView v2;
+    REQUIRE(v2.open(kept.bsp));
+    const auto surfaces2 = v2.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto verts2 = v2.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    REQUIRE(surfaces.size() == surfaces2.size());
+    auto read = [&](const BspOutput& o, const rbsp::DrawVert& dv, int page) {
+        const int x = std::clamp(static_cast<int>(dv.lightmap[0][0] * 64), 0, 63), y = std::clamp(static_cast<int>(dv.lightmap[0][1] * 64), 0, 63);
+        return o.lightmaps[static_cast<size_t>(page)].rgb[(static_cast<size_t>(y) * 64 + x) * 3];
+    };
+    size_t checked = 0;
+    for (size_t i = 0; i < surfaces.size(); ++i) {
+        if (surfaces[i].lightmapNum[0] < 0) continue;
+        REQUIRE(surfaces[i].numVerts == surfaces2[i].numVerts);
+        for (int k = 0; k < surfaces[i].numVerts; ++k) {
+            const float a = read(out, verts[static_cast<size_t>(surfaces[i].firstVert + k)], surfaces[i].lightmapNum[0]);
+            const float b = read(kept, verts2[static_cast<size_t>(surfaces2[i].firstVert + k)], surfaces2[i].lightmapNum[0]);
+            CHECK(a == b);
+            ++checked;
+        }
+    }
+    CHECK(checked > 0);
 }

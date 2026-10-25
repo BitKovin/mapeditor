@@ -1,5 +1,6 @@
 ﻿// The rBSP compiler (REQUIREMENTS В§25, DESIGN В§12).
 #include "core/bsp_compile.h"
+#include "core/lightmap_pack.h"
 #include "core/csg.h"
 #include "core/parallel.h"
 #include "core/raytrace.h"
@@ -99,9 +100,7 @@ double hash01(uint32_t a, uint32_t b, uint32_t c) {
 // Shelf packing of rectangles into square pages: (page, x, y) per rectangle.
 struct Placement { int page = 0, x = 0, y = 0; };
 std::vector<Placement> shelfPack(const std::vector<std::pair<int, int>>& sizes, int pageSize, int& pages) {
-    std::vector<size_t> order(sizes.size());
-    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
-    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return sizes[a].second > sizes[b].second; });
+    const std::vector<PackPlacement> packed = packRects(sizes, pageSize, pages);  // MaxRects (lightmap_pack.h)
     std::vector<Placement> out(sizes.size());
     pages = 0;
     int x = 0, y = 0, shelf = 0;
@@ -152,8 +151,38 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     std::array<std::map<int, Placement>, rbsp::kStyles> placed;  // slot -> chart -> where its layer went (output page index)
     if (lit) {
         const LightmapPages& bp = basePages->second;
-        for (int p = 0; p < bp.pageCount; ++p) res.lightmaps.push_back({atlas, bp.rgb[static_cast<size_t>(p)]});
-        for (size_t c = 0; c < layout->charts.size(); ++c) placed[0][static_cast<int>(c)] = {layout->charts[c].page, layout->charts[c].x, layout->charts[c].y};
+        // The base layer: the charts as the live layout placed them (pages are 20-60% full: buckets of one texture / entity stay together there), or, when
+        // packing them all again by size takes fewer pages, repacked (cfg.repackLightmaps). A texel moves with its chart, gutter included.
+        bool repacked = false;
+        if (cfg.repackLightmaps && !layout->charts.empty()) {
+            std::vector<std::pair<int, int>> sizes;
+            for (const auto& ch : layout->charts) sizes.push_back({ch.w, ch.h});
+            int pages = 0;
+            const auto where = shelfPack(sizes, atlas, pages);
+            if (pages < bp.pageCount) {
+                repacked = true;
+                for (int p = 0; p < pages; ++p) res.lightmaps.push_back({atlas, std::vector<float>(static_cast<size_t>(atlas) * atlas * 3, 0.0f)});
+                for (size_t c = 0; c < layout->charts.size(); ++c) {
+                    const auto& ch = layout->charts[c];
+                    const Placement dst = where[c];
+                    placed[0][static_cast<int>(c)] = dst;
+                    if (ch.page >= bp.pageCount) continue;
+                    const auto& src = bp.rgb[static_cast<size_t>(ch.page)];
+                    auto& out = res.lightmaps[static_cast<size_t>(dst.page)].rgb;
+                    for (int y = 0; y < ch.h && dst.y + y < atlas && ch.y + y < atlas; ++y) {
+                        const int w = std::min({ch.w, atlas - dst.x, atlas - ch.x});
+                        if (w <= 0) break;
+                        std::copy_n(src.begin() + (static_cast<size_t>(ch.y + y) * atlas + ch.x) * 3, static_cast<size_t>(w) * 3,
+                                    out.begin() + (static_cast<size_t>(dst.y + y) * atlas + dst.x) * 3);
+                    }
+                }
+                res.warnings.push_back("lightmaps repacked: " + std::to_string(bp.pageCount) + " -> " + std::to_string(pages) + " pages");
+            }
+        }
+        if (!repacked) {
+            for (int p = 0; p < bp.pageCount; ++p) res.lightmaps.push_back({atlas, bp.rgb[static_cast<size_t>(p)]});
+            for (size_t c = 0; c < layout->charts.size(); ++c) placed[0][static_cast<int>(c)] = {layout->charts[c].page, layout->charts[c].x, layout->charts[c].y};
+        }
         size_t dropped = 0;
         for (const auto& ch : layout->charts) dropped += ch.styles.size() > static_cast<size_t>(rbsp::kStyles);
         if (dropped) res.warnings.push_back(std::to_string(dropped) + " lightmap chart(s) have more than 8 light styles; the rest are dropped");
