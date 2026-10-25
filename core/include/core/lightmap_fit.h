@@ -31,6 +31,14 @@ struct ChartFit {
 // The smallest size at which every layer still looks the same (max over layers). Never larger than the original.
 ChartFit fitChart(const std::vector<FitLayer>& layers, const FitSettings& settings);
 
+// Whether every layer, stored at w x h texels (as from resampleLayer) in 8 bits (`srgb`: through the sRGB curve, else linear), still looks the same by the
+// fit's measure, and none of it is brighter than 1 (what a JPEG page can hold).
+bool fitsEightBits(const std::vector<FitLayer>& layers, int w, int h, const FitSettings& settings, bool srgb);
+
+// The 8-bit value of a light value (clamped to 0..1) and back.
+uint8_t lightToByte(float v, bool srgb);
+float byteToLight(uint8_t b, bool srgb);
+
 // The value of a small image (w x h x 3, from resampleLayer) at texel (x, y), also outside it: past the edge the image continues linearly (clamped at 0), which
 // is what the stored gutter holds, so a plain gradient stays a gradient up to the chart's edge.
 float fitTap(const std::vector<float>& img, int w, int h, int x, int y, int channel);

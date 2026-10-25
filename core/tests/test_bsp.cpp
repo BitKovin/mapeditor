@@ -1,5 +1,7 @@
 ﻿// rBSP export (REQUIREMENTS В§25, DESIGN В§12): EXR lightmaps, convex collision pieces, the compiler.
 #include "core/bsp_compile.h"
+#include "core/jpeg.h"
+#include "core/albedo.h"
 #include "core/parallel.h"
 #include <tuple>
 #include <filesystem>
@@ -1146,6 +1148,31 @@ TEST_CASE("lightmap fit: measure an exported level" * doctest::skip(std::getenv(
             fits[i] = fitChart({l}, fs);
         }
     });
+    {  // how much of it fits 8 bits (JPEG pages), stored linearly or through the sRGB curve
+        std::vector<char> okLin(list.size(), 0), okSrgb(list.size(), 0);
+        parallelFor(list.size(), 8, [&](size_t b, size_t e) {
+            for (size_t i = b; i < e; ++i) {
+                const auto& c = list[i];
+                const ExrImage& img = pages.at(c[0]);
+                FitLayer l;
+                l.rgb = img.rgb.data(); l.atlas = img.width; l.x0 = c[1] + 2; l.y0 = c[2] + 2; l.w = c[3] - 4; l.h = c[4] - 4;
+                if (l.w < 1 || l.h < 1) continue;
+                FitSettings fs;
+                fs.exposure = exposure;
+                fs.tolerance = tolerance;
+                okLin[i] = fitsEightBits({l}, fits[i].w, fits[i].h, fs, false);
+                okSrgb[i] = fitsEightBits({l}, fits[i].w, fits[i].h, fs, true);
+            }
+        });
+        long long lin = 0, srgb = 0, all = 0;
+        for (size_t i = 0; i < list.size(); ++i) {
+            const long long t = static_cast<long long>(fits[i].w + 4) * (fits[i].h + 4);
+            all += t;
+            if (okLin[i]) lin += t;
+            if (okSrgb[i]) srgb += t;
+        }
+        std::printf("8 bit pages: %.1f%% of the stored texels fit linear bytes, %.1f%% fit sRGB bytes\n", 100.0 * lin / all, 100.0 * srgb / all);
+    }
     long long before = 0, after = 0, flat = 0;
     std::set<std::tuple<int, int, uint64_t>> distinct;
     for (size_t i = 0; i < list.size(); ++i) {
@@ -1172,4 +1199,102 @@ TEST_CASE("lightmap fit: measure an exported level" * doctest::skip(std::getenv(
     std::printf("charts %zu | texels %.2f M -> %.2f M (%.1f%%), with identical charts shared %.2f M (%.1f%%) | 1x1 charts %lld | tolerance %.1f levels, exposure %.2f | %.1f s\n", list.size(),
                 before / 1e6, after / 1e6, 100.0 * after / before, shared / 1e6, 100.0 * shared / before, flat, tolerance, exposure,
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+}
+
+TEST_CASE("jpeg: the encoder's baseline files are read back by the baseline decoder, smooth data within a few levels") {
+    constexpr int W = 40, H = 24;  // not multiples of 8: the edge blocks are padded
+    std::vector<uint8_t> rgb(W * H * 3);
+    for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) { rgb[(y * W + x) * 3] = uint8_t(20 + x * 4); rgb[(y * W + x) * 3 + 1] = uint8_t(200 - y * 5); rgb[(y * W + x) * 3 + 2] = 90; }
+    const std::vector<uint8_t> file = encodeJpeg(W, H, rgb.data(), 95);
+    REQUIRE(file.size() > 100);
+    CHECK(file[0] == 0xFF);
+    CHECK(file[1] == 0xD8);
+    const auto img = decodeJpeg(file);
+    REQUIRE(img.has_value());
+    CHECK(img->width == W);
+    CHECK(img->height == H);
+    int worst = 0;
+    for (int i = 0; i < W * H; ++i) for (int c = 0; c < 3; ++c) worst = std::max(worst, std::abs(int(img->rgba[i * 4 + c]) - int(rgb[i * 3 + c])));
+    CHECK(worst <= 4);
+}
+
+namespace fs = std::filesystem;
+
+TEST_CASE("bsp lightmaps: with lightmapJpeg the charts that fit 8 bits go to .jpg pages, the others (above 1) stay .exr, and every vertex reads the same light") {
+    Document d = twoRooms(true);
+    std::shared_ptr<SolidSet> solids;
+    BspInput in = inputFor(d, solids);
+    in.settings.visibility = false;
+    LightmapSettings ls;
+    ls.texelsPerMeter = 6;
+    ls.atlasSize = 128;
+    LightmapLayout layout = buildLightmapLayout(in.surfaces, in.classes, ls);
+    REQUIRE(layout.charts.size() > 3);
+    in.layout = &layout;
+    LightmapPages p;
+    p.atlas = 128;
+    p.pageCount = layout.pageCount;
+    for (int k = 0; k < p.pageCount; ++k) {
+        p.rgb.push_back(std::vector<float>(128 * 128 * 3, 0.0f));
+        p.valid.push_back(std::vector<uint8_t>(128 * 128, 1));
+    }
+    // even charts: a smooth 0.4..0.7 ramp; odd charts: bright (3.0), above what a JPEG holds
+    for (size_t c = 0; c < layout.charts.size(); ++c) {
+        const auto& ch = layout.charts[c];
+        for (int y = 0; y < ch.h; ++y)
+            for (int x = 0; x < ch.w; ++x)
+                for (int q = 0; q < 3; ++q) p.rgb[static_cast<size_t>(ch.page)][(static_cast<size_t>(ch.y + y) * 128 + ch.x + x) * 3 + q] = c % 2 ? 3.0f : 0.4f + 0.3f * float(x) / float(std::max(1, ch.w));
+    }
+    in.pages[0] = p;
+    in.settings.lightmapJpeg = true;
+    in.settings.lightmapExposure = 1.0;
+    const BspOutput out = compileBsp(in);
+    MESSAGE("jpeg pages ", out.stats.lightmapJpegPages, " rejected ", out.stats.lightmapJpegRejected, " pages ", out.lightmaps.size());
+    CHECK(out.stats.lightmapJpegPages >= 1);
+    size_t jpgPages = 0, exrPages = 0;
+    for (const auto& pg : out.lightmaps) {
+        if (pg.ldr) {
+            ++jpgPages;
+            CHECK(!pg.jpg.empty());
+            for (float v : pg.rgb) CHECK(v <= 1.0f);
+        } else {
+            ++exrPages;
+            CHECK(pg.jpg.empty());
+        }
+    }
+    CHECK(jpgPages >= 1);
+    CHECK(exrPages >= 1);
+    BspView v;
+    REQUIRE(v.open(out.bsp));
+    const auto surfaces = v.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto verts = v.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    size_t bright = 0, smooth = 0;
+    for (const auto& s : surfaces) {
+        if (s.lightmapNum[0] < 0) continue;
+        const BspLightmapPage& pg = out.lightmaps[static_cast<size_t>(s.lightmapNum[0])];
+        const auto& dv = verts[static_cast<size_t>(s.firstVert)];
+        const int x = std::clamp(static_cast<int>(dv.lightmap[0][0] * 128), 0, 127), y = std::clamp(static_cast<int>(dv.lightmap[0][1] * 128), 0, 127);
+        const float value = pg.rgb[(static_cast<size_t>(y) * 128 + x) * 3];
+        if (value > 1.5f) { CHECK(!pg.ldr); ++bright; }
+        else { CHECK(pg.ldr); CHECK(value >= 0.3f); CHECK(value <= 0.8f); ++smooth; }
+    }
+    CHECK(bright > 0);
+    CHECK(smooth > 0);
+    // the files: .jpg for 8 bit pages, .exr for the others; an older export's leftovers are gone
+    TempDir dir;
+    const fs::path lm = dir.path / "map";
+    fs::create_directories(lm);
+    std::ofstream(lm / "lm_0007.exr") << "old";
+    std::ofstream(lm / "lm_0000.jpg") << "old";
+    std::ofstream(lm / "keep.txt") << "mine";
+    writeLightmapPages(lm, out.lightmaps);
+    for (size_t i = 0; i < out.lightmaps.size(); ++i) {
+        char name[32];
+        std::snprintf(name, sizeof name, out.lightmaps[i].ldr ? "lm_%04d.jpg" : "lm_%04d.exr", static_cast<int>(i));
+        CHECK(fs::exists(lm / name));
+        std::snprintf(name, sizeof name, out.lightmaps[i].ldr ? "lm_%04d.exr" : "lm_%04d.jpg", static_cast<int>(i));
+        CHECK(!fs::exists(lm / name));
+    }
+    CHECK(!fs::exists(lm / "lm_0007.exr"));
+    CHECK(fs::exists(lm / "keep.txt"));
 }

@@ -29,10 +29,17 @@ void writeLightmapPages(const fs::path& lmDir, const std::vector<BspLightmapPage
     std::error_code ec;
     if (fs::exists(lmDir, ec))
         for (const auto& f : fs::directory_iterator(lmDir, ec))
-            if (f.path().filename().string().rfind("lm_", 0) == 0 && f.path().extension() == ".exr") fs::remove(f.path(), ec);  // pages of an older export
+            if (f.path().filename().string().rfind("lm_", 0) == 0 && (f.path().extension() == ".exr" || f.path().extension() == ".jpg")) fs::remove(f.path(), ec);  // pages of an older export
     if (!pages.empty()) fs::create_directories(lmDir);
     for (size_t i = 0; i < pages.size(); ++i) {
         char name[32];
+        if (!pages[i].jpg.empty()) {  // an 8 bit page (bsp_compile.h lightmapJpeg)
+            std::snprintf(name, sizeof(name), "lm_%04d.jpg", static_cast<int>(i));
+            std::ofstream f(lmDir / name, std::ios::binary);
+            f.write(reinterpret_cast<const char*>(pages[i].jpg.data()), static_cast<std::streamsize>(pages[i].jpg.size()));
+            if (!f) throw std::runtime_error("cannot write " + (lmDir / name).string());
+            continue;
+        }
         std::snprintf(name, sizeof(name), "lm_%04d.exr", static_cast<int>(i));
         if (!writeExr((lmDir / name).string(), pages[i].size, pages[i].size, pages[i].rgb.data())) throw std::runtime_error("cannot write " + (lmDir / name).string());
     }
@@ -156,6 +163,14 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                 const LevelSettings lv = levelSettingsOf(e);  // the exposure the lightmap fit judges by (the level's, else lighting.json's)
                 in.settings.lightmapExposure = lv.exposure > 0 ? lv.exposure : req.lighting.exposure;
 
+                {  // 8 bit lightmap pages as .jpg (bsp_compile.h): _lightmap_jpg 1; _lightmap_jpg_srgb 1 stores the sRGB curve of the light; _lightmap_jpg_quality
+                    auto flag = [&](const char* key) { const auto k = e.keyvalues.find(key); return k != e.keyvalues.end() && k->second != "0" && !k->second.empty(); };
+                    in.settings.lightmapJpeg = flag("_lightmap_jpg");
+                    in.settings.lightmapSrgb = flag("_lightmap_jpg_srgb");
+                    if (const auto q = e.keyvalues.find("_lightmap_jpg_quality"); q != e.keyvalues.end()) {
+                        try { in.settings.lightmapJpegQuality = std::clamp(std::stoi(q->second), 50, 100); } catch (...) { r.warnings.push_back("_lightmap_jpg_quality is not a number"); }
+                    }
+                }
         // final bake: the live pipeline, synchronously, at the level's bake quality
         std::unique_ptr<LightingService> svc;
         LightmapLayout layout;

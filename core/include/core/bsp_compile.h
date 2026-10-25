@@ -101,6 +101,12 @@ struct BspSettings {
     // (the level's _cc_exposure); 0 = store the charts as baked.
     double lightmapTolerance = 2.5;
     double lightmapExposure = 1;
+    // Pages whose light fits 8 bits (nothing above 1, within the tolerance above) are stored as .jpg instead of .exr, in pages of their own: the charts are
+    // grouped by that. The engine has to find lm_NNNN.jpg. `lightmapSrgb`: the bytes hold the sRGB curve of the light, else the light itself (byte / 255).
+    // Needs lightmapTolerance > 0 (its error budget is also the JPEG's).
+    bool lightmapJpeg = false;
+    bool lightmapSrgb = false;
+    int lightmapJpegQuality = 95;
     bool repackLightmaps = true;           // pack all lightmap charts again by size (fewer, fuller pages) when that takes fewer pages than the live layout
     SkySettings sky;                       // the automatic sky (its texture "" = env/sky_cube with a warning)
     double engineFarPlane = 3000;          // m: the engine's Camera::FarPlane; a sky box larger than that across is clipped (warning)
@@ -127,6 +133,8 @@ struct BspInput {
 struct BspLightmapPage {
     int size = 0;
     std::vector<float> rgb;  // size * size * 3
+    bool ldr = false;        // an 8 bit page (lightmapJpeg): `jpg` holds its file and `rgb` the light as read back from it
+    std::vector<uint8_t> jpg;
 };
 
 struct BspOutput {
@@ -134,7 +142,7 @@ struct BspOutput {
     std::vector<BspLightmapPage> lightmaps;  // lm_0000.exr, lm_0001.exr, ...
     std::vector<std::string> warnings;
     struct Stats {
-        size_t surfaces = 0, decals = 0, skySurfaces = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, lightmapTexelsBefore = 0, lightmapTexelsAfter = 0, gridPoints = 0, palette = 0;
+        size_t surfaces = 0, decals = 0, skySurfaces = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, lightmapTexelsBefore = 0, lightmapTexelsAfter = 0, lightmapJpegPages = 0, lightmapJpegRejected = 0, gridPoints = 0, palette = 0;
         double visCell = 0, visSeconds = 0;
     } stats;
 };

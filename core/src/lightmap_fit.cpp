@@ -185,6 +185,27 @@ std::vector<float> resampleLayer(const FitLayer& l, int nw, int nh) {
     return out;
 }
 
+uint8_t lightToByte(float v, bool srgb) {
+    const double c = std::clamp(static_cast<double>(v), 0.0, 1.0);
+    const double e = srgb ? (c <= 0.0031308 ? 12.92 * c : 1.055 * std::pow(c, 1.0 / 2.4) - 0.055) : c;
+    return static_cast<uint8_t>(std::lround(e * 255.0));
+}
+
+float byteToLight(uint8_t b, bool srgb) {
+    const double e = b / 255.0;
+    return static_cast<float>(srgb ? (e <= 0.04045 ? e / 12.92 : std::pow((e + 0.055) / 1.055, 2.4)) : e);
+}
+
+bool fitsEightBits(const std::vector<FitLayer>& layers, int w, int h, const FitSettings& st, bool srgb) {
+    for (const FitLayer& l : layers) {
+        std::vector<float> small = resampleLayer(l, w, h);
+        for (float v : small) if (!(v <= 1.0f)) return false;
+        for (float& v : small) v = byteToLight(lightToByte(v, srgb), srgb);
+        if (!acceptable(fitError(l, small, w, h, st.exposure, st.tolerance), st.tolerance)) return false;
+    }
+    return true;
+}
+
 FitError fitError(const FitLayer& layer, const std::vector<float>& small, int w, int h, double exposure, double tolerance) {
     return compare(layer, referenceOf(layer, exposure), small, w, h, exposure, tolerance);
 }
