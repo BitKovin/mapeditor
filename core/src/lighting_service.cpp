@@ -1,4 +1,5 @@
 #include "core/lighting_service.h"
+#include "core/playable_visibility.h"
 #include "core/parallel.h"
 #include "core/relief_geometry.h"
 #include "core/smoothing.h"
@@ -716,6 +717,11 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
             LightmapSettings layoutSettings = opt_.layout;
             layoutSettings.playable = in.lights.playable;
             layoutSettings.lod = in.lights.level.lod;
+            std::unique_ptr<PlayableVisibility> visibility;
+            if (in.lights.playable && !in.lights.playable->empty() && layoutSettings.lod.levels > 1 && layoutSettings.lod.cullUnseen) {
+                visibility = std::make_unique<PlayableVisibility>(*in.lights.playable, in.surfaces, in.classes);
+                layoutSettings.seen = [&visibility](const std::vector<Vec3>& poly, const Vec3& n) { return visibility->seen(poly, n); };
+            }
             styleWarnings_.clear();
             if (styled) {
                 const OccluderMesh shadowMesh = buildOccluders(in.surfaces, in.classes);
@@ -726,6 +732,8 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
                 if (log_) for (const auto& w : analysis.warnings) log_("lighting: " + w);
             }
             const LightmapLayout layout = buildLightmapLayout(in.surfaces, in.classes, layoutSettings);
+            layoutSettings.seen = nullptr;
+            visibility.reset();
             const auto a2 = Clock::now();
             std::vector<Aabb> regions = built_ ? diffSurfaces(prevSurfaces_, in.surfaces) : std::vector<Aabb>{};
             if (built_ && texturesTouched)

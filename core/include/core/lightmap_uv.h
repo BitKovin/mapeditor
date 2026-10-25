@@ -3,6 +3,7 @@
 #include "core/lighting_classes.h"
 #include "core/math3.h"
 #include "core/playable.h"
+#include <functional>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -35,6 +36,9 @@ struct LightmapSettings {
     // area), so far away faces get fewer texels. Null or empty area = no falloff. Faces in different cascades are never merged into one chart.
     std::shared_ptr<const PlayableArea> playable;
     PlayableLod lod;
+    // With `lod.cullUnseen`: whether anything of the area can see a polygon (PlayableVisibility); surfaces it cannot see beyond the full-detail radius go
+    // to the last cascade. Null = every surface counts as seen.
+    std::function<bool(const std::vector<Vec3>& polygon, const Vec3& normal)> seen;
     // Light styles (light_style_analysis.h): the non-base styles that touch each face, keyed by LightmapFace::key(). Faces with a different set are never
     // merged into one chart, so a chart carries as few style layers as possible; a face absent from the map has only the base style.
     std::map<std::string, std::vector<int>> faceStyles;

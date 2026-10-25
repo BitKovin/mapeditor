@@ -228,7 +228,13 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
             for (size_t i = b; i < e; ++i) {
                 double d = 1e300;
                 for (const auto& piece : faces[i].pieces) d = std::min(d, cfg.playable->distance(piece, d));
-                faces[i].scale *= cfg.lod.densityAt(d);
+                int k = cfg.lod.cascade(d);
+                if (k > 0 && k < cfg.lod.levels && cfg.lod.cullUnseen && cfg.seen) {
+                    bool seen = false;
+                    for (const auto& piece : faces[i].pieces) if (cfg.seen(piece, faces[i].out.normal)) { seen = true; break; }
+                    if (!seen) k = cfg.lod.levels;  // nobody in the area sees this surface: the cheapest cascade
+                }
+                faces[i].scale *= k == 0 ? 1.0 : std::pow(std::clamp(cfg.lod.density, 0.05, 1.0), k);
             }
         });
     }

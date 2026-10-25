@@ -17,8 +17,10 @@ struct PlayableLod {
     double range = 2;           // each cascade reaches `range` times further than the one before: cascade k ends at radius * range^k
     double density = 0.5;       // lightmap texel density multiplier per cascade (cascade k: density^k)
     double lightvolMargin = 2;  // m: the light volume covers the area grown by this
+    bool cullUnseen = true;     // surfaces beyond the full-detail radius that no point of the area can see go straight to the last cascade
     bool operator==(const PlayableLod& o) const {
-        return radius == o.radius && levels == o.levels && range == o.range && density == o.density && lightvolMargin == o.lightvolMargin;
+        return radius == o.radius && levels == o.levels && range == o.range && density == o.density && lightvolMargin == o.lightvolMargin &&
+               cullUnseen == o.cullUnseen;
     }
     // cascade of a surface `d` metres from the area: 0 = full density
     int cascade(double d) const;
@@ -53,6 +55,7 @@ private:
     Vec3 mn_{1e300, 1e300, 1e300}, mx_{-1e300, -1e300, -1e300};
     uint64_t fp_ = 0;
 };
+
 
 /// Every volume of a playable-area entity in the document and its prefabs (convex pieces of each brush; subtractive brushes are ignored).
 std::shared_ptr<const PlayableArea> collectPlayableArea(const Document& doc, const std::vector<ResolvedEntity>& prefabs);

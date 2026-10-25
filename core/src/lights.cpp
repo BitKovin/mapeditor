@@ -70,6 +70,7 @@ LevelSettings levelSettingsOf(const Entity& w, std::vector<std::string>* warning
     num("_lod_range", s.lod.range, 1.1, 8.0);
     num("_lod_density", s.lod.density, 0.05, 1.0);
     num("_lightvol_margin", s.lod.lightvolMargin, 0.0, 256.0);
+    { double cull = s.lod.cullUnseen ? 1 : 0; num("_lod_cull_unseen", cull, 0.0, 1.0); s.lod.cullUnseen = cull >= 0.5; }
     return s;
 }
 

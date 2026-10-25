@@ -37,6 +37,7 @@ export const LEVEL_SECTIONS: LevelSection[] = [
     { key: '_lod_levels', label: 'Cascades', dflt: 4, min: 0, max: 8, step: 1, int: true, hint: 'Number of lower-detail cascades beyond the full-detail one; 0 = no falloff. Surfaces further out stay in the last cascade' },
     { key: '_lod_range', label: 'Range factor', dflt: 2, min: 1.1, max: 8, step: 0.1, hint: 'Each cascade reaches this many times further than the previous one (cascade k ends at Radius x Range^k)' },
     { key: '_lod_density', label: 'Density per cascade', dflt: 0.5, min: 0.05, max: 1, step: 0.05, hint: 'Lightmap texels per metre of a cascade relative to the one before (0.5 = half, so a quarter in the second)' },
+    { key: '_lod_cull_unseen', label: 'Cull unseen surfaces', dflt: 1, min: 0, max: 1, step: 1, int: true, hint: '1 = surfaces that nothing in the playable area can see (inside far closed buildings, backs of far walls) get the lowest cascade straight away' },
     { key: '_lightvol_margin', label: 'Light volume margin (m)', dflt: 2, min: 0, max: 256, step: 0.5, hint: 'The light volume covers the playable area grown by this much' },
   ] },
   { title: 'Optimisation', note: 'Empty = the Core\'s lighting.json value.', fields: [
