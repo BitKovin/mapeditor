@@ -32,6 +32,7 @@ import { restoreHideRules, rulePatterns, rulesFromGroups } from './model/visibil
 import { setHideRules as applyHideRules } from './state/actions'
 import { TexGroupCache } from './state/texgroups'
 import { modelStore } from './state/models'
+import { setKeyDefaultProvider } from './model/modelEntity'
 import { TexGroupsPanel } from './ui/texGroupsPanel'
 import { toggleFastTextureTool } from './ui/fastTextureTool'
 import { openTexGroupEditor, GroupEditorEnv } from './ui/texGroupEditor'
@@ -110,6 +111,16 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
       return { bounds: r.bounds, warnings: r.warnings, groups: r.groups }
     },
   })
+  {
+    let defsOf: unknown = null, table = new Map<string, string>()
+    setKeyDefaultProvider((cls, key) => {
+      const defs = store.state.entityDefs
+      if (defs !== defsOf) { defsOf = defs; table = new Map(defs.flatMap((c) => c.keys.flatMap((k) => (k.default !== undefined ? [[`${c.name}
+${k.key}`, k.default] as [string, string]] : [])))) }
+      return table.get(`${cls}
+${key}`)
+    })
+  }
   const prefabIcons = new PrefabIcons({ textures, previews, entityColor: (c) => store.entityColor(c), entityBox: (c) => store.entityBox(c) })
   const listTextures = async (): Promise<string[]> => (await conn.request((id) => msg.listTextures(id))).textures ?? []
 

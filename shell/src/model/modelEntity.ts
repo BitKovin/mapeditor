@@ -6,13 +6,18 @@ import type { Box } from './entityBox'
 import type { Vec3 } from './math'
 import { rotationFromAngles } from './rotation'
 
+let keyDefault: (classname: string, key: string) => string | undefined = () => undefined
+/** The game's default of a key (the .ent's value / default) for an entity that does not set it: env_door has models/tools/door.obj, a weapon pickup its modelscale. */
+export const setKeyDefaultProvider = (fn: (classname: string, key: string) => string | undefined): void => { keyDefault = fn }
+const kv = (e: Entity, key: string): string | undefined => e.keyvalues?.[key] ?? keyDefault(classOf(e), key)
+
 /** The model file of an entity: `model_path`, else the classic `model` key (relative to the game folder, forward slashes); '' when it has none or is a brush entity. */
 export function modelPathOf(e: Entity): string {
   if (isBrushEntity(e) || classOf(e) === 'worldspawn') return ''
-  return (e.keyvalues?.model_path ?? e.keyvalues?.model ?? '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
+  return (kv(e, 'model_path') ?? kv(e, 'model') ?? '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
 }
 /** The animation to play: a name, or an index; '' = the rest pose. */
-export const modelAnimationOf = (e: Entity): string => (e.keyvalues?.model_animation ?? '').trim()
+export const modelAnimationOf = (e: Entity): string => (kv(e, 'model_animation') ?? '').trim()
 
 const numbers = (s: string | undefined): number[] | null => {
   if (s === undefined) return null
@@ -23,7 +28,7 @@ const numbers = (s: string | undefined): number[] | null => {
 export function modelScaleOf(e: Entity): Vec3 {
   const s: Vec3 = [1, 1, 1]
   for (const key of ['model_scale', 'modelscale', 'modelscale_vec']) {
-    const v = numbers(e.keyvalues?.[key])
+    const v = numbers(e.keyvalues?.[key]) // only what is set: the .ent's modelscale defaults (48, 32) are engine units, not metres
     if (v?.length === 3) { s[0] *= v[0]; s[1] *= v[1]; s[2] *= v[2] }
     else if (v?.length === 1 && v[0] !== 0) { s[0] *= v[0]; s[1] *= v[0]; s[2] *= v[0] }
   }
