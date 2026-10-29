@@ -40,6 +40,9 @@ struct LightmapSettings {
     // With `lod.cullUnseen`: whether anything of the area can see a polygon (PlayableVisibility); surfaces it cannot see beyond the full-detail radius go
     // to the last cascade. Null = every surface counts as seen.
     std::function<bool(const std::vector<Vec3>& polygon, const Vec3& normal)> seen;
+    // The same question for a whole face (all its pieces; `key` = LightmapFace::key()), asked once per face, from several threads. Takes precedence over `seen`.
+    // The live service answers from a cache for faces that did not change (a full visibility pass over 20 000 faces took 18 s on every edit).
+    std::function<bool(const std::string& key, const std::vector<std::vector<Vec3>>& pieces, const Vec3& normal)> seenFace;
     // Light styles (light_style_analysis.h): the non-base styles that touch each face, keyed by LightmapFace::key(). Faces with a different set are never
     // merged into one chart, so a chart carries as few style layers as possible; a face absent from the map has only the base style.
     std::map<std::string, std::vector<int>> faceStyles;

@@ -34,12 +34,15 @@ json optionsToJson(const LightingService::Options& o) {
                 {"gpuMaxStepScale", o.live.gpuMaxStepScale}, {"texelsPerStep", o.texelsPerStep}, {"tickBudgetMs", o.tickBudgetSeconds * 1000.0}, {"flushIntervalMs", o.flushIntervalMs},
                 {"defaultSourceSize", o.defaultSourceSize}, {"defaultSunSize", o.defaultSunSize}, {"firstSendFraction", o.firstSendFraction}, {"maxHoldSeconds", o.maxHoldSeconds},
                 {"lightvol", o.lightvolEnabled}, {"lightvolGridSize", o.lightvol.gridSize}, {"lightvolMaxProbes", o.lightvol.maxProbes}, {"lightvolNormals", o.lightvol.normals},
-                {"lightvolGiSamples", o.lightvol.giSamples}, {"lightvolProbesPerStep", o.lightvolProbesPerStep}};
+                {"lightvolGiSamples", o.lightvol.giSamples}, {"lightvolProbesPerStep", o.lightvolProbesPerStep},
+                {"stickyVisibility", o.stickyVisibility}, {"stickyVisibilityRadius", o.stickyVisibilityRadius}, {"lightvolIdleSeconds", o.lightvolIdleSeconds}};
 }
 }  // namespace
 
 LightingService::Options LightingService::loadOptions(const std::filesystem::path& file, std::string* warning) {
     Options o;
+    o.stickyVisibility = true;  // the editor's setting;
+    o.lightvolIdleSeconds = 2;  // likewise Options{} (export, tests) asks the visibility of every face every time
     std::ifstream in(file, std::ios::binary);
     if (!in) return o;
     try {
@@ -84,6 +87,9 @@ LightingService::Options LightingService::loadOptions(const std::filesystem::pat
         num("firstSendFraction", o.firstSendFraction, 0.0, 1.0);
         num("maxHoldSeconds", o.maxHoldSeconds, 0.0, 60.0);
         flag("lightvol", o.lightvolEnabled);
+        flag("stickyVisibility", o.stickyVisibility);
+        num("stickyVisibilityRadius", o.stickyVisibilityRadius, 0, 100000);
+        num("lightvolIdleSeconds", o.lightvolIdleSeconds, 0, 600);
         num("lightvolGridSize", o.lightvol.gridSize, 0.25, 64.0);
         integer("lightvolMaxProbes", o.lightvol.maxProbes, 0, 2000000000);
         integer("lightvolNormals", o.lightvol.normals, 6, 256);
@@ -91,7 +97,10 @@ LightingService::Options LightingService::loadOptions(const std::filesystem::pat
         { double v = static_cast<double>(o.lightvolProbesPerStep); num("lightvolProbesPerStep", v, 1, 100000); o.lightvolProbesPerStep = static_cast<size_t>(v); }
     } catch (const std::exception& e) {
         if (warning) *warning = std::string("lighting settings '") + file.string() + "' ignored: " + e.what();
-        return Options{};
+        Options d;
+        d.stickyVisibility = true;
+        d.lightvolIdleSeconds = 2;
+        return d;
     }
     return o;
 }
@@ -105,7 +114,10 @@ bool LightingService::writeDefaultOptions(const std::filesystem::path& file) {
         if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path());
         std::ofstream out(file, std::ios::binary | std::ios::trunc);
         if (!out) return false;
-        out << optionsToJson(Options{}).dump(2) << "\n";
+        Options d;  // the editor's defaults (loadOptions)
+        d.stickyVisibility = true;
+        d.lightvolIdleSeconds = 2;
+        out << optionsToJson(d).dump(2) << "\n";
         return static_cast<bool>(out);
     } catch (const std::exception&) {
         return false;
@@ -140,12 +152,18 @@ bool sameSurfaces(const std::vector<LightSurface>& a, const std::vector<LightSur
 constexpr uint16_t kHalfOne = 0x3C00;  // 1.0 as a half: the alpha of a pixel that holds a value
 
 // One tile entry; `px` are RGBA halves (little endian on every supported host).
-void appendTile(std::string& json, bool first, int page, int x, int y, int w, int h, const std::vector<uint16_t>& px) {
+void appendTile(std::string& json, bool first, int page, int x, int y, int w, int h, const std::vector<uint16_t>& px, const std::vector<uint16_t>* direct = nullptr) {
     if (!first) json += ',';
     std::vector<unsigned char> raw(px.size() * 2);
     if (!px.empty()) std::memcpy(raw.data(), px.data(), raw.size());
     json += "{\"page\":" + std::to_string(page) + ",\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) + ",\"w\":" + std::to_string(w) + ",\"h\":" + std::to_string(h) +
-            ",\"rgba\":\"" + base64Encode(raw) + "\"}";
+            ",\"rgba\":\"" + base64Encode(raw) + "\"";
+    if (direct && !direct->empty()) {  // the same rectangle of the direct layer (DESIGN 6.11): applied together with the tile, so the two never disagree on screen
+        std::vector<unsigned char> d(direct->size() * 2);
+        std::memcpy(d.data(), direct->data(), d.size());
+        json += ",\"d\":\"" + base64Encode(d) + "\"";
+    }
+    json += "}";
 }
 
 }  // namespace
@@ -257,9 +275,10 @@ json LightingService::statusLive() const {
     return json{{"type", proto::kLightingStatus}, {"enabled", enabled_.load()}, {"rev", rev_.load()}, {"chunks", chunks}, {"stale", stale},
                 {"minPasses", std::max(minPasses, 0)}, {"maxPasses", maxPasses_.load()}, {"converged", built_ && allConverged()},
                 {"exposure", exposure_.load()}, {"brightness", brightness_.load()}, {"texels", texels}, {"pages", baker_.layout().pageCount}, {"evaluator", baker_.evaluator()},
+                {"directLayer", baker_.directLayerAvailable()}, {"defaultSourceSize", opt_.defaultSourceSize}, {"defaultSunSize", opt_.defaultSunSize},
                 {"gpuError", baker_.gpuError()}, {"denoisedPages", baker_.denoisedPages()}, {"denoiseError", baker_.denoiseError()}, {"steps", baker_.stats().steps},
                 {"gpuSeconds", baker_.stats().gpuSeconds}, {"stepSeconds", baker_.stats().stepSeconds}, {"styles", styles()}, {"styleWarnings", styleWarnings_},
-                {"timingsMs", json{{"surfaces", timings_.surfaces}, {"layout", timings_.layout}, {"diff", timings_.diff}, {"geometry", timings_.geometry}, {"lights", timings_.lights},
+                {"timingsMs", json{{"queued", timings_.queued}, {"surfaces", timings_.surfaces}, {"layout", timings_.layout}, {"visibility", timings_.visibility}, {"diff", timings_.diff}, {"geometry", timings_.geometry}, {"lights", timings_.lights},
                                    {"session", timings_.session}, {"steps", timings_.steps}, {"tiles", timings_.tiles}, {"denoise", timings_.denoise},
                                    {"firstTiles", timings_.firstTiles}, {"converged", timings_.converged}}}};
 }
@@ -389,10 +408,14 @@ size_t LightingService::tilesFor(int style, LiveBaker& baker, const std::vector<
     // chart), 56% more pixels than the chunk itself, and a block of 8 x 8 chunks only 6% more.
     const std::vector<LiveBaker::Rect> rects = mergeChunkRects(baker, chunks);
     const size_t nc = rects.size();
-    std::vector<std::vector<uint16_t>> pixels(nc);
+    std::vector<std::vector<uint16_t>> pixels(nc), directPixels(nc);
+    const bool withDirect = style == 0 && baker.directLayerAvailable();  // the base layer only: the Shell predicts the lights of style 0
     parallelFor(nc, 4, [&](size_t b, size_t e) {
         for (size_t i = b; i < e; ++i)
-            if (rects[i].w > 0 && rects[i].h > 0) pixels[i] = baker.renderTile(rects[i]);
+            if (rects[i].w > 0 && rects[i].h > 0) {
+                pixels[i] = baker.renderTile(rects[i]);
+                if (withDirect) directPixels[i] = baker.renderDirectTile(rects[i]);
+            }
     });
     std::vector<char> changed(nc, 0);
     {
@@ -415,12 +438,27 @@ size_t LightingService::tilesFor(int style, LiveBaker& baker, const std::vector<
                         d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = kHalfOne;
                     }
                 }
+            if (withDirect && !directPixels[i].empty()) {
+                if (mirror_.directPages.empty()) mirror_.directPages.assign(static_cast<size_t>(mirror_.pageCount), std::vector<uint16_t>(static_cast<size_t>(atlas) * atlas * 4, 0));
+                std::vector<uint16_t>& dpage = mirror_.directPages[static_cast<size_t>(r.page)];
+                const std::vector<uint16_t>& dpx = directPixels[i];
+                for (int y = 0; y < r.h; ++y)
+                    for (int x = 0; x < r.w; ++x) {
+                        const uint16_t* s = &dpx[(static_cast<size_t>(y) * r.w + x) * 4];
+                        if (s[3] == 0) continue;
+                        uint16_t* d = &dpage[(static_cast<size_t>(r.y + y) * atlas + r.x + x) * 4];
+                        if (d[0] != s[0] || d[1] != s[1] || d[2] != s[2] || d[3] != s[3]) {
+                            changed[i] = 1;
+                            d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+                        }
+                    }
+            }
         }
     }
     std::vector<std::string> encoded(nc);
     parallelFor(nc, 16, [&](size_t b, size_t e) {
         for (size_t i = b; i < e; ++i)
-            if (changed[i]) appendTile(encoded[i], true, rects[i].page, rects[i].x, rects[i].y, rects[i].w, rects[i].h, pixels[i]);
+            if (changed[i]) appendTile(encoded[i], true, rects[i].page, rects[i].x, rects[i].y, rects[i].w, rects[i].h, pixels[i], withDirect ? &directPixels[i] : nullptr);
     });
     for (size_t i = 0; i < nc; ++i) {
         if (!changed[i]) continue;
@@ -595,6 +633,11 @@ bool LightingService::workLightvol(double budgetSeconds, Clock::time_point t0, c
         if (volRunning_) { probes_.reset(); volRunning_ = false; volStale_ = true; }
         return finish();
     }
+    volWaiting_ = false;
+    if (volStale_ && !volRunning_ && opt_.lightvolIdleSeconds > 0 && msBetween(lastEdit_, Clock::now()) < opt_.lightvolIdleSeconds * 1000.0) {
+        volWaiting_ = true;  // not yet: the worker loop checks again in a few ms (it must not spin)
+        return finish();
+    }
     const LightvolSettings cfg = volSettings();
     auto startLayer = [&](int style) {
         const LiveBaker* b = layerBaker(style);
@@ -682,7 +725,10 @@ LightingService::Inputs LightingService::captureInputs() {
 void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
     try {
         timings_ = Timings{};
+        timings_.queued = queuedMs_;
+        queuedMs_ = 0;
         editStart_ = Clock::now();
+        lastEdit_ = editStart_;
         firstTilesSent_ = false;
         const auto a0 = Clock::now();
         probes_.reset();  // it points into the bakers, whose geometry or lights are about to change
@@ -719,6 +765,9 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
             layoutSettings.playable = in.lights.playable;
             layoutSettings.lod = in.lights.level.lod;
             std::unique_ptr<PlayableVisibility> visibility;
+            std::shared_ptr<std::unordered_map<std::string, VisibilityAnswer>> stickyFresh;
+            std::mutex visibilityM;
+            std::vector<Aabb> layoutRegions;  // what changed since the last layout (needed before the layout for the sticky visibility)
             if (in.lights.playable && !in.lights.playable->empty() && (layoutSettings.lod.levels > 1 || layoutSettings.lod.removeUnseen) && layoutSettings.lod.cullUnseen) {
                 // removing a surface needs a surer "nobody sees it" than choosing a density: many more viewpoints
                 // what blocks the view is what the compiler's own visibility uses: the static world, and only its opaque textures
@@ -729,8 +778,60 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
                     const auto img = texLoader(s.texture);
                     return !img || img->transparency.mode == TransparencyMode::Opaque;  // glass, water, cutouts: see-through
                 };
-                visibility = std::make_unique<PlayableVisibility>(*in.lights.playable, in.surfaces, in.classes, layoutSettings.lod.removeUnseen ? 768 : 96, blocks);
-                layoutSettings.seen = [&visibility](const std::vector<Vec3>& poly, const Vec3& n) { return visibility->seen(poly, n); };
+                // built when the first face asks (an edit that leaves every face's answer in the cache never builds it)
+                const auto ensureVisibility = [&]() -> const PlayableVisibility& {
+                    std::lock_guard<std::mutex> lock(visibilityM);
+                    if (!visibility) {
+                        const auto v0 = Clock::now();
+                        visibility = std::make_unique<PlayableVisibility>(*in.lights.playable, in.surfaces, in.classes, layoutSettings.lod.removeUnseen ? 768 : 96, blocks);
+                        timings_.visibility = msBetween(v0, Clock::now());
+                    }
+                    return *visibility;
+                };
+                if (!opt_.stickyVisibility) {
+                    layoutSettings.seen = [&](const std::vector<Vec3>& poly, const Vec3& n) { return ensureVisibility().seen(poly, n); };
+                } else {
+                    // the answers are only valid for this scope; a change of any of it asks everything again
+                    uint64_t scope = playableFp ^ 0x9e3779b97f4a7c15ull;
+                    scope = (scope ^ static_cast<uint64_t>(layoutSettings.lod.levels)) * 1099511628211ull;
+                    scope = (scope ^ static_cast<uint64_t>(layoutSettings.lod.removeUnseen)) * 1099511628211ull;
+                    scope = (scope ^ std::hash<std::string>{}(in.classes.toJson().dump())) * 1099511628211ull;
+                    if (texturesTouched) scope ^= 0xabcdefull + visibilityScope_;
+                    if (scope != visibilityScope_) { visibilityCache_.clear(); visibilityScope_ = scope; }
+                    if (built_) layoutRegions = diffSurfaces(prevSurfaces_, in.surfaces);
+                    const double R = opt_.stickyVisibilityRadius;
+                    auto fresh = std::make_shared<std::unordered_map<std::string, VisibilityAnswer>>();
+                    auto freshM = std::make_shared<std::mutex>();
+                    const auto* cache = &visibilityCache_;
+                    const std::vector<Aabb>* regions = &layoutRegions;
+                    layoutSettings.seenFace = [&, fresh, freshM, cache, regions, R](const std::string& key, const std::vector<std::vector<Vec3>>& pieces, const Vec3& n) {
+                        uint64_t h = 1469598103934665603ull;
+                        Aabb box;
+                        auto mix = [&](double d) { uint64_t b; std::memcpy(&b, &d, sizeof b); h = (h ^ b) * 1099511628211ull; };
+                        for (const auto& piece : pieces) {
+                            for (const Vec3& p : piece) { mix(p.x); mix(p.y); mix(p.z); box.add(p); }
+                            h = (h ^ 0xFFull) * 1099511628211ull;
+                        }
+                        mix(n.x); mix(n.y); mix(n.z);
+                        const auto it = cache->find(key);
+                        if (it != cache->end() && it->second.geometry == h) {
+                            const Aabb wide = box.expanded(R);
+                            bool near = false;
+                            for (const Aabb& r : *regions) if (r.intersects(wide)) { near = true; break; }
+                            if (!near) {
+                                std::lock_guard<std::mutex> lock(*freshM);
+                                (*fresh)[key] = it->second;
+                                return it->second.seen;
+                            }
+                        }
+                        bool seen = false;
+                        for (const auto& piece : pieces) if (ensureVisibility().seen(piece, n)) { seen = true; break; }
+                        std::lock_guard<std::mutex> lock(*freshM);
+                        (*fresh)[key] = VisibilityAnswer{h, seen};
+                        return seen;
+                    };
+                    stickyFresh = fresh;
+                }
             }
             styleWarnings_.clear();
             if (styled) {
@@ -743,6 +844,8 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
             }
             const LightmapLayout layout = buildLightmapLayout(in.surfaces, in.classes, layoutSettings);
             layoutSettings.seen = nullptr;
+            layoutSettings.seenFace = nullptr;
+            if (stickyFresh) visibilityCache_ = std::move(*stickyFresh);
             visibility.reset();
             const auto a2 = Clock::now();
             std::vector<Aabb> regions = built_ ? diffSurfaces(prevSurfaces_, in.surfaces) : std::vector<Aabb>{};
@@ -856,6 +959,7 @@ void LightingService::releaseMesh(std::vector<std::string>& out) {
         sendStyles = !keep || stylesMsg != mirror_.styles;  // the Shell rebuilds its texture when it gets the table: only when it is news
         if (!keep) {
             mirror_.pages.clear();
+            mirror_.directPages.clear();
             mirror_.atlas = L.settings.atlasSize;
             mirror_.pageCount = L.pageCount;
         }
@@ -908,6 +1012,7 @@ void LightingService::flush(const Emit& emit, bool force) {
 }
 
 void LightingService::goIdle() {
+    visibilityCache_.clear();  // lighting off / on: the next layout asks everything again
     // the Shell dropped its lightmap: the next enable sends everything again
     clientHasMesh_ = false;
     meshPending_ = false;
@@ -920,6 +1025,7 @@ void LightingService::goIdle() {
     std::lock_guard<std::mutex> lock(mirror_.m);
     mirror_.valid = false;
     mirror_.pages.clear();
+    mirror_.directPages.clear();
     mirror_.layerStyles.clear();
     mirror_.mesh.clear();
     mirror_.styles.clear();
@@ -1084,6 +1190,7 @@ void LightingService::flushInputs() {
         std::lock_guard<std::mutex> lock(m_);
         pending_ = std::move(in);
         hasPending_ = true;
+        pendingAt_ = Clock::now();
         ++epoch_;
     }
     cv_.notify_one();
@@ -1143,11 +1250,12 @@ void LightingService::workerMain() {
             std::unique_lock<std::mutex> lock(m_);
             if (busy) {
                 if (flushPending_) cv_.wait_for(lock, std::chrono::milliseconds(2));  // only waiting for the receiver
+                else if (volWaiting_) cv_.wait_for(lock, std::chrono::milliseconds(20), [&] { return quit_ || epoch_.load() != seen; });  // the probes wait for the editor to be idle
             } else {
                 cv_.wait(lock, [&] { return quit_ || epoch_.load() != seen || statusDue_.load() || denoiseFinished_.load(); });
             }
             if (quit_) return;
-            if (hasPending_) { in = std::move(pending_); hasPending_ = false; have = true; }
+            if (hasPending_) { in = std::move(pending_); hasPending_ = false; have = true; queuedMs_ = msBetween(pendingAt_, Clock::now()); }
             seen = epoch_.load();
         }
         if (denoiseInFlight_ && denoiseFinished_.load()) finishDenoise();
@@ -1202,7 +1310,12 @@ std::vector<std::string> LightingService::fullState() {
                 if (!any) continue;  // nothing baked in these rows
                 std::vector<uint16_t> px(rows, rows + static_cast<size_t>(h) * atlas * 4);
                 std::string msg = "{\"type\":\"lightmap_tiles\",\"rev\":" + std::to_string(mirror_.rev) + ",\"atlas\":" + std::to_string(atlas) + ",\"style\":" + std::to_string(style) + ",\"tiles\":[";
-                appendTile(msg, true, static_cast<int>(pg), 0, y, atlas, h, px);
+                std::vector<uint16_t> dpx;
+                if (style == 0 && pg < mirror_.directPages.size() && !mirror_.directPages[pg].empty()) {
+                    const uint16_t* drows = &mirror_.directPages[pg][static_cast<size_t>(y) * atlas * 4];
+                    dpx.assign(drows, drows + static_cast<size_t>(h) * atlas * 4);
+                }
+                appendTile(msg, true, static_cast<int>(pg), 0, y, atlas, h, px, dpx.empty() ? nullptr : &dpx);
                 msg += "]}";
                 out.push_back(std::move(msg));
             }

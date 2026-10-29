@@ -1,3 +1,6 @@
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include "core/lightmap_uv.h"
 #include "core/lightmap_pack.h"
 #include "core/parallel.h"
@@ -185,12 +188,24 @@ json LightmapLayout::toJson() const {
 
 // ---- the generator ---------------------------------------------------------------------------------------------------
 LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, const LightingClasses& classes, const LightmapSettings& cfg) {
+    // MAPEDITOR_LAYOUT_PROFILE=1 prints where the time of a layout goes (stderr)
+    static const bool profileOn = std::getenv("MAPEDITOR_LAYOUT_PROFILE") != nullptr;
+    auto profT = std::chrono::steady_clock::now();
+    std::string profPrev = "start";
+    auto prof = [&](const char* next) {
+        if (!profileOn) return;
+        const auto now = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "layout %s: %.0f ms\n", profPrev.c_str(), std::chrono::duration<double, std::milli>(now - profT).count());
+        profT = now;
+        profPrev = next;
+    };
     LightmapLayout out;
     out.settings = cfg;
     const int pad = std::max(0, cfg.padding);
     const int atlas = std::max(8, cfg.atlasSize);
     const int sideLimit = std::max(1, std::min(cfg.maxChartTexels, atlas - 2 * pad));
 
+    prof("A");
     // ---- A. faces (one per authored face side) ----------------------------------------------------------------------
     std::map<std::string, size_t> byKey;
     std::vector<Face> faces;
@@ -240,7 +255,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
                 double d = 1e300;
                 for (const auto& piece : faces[i].pieces) d = std::min(d, cfg.playable->distance(piece, d));
                 int k = cfg.lod.cascade(d);
-                if (k > 0 && cfg.lod.cullUnseen && cfg.seen && (cfg.lod.removeUnseen || k < cfg.lod.levels)) {
+                if (k > 0 && cfg.lod.cullUnseen && (cfg.seen || cfg.seenFace) && (cfg.lod.removeUnseen || k < cfg.lod.levels)) {
                     // Whole-face removal is destructive: a tiny authored face is often a trim, a narrow board edge,
                     // or another intentional detail. Sparse viewpoint/face samples cannot establish that such a
                     // feature is truly invisible, so keep its normal distance-based LOD and never remove it solely
@@ -257,8 +272,10 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
                     }
                     bool seen = preserveSmallDetail;
                     if (!seen) {
-                        for (const auto& piece : faces[i].pieces)
-                            if (cfg.seen(piece, faces[i].out.normal)) { seen = true; break; }
+                        if (cfg.seenFace) seen = cfg.seenFace(faces[i].out.key(), faces[i].pieces, faces[i].out.normal);
+                        else
+                            for (const auto& piece : faces[i].pieces)
+                                if (cfg.seen(piece, faces[i].out.normal)) { seen = true; break; }
                     }
                     if (!seen) {  // no sampled point of the area sees this large surface
                         if (cfg.lod.removeUnseen && faces[i].world) { faces[i].culled = true; continue; }  // no chart at all
@@ -286,6 +303,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
             }
     }
 
+    prof("B");
     // ---- B. adjacency (shared edges) --------------------------------------------------------------------------------
     struct PieceRef {
         int face;
@@ -403,6 +421,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
     // bilinear filtering at the edge of one reads texels of the other: light leaks, dark / bright edges at corners.
     const double isolationGap = 2.0 * pad + 1.0;
 
+    prof("C");
     // ---- C. islands (unfold connected faces) ------------------------------------------------------------------------
     const double cosLimit = std::cos(std::min(180.0, std::max(0.0, cfg.mergeAngleDeg)) * kPi / 180.0) - 1e-6;  // tolerance ~0.06 deg
     std::vector<int> assigned(N, -1);
@@ -521,6 +540,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
         islands.push_back(std::move(isl));
     }
 
+    prof("D");
     // ---- D. chart rectangles ----------------------------------------------------------------------------------------
     for (auto& isl : islands) {
         auto extent = [&] {
@@ -561,6 +581,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
         isl.bucket = faces[isl.root].group + "|" + isl.texture;
     }
 
+    prof("E");
     // ---- E. packing: buckets (instance, entity, texture) in order, Morton order inside a bucket -----------------------
     Vec3 gmn{1e300, 1e300, 1e300}, gmx{-1e300, -1e300, -1e300};
     for (const auto& f : faces) {
@@ -631,6 +652,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
     }
     if (islands.empty()) pages.clear();
 
+    prof("F");
     // ---- F. write the result ----------------------------------------------------------------------------------------
     out.pageCount = static_cast<int>(pages.size());
     for (const auto& p : pages) out.pageFill.push_back(static_cast<double>(p.used) / (static_cast<double>(atlas) * atlas));
@@ -668,6 +690,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
         out.charts.push_back(std::move(c));
     }
     // charts remember their page-local rect; the page index is stored on the chart, faces address the page through it
+    prof("end");
     return out;
 }
 

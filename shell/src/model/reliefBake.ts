@@ -18,6 +18,7 @@ import { faceNormal } from './geometry'
 import type { Vec3 } from './math'
 import { fanBorder, neighbourFn, newBudget, planHasRelief, pieceBorder, polygonBorders, reliefOf, reliefTriangle } from './reliefApply'
 import { faceUvAt, lerpVec3, planForFace, retexture } from './uvmesh'
+import { texEnv } from './texprops'
 
 /** Most triangles of relief one send holds (beyond it the remaining faces stay flat in the bake, like in the drawing's own budget). */
 export const RELIEF_BAKE_BUDGET = 400000
@@ -86,14 +87,36 @@ function pieceTriangles(brush: Brush, face: Face, verts: readonly Vec3[], border
  * this world (`usableEntries`); `known` lists every brush the Core carved (`carvedKey`), so a brush whose result is out of date is left out (its pieces
  * are not the authored faces any more) instead of being covered by a whole-face relief.
  */
+/**
+ * What one brush (or one carved result) contributed last time, with the objects it was computed from. The document keeps every brush an edit did not touch
+ * as the same object, so on the next call it is copied from here: walking every face of a 20 000 piece level for a relief took 0.5 s per edit.
+ */
+interface UnitCache { rev: number; deps: readonly (Brush | undefined)[]; faces: Map<string, ReliefFace> }
+const brushUnits = new WeakMap<Brush, Map<string, UnitCache>>()
+const carvedUnits = new WeakMap<DerivedEntry, UnitCache>()
+const sameDeps = (a: readonly (Brush | undefined)[], b: readonly (Brush | undefined)[]): boolean => a.length === b.length && a.every((x, i) => x === b[i])
+
 export function reliefFaces(world: World, entries: readonly DerivedEntry[], known: ReadonlySet<string> = new Set(entries.map((e) => carvedKey(e.entityId, e.brushId, e.instance)))): ReliefFace[] {
   const byKey = new Map(entries.map((e) => [carvedKey(e.entityId, e.brushId, e.instance), e]))
   const indexes = new Map<string, ReturnType<typeof brushIndex>>()
   const owner = (instance: string) => { let m = indexes.get(instance); if (!m) { m = brushIndex(world, instance); indexes.set(instance, m) } return m }
   const budget = newBudget(RELIEF_BAKE_BUDGET)
   const out = new Map<string, ReliefFace>()
+  const owned = new Set<string>()  // keys whose face is this call's own copy (the cached faces are shared and never changed)
+  const merge = (unit: Map<string, ReliefFace>, cached: boolean): void => {
+    for (const [key, f] of unit) {
+      const o = out.get(key)
+      if (!o) out.set(key, f)
+      else {
+        let mine = o
+        if (!owned.has(key)) { mine = { ...o, tris: o.tris.slice() }; out.set(key, mine); owned.add(key) }
+        for (const x of f.tris) mine.tris.push(x)
+      }
+      if (cached) budget.left -= f.tris.length / 9 // a fresh unit already spent its budget while it was built
+    }
+  }
 
-  const add = (entityId: string, instance: string, p: Piece): void => {
+  const add = (into: Map<string, ReliefFace>, entityId: string, instance: string, p: Piece): void => {
     const parentBrush = owner(p.brushInstance).get(p.brushId)?.brush
     const face = parentBrush?.faces.find((f) => f.id === p.faceId)
     if (!parentBrush || !face || p.verts.length < 3 || !faceHasRelief(parentBrush, face)) return
@@ -101,8 +124,8 @@ export function reliefFaces(world: World, entries: readonly DerivedEntry[], know
     if (normal[0] === 0 && normal[1] === 0 && normal[2] === 0) return
     const back = dot(normal, faceNormal(parentBrush, face)) < 0
     const key = `${instance}|${entityId}|${p.brushInstance}|${p.brushId}|${p.faceId}|${back ? 'B' : 'F'}`
-    let f = out.get(key)
-    if (!f) { f = { instance, entityId, brushInstance: p.brushInstance, brushId: p.brushId, faceId: p.faceId, back, normal, offset: dot(normal, p.verts[0]), tris: [] }; out.set(key, f) }
+    let f = into.get(key)
+    if (!f) { f = { instance, entityId, brushInstance: p.brushInstance, brushId: p.brushId, faceId: p.faceId, back, normal, offset: dot(normal, p.verts[0]), tris: [] }; into.set(key, f) }
     pieceTriangles(parentBrush, face, p.verts, p.border(), normal, budget, f.tris)
   }
 
@@ -112,6 +135,15 @@ export function reliefFaces(world: World, entries: readonly DerivedEntry[], know
       const key = carvedKey(entityId, b.id, instance)
       const entry = byKey.get(key)
       if (entry) {
+        const parents: (Brush | undefined)[] = []
+        const seen = new Set<string>()
+        for (const fr of entry.fragments) {
+          const k = `${fr.instance ?? entry.instance}|${fr.brush}`
+          if (!seen.has(k)) { seen.add(k); parents.push(owner(fr.instance ?? entry.instance).get(fr.brush)?.brush) }
+        }
+        const hit = carvedUnits.get(entry)
+        if (hit && hit.rev === texEnv.rev && sameDeps(hit.deps, parents)) { merge(hit.faces, true); continue }
+        const unit = new Map<string, ReliefFace>()
         const polys = entry.fragments.map((fr) => {
           const verts: Vec3[] = []
           for (let i = 0; i + 2 < fr.v.length; i += 3) verts.push([fr.v[i], fr.v[i + 1], fr.v[i + 2]])
@@ -125,9 +157,19 @@ export function reliefFaces(world: World, entries: readonly DerivedEntry[], know
           if (!border[k]) { const g = groups.get(`${entry.fragments[k].brush}#${entry.fragments[k].face}`)!; polygonBorders(g.map((m) => polys[m])).forEach((b, m) => { border[g[m]] = b }) }
           return border[k]
         }
-        entry.fragments.forEach((fr, k) => add(entityId, instance, { brushInstance: fr.instance ?? entry.instance, brushId: fr.brush, faceId: fr.face, verts: polys[k], border: () => borderOf(k) }))
+        entry.fragments.forEach((fr, k) => add(unit, entityId, instance, { brushInstance: fr.instance ?? entry.instance, brushId: fr.brush, faceId: fr.face, verts: polys[k], border: () => borderOf(k) }))
+        carvedUnits.set(entry, { rev: texEnv.rev, deps: parents, faces: unit })
+        merge(unit, false)
       } else if (!known.has(key)) {
-        for (const f of b.faces) add(entityId, instance, { brushInstance: instance, brushId: b.id, faceId: f.id, verts: f.loop.map((i) => b.vertices[i]), border: () => f.loop.map(() => true) })
+        let perOwner = brushUnits.get(b)
+        if (!perOwner) { perOwner = new Map(); brushUnits.set(b, perOwner) }
+        const ownerKey = `${instance}|${entityId}`
+        const hit = perOwner.get(ownerKey)
+        if (hit && hit.rev === texEnv.rev) { merge(hit.faces, true); continue }
+        const unit = new Map<string, ReliefFace>()
+        for (const f of b.faces) add(unit, entityId, instance, { brushInstance: instance, brushId: b.id, faceId: f.id, verts: f.loop.map((i) => b.vertices[i]), border: () => f.loop.map(() => true) })
+        perOwner.set(ownerKey, { rev: texEnv.rev, deps: [], faces: unit })
+        merge(unit, false)
       }
     }
   }
@@ -138,14 +180,26 @@ export function reliefFaces(world: World, entries: readonly DerivedEntry[], know
 }
 
 /** A cheap content signature (FNV-1a over the keys and the float bits): equal geometry gives equal text, so an unchanged relief is not sent again. */
+const faceHash = new WeakMap<ReliefFace, number>()
 export function reliefSignature(faces: readonly ReliefFace[]): string {
   const buf = new DataView(new ArrayBuffer(8))
   let h = 2166136261 >>> 0
   const mix = (n: number): void => { h = Math.imul(h ^ n, 16777619) >>> 0 }
   for (const f of faces) {
-    for (const ch of `${f.instance}|${f.entityId}|${f.brushInstance}|${f.brushId}|${f.faceId}|${f.back}`) mix(ch.charCodeAt(0))
-    for (const x of [...f.normal, f.offset, ...f.tris]) { buf.setFloat32(0, x); mix(buf.getUint32(0)) }
-    mix(f.tris.length)
+    let fh = faceHash.get(f)
+    if (fh === undefined) {
+      const saved = h
+      h = 2166136261 >>> 0
+      for (const ch of `${f.instance}|${f.entityId}|${f.brushInstance}|${f.brushId}|${f.faceId}|${f.back}`) mix(ch.charCodeAt(0))
+      for (const x of [...f.normal, f.offset]) { buf.setFloat32(0, x); mix(buf.getUint32(0)) }
+      const t = f.tris
+      for (let i = 0; i < t.length; i++) { buf.setFloat32(0, t[i]); mix(buf.getUint32(0)) }
+      mix(t.length)
+      fh = h
+      faceHash.set(f, fh)
+      h = saved
+    }
+    mix(fh)
   }
   return `${faces.length}:${h.toString(16)}`
 }
@@ -156,13 +210,17 @@ const toBase64 = (bytes: Uint8Array): string => {
   return btoa(s)
 }
 
-/** The `relief_geometry` message (core/protocol.h): vertices are base64 of little endian float32, 9 per triangle. */
+const faceJson = new WeakMap<ReliefFace, string>()
+/** The `relief_geometry` message (core/protocol.h): vertices are base64 of little endian float32, 9 per triangle. Every face is encoded once (the faces of untouched brushes are the same objects from edit to edit). */
 export function reliefMessage(faces: readonly ReliefFace[]): string {
-  return JSON.stringify({
-    type: 'relief_geometry',
-    faces: faces.map((f) => ({
-      i: f.instance, e: f.entityId, bi: f.brushInstance, b: f.brushId, f: f.faceId, s: f.back ? 1 : 0, n: f.normal, d: f.offset,
-      v: toBase64(new Uint8Array(Float32Array.from(f.tris).buffer)),
-    })),
-  })
+  const parts: string[] = []
+  for (const f of faces) {
+    let j = faceJson.get(f)
+    if (j === undefined) {
+      j = JSON.stringify({ i: f.instance, e: f.entityId, bi: f.brushInstance, b: f.brushId, f: f.faceId, s: f.back ? 1 : 0, n: f.normal, d: f.offset, v: toBase64(new Uint8Array(Float32Array.from(f.tris).buffer)) })
+      faceJson.set(f, j)
+    }
+    parts.push(j)
+  }
+  return `{"type":"relief_geometry","faces":[${parts.join(',')}]}`
 }

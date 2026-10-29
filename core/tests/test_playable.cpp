@@ -8,7 +8,10 @@
 #include "core/prefab.h"
 #include "test_util.h"
 #include <doctest.h>
+#include <atomic>
 #include <chrono>
+#include <mutex>
+#include <set>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -281,4 +284,38 @@ TEST_CASE("playable: measure the lightmap size of a real level with and without 
     std::printf("surfaces %zu | layout flat %.0f ms, cascades %.0f ms | visibility build %.0f ms (%zu viewpoints), culled layout %.0f ms\n", surfaces.size(), ms(a, c), ms(c, d), ms(d, e), vis.viewpointCount(), ms(e, g));
     (void)t0;
     CHECK(culled.pageCount <= lod.pageCount);
+}
+
+TEST_CASE("playable: the per-face visibility callback is asked once per face, with the whole face, and wins over the per-polygon one") {
+    Document doc;
+    std::vector<Brush> world;
+    world.push_back(Brush::makeBox("screen", {-100, -100, 5}, {100, 100, 5.2}));
+    world.push_back(Brush::makeBox("large_hidden", {-40, -40, 10}, {40, 40, 10.5}));
+    doc.entities.push_back(ent("w", "worldspawn", std::move(world)));
+    doc.entities.push_back(ent("p", "editor_playable_area", {Brush::makeBox("vol", {-0.1, -0.1, -0.1}, {0.1, 0.1, 0.1})}));
+    const auto surfaces = collectSurfaces(doc, {});
+    const auto area = collectPlayableArea(doc, {});
+
+    LightmapSettings cfg;
+    cfg.texelsPerMeter = 4;
+    cfg.playable = area;
+    cfg.lod.radius = 1;
+    cfg.lod.removeUnseen = true;
+    std::atomic<int> asked{0};
+    std::mutex m;
+    std::set<std::string> keys;
+    cfg.seen = [](const std::vector<Vec3>&, const Vec3&) { return true; };  // would keep everything
+    cfg.seenFace = [&](const std::string& key, const std::vector<std::vector<Vec3>>& pieces, const Vec3&) {
+        ++asked;
+        std::lock_guard<std::mutex> lock(m);
+        keys.insert(key);
+        return pieces.empty();  // nobody sees any face
+    };
+    const LightmapLayout layout = buildLightmapLayout(surfaces, LightingClasses::defaults(), cfg);
+    CHECK(asked.load() == static_cast<int>(keys.size()));  // once per face
+    CHECK(asked.load() > 0);
+    bool largeCulled = false;
+    for (const LightSurface& s : surfaces)
+        if (s.brushId == "large_hidden" && s.side == FaceSide::Front) largeCulled = largeCulled || layout.culledFace(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, s.side);
+    CHECK(largeCulled);  // seenFace said no although seen said yes
 }

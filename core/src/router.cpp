@@ -194,7 +194,9 @@ RouterOutput Router::onMessage(const std::string& text) {
         else if (type == proto::kBrowseFilesystem) handleBrowseFilesystem(req, out);
         else if (type == proto::kSetAssetsRoot) handleSetAssetsRoot(req, out);
         else if (type == proto::kLighting) handleLighting(req, out);
-        else if (type == proto::kReliefGeometry) { if (scene_.setReliefGeometry(req)) lighting_.markDirty(); lastRelief_ = req; }
+        // The live bake is flat: a relief reached the lighting as a second snapshot right behind the edit's own (the bake did the first one's layout and geometry
+        // for nothing and the light came seconds late), and Lit mode is for fast light iteration. The export gets the relief from here (RouterExport::relief).
+        else if (type == proto::kReliefGeometry) lastRelief_ = req;
         else if (type == proto::kExportMap || type == proto::kExportBsp || type == proto::kExportCancel) handleExport(req, out);
         else if (type == proto::kNativeDialog) handleNativeDialog(req, out);
         else if (type == proto::kSetSettings) handleSetSettings(req, out);

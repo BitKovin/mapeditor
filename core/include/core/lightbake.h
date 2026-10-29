@@ -172,9 +172,10 @@ std::vector<float> evaluateGiCpu(const TexelSamples& samples, const LightScene& 
 std::vector<float> gatherCpu(const TexelSamples& samples, const OccluderMesh& mesh, const TriangleBvh& bvh, const std::vector<float>& atlasS,
                              double albedo, int giSamples, uint32_t sampleOffset, double range = 10000.0, int sAtlas = 0);
 
-// Direct light (4 floats per sample) and, optionally, the bounce-weighted direct light `db` (see evaluateGiCpu).
+// Direct light (4 floats per sample) and, optionally, the bounce-weighted direct light `db` (see evaluateGiCpu) and `dx`: the share of sky and rect lights in
+// the direct light (what a client cannot predict with shadow maps; the ambient is not part of it).
 std::vector<float> evaluateDirectWithBounceCpu(const TexelSamples& samples, const LightScene& lights, const TriangleBvh* occluders,
-                                               const BakeOptions& options, std::vector<float>* db);
+                                               const BakeOptions& options, std::vector<float>* db, std::vector<float>* dx = nullptr);
 
 // Shared constants of the shadow model (the shader has the same numbers).
 constexpr double kShadowBias = 0.01;        // m: rays start this far above the surface and stop this far before their target

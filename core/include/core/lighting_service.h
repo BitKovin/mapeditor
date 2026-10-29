@@ -16,6 +16,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace core {
@@ -58,11 +59,21 @@ public:
         double maxHoldSeconds = 3.0;
         // Light volumes (DESIGN §6.7): probes are baked after the lightmap converged, `lightvolProbesPerStep` at a time between clock checks.
         bool lightvolEnabled = true;
+        // Editing: the light volume (what lights doors and other entities) is baked only after this many seconds without an edit. Its grid and sample
+        // set are built on the bake thread in one piece, and an edit that arrives meanwhile waited for it (1-2 s on a big level); the lightmaps are what
+        // the level is edited against. 0 = start at once (the export, tests).
+        double lightvolIdleSeconds = 0;
         // Multiplies the refinement pass target and the rays per light volume probe after the level settings are applied: the BSP export bakes at the
         // level's bake quality multiplier (`_bake_quality`, REQUIREMENTS §22 P2 / §25 E7); the live view runs at 1.
         double qualityScale = 1.0;
         LightvolSettings lightvol;
         size_t lightvolProbesPerStep = 8;
+        // Editing: the playable area's visibility test (which surfaces nobody can see, DESIGN �6.10) decides charts and cascades, and costs seconds per
+        // layout on a big level (18 s on lvl2). With this on, a face whose geometry did not change and that lies further than `stickyVisibilityRadius` m
+        // from every changed region keeps its previous answer; everything else is asked again. Switching the lighting off and on starts afresh. The export
+        // never uses it (it always asks everything).
+        bool stickyVisibility = false;
+        double stickyVisibilityRadius = 16;
         Options() {
             layout.texelsPerMeter = 8;  // retro look, and quick to bake
             layout.atlasSize = 1024;
@@ -145,6 +156,8 @@ public:
     struct Timings {
         double capture = 0;                                                    // taking the snapshot from the Scene (synchronous mode only)
         double surfaces = 0, layout = 0, diff = 0, geometry = 0, lights = 0;  // applying a snapshot
+        double queued = 0;                                                     // the snapshot waited this long for the bake thread (previous step / stage still running)
+        double visibility = 0;                                                 // of `layout`: building the playable area's visibility (cascade choice, unseen surfaces)
         double session = 0;                                                    // GPU session creation (inside the first step after a rebuild)
         double steps = 0, tiles = 0, denoise = 0;                              // accumulated since the last snapshot
         double firstTiles = 0, converged = 0;                                  // since the snapshot was applied
@@ -198,6 +211,9 @@ private:
     std::chrono::steady_clock::time_point holdStart_, lastFlush_, editStart_, lastEmit_;
     LiveBaker::Stats runStart_;
     std::vector<LightSurface> prevSurfaces_;
+    struct VisibilityAnswer { uint64_t geometry = 0; bool seen = false; };
+    std::unordered_map<std::string, VisibilityAnswer> visibilityCache_;  // face key -> answer (stickyVisibility)
+    uint64_t visibilityScope_ = 0;                                         // what the cache is valid for (playable area, lod, classes, textures)
     LightingClasses prevClasses_;
     uint64_t prevSolids_ = 0;
     std::shared_ptr<const PlayableArea> prevPlayable_;  // the playable area and its quality falloff of the geometry in the bakers (layout, light volume bounds)
@@ -221,6 +237,7 @@ private:
         std::string styles;                        // the light_styles message
         std::vector<int> layerStyles;              // the style layers that existed when the mesh was released (0 first)
         std::map<int, std::vector<std::vector<uint16_t>>> pages;  // per style layer: RGBA16F (halves), as the Shell has them; a layer appears with its first tile
+        std::vector<std::vector<uint16_t>> directPages;           // the base layer's direct layer (LiveBaker::renderDirectTile), as the Shell has it (empty: none sent)
         std::string lightvol, entityLight;         // the last light volume grid / entity light messages ('' = none)
         std::string status;                        // last status message
     } mirror_;
@@ -231,6 +248,8 @@ private:
     std::condition_variable cv_;
     std::atomic<uint64_t> epoch_{0};    // bumped by everything that should interrupt the bake in progress
     bool quit_ = false, hasPending_ = false;
+    std::chrono::steady_clock::time_point pendingAt_{};   // when the pending snapshot was handed over
+    double queuedMs_ = 0;             // how long the snapshot applied last waited for the bake thread
     Inputs pending_;
     Vec3 camera_;
     bool haveCamera_ = false;
@@ -293,6 +312,8 @@ private:
     LightvolGrid volBase_;                   // the grid every style layer starts from
     std::vector<char> volSolid_;
     std::unique_ptr<ProbeBaker> probes_;     // the layer being baked (holds pointers into a baker: reset before any baker's geometry changes)
+    bool volWaiting_ = false;                      // the probes wait for the editor to be idle (lightvolIdleSeconds)
+    std::chrono::steady_clock::time_point lastEdit_{};
     bool volStale_ = false, volRunning_ = false, volDone_ = false, volSendDue_ = false, entityLightDue_ = false;
     int volRev_ = 0;
     std::string volDevice_;

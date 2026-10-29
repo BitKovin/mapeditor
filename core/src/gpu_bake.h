@@ -73,7 +73,8 @@ public:
     // sample or per grid entry. Every part reads the bounce source atlas() as it was when runParts() was called: write it only after it returned.
     // The default runs everything with run() and calls `done` once.
     enum class Indirect { None, PerSample, PerEntry };
-    struct JobResult { const float* d = nullptr; const float* db = nullptr; const float* ind = nullptr; };
+    // dx (null when the session cannot tell): the share of sky and rect lights in d, 4 floats per sample; what a Shell cannot predict with shadow maps
+    struct JobResult { const float* d = nullptr; const float* db = nullptr; const float* ind = nullptr; const float* dx = nullptr; };
     using PartDone = std::function<void(size_t first, size_t count, const std::vector<JobResult>& results)>;
     virtual bool runParts(const std::vector<Job>& jobs, Indirect indirect, size_t maxParts, const PartDone& done) {
         (void)maxParts;

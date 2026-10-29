@@ -423,10 +423,11 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
     ++geometryGen_;
     gpuDisabled_ = false;  // new geometry may bring the GPU path back (e.g. the first shadow casters)
     session_.reset();      // the resident samples, occluders and atlas belong to the old geometry
+    splitMissing_ = false;
 
     // What we know about the old texels. Moved, not copied: they are replaced below.
     const TexelSamples oldSamples = std::move(samples_);
-    const std::vector<float> oldD = std::move(direct_), oldDb = std::move(db_), oldI = std::move(indirect_), oldDn = std::move(indirectDn_);
+    const std::vector<float> oldD = std::move(direct_), oldDb = std::move(db_), oldI = std::move(indirect_), oldDn = std::move(indirectDn_), oldDx = std::move(directX_);
     const std::vector<float> oldOcc = std::move(occ_);
     const std::vector<int32_t> oldAt = std::move(sampleAt_);
     const std::vector<char> oldChunkDn = std::move(chunkDn_);
@@ -459,6 +460,7 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
     t1 = Clock::now();
     const size_t n = samples_.count();
     direct_.assign(n * 4, 0.f);
+    directX_.assign(n * 4, 0.f);
     db_.assign(n * 4, 0.f);
     indirect_.assign(n * 4, 0.f);
     occ_.assign(n, std::numeric_limits<float>::quiet_NaN());
@@ -505,6 +507,7 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
             else {
                 for (size_t c = 0; c < 4; ++c) {
                     direct_[i * 4 + c] = oldD[static_cast<size_t>(o) * 4 + c];
+                    if (!oldDx.empty()) directX_[i * 4 + c] = oldDx[static_cast<size_t>(o) * 4 + c];
                     db_[i * 4 + c] = oldDb[static_cast<size_t>(o) * 4 + c];
                     indirect_[i * 4 + c] = oldI[static_cast<size_t>(o) * 4 + c];
                 }
@@ -584,6 +587,7 @@ void LiveBaker::setGeometry(const LightmapLayout& layout, const std::vector<Ligh
             if (bestOld < 0) continue;
             for (size_t c = 0; c < 4; ++c) {
                 direct_[i * 4 + c] = oldD[static_cast<size_t>(bestOld) * 4 + c];
+                if (!oldDx.empty()) directX_[i * 4 + c] = oldDx[static_cast<size_t>(bestOld) * 4 + c];
                 db_[i * 4 + c] = oldDb[static_cast<size_t>(bestOld) * 4 + c];
                 indirect_[i * 4 + c] = oldI[static_cast<size_t>(bestOld) * 4 + c];
             }
@@ -1040,6 +1044,8 @@ bool LiveBaker::refineOnGpu(const std::vector<int>& ids, int perPass) {
                 LiveChunk& c = chunks_[static_cast<size_t>(ids[firstJob + q])];
                 const float* d = results[q].d;
                 const float* db = results[q].db;
+                const float* dx = results[q].dx;
+                if (!dx) splitMissing_ = true;
                 const float* ind = results[q].ind;
                 size_t gridAt = 0;
                 const int p = c.passes;
@@ -1052,6 +1058,7 @@ bool LiveBaker::refineOnGpu(const std::vector<int>& ids, int perPass) {
                         float& B = db_[s * 4 + ch];
                         D += (d[j * 4 + ch] - D) * k;
                         B += (db[j * 4 + ch] - B) * k;
+                        if (dx) { float& X = directX_[s * 4 + ch]; X += (dx[j * 4 + ch] - X) * k; }
                         if (sessionGather_ && !fine) {
                             float& I = indirect_[s * 4 + ch];
                             I += (ind[j * 4 + ch] - I) * kk;
@@ -1116,7 +1123,7 @@ void LiveBaker::refineBatch(const std::vector<int>& ids) {
     }
     begin.push_back(all.count());
 
-    std::vector<float> d, db;
+    std::vector<float> d, db, dx;
     bool onGpu = false;
     gpuError_.clear();
     if (cfg_.useGpu && !gpuDisabled_ && bvh && gpu::needsRayTracing(lights_, &mesh_, o)) {
@@ -1124,6 +1131,7 @@ void LiveBaker::refineBatch(const std::vector<int>& ids) {
         gpuValidation_ = r.validation;
         if (r.ok) {
             onGpu = true;
+            splitMissing_ = true;  // the one-shot evaluation does not report the sky / rect share
             evaluator_ = r.device;
         } else {
             gpuError_ = r.error;
@@ -1132,7 +1140,7 @@ void LiveBaker::refineBatch(const std::vector<int>& ids) {
     }
     if (!onGpu) {
         evaluator_ = "cpu";
-        d = evaluateDirectWithBounceCpu(all, lights_, bvh, o, &db);
+        d = evaluateDirectWithBounceCpu(all, lights_, bvh, o, &db, &dx);
     }
 
     for (size_t n = 0; n < ids.size(); ++n) {
@@ -1153,6 +1161,7 @@ void LiveBaker::refineBatch(const std::vector<int>& ids) {
                 float& B = db_[c.samples[j] * 4 + ch];
                 D += (d[(first + j) * 4 + ch] - D) * k;
                 B += (db[(first + j) * 4 + ch] - B) * k;
+                if (!dx.empty()) { float& X = directX_[c.samples[j] * 4 + ch]; X += (dx[(first + j) * 4 + ch] - X) * k; }
             }
         publish();
         if (cfg_.bounces && bvh && mesh_.hasLightmap()) {
@@ -1189,6 +1198,8 @@ LiveBaker::Rect LiveBaker::chunkRect(int i) const {
     r.h = std::min(samples_.atlas, (c.ty + 1) * edge + pad) - r.y;
     return r;
 }
+
+uint16_t floatToHalfSigned(float v) { return v < 0.f ? static_cast<uint16_t>(floatToHalf(-v) | 0x8000) : floatToHalf(v); }
 
 uint16_t floatToHalf(float v) {
     if (!(v > 0.f)) return 0;  // negative, zero and NaN
@@ -1250,6 +1261,48 @@ std::vector<uint16_t> LiveBaker::renderTile(const Rect& r) const {
             px[1] = floatToHalf(static_cast<float>(v.y));
             px[2] = floatToHalf(static_cast<float>(v.z));
             px[3] = 0x3C00;  // 1.0
+        }
+    return out;
+}
+
+std::vector<uint16_t> LiveBaker::renderDirectTile(const Rect& r) const {
+    std::vector<uint16_t> out(static_cast<size_t>(r.w) * static_cast<size_t>(r.h) * 4, 0);
+    const int atlas = samples_.atlas;
+    const size_t perPage = static_cast<size_t>(atlas) * atlas;
+    auto sampleOf = [&](int x, int y) -> int32_t {
+        if (x < 0 || y < 0 || x >= atlas || y >= atlas || sampleAt_.empty()) return -1;
+        return sampleAt_[static_cast<size_t>(r.page) * perPage + static_cast<size_t>(y) * atlas + x];
+    };
+    struct Px { double x = 0, y = 0, z = 0, ao = 0; };
+    auto valueOf = [&](int32_t s) {
+        const size_t i = static_cast<size_t>(s);
+        return Px{static_cast<double>(direct_[i * 4] - directX_[i * 4]), static_cast<double>(direct_[i * 4 + 1] - directX_[i * 4 + 1]),
+                  static_cast<double>(direct_[i * 4 + 2] - directX_[i * 4 + 2]), static_cast<double>(aoFactor(i))};
+    };
+    for (int y = 0; y < r.h; ++y)
+        for (int x = 0; x < r.w; ++x) {
+            const int ax = r.x + x, ay = r.y + y;
+            Px v;
+            int count = 0;
+            const int32_t own = sampleOf(ax, ay);
+            if (own >= 0) { v = valueOf(own); count = 1; }
+            else {  // gutter: one ring of dilation, like renderTile
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int32_t s = sampleOf(ax + dx, ay + dy);
+                        if (s < 0) continue;
+                        const Px o = valueOf(s);
+                        v.x += o.x; v.y += o.y; v.z += o.z; v.ao += o.ao;
+                        ++count;
+                    }
+                if (count) { v.x /= count; v.y /= count; v.z /= count; v.ao /= count; }
+            }
+            if (!count) continue;
+            uint16_t* px = &out[(static_cast<size_t>(y) * static_cast<size_t>(r.w) + static_cast<size_t>(x)) * 4];
+            px[0] = floatToHalfSigned(static_cast<float>(v.x));
+            px[1] = floatToHalfSigned(static_cast<float>(v.y));
+            px[2] = floatToHalfSigned(static_cast<float>(v.z));
+            px[3] = floatToHalf(static_cast<float>(std::max(v.ao, 1.0 / 1024.0)));
         }
     return out;
 }

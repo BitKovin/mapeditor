@@ -35,7 +35,8 @@ export interface CoreSettings {
 export interface DialogFilter { name: string; pattern: string }
 export interface FolderEntry { name: string; path: string }
 /** rgba: base64 of little endian float16 x 4 per pixel (linear, as baked; alpha 0 = no value). */
-export interface LightmapTile { page: number; x: number; y: number; w: number; h: number; rgba: string }
+/** `d` (base layer only): the same rectangle of the direct layer, RGBA16F as base64: rgb = the direct light a client can predict (point, spot, directional, ambient), alpha = the ambient occlusion factor (core/live_bake.h renderDirectTile). */
+export interface LightmapTile { page: number; x: number; y: number; w: number; h: number; rgba: string; d?: string }
 export type RequestId = number | string | null
 /** One surface piece of the lit mesh: the authored face it lies on and how many triangles it has (in vertex order). */
 /** A face's lightmap mapping (sent with its first piece): lightmap uv = (dot(p, u.xyz) + u.w, dot(p, v.xyz) + v.w) on page `pg`, style layers as a bit mask `k`. */
@@ -58,7 +59,7 @@ export type Inbound =
   | { type: 'lightvol'; rev: number; origin: [number, number, number]; cell: number; dims: [number, number, number]; probes: string; layers?: { s: number; probes: string }[] }
   | { type: 'entity_light'; rev: number; entities: EntityLightEntry[] }
   | { type: 'lightmap_tiles'; rev: number; atlas: number; /** light style layer, 0 = base */ style?: number; tiles: LightmapTile[] }
-  | { type: 'lighting_status'; enabled: boolean; rev: number; chunks: number; stale: number; minPasses: number; maxPasses: number; converged: boolean; texels: number; pages: number; /** the light style layers that exist (0 = base first) */ styles?: number[]; styleWarnings?: string[]; /** display multiplier (Level settings exposure); absent = 1 */ exposure?: number; /** display offset added after the exposure (Level settings brightness); absent = 0 */ brightness?: number }
+  | { type: 'lighting_status'; enabled: boolean; rev: number; chunks: number; stale: number; minPasses: number; maxPasses: number; converged: boolean; texels: number; pages: number; /** the light style layers that exist (0 = base first) */ styles?: number[]; styleWarnings?: string[]; /** display multiplier (Level settings exposure); absent = 1 */ exposure?: number; /** display offset added after the exposure (Level settings brightness); absent = 0 */ brightness?: number; /** the Core sends the direct layer (tiles carry `d`) */ directLayer?: boolean; /** the live bake treats point / spot lights with source_size 0 as spheres of this radius (m) and directional ones as a sun of this angular diameter (degrees) */ defaultSourceSize?: number; defaultSunSize?: number }
   | { type: 'derived_geometry'; rev: number; carved: DerivedEntry[]; skipped: { entityId: string; instance?: string; brushId: string }[]; decals: DecalEntry[] }
   | { type: 'response'; requestId: RequestId; ok: boolean; path?: string; rev?: number; error?: string; /** import_map: the .map.json is already there */ exists?: boolean; /** import_map: what was not converted exactly, and the counts */ warnings?: string[]; stats?: { entities: number; brushes: number; patches: number; lights: number; faces: number; skipped: number; droppedEntities: number }; ext?: string; data?: string; props?: unknown; textures?: string[]; texgroups?: string[]; group?: unknown
       // read_texture of a skybox (REQUIREMENTS §28): its faces (lf rt up dn ft bk) or its panorama, as the engine loads them from env/
@@ -149,13 +150,13 @@ export function parseInbound(text: string): Inbound | null {
     }
     case 'lightmap_tiles': {
       if (!Number.isInteger(m.rev) || !Number.isInteger(m.atlas) || m.atlas <= 0 || !Array.isArray(m.tiles)) return null
-      const okTile = (t: any) => t && ['page', 'x', 'y', 'w', 'h'].every((k) => Number.isInteger(t[k]) && t[k] >= 0) && t.w > 0 && t.h > 0 && typeof t.rgba === 'string'
+      const okTile = (t: any) => t && ['page', 'x', 'y', 'w', 'h'].every((k) => Number.isInteger(t[k]) && t[k] >= 0) && t.w > 0 && t.h > 0 && typeof t.rgba === 'string' && (t.d === undefined || typeof t.d === 'string')
       return { type: 'lightmap_tiles', rev: m.rev, atlas: m.atlas, style: Number.isInteger(m.style) && m.style >= 0 && m.style <= 63 ? m.style : 0, tiles: m.tiles.filter(okTile) }
     }
     case 'lighting_status': {
       const nums = ['rev', 'chunks', 'stale', 'minPasses', 'maxPasses', 'texels', 'pages']
       if (typeof m.enabled !== 'boolean' || typeof m.converged !== 'boolean' || !nums.every((k) => Number.isFinite(m[k]))) return null
-      return { type: 'lighting_status', enabled: m.enabled, rev: m.rev, chunks: m.chunks, stale: m.stale, minPasses: m.minPasses, maxPasses: m.maxPasses, converged: m.converged, texels: m.texels, pages: m.pages, exposure: Number.isFinite(m.exposure) && m.exposure > 0 ? m.exposure : 1, brightness: Number.isFinite(m.brightness) ? m.brightness : 0, styles: Array.isArray(m.styles) ? m.styles.filter(Number.isInteger) : [0], styleWarnings: Array.isArray(m.styleWarnings) ? m.styleWarnings.filter((w: any) => typeof w === 'string') : [] }
+      return { type: 'lighting_status', enabled: m.enabled, rev: m.rev, chunks: m.chunks, stale: m.stale, minPasses: m.minPasses, maxPasses: m.maxPasses, converged: m.converged, texels: m.texels, pages: m.pages, exposure: Number.isFinite(m.exposure) && m.exposure > 0 ? m.exposure : 1, brightness: Number.isFinite(m.brightness) ? m.brightness : 0, directLayer: m.directLayer === true, defaultSourceSize: Number.isFinite(m.defaultSourceSize) ? m.defaultSourceSize : 0, defaultSunSize: Number.isFinite(m.defaultSunSize) ? m.defaultSunSize : 0, styles: Array.isArray(m.styles) ? m.styles.filter(Number.isInteger) : [0], styleWarnings: Array.isArray(m.styleWarnings) ? m.styleWarnings.filter((w: any) => typeof w === 'string') : [] }
     }
     case 'settings': {
       if (typeof m.assetsRoot !== 'string') return null

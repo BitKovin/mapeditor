@@ -44,6 +44,7 @@ constexpr double kMaxLiveAlbedo = 0.95;
 
 // float -> IEEE 754 half, round to nearest even; negative and NaN become 0, values above 65504 saturate (light is never negative).
 uint16_t floatToHalf(float v);
+uint16_t floatToHalfSigned(float v);   // keeps the sign (floatToHalf turns negatives into 0)
 float halfToFloat(uint16_t h);
 
 struct LiveSettings {
@@ -177,6 +178,12 @@ public:
     // a rectangle of a page, row by row. Texels without a sample get the average of their baked neighbours (gutter); where there are none the pixel is
     // all zero (alpha 0 = nothing here, alpha 1.0 = a value). Values beyond the half range (65504) saturate there.
     std::vector<uint16_t> renderTile(const Rect& r) const;
+    // The direct layer of a rectangle (RGBA16F like renderTile): rgb = the direct light of the lights a client can predict with shadow maps (point, spot,
+    // directional, ambient: direct minus the sky and rect share), raw (no ambient occlusion, signed: dark lights), alpha = the ambient occlusion factor
+    // the shown value is multiplied by (never 0: alpha 0 means nothing here). With `renderTile` this lets a client replace the predictable part of the
+    // light without touching the rest: shown' = shown + ao * (predicted - direct layer).
+    std::vector<uint16_t> renderDirectTile(const Rect& r) const;
+    bool directLayerAvailable() const { return !splitMissing_; }
     // Current value of one sample (direct + indirect, both raw: signed when the level has dark lights).
     Vec3 value(size_t sample) const;
     // What is displayed: like value(), but with the denoised indirect light where its page has been denoised (renderTile and snapshot use this),
@@ -241,6 +248,8 @@ private:
     bool haveLights_ = false;
     std::vector<LiveChunk> chunks_;
     std::vector<float> direct_, db_, indirect_;   // 4 floats per sample
+    std::vector<float> directX_;                  // the share of sky and rect lights in direct_ (4 floats per sample): what the Shell cannot predict
+    bool splitMissing_ = false;                   // a step did not say how much of the direct light is sky / rect: the direct layer is not offered
     std::vector<float> occ_;                      // ambient occlusion per sample: occluded fraction 0..1, NaN = not computed (see aoFactor)
     void computeOcclusion(const std::vector<int>& chunks);  // fills the unknown occ_ of these chunks' samples (GPU when it can, else CPU)
     bool occlusionOnGpu(const std::vector<int>& chunks);    // the same on the resident session; false = not done (no session, or it failed)

@@ -651,9 +651,11 @@ namespace {
 // `bounceOut` (optional): 4 floats per sample, the direct light weighted by each light's `bounce` (ambient excluded).
 // Super sampling (BakeOptions::superSamples): when shadows are traced and the sample has sub positions, every light is evaluated at each of
 // them (each with its own random numbers: seed * 8 + k) and the results are averaged; the ambient term is added once.
-std::vector<float> directCpu(const TexelSamples& s, const LightScene& scene, const TriangleBvh* bvh, const BakeOptions& opt, std::vector<float>* bounceOut) {
+std::vector<float> directCpu(const TexelSamples& s, const LightScene& scene, const TriangleBvh* bvh, const BakeOptions& opt, std::vector<float>* bounceOut,
+                             std::vector<float>* softOut = nullptr) {
     std::vector<float> out(s.count() * 4, 0.f);
     if (bounceOut) bounceOut->assign(s.count() * 4, 0.f);
+    if (softOut) softOut->assign(s.count() * 4, 0.f);
     ShadowCtx sc{bvh && opt.shadows && bvh->nodeCount() ? bvh : nullptr, opt.areaSamples, opt.skySamples, opt.sampleOffset};
     const int ss = std::clamp(opt.superSamples, 1, kMaxSuperSamples);
     const bool superOn = sc.bvh && ss > 1 && s.hasSub();
@@ -663,7 +665,7 @@ std::vector<float> directCpu(const TexelSamples& s, const LightScene& scene, con
         const Vec3 p0{s.pos[i * 4], s.pos[i * 4 + 1], s.pos[i * 4 + 2]};
         const Vec3 n{s.nrm[i * 4], s.nrm[i * 4 + 1], s.nrm[i * 4 + 2]};
         // adds every light's contribution at `p` (random id `seedId`) to sum / sumB
-        auto shade = [&](const Vec3& p, uint32_t seedId, Vec3& sum, Vec3& sumB) {
+        auto shade = [&](const Vec3& p, uint32_t seedId, Vec3& sum, Vec3& sumB, Vec3& sumX) {
             const Vec3 o = p + n * kShadowBias;
             for (size_t k = 0; k < scene.lights.size(); ++k) {
                 const Light& L = scene.lights[k];
@@ -676,27 +678,34 @@ std::vector<float> directCpu(const TexelSamples& s, const LightScene& scene, con
                     if (traced && (v.x != 0 || v.y != 0 || v.z != 0)) v = v.mul(visibility(L, static_cast<uint32_t>(k), seedId, o, sc));
                 }
                 sum = sum + v;
+                if (L.type == LightType::Sky || L.type == LightType::Rect) sumX = sumX + v;
                 sumB = sumB + v * (L.bounce * bounceNearFactor(L, p));
             }
         };
         const uint32_t mask = superOn ? (s.subMask(i) & ssMask) : 0u;
-        Vec3 sum, sumB;
+        Vec3 sum, sumB, sumX;
         if (mask) {
             int cnt = 0;
             for (int k = 0; k < kMaxSuperSamples; ++k) {
                 if (!(mask & (1u << k))) continue;
-                shade(s.subPosition(i, k), s.seedOf(i) * 8u + static_cast<uint32_t>(k), sum, sumB);
+                shade(s.subPosition(i, k), s.seedOf(i) * 8u + static_cast<uint32_t>(k), sum, sumB, sumX);
                 ++cnt;
             }
             sum = scene.ambient + sum * (1.0 / cnt);
             sumB = sumB * (1.0 / cnt);
+            sumX = sumX * (1.0 / cnt);
         } else {
             sum = scene.ambient;
-            shade(p0, s.seedOf(i), sum, sumB);
+            shade(p0, s.seedOf(i), sum, sumB, sumX);
         }
         out[i * 4] = static_cast<float>(sum.x);
         out[i * 4 + 1] = static_cast<float>(sum.y);
         out[i * 4 + 2] = static_cast<float>(sum.z);
+        if (softOut) {
+            (*softOut)[i * 4] = static_cast<float>(sumX.x);
+            (*softOut)[i * 4 + 1] = static_cast<float>(sumX.y);
+            (*softOut)[i * 4 + 2] = static_cast<float>(sumX.z);
+        }
         if (bounceOut) {
             (*bounceOut)[i * 4] = static_cast<float>(sumB.x);
             (*bounceOut)[i * 4 + 1] = static_cast<float>(sumB.y);
@@ -712,8 +721,8 @@ std::vector<float> evaluateDirectCpu(const TexelSamples& s, const LightScene& sc
 }
 
 std::vector<float> evaluateDirectWithBounceCpu(const TexelSamples& s, const LightScene& scene, const TriangleBvh* bvh, const BakeOptions& opt,
-                                               std::vector<float>* db) {
-    return directCpu(s, scene, bvh, opt, db);
+                                               std::vector<float>* db, std::vector<float>* dx) {
+    return directCpu(s, scene, bvh, opt, db, dx);
 }
 
 // ---- bounces ----------------------------------------------------------------------------------------------------------------

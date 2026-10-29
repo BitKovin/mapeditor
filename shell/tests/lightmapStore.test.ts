@@ -238,3 +238,35 @@ describe('HDR: lightmap values reach the page exactly as baked', () => {
     for (const v of [0.01, 0.5, 1.5, 7.25, 100, 1000]) expect(Math.abs(halfToFloat(floatToHalf(v)) - v)).toBeLessThanOrEqual(v * 0.0006)
   })
 })
+
+describe('lightmap store: the direct layer', () => {
+  const status = (directLayer: boolean) => ({ type: 'lighting_status' as const, enabled: true, rev: 1, chunks: 1, stale: 0, minPasses: 1, maxPasses: 1, converged: true, texels: 1, pages: 1, directLayer })
+  it('keeps the direct layer of a tile (alpha = the ambient occlusion factor, as sent) apart from the lightmap and logs it', () => {
+    const s = new LightmapStore()
+    s.applyMesh(mesh(1))
+    const ao = floatToHalf(0.5)
+    const t = { ...tile(0, 1, 1, 1, 1, [2, 3, 4, 1]), d: b64(new Uint8Array(new Uint16Array([floatToHalf(0.25), floatToHalf(0.5), 0xb000, ao]).buffer)) }
+    expect(s.applyTiles({ type: 'lightmap_tiles', rev: 1, atlas: 8, tiles: [t] })).toBe(1)
+    const at = (pg: Uint16Array) => Array.from(pg.slice((1 * 8 + 1) * 4, (1 * 8 + 1) * 4 + 4))
+    expect(at(s.pages[0]).map(halfToFloat)).toEqual([2, 3, 4, 1])
+    expect(at(s.directPages[0]).map(halfToFloat)).toEqual([0.25, 0.5, -0.125, 0.5])
+    const rects = s.dirtySince(0).rects
+    expect(rects.filter((r) => r.direct).length).toBe(1)
+    expect(rects.filter((r) => !r.direct).length).toBe(1)
+  })
+  it('offers the layer only when the Core says so and every page has one', () => {
+    const s = new LightmapStore()
+    s.applyMesh(mesh(1, 1, 8, 2))
+    expect(s.directLayer).toBe(false)
+    s.applyStatus(status(true))
+    expect(s.directLayer).toBe(true)
+    s.applyStatus(status(false))
+    expect(s.directLayer).toBe(false)
+  })
+  it('parses the new tile field and status fields, and drops a tile with a bad direct layer', () => {
+    const m = parseInbound(JSON.stringify({ type: 'lightmap_tiles', rev: 1, atlas: 8, tiles: [{ page: 0, x: 0, y: 0, w: 1, h: 1, rgba: 'AAAAAAAAAAA=', d: 'AAAAAAAAAAA=' }, { page: 0, x: 1, y: 0, w: 1, h: 1, rgba: 'AA', d: 5 }] }))
+    expect(m?.type === 'lightmap_tiles' && m.tiles.length).toBe(1)
+    const st = parseInbound(JSON.stringify({ type: 'lighting_status', enabled: true, rev: 1, chunks: 1, stale: 0, minPasses: 1, maxPasses: 1, converged: true, texels: 1, pages: 1, directLayer: true, defaultSourceSize: 0.25, defaultSunSize: 0.5 }))
+    expect(st?.type === 'lighting_status' && [st.directLayer, st.defaultSourceSize, st.defaultSunSize]).toEqual([true, 0.25, 0.5])
+  })
+})

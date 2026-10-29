@@ -193,7 +193,7 @@ TEST_CASE("relief: Scene attaches the Shell's relief to the matching face only, 
     CHECK_FALSE(rig.scene.setReliefGeometry(rig.pitMessage(*top)));
 }
 
-TEST_CASE("relief: the router takes the message and the lighting sees it as a change") {
+TEST_CASE("relief: the router takes the message for the export and leaves the live lighting flat (no second snapshot behind the edit)") {
     ReliefRig rig;
     const LightSurface* top = nullptr;
     std::vector<LightSurface> s = rig.scene.lightSurfaces();
@@ -204,7 +204,7 @@ TEST_CASE("relief: the router takes the message and the lighting sees it as a ch
     for (const auto& m : out.toSender) CHECK(nlohmann::json::parse(m).value("type", "") != "error");
     int withRelief = 0;
     for (const auto& x : rig.scene.lightSurfaces()) if (x.relief) ++withRelief;
-    CHECK(withRelief == 1);
+    CHECK(withRelief == 0);
 }
 
 // ---- the light itself --------------------------------------------------------------------------------------------------------------

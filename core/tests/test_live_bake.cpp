@@ -693,3 +693,41 @@ TEST_CASE("live: dark lights - the shown light and the tiles are never below 0; 
         }
     CHECK(maxDiff < 1e-4);
 }
+
+TEST_CASE("live: the direct layer holds the light a client can predict, the shown light is that plus the sky share plus the bounces (ambient occlusion on top)") {
+    Entity sky = ent("sky", "light_sky");
+    sky.keyvalues["brightness"] = "0.5";
+    World w(corridor({pointLight("l", {0, 3, 0}, 10, 30), sky}));
+    LiveSettings s = smallChunks();
+    s.useGpu = false;  // the CPU evaluator reports the sky / rect share
+    LiveBaker b(s);
+    b.setGeometry(w.layout, w.surfaces);
+    b.setLights(w.lights);
+    int guard = 0;
+    while (!b.converged() && guard++ < 100) b.step(nullptr, 100000);
+    REQUIRE(b.converged());
+    REQUIRE(b.directLayerAvailable());
+    // the CPU baker has no ambient occlusion here: shown = clamp(direct + indirect); the direct layer is direct minus the sky share
+    LiveBaker::Rect r{0, 0, 0, 16, 16};
+    const std::vector<uint16_t> shown = b.renderTile(r), direct = b.renderDirectTile(r);
+    REQUIRE(shown.size() == direct.size());
+    size_t checked = 0, withSky = 0;
+    for (size_t i = 0; i < shown.size(); i += 4) {
+        if (shown[i + 3] == 0) { CHECK(direct[i + 3] == 0); continue; }
+        REQUIRE(direct[i + 3] != 0);
+        CHECK(halfToFloat(direct[i + 3]) == doctest::Approx(1.0).epsilon(0.001));  // no AO: factor 1
+        // the point light's part cannot exceed the whole, and the whole minus the direct layer is the sky (+ bounce) share, never negative here
+        const float whole = halfToFloat(shown[i]), part = halfToFloat(direct[i]);
+        CHECK(part <= whole + 1e-3f);
+        if (whole - part > 1e-4f) ++withSky;
+        ++checked;
+    }
+    CHECK(checked > 0);
+    CHECK(withSky > 0);  // the sky lit at least some of the texels
+}
+
+TEST_CASE("live: floatToHalfSigned keeps the sign") {
+    CHECK(halfToFloat(floatToHalfSigned(-0.5f)) == doctest::Approx(-0.5f));
+    CHECK(halfToFloat(floatToHalfSigned(0.25f)) == doctest::Approx(0.25f));
+    CHECK(halfToFloat(floatToHalfSigned(0.f)) == 0.f);
+}

@@ -538,7 +538,7 @@ export class ViewportPanel implements IContentRenderer {
     const preview = this.previewLines()
     if (this.needsLighting()) { this.store.reportCamera([this.camera.eye[0], this.camera.eye[1], this.camera.eye[2]]); this.store.syncRelief() }
     this.renderer?.draw({
-      camera: this.camera, settings: this.settings, lighting: this.store.lightmap, lightvol: this.store.lightvol, world: { doc: st.doc, prefabs: st.prefabEntities }, selection: sel, selections: st.editMode === 'object' ? st.multi : undefined,
+      camera: this.camera, settings: this.settings, lighting: this.store.lightmap, lightvol: this.store.lightvol, world: { doc: st.doc, prefabs: st.prefabEntities }, entityDefs: st.entityDefs, selection: sel, selections: st.editMode === 'object' ? st.multi : undefined,
       entityColor: (c) => this.store.entityColor(c), entityBox: (c) => this.store.entityBox(c), ghost: this.ghost, carved: this.store.carved(), decals: this.store.decals(), decalEntries: this.store.decalEntries(),
       entities: [
         ...this.shownEntities().map((entity) => ({ entity, readonly: false })),
@@ -557,6 +557,7 @@ export class ViewportPanel implements IContentRenderer {
       mesh: mt ? { brush: mt.brush, mode: st.meshMode, sel: st.meshSel } : null,
       time: this.styleTimeOverride ?? (this.element.ownerDocument.defaultView ?? window).performance.now() / 1000,
     })
+    if (this.renderer?.wantsFrame) this.invalidate() // the direct light prediction works through its queue a few milliseconds per frame
     // light styles play at 10 Hz: while an animated layer is shown in a lit view, redraw at 20 Hz (nothing else would trigger a frame)
     const lm = this.store.lightmap
     if (this.styleTimeOverride === null && this.needsLighting() && lm.ready && lm.styles.some((style) => styleAnimates(lm.patterns, style))) this.scheduleStyleFrame()

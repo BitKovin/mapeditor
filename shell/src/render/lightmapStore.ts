@@ -10,7 +10,7 @@ import type { Brush } from '../model/document'
 import { analyzeLit, buildPlainMesh } from './litStale'
 import type { LitAnalysis } from './litStale'
 
-export interface DirtyRect { page: number; x: number; y: number; w: number; h: number; /** light style layer; absent = 0 (base) */ style?: number }
+export interface DirtyRect { page: number; x: number; y: number; w: number; h: number; /** light style layer; absent = 0 (base) */ style?: number; /** this rectangle of the direct layer changed (the base layer's `directPages`), not of the lightmap itself */ direct?: boolean }
 export type LitMeshMsg = Extract<Inbound, { type: 'lit_mesh' }>
 export type TilesMsg = Extract<Inbound, { type: 'lightmap_tiles' }>
 export type LightingStatus = Extract<Inbound, { type: 'lighting_status' }>
@@ -70,6 +70,8 @@ export class LightmapStore {
   private drawCache: { serial: number; doc: unknown; prefabs: unknown; texRev: number; draw: LitDraw } | null = null
   /** Pages of the base layer (style 0). */
   pages: Uint16Array[] = []
+  /** The base layer's direct layer as the Core sent it (RGBA16F, alpha = the ambient occlusion factor, 0 = nothing): what the direct light predictor subtracts from `pages`. */
+  directPages: Uint16Array[] = []
   /** Pages of the other light style layers (same page count and size as the base): light = sum over layers of value(style, time) x layer. */
   private layerPages = new Map<number, Uint16Array[]>()
   /** Light style patterns from the Core (index = style id; '' = constant 1). */
@@ -88,6 +90,8 @@ export class LightmapStore {
   get exposure(): number { return this.status?.exposure ?? 1 }
   /** The level's display brightness offset (Level settings, colour correction), added after the exposure; 0 = none. */
   get brightness(): number { return this.status?.brightness ?? 0 }
+  /** The Core sends the direct layer: the Shell may predict the direct light of an edit. */
+  get directLayer(): boolean { return this.status?.directLayer === true && this.directPages.length === this.pages.length && this.pages.length > 0 }
 
   /** The style layers that have pixels, ascending, 0 (the base) first. */
   get styles(): number[] { return [0, ...[...this.layerPages.keys()].sort((a, b) => a - b)] }
@@ -119,6 +123,7 @@ export class LightmapStore {
     this.atlas = m.atlas
     this.pageCount = m.pageCount
     this.pages = Array.from({ length: m.pageCount }, () => new Uint16Array(m.atlas * m.atlas * 4))
+    this.directPages = Array.from({ length: m.pageCount }, () => new Uint16Array(m.atlas * m.atlas * 4))
     this.layerPages = new Map()
     this.resetLog()
     this.serial++
@@ -155,6 +160,24 @@ export class LightmapStore {
         }
       }
       this.log.push({ seq: ++this.seq, rect: { page: t.page, x: t.x, y: t.y, w: t.w, h: t.h, style } })
+      if (t.d && style === 0 && this.directPages[t.page]) {
+        const dpx = decodeHalves(t.d)
+        if (dpx.length === t.w * t.h * 4) {
+          const dd = new Uint32Array(dpx.buffer, dpx.byteOffset, dpx.length >> 1)
+          const dpage = this.directPages[t.page]
+          const dst2 = new Uint32Array(dpage.buffer, dpage.byteOffset, dpage.length >> 1)
+          for (let y = 0; y < t.h; y++) {
+            let s = y * t.w * 2
+            let d = ((t.y + y) * this.atlas + t.x) * 2
+            for (let x = 0; x < t.w; x++, s += 2, d += 2) {
+              if (dd[s + 1] >>> 16 === 0) continue // alpha 0: nothing here
+              dst2[d] = dd[s]
+              dst2[d + 1] = dd[s + 1]
+            }
+          }
+          this.log.push({ seq: ++this.seq, rect: { page: t.page, x: t.x, y: t.y, w: t.w, h: t.h, style: 0, direct: true } })
+        }
+      }
       applied++
     }
     return applied
@@ -238,6 +261,7 @@ export class LightmapStore {
     this.staleCache = null; this.plainCache = null; this.reliefPlainCache = null
     this.triangleCount = 0
     this.pages = []
+    this.directPages = []
     this.layerPages = new Map()
     this.resetLog()
     this.rev = -1

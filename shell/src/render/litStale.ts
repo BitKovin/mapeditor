@@ -21,7 +21,7 @@ export const staleKey = (brushInstance: string, brushId: string): string => `${b
 const mapKey = (f: LitFace): string => `${f.i}|${f.e}|${f.b}|${f.f}`
 
 /** One face of a changed brush, in the Core's vertex layout, plus the albedo coordinates of the current projection. */
-export interface OverlayFace { texture: string; vertexCount: number; core: number[]; uv: number[] }
+export interface OverlayFace { texture: string; vertexCount: number; core: number[]; uv: number[]; /** the brush it belongs to (`staleKey`) */ brush: string }
 export interface LitAnalysis {
   /** Brushes (`brushInstance|brushId`) whose mesh pieces no longer match: hide their pieces. */
   stale: Set<string>
@@ -131,7 +131,7 @@ export function analyzeLit(mesh: Float32Array, faces: readonly LitFace[], world:
         const per = new Map<string, OverlayFace>()
         for (const o of retexture(plan, triPts)) {
           let of = per.get(o.texture)
-          if (!of) { of = { texture: o.texture, vertexCount: 0, core: [], uv: [] }; per.set(o.texture, of); overlay.push(of) }
+          if (!of) { of = { texture: o.texture, vertexCount: 0, core: [], uv: [], brush: key }; per.set(o.texture, of); overlay.push(of) }
           for (const v of o.verts) { of.core.push(...coreAt(lerpVec3(triPts[o.src], v.w))); of.uv.push(v.uv[0], v.uv[1]); of.vertexCount++ }
         }
         continue
@@ -141,7 +141,7 @@ export function analyzeLit(mesh: Float32Array, faces: readonly LitFace[], world:
       if (pts.length === 0) continue
       const uvAt = faceUvAt(b, f)
       const uvs = pts.map(uvAt)
-      overlay.push({ texture, vertexCount: pts.length, core, uv: uvs.flatMap((u) => [u[0], u[1]]) })
+      overlay.push({ texture, vertexCount: pts.length, core, uv: uvs.flatMap((u) => [u[0], u[1]]), brush: key })
     }
   }
   return stale.size === 0 ? null : { stale, overlay }

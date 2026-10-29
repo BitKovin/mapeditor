@@ -15,6 +15,8 @@ import type { NeighbourFn } from '../model/reliefApply'
 import { neighbourFn, newBudget, pieceBorder, planHasRelief, polygonBorders, reliefOf } from '../model/reliefApply'
 import type { ReliefBudget } from '../model/reliefApply'
 import { reliefTriangle } from '../model/reliefApply'
+import type { Brush } from '../model/document'
+import { texEnv } from '../model/texprops'
 import type { LitAnalysis } from './litStale'
 import { staleKey } from './litStale'
 
@@ -177,6 +179,39 @@ export function buildReliefPlainMesh(mesh: Float32Array, faces: readonly LitFace
 export interface LitGroup { texture: string; first: number; count: number }
 export interface LitDraw { data: Float32Array; groups: LitGroup[]; vertexCount: number }
 
+/** What one surface piece of the lit mesh contributes to the draw, with everything it was computed from (so an unchanged piece is not computed again). */
+interface PieceEntry {
+  brush: Brush | undefined
+  rev: number
+  texture: string
+  borders: string
+  src: Float32Array        // the piece's vertices in the Core's mesh
+  parts: { texture: string; data: Float32Array }[]
+  used: number
+}
+/**
+ * The pieces of the last builds. A move or an edit changes a handful of brushes; the document keeps every other brush as the same object and the Core's
+ * mesh repeats their vertices exactly, so those pieces are copied out of here instead of being projected, planned and relieved again (that was 0.5 s
+ * of a 20 000 piece level on every edit, and again when the Core's new mesh arrived).
+ */
+const pieceCache = new Map<string, PieceEntry>()
+let pieceGeneration = 0
+/** Whether a face shows a relief (its own texture's or one of its repeat plan's): per brush object and texture environment, the lookup walks the plan. */
+const reliefWantedCache = new WeakMap<Brush, { rev: number; byFace: Map<number, boolean> }>()
+const reliefWanted = (brush: Brush | undefined, parent: Brush['faces'][number] | undefined, texture: string): boolean => {
+  if (reliefOf(texture)) return true
+  if (!brush || !parent) return false
+  let c = reliefWantedCache.get(brush)
+  if (!c || c.rev !== texEnv.rev) { c = { rev: texEnv.rev, byFace: new Map() }; reliefWantedCache.set(brush, c) }
+  let v = c.byFace.get(parent.id)
+  if (v === undefined) { const plan = planForFace(brush, parent); v = plan !== null && planHasRelief(plan); c.byFace.set(parent.id, v) }
+  return v
+}
+const sameFloats = (a: Float32Array, b: Float32Array, from: number): boolean => {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[from + i]) return false
+  return true
+}
+
 /**
  * Regroups the lit mesh per texture (one draw call each) and appends the albedo UV. Faces whose triangles do not add up to the mesh are
  * ignored from the first mismatch on (a stale table must never read outside the vertices).
@@ -184,13 +219,19 @@ export interface LitDraw { data: Float32Array; groups: LitGroup[]; vertexCount: 
 export function buildLitDraw(mesh: Float32Array, faces: readonly LitFace[], world: World, stale?: LitAnalysis | null): LitDraw {
   const indexes = new Map<string, ReturnType<typeof brushIndex>>()
   const owner = (instance: string) => { let m = indexes.get(instance); if (!m) { m = brushIndex(world, instance); indexes.set(instance, m) } return m }
-  const byTexture = new Map<string, number[]>()
+  const byTexture = new Map<string, Float32Array[]>()
   const budget = newBudget()
+  const push = (texture: string, data: Float32Array | number[]): void => {
+    const list = byTexture.get(texture) ?? []
+    byTexture.set(texture, list)
+    list.push(data instanceof Float32Array ? data : Float32Array.from(data))
+  }
   const borders = pieceBorders(mesh, faces, stale, (f) => {
-    if (reliefOf(f.t)) return true
-    const b = owner(f.bi).get(f.b)?.brush, p = b?.faces.find((x) => x.id === f.f), plan = b && p ? planForFace(b, p) : null
-    return plan !== null && planHasRelief(plan)
+    const b = owner(f.bi).get(f.b)?.brush
+    return reliefWanted(b, b?.faces.find((x) => x.id === f.f), f.t)
   })
+  const generation = ++pieceGeneration
+  const ordinal = new Map<string, number>()
   let at = 0 // vertex cursor
   const total = Math.floor(mesh.length / CORE_FLOATS)
   for (const f of faces) {
@@ -198,6 +239,20 @@ export function buildLitDraw(mesh: Float32Array, faces: readonly LitFace[], worl
     if (at + verts > total) break
     if (stale?.stale.has(staleKey(f.bi, f.b))) { at += verts; continue } // changed since the Core's mesh: drawn from the overlay below
     const ownerBrush = owner(f.bi).get(f.b)?.brush
+    const faceKey = `${f.i}|${f.e}|${f.bi}|${f.b}|${f.f}`
+    const nth = ordinal.get(faceKey) ?? 0
+    ordinal.set(faceKey, nth + 1)
+    const key = `${faceKey}|${nth}`
+    const bordersKey = (borders.get(f) ?? []).join(',')
+    const hit = pieceCache.get(key)
+    if (hit && hit.brush === ownerBrush && hit.rev === texEnv.rev && hit.texture === f.t && hit.borders === bordersKey && hit.src.length === verts * CORE_FLOATS && sameFloats(hit.src, mesh, at * CORE_FLOATS)) {
+      hit.used = generation
+      for (const p of hit.parts) push(p.texture, p.data)
+      at += verts
+      continue
+    }
+    const parts: { texture: string; data: Float32Array }[] = []
+    const emit = (texture: string, data: number[]): void => { parts.push({ texture, data: Float32Array.from(data) }) }
     const parent = ownerBrush?.faces.find((x) => x.id === f.f)
     const relief = reliefOf(f.t) // texture relief laid over the piece (displaceLit)
     const plan = ownerBrush && parent ? planForFace(ownerBrush, parent) : null
@@ -207,56 +262,53 @@ export function buildLitDraw(mesh: Float32Array, faces: readonly LitFace[], worl
       // interpolation (the lightmap uv is affine in the position), page and style mask from the triangle. A piece takes the relief of the texture it
       // samples (the face's own or an alternate), placed by the piece's own uv: mirrored, anchored and clamped tiles carry their relief with them
       for (const piece of planTriangles(mesh, at, f.n, plan, borders.get(f))) {
-        const list = byTexture.get(piece.texture) ?? []
-        byTexture.set(piece.texture, list)
         const r = reliefOf(piece.texture)
-        if (r) { for (const x of displaceLit(piece.core, 0, 3, piece.uv, r, budget, [piece.border], nb)) list.push(x); continue }
+        if (r) { emit(piece.texture, displaceLit(piece.core, 0, 3, piece.uv, r, budget, [piece.border], nb)); continue }
+        const list: number[] = []
         for (let k = 0; k < 3; k++) { for (let c = 0; c < CORE_FLOATS; c++) list.push(piece.core[k * CORE_FLOATS + c]); list.push(piece.uv[k][0], piece.uv[k][1]) }
+        emit(piece.texture, list)
       }
-      at += verts
-      continue
+    } else if (relief) {
+      emit(f.t, displaceLit(mesh, at, verts, pieceUv(mesh, at, verts, ownerBrush && parent ? faceUvAt(ownerBrush, parent) : undefined), relief, budget, borders.get(f), nb))
+    } else {
+      const uvAt = ownerBrush && parent ? faceUvAt(ownerBrush, parent) : undefined
+      const pts: Vec3[] = []
+      for (let k = 0; k < verts; k++) { const o = (at + k) * CORE_FLOATS; pts.push([mesh[o], mesh[o + 1], mesh[o + 2]]) }
+      const o0 = at * CORE_FLOATS
+      const normal: Vec3 = [mesh[o0 + 3], mesh[o0 + 4], mesh[o0 + 5]]
+      const uv = uvAt ? pts.map(uvAt) : planarCoordsProjected(normal, pts, undefined)
+      const list: number[] = []
+      for (let k = 0; k < verts; k++) {
+        const o = (at + k) * CORE_FLOATS
+        for (let c = 0; c < CORE_FLOATS; c++) list.push(mesh[o + c])
+        list.push(uv[k][0], uv[k][1])
+      }
+      emit(f.t, list)
     }
-    if (relief) {
-      const list = byTexture.get(f.t) ?? []
-      byTexture.set(f.t, list)
-      for (const x of displaceLit(mesh, at, verts, pieceUv(mesh, at, verts, ownerBrush && parent ? faceUvAt(ownerBrush, parent) : undefined), relief, budget, borders.get(f), nb)) list.push(x)
-      at += verts
-      continue
-    }
-    const uvAt = ownerBrush && parent ? faceUvAt(ownerBrush, parent) : undefined
-    const pts: Vec3[] = []
-    for (let k = 0; k < verts; k++) { const o = (at + k) * CORE_FLOATS; pts.push([mesh[o], mesh[o + 1], mesh[o + 2]]) }
-    const o0 = at * CORE_FLOATS
-    const normal: Vec3 = [mesh[o0 + 3], mesh[o0 + 4], mesh[o0 + 5]]
-    const uv = uvAt ? pts.map(uvAt) : planarCoordsProjected(normal, pts, undefined)
-    const list = byTexture.get(f.t) ?? []
-    byTexture.set(f.t, list)
-    for (let k = 0; k < verts; k++) {
-      const o = (at + k) * CORE_FLOATS
-      for (let c = 0; c < CORE_FLOATS; c++) list.push(mesh[o + c])
-      list.push(uv[k][0], uv[k][1])
-    }
+    pieceCache.set(key, { brush: ownerBrush, rev: texEnv.rev, texture: f.t, borders: bordersKey, src: mesh.slice(at * CORE_FLOATS, (at + verts) * CORE_FLOATS), parts, used: generation })
+    for (const p of parts) push(p.texture, p.data)
     at += verts
   }
+  if (pieceCache.size > 2 * (faces.length + 64)) for (const [k, e] of pieceCache) if (e.used !== generation) pieceCache.delete(k)
   for (const o of stale?.overlay ?? []) {
-    const list = byTexture.get(o.texture) ?? []
-    byTexture.set(o.texture, list)
     const oRelief = reliefOf(o.texture)
     if (oRelief) {
-      for (const x of displaceLit(o.core, 0, o.vertexCount, Array.from({ length: o.vertexCount }, (_, k) => [o.uv[k * 2], o.uv[k * 2 + 1]] as [number, number]), oRelief, budget, triangleBits(polygonBorders(runTriangles(o.core, 0, o.vertexCount))))) list.push(x)
+      push(o.texture, displaceLit(o.core, 0, o.vertexCount, Array.from({ length: o.vertexCount }, (_, k) => [o.uv[k * 2], o.uv[k * 2 + 1]] as [number, number]), oRelief, budget, triangleBits(polygonBorders(runTriangles(o.core, 0, o.vertexCount)))))
       continue
     }
+    const list: number[] = []
     for (let k = 0; k < o.vertexCount; k++) { for (let c = 0; c < CORE_FLOATS; c++) list.push(o.core[k * CORE_FLOATS + c]); list.push(o.uv[k * 2], o.uv[k * 2 + 1]) }
+    push(o.texture, list)
   }
   const groups: LitGroup[] = []
   let count = 0
-  for (const l of byTexture.values()) count += l.length
+  for (const l of byTexture.values()) for (const a of l) count += a.length
   const data = new Float32Array(count)
   let off = 0
   for (const [texture, l] of byTexture) {
-    data.set(l, off)
-    groups.push({ texture, first: off / LIT_TEX_FLOATS, count: l.length / LIT_TEX_FLOATS })
-    off += l.length
+    const first = off
+    for (const a of l) { data.set(a, off); off += a.length }
+    groups.push({ texture, first: first / LIT_TEX_FLOATS, count: (off - first) / LIT_TEX_FLOATS })
   }
   return { data, groups, vertexCount: count / LIT_TEX_FLOATS }
 }

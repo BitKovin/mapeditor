@@ -15,6 +15,7 @@ import { HEAT_BUCKETS, bucketColor, faceHeat, heatBucket } from '../model/texelD
 import { brushTextureSignature, lerpVec3, planForFace, retexture } from '../model/uvmesh'
 import type { TextureCache } from '../state/textures'
 import { LightmapStore, LIT_VERTEX_FLOATS, packRect } from './lightmapStore'
+import type { DirtyRect } from './lightmapStore'
 import type { LightvolStore } from './lightvolStore'
 import { styleValue } from './lightStyles'
 import { entityLightKey } from './lightvolStore'
@@ -27,6 +28,9 @@ import type { EntityDecalGroup } from './litTextured'
 import type { DecalEntry, World } from '../model/derived'
 import type { Vec3 } from '../model/math'
 import type { Selection } from '../state/store'
+import type { EntityClassDef } from '../net/protocol'
+import { DirectLightPredictor } from './directLight'
+import type { PredictorTarget } from './directLight'
 import { OrthoCamera } from './camera'
 import type { Camera } from './camera'
 import { orthoGrid } from './orthoGrid'
@@ -65,6 +69,8 @@ export interface Frame {
   lightvol?: LightvolStore
   /** The document and prefab content: the Lit view projects albedo textures onto the lit mesh with the faces' own projections. */
   world?: World
+  /** The game's entity definitions (light defaults), for the direct light prediction. */
+  entityDefs?: EntityClassDef[]
   /** Boolean results (keyed `entityId/brushId`) drawn instead of the authored brush. */
   carved?: Map<string, CarvedMesh>
   entities: DrawEntity[]
@@ -336,6 +342,11 @@ export class Renderer {
   private litMeshSerial = -1
   private litCursor = 0
   private lmTex: WebGLTexture | null = null
+  /** Direct light of an edit, predicted here while the Core catches up (directLight.ts). Null until the first lighting view. */
+  predictor: DirectLightPredictor | null = null
+  private predictorTarget: PredictorTarget = { lmTex: null, layerOf: (page: number) => page }
+  /** The direct light prediction has batches left: another frame is needed to go on with them. */
+  get wantsFrame(): boolean { return !!this.predictor?.wantsFrame }
   private lmStyles: number[] = []   // style of every slot of the texture array (slot 0 = base)
   private lmPages = 0
   private styleW = new Float32Array(64)
@@ -794,6 +805,7 @@ export class Renderer {
     if (l.serial !== this.litSerial) {
       this.litSerial = l.serial
       this.litMeshSerial = l.meshSerial
+      this.predictor?.releaseAll(null, null, false)  // its pages sat on the texture that goes now
       if (this.lmTex) { gl.deleteTexture(this.lmTex); this.lmTex = null }
       if (!l.ready || !l.mesh) { this.litCount = 0; return }
       if (!this.litVao) {
@@ -913,7 +925,7 @@ export class Renderer {
     }
   }
 
-  private uploadRects(l: LightmapStore, rects: { page: number; x: number; y: number; w: number; h: number; style?: number }[]): void {
+  private uploadRects(l: LightmapStore, rects: DirtyRect[]): void {
     const gl = this.gl
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.lmTex)
     // Each rectangle is copied into a tightly packed buffer and uploaded with default unpack state. Uploading straight out of the page with
@@ -922,8 +934,11 @@ export class Renderer {
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0)
     gl.pixelStorei(gl.UNPACK_SKIP_IMAGES, 0); gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, 0)
     const atlas = l.atlas
+    this.predictorTarget.lmTex = this.lmTex
     for (const r of rects) {
       const style = r.style ?? 0
+      if (r.direct) { this.predictor?.handleRect(l, this.predictorTarget, r); continue } // the direct layer lives on the predictor's side only
+      if (style === 0 && this.predictor?.pageActive(r.page) && this.predictor.handleRect(l, this.predictorTarget, r)) continue
       const slot = this.lmStyles.indexOf(style)
       const page = l.pagesOf(style)?.[r.page]
       if (slot < 0 || !page || r.w <= 0 || r.h <= 0) continue
@@ -950,7 +965,24 @@ export class Renderer {
     const litMode = (lightingOnly || litView) && !!frame.lighting?.ready
     const texturedLit = litMode && litView && !!frame.world
     const nowSeconds = frame.time ?? performance.now() / 1000
-    if (litMode) { this.syncLighting(frame.lighting!); this.styleUniforms(frame.lighting!, nowSeconds) }
+    if (litMode) {
+      this.syncLighting(frame.lighting!); this.styleUniforms(frame.lighting!, nowSeconds)
+      // the direct light of what the document changed since the Core's mesh, until the Core has caught up (a failure here must never stop the frame)
+      if (frame.world && this.lmTex && !frame.pixelSize) {
+        try {
+          if (!this.predictor) this.predictor = new DirectLightPredictor(gl)
+          this.predictorTarget.lmTex = this.lmTex
+          this.predictor.update(frame.lighting!, frame.world, frame.entityDefs ?? [], this.predictorTarget, frame.camera.eye as [number, number, number])
+        } catch (e) { console.error('direct light prediction failed', e); this.predictor?.releaseAll(frame.lighting!, this.predictorTarget, true); this.predictor = null }
+        // the prediction drew into other targets with its own viewport and state: the scene is drawn with the frame's (it set them before the lighting sync)
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+        gl.viewport(0, 0, w, h)
+        gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(true)
+        gl.disable(gl.SCISSOR_TEST)
+        gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA) // the grid is drawn next and relies on the blending the previous frame left on
+        if (frame.settings.backfaceCulling) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW) } else gl.disable(gl.CULL_FACE)
+      }
+    } else if (this.predictor?.active) { this.predictorTarget.lmTex = this.lmTex; this.predictor.releaseAll(frame.lighting ?? null, this.predictorTarget, true) }
     if (texturedLit) this.syncLitTextured(frame.lighting!, frame.world!)
     else if (litMode) this.syncLitPlain(frame.lighting!, frame.world)
     if (texturedLit && frame.decalEntries?.length) this.syncLitDecals(frame.lighting!, frame.decalEntries)
@@ -1362,7 +1394,7 @@ export class Renderer {
     }
   }
 
-  dispose(): void { this.gl.getExtension('WEBGL_lose_context')?.loseContext() }
+  dispose(): void { try { this.predictor?.dispose() } catch { /* the context goes next */ } this.gl.getExtension('WEBGL_lose_context')?.loseContext() }
 }
 
 function buildGrid(half: number): { minor: Float32Array; major: Float32Array } {

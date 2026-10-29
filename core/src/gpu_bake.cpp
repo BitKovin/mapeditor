@@ -192,7 +192,7 @@ struct AoPush {  // layout of `PC` in shaders/lightmap_ao.comp
 constexpr uint32_t kAoBindings = 6;
 
 // Bindings of the ray traced direct shader: 0..3 pos nrm lights result, 4 tlas, 5 bounce result, 6 texel index, 7 atlas0, 8 sub-texel positions.
-constexpr uint32_t kDirectRtBindings = 11;  // 0..8, 9 per triangle albedo record (raw ids), 10 transparency words
+constexpr uint32_t kDirectRtBindings = 12;  // 0..8, 9 per triangle albedo record (raw ids), 10 transparency words, 11 sky + rect share of the direct light
 // Bindings of the gather shader: 0..7 buffers, 8 tlas, 9 per triangle albedo record, 10 sampler, 11 texture array.
 constexpr uint32_t kGatherBindings = 13;  // ..., 11 transparency words, 12 the textures (variable count: last)
 
@@ -1133,6 +1133,8 @@ void run(const TexelSamples& samples, const LightScene& scene, const OccluderMes
     VkDescriptorBufferInfo tbi[2] = {{bTMeta.buffer, 0, VK_WHOLE_SIZE}, {bTWords.buffer, 0, VK_WHOLE_SIZE}};  // bindings 9, 10: transparency
     w[9] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 9, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &tbi[0], nullptr};
     w[10] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 10, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &tbi[1], nullptr};
+    VkDescriptorBufferInfo xbi{bDb.buffer, 0, VK_WHOLE_SIZE};  // binding 11: only written with push.gi bit 4, which a one-shot evaluation never sets
+    w[11] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 11, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &xbi, nullptr};
     f.vkUpdateDescriptorSets(device, bindingCount, w, 0, nullptr);
 
     // ---- gather pipeline (one bounce) and its two ping-pong descriptor sets ----
@@ -1398,7 +1400,7 @@ public:
     size_t n = 0, m = 0, atlasTexels = 0, lightCap = 0;  // n base samples, m fine GI grid entries behind them
     uint32_t atlasSize = 0, lightCount = 0;
     float ambient[3] = {0, 0, 0};
-    Buffer bPos, bNrm, bLights, bOut, bDb, bInd, bIdx, bAtlas, bScratch, bDummy, bMeta, bSub, bAlb, bTMeta, bTWords, bOcc;
+    Buffer bPos, bNrm, bLights, bOut, bDb, bDx, bInd, bIdx, bAtlas, bScratch, bDummy, bMeta, bSub, bAlb, bTMeta, bTWords, bOcc;
     bool transparent = false;          // the mesh has transparent surfaces (direct bit 3, gather bit 2; the geometry is not opaque)
     std::shared_ptr<GpuTextures> tex;  // after `ctx`: released first
     bool textured = false;             // bounces use the albedo textures (flag bit 1 of the gather)
@@ -1445,6 +1447,7 @@ public:
         bOut = mk(sampleBytes, MemKind::HostCached);
         bOcc = mk(n * 4, MemKind::HostCached);                     // ambient occlusion, one float per base sample
         bDb = mk(sampleBytes, MemKind::HostCached);
+        bDx = mk(sampleBytes, MemKind::HostCached);                // the sky + rect share of the direct light (what a client cannot predict)
         bInd = mk(cfg.gather ? totalBytes : 16, MemKind::HostCached);
         bDummy = mk(sampleBytes, MemKind::Device);                 // gather's db input: only feeds its (unused) atlas write
         bAtlas = mk(atlasTexels * 16, MemKind::DeviceHost);        // resident bounce source, written by the CPU between steps
@@ -1646,7 +1649,7 @@ public:
         asw.accelerationStructureCount = 1;
         asw.pAccelerationStructures = &tlas;
         // direct shader (RAY_QUERY): pos nrm lights result | tlas | bounce result, texel index, atlas0 (unused: gi bit 0 stays clear)
-        const Buffer* dbufs[kDirectRtBindings] = {&bPos, &bNrm, &bLights, &bOut, nullptr, &bDb, &bIdx, &bScratch, &bSub, &bTMeta, &bTWords};
+        const Buffer* dbufs[kDirectRtBindings] = {&bPos, &bNrm, &bLights, &bOut, nullptr, &bDb, &bIdx, &bScratch, &bSub, &bTMeta, &bTWords, &bDx};
         // gather: pos nrm db(dummy) texel index | atlas in, atlas out(scratch), indirect, triangle meta | tlas
         const Buffer* gbufs[10] = {&bPos, &bNrm, &bDummy, &bIdx, &bAtlas, &bScratch, &bInd, &bMeta, nullptr, &bAlb};
         VkDescriptorBufferInfo infos[kDirectRtBindings + 11 + kAoBindings];
@@ -1844,7 +1847,7 @@ public:
         push.bias = static_cast<float>(kShadowBias);
         push.farDistance = static_cast<float>(kShadowFar);
         std::memcpy(push.ambient, ambient, sizeof(ambient));
-        push.gi = 2u | 4u | (transparent ? 8u : 0u);  // ray traced shadows, write the bounce-weighted direct light only; transparency
+        push.gi = 2u | 4u | 16u | (transparent ? 8u : 0u);  // ray traced shadows, write the bounce-weighted direct light only (and the sky + rect share); transparency
         push.superSamples = superSamples;
         f.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, dp.pipe);
         f.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, dp.pl, 0, 1, &dset, 0, nullptr);
@@ -1988,6 +1991,7 @@ public:
                 JobResult& x = r[i - cut[k]];
                 x.d = static_cast<const float*>(bOut.mapped) + static_cast<size_t>(j.first) * 4;
                 x.db = static_cast<const float*>(bDb.mapped) + static_cast<size_t>(j.first) * 4;
+                x.dx = static_cast<const float*>(bDx.mapped) + static_cast<size_t>(j.first) * 4;
                 if (indirect == Indirect::PerSample) x.ind = static_cast<const float*>(bInd.mapped) + static_cast<size_t>(j.first) * 4;
                 else if (indirect == Indirect::PerEntry) x.ind = static_cast<const float*>(bInd.mapped) + static_cast<size_t>(j.giFirst) * 4;
             }
