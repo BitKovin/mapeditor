@@ -13,10 +13,10 @@ uniform mat4 uViewProj; uniform mat4 uModel; layout(location = 0) in vec3 aPos; 
 void main() { vN = mat3(uModel) * aNormal; vUv = aUv; gl_Position = uViewProj * (uModel * vec4(aPos, 1.0)); }`
 
 /**
- * The engine's own lighting of a model (GameData/shaders/source/fs_default.sc CalculateDirectionalDiffuse, light grid values as the engine reads them: byte / 255 * 2):
- *   colour = texture * 0.6 * (0.9 * ambient + directed * (0.5 * N.L + 0.5))
- * in the texture's own (display) space and no level exposure - the brush faces are lit another way (lightmaps), models are not. Backfaces light
- * with the flipped normal. The engine's specular, rim light and dynamic point lights are not part of the preview.
+ * Light from the light volume on a model, as the game's environment shader (fs_default_env.sc) lights it:
+ *   colour = texture * (ambient + directed * max(0, N.L))
+ * with the light grid values as the engine reads them (byte / 255 * 2, animated style layers summed). Backfaces light with the flipped normal. The sample
+ * point, the minimum brightness the engine enforces (EnsureMinBrightness) and the one direction per object are done in ModelDrawer.
  */
 export const MODEL_LIT_FS = `#version 300 es
 precision highp float; uniform vec3 uColor; uniform sampler2D uTex; uniform float uHasTex; uniform float uAlphaTex; uniform int uN; uniform vec3 uAmb[8]; uniform vec3 uDc[8]; uniform vec3 uDir; uniform vec3 uTransp; in vec3 vN; in vec2 vUv; out vec4 o;
@@ -29,10 +29,10 @@ void main() {
   vec3 albedo = mix(uColor, t.rgb, uHasTex);
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
-  float f = dot(n, normalize(uDir)) * 0.5 + 0.5;
+  float f = max(dot(n, normalize(uDir)), 0.0);
   vec3 light = vec3(0.0);
-  for (int i = 0; i < 8; i++) { if (i >= uN) break; light += uAmb[i] * 0.9 + uDc[i] * f; }
-  o = vec4(albedo * light * 0.6, transparency(t.a * uHasTex + (1.0 - uHasTex)));
+  for (int i = 0; i < 8; i++) { if (i >= uN) break; light += uAmb[i] + uDc[i] * f; }
+  o = vec4(albedo * light, transparency(t.a * uHasTex + (1.0 - uHasTex)));
 }`
 
 interface GpuPrim { vao: WebGLVertexArrayObject; pos: WebGLBuffer; nrm: WebGLBuffer; count: number }
@@ -56,6 +56,15 @@ export interface ModelDrawOptions {
   lit?: { sample: (p: [number, number, number]) => EntityLight[] | null; weight: (style: number) => number; exposure: number; brightness: number; lightingOnly: boolean }
   /** Which entities are in view (a box test); undefined = all. */
   visible?: (e: Entity, bounds: { min: [number, number, number]; max: [number, number, number] }) => boolean
+}
+
+/** `light` with at least `min` luminance (hue kept; black becomes grey at `min`): the engine's EnsureMinBrightness. */
+export function minBrightness(light: readonly number[], min: number): number[] {
+  const lum = light[0] * 0.2126 + light[1] * 0.7152 + light[2] * 0.0722
+  if (lum >= min) return [light[0], light[1], light[2]]
+  if (lum <= 1e-6) return [min, min, min]
+  const k = min / lum
+  return [light[0] * k, light[1] * k, light[2] * k]
 }
 
 export class ModelDrawer {
@@ -189,12 +198,11 @@ export class ModelDrawer {
         const flatColor = opts.lit?.lightingOnly && lit ? [1, 1, 1, 1] : prim.color
         if (lit) {
           gl.uniform3f(L.color, flatColor[0], flatColor[1], flatColor[2])
-          const n = Math.min(8, lit.length)
-          for (let i = 0; i < n; i++) {
-            const w = opts.lit!.weight(lit[i].s)
-            for (let c = 0; c < 3; c++) { amb[i * 3 + c] = lit[i].ambient[c] * w; dc[i * 3 + c] = lit[i].directed[c] * w }
-          }
-          gl.uniform1i(L.n, n); gl.uniform3fv(L.amb, amb); gl.uniform3fv(L.dc, dc); gl.uniform3fv(L.dir, lit[0].dir)
+          // the styles' light summed by their value now, then at least the brightness the engine keeps (StaticMesh EnsureMinBrightness: 0.01 ambient, 0.03 directed)
+          const a = [0, 0, 0], dd = [0, 0, 0]
+          for (const l of lit) { const w = opts.lit!.weight(l.s); for (let c = 0; c < 3; c++) { a[c] += l.ambient[c] * w; dd[c] += l.directed[c] * w } }
+          amb.set(minBrightness(a, 0.01)); dc.set(minBrightness(dd, 0.03))
+          gl.uniform1i(L.n, 1); gl.uniform3fv(L.amb, amb); gl.uniform3fv(L.dc, dc); gl.uniform3fv(L.dir, lit[0].dir)
         } else gl.uniform4f(L.color, prim.color[0], prim.color[1], prim.color[2], prim.alphaMode === 'BLEND' ? prim.color[3] : 1)
         gl.uniform3f(L.transp, tp[0], tp[1], tp[2])
         gl.uniformMatrix4fv(L.model, false, d.m)
