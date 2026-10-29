@@ -6,10 +6,10 @@ import type { Box } from './entityBox'
 import type { Vec3 } from './math'
 import { rotationFromAngles } from './rotation'
 
-/** The model file of an entity (relative to the game folder, forward slashes); '' when it has none or is a brush entity. */
+/** The model file of an entity: `model_path`, else the classic `model` key (relative to the game folder, forward slashes); '' when it has none or is a brush entity. */
 export function modelPathOf(e: Entity): string {
   if (isBrushEntity(e) || classOf(e) === 'worldspawn') return ''
-  return (e.keyvalues?.model_path ?? '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
+  return (e.keyvalues?.model_path ?? e.keyvalues?.model ?? '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
 }
 /** The animation to play: a name, or an index; '' = the rest pose. */
 export const modelAnimationOf = (e: Entity): string => (e.keyvalues?.model_animation ?? '').trim()
