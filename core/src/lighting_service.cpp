@@ -35,12 +35,14 @@ json optionsToJson(const LightingService::Options& o) {
                 {"defaultSourceSize", o.defaultSourceSize}, {"defaultSunSize", o.defaultSunSize}, {"firstSendFraction", o.firstSendFraction}, {"maxHoldSeconds", o.maxHoldSeconds},
                 {"lightvol", o.lightvolEnabled}, {"lightvolGridSize", o.lightvol.gridSize}, {"lightvolMaxProbes", o.lightvol.maxProbes}, {"lightvolNormals", o.lightvol.normals},
                 {"lightvolGiSamples", o.lightvol.giSamples}, {"lightvolProbesPerStep", o.lightvolProbesPerStep},
-                {"stickyVisibility", o.stickyVisibility}, {"stickyVisibilityRadius", o.stickyVisibilityRadius}, {"lightvolIdleSeconds", o.lightvolIdleSeconds}};
+                {"skipVisibility", o.skipVisibility}, {"stickyVisibility", o.stickyVisibility}, {"stickyVisibilityRadius", o.stickyVisibilityRadius}, {"lightvolIdleSeconds", o.lightvolIdleSeconds}};
 }
 }  // namespace
 
 LightingService::Options LightingService::loadOptions(const std::filesystem::path& file, std::string* warning) {
     Options o;
+    o.firstSendFraction = 0;    // the mesh goes out at once, the Shell predicts the direct light until the Core's tiles arrive
+    o.skipVisibility = true;    // the live view only previews light: no visibility, no unseen-face culling or density falloff
     o.stickyVisibility = true;  // the editor's setting;
     o.lightvolIdleSeconds = 2;  // likewise Options{} (export, tests) asks the visibility of every face every time
     std::ifstream in(file, std::ios::binary);
@@ -87,6 +89,7 @@ LightingService::Options LightingService::loadOptions(const std::filesystem::pat
         num("firstSendFraction", o.firstSendFraction, 0.0, 1.0);
         num("maxHoldSeconds", o.maxHoldSeconds, 0.0, 60.0);
         flag("lightvol", o.lightvolEnabled);
+        flag("skipVisibility", o.skipVisibility);
         flag("stickyVisibility", o.stickyVisibility);
         num("stickyVisibilityRadius", o.stickyVisibilityRadius, 0, 100000);
         num("lightvolIdleSeconds", o.lightvolIdleSeconds, 0, 600);
@@ -98,6 +101,8 @@ LightingService::Options LightingService::loadOptions(const std::filesystem::pat
     } catch (const std::exception& e) {
         if (warning) *warning = std::string("lighting settings '") + file.string() + "' ignored: " + e.what();
         Options d;
+        d.firstSendFraction = 0;
+        d.skipVisibility = true;
         d.stickyVisibility = true;
         d.lightvolIdleSeconds = 2;
         return d;
@@ -115,6 +120,8 @@ bool LightingService::writeDefaultOptions(const std::filesystem::path& file) {
         std::ofstream out(file, std::ios::binary | std::ios::trunc);
         if (!out) return false;
         Options d;  // the editor's defaults (loadOptions)
+        d.firstSendFraction = 0;
+        d.skipVisibility = true;
         d.stickyVisibility = true;
         d.lightvolIdleSeconds = 2;
         out << optionsToJson(d).dump(2) << "\n";
@@ -768,7 +775,7 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
             std::shared_ptr<std::unordered_map<std::string, VisibilityAnswer>> stickyFresh;
             std::mutex visibilityM;
             std::vector<Aabb> layoutRegions;  // what changed since the last layout (needed before the layout for the sticky visibility)
-            if (in.lights.playable && !in.lights.playable->empty() && (layoutSettings.lod.levels > 1 || layoutSettings.lod.removeUnseen) && layoutSettings.lod.cullUnseen) {
+            if (in.lights.playable && !in.lights.playable->empty() && (layoutSettings.lod.levels > 1 || layoutSettings.lod.removeUnseen) && layoutSettings.lod.cullUnseen && !opt_.skipVisibility) {
                 // removing a surface needs a surer "nobody sees it" than choosing a density: many more viewpoints
                 // what blocks the view is what the compiler's own visibility uses: the static world, and only its opaque textures
                 const AlbedoLoader& texLoader = in.visibilityLoader;

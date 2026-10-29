@@ -72,6 +72,8 @@ public:
         // layout on a big level (18 s on lvl2). With this on, a face whose geometry did not change and that lies further than `stickyVisibilityRadius` m
         // from every changed region keeps its previous answer; everything else is asked again. Switching the lighting off and on starts afresh. The export
         // never uses it (it always asks everything).
+        // Editing: do not build the playable area's visibility at all (every face counts as seen); the live view only previews light.
+        bool skipVisibility = false;
         bool stickyVisibility = false;
         double stickyVisibilityRadius = 16;
         Options() {

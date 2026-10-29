@@ -11,7 +11,7 @@
   "denoiseQuality": 1,
   "directSupersample": 8,
   "exposure": 1.0,
-  "firstSendFraction": 0.1,
+  "firstSendFraction": 0,
   "flushIntervalMs": 25.0,
   "giSamplesPerPass": 16,
   "giScale": 2,

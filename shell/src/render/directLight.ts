@@ -476,7 +476,20 @@ export class DirectLightPredictor {
       this.uploadOccluders(plain)
       this.stats.uploadMs = performance.now() - u0
     }
-    if (!this.predScene || !this.predBoxes) { this.predScene = scene; this.predBoxes = boxes; this.meshSerial = l.meshSerial; return }
+    if (!this.predScene || !this.predBoxes) {
+      this.predScene = scene; this.predBoxes = boxes; this.meshSerial = l.meshSerial
+      // the Core has not baked this mesh yet (its pages are empty, the AO factor reads as 1): predict the direct light of everything, nearest first
+      if (status && !status.converged) {
+        this.generation++
+        this.cubeCache.clear(); this.cubeSlots.fill(null)
+        this.enqueue(Uint32Array.from({ length: this.info!.count }, (_, i) => i), this.info!, camera)
+        this.lastPredictAt = performance.now(); this.sawUnconverged = false; this.stats.predictions++
+        this.run(l, target, scene, t0)
+        this.restoreState()
+        this.stats.pending = this.queue.length; this.stats.activePages = this.pages.size
+      }
+      return
+    }
     const info = this.info!
     const overlayTris = pm.overlay
     const forcedFrom = Math.max(0, info.count - overlayTris)
