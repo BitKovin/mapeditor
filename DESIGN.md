@@ -1037,15 +1037,17 @@ ambient and directed bytes `round(clamp(v / 2, 0, 1) * 255)`, read as `byte / 25
 in Quake axes: `lat = acos(dir.z) / pi * 255`, `lng = atan2(dir.y, dir.x) / (2 pi) * 255` (mod 256), as the engine's `computeLightDirection`
 reads it. Light at a normal: `ambient + directed * max(0, n . dir)` per slot, times the style value, summed. Identical palette entries are shared.
 
-**Visibility: sampled cells, no portals (the user, 2026-10-16: "modern system that supports open levels. So no leaks to worry about").**
-No sealing, no leak, no `.prt`. The level's bounds are cut into cubic CELLS (`_vis_cell`, default 4 m; grown until at most `kMaxClusters`
-cells are not entirely solid). The tree is an axis-aligned kd tree whose leafs are exactly the cells (median splits on cell boundaries), so the
-engine's point -> leaf -> cluster lookup works unchanged; a cell entirely inside solid brushes has cluster -1. Cell A may see cell B when a ray
-from a sample point of A (points inside solids are skipped) reaches B: every cell the ray passes before it hits an OCCLUDER is visible, and so is
-the cell of the hit. Occluders are the opaque surfaces of static, light-blocking classes (glass, cutout and translucent textures and moving brush
-entities never occlude). Each cell casts `samples x directions` rays (3D DDA through the grid on the CPU BVH); the result is made symmetric and
-dilated by one cell (a camera at a cell border), which keeps it conservative in practice. Surfaces and brushes go into every leaf their bounds
-overlap.
+**Visibility: cells in the playable zones, split by big walls, clusters joined by traced segments (core/src/bsp_vis.cpp, `VISIBILITY_REWRITE.md`).**
+No sealing, no leak, no `.prt`. Cells (boxes of `_vis_cell_x/y/z`, default 5 x 2 x 5 m, grown until the table fits `_vis_max_mb`, default 50) exist only where they touch a
+playable zone grown by 0.5 m (zones overlap or lie less than 1 m apart); everything else is cluster 0 ("outside"), which sees and is seen by every cluster, and holds the
+sky and the background faces (the faces that leave the cells). Walls of the static world (worldspawn, func_group, func_detail; opaque, solid contents) whose merged coplanar
+face has no side under `_vis_split_min` (2 m) cut the cells they cross by their planes (the tree is arbitrary planes: kd tree of cells, then the cut planes). A region inside
+solid brushes has cluster -1; the other regions are clusters. The engine's point -> leaf -> cluster lookup and `IsClusterVisible` (true for cluster < 0) are unchanged.
+Pairs: `_vis_segments` (64) segments between `_vis_samples` (32) sample points of each cluster pair, all pairs, on the GPU (ray query, else a compute shader over the same
+BVH, else the CPU); rays are aimed through gaps up to `_vis_aperture` (0.5 m) between a face edge and what is behind it (cracks, slits). `_vis_dilate` (off) also gives a
+cluster what the clusters it opens into see (one ring, never through a wall). Sampling cannot prove "never hidden": `MAPEDITOR_VIS_CHECK=<n>` checks n random segments
+(lvl2: 16 misses in 3M without propagation). lvl2: 19.8k clusters, 5 s.
+**The lighting uses the same data:** `PlayableVisibility` (the "unseen surface" test of the lightmap layout) builds this visibility for the playable zones; a surface is seen when part of it lies outside the cells (beyond the zones everything is always visible) or in a cluster that a cluster inside a zone sees. So the unseen cull only works within reach of the zones' cells.
 
 **Collision brushes.** Every additive brush of the exported entities becomes convex pieces: a convex brush as is, a concave one split by its
 own face planes; then each subtractor in its carve scope is subtracted (piece minus convex subtractor = at most one piece per subtractor plane).

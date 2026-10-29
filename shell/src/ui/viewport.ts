@@ -537,6 +537,7 @@ export class ViewportPanel implements IContentRenderer {
     const mt = st.editMode === 'mesh' ? this.store.meshTarget() : null
     const preview = this.previewLines()
     if (this.needsLighting()) { this.store.reportCamera([this.camera.eye[0], this.camera.eye[1], this.camera.eye[2]]); this.store.syncRelief() }
+    this.visibilityTick()
     this.renderer?.draw({
       camera: this.camera, settings: this.settings, lighting: this.store.lightmap, lightvol: this.store.lightvol, world: { doc: st.doc, prefabs: st.prefabEntities }, entityDefs: st.entityDefs, selection: sel, selections: st.editMode === 'object' ? st.multi : undefined,
       entityColor: (c) => this.store.entityColor(c), entityBox: (c) => this.store.entityBox(c), ghost: this.ghost, carved: this.store.carved(), decals: this.store.decals(), decalEntries: this.store.decalEntries(),
@@ -547,7 +548,7 @@ export class ViewportPanel implements IContentRenderer {
       gizmo: this.faceGizmo() && this.store.canEdit ? { pivot: this.faceGizmo()!.pivot, dir: this.faceGizmo()!.dir, length: gizmoLength(this.camera.distanceTo(this.faceGizmo()!.pivot)), active: this.drag?.kind === 'face' || this.hoverFace ? 0 : null }
         : pivot && this.store.canEdit ? { pivot, length: gizmoLength(this.camera.distanceTo(pivot)), active: this.drag?.kind === 'gizmo' ? this.drag.axis : this.hoverAxis, mode: this.gizmoMode() } : null,
       annotations: this.settings.showOrigins ? entityAnnotations([...this.shownEntities(), ...this.shownPrefabs().map((p) => p.entity)]) : undefined,
-      overlays: [...this.arrowOverlays(), ...this.lightOverlays(), ...this.decalSelectionOverlay()],
+      overlays: [...this.arrowOverlays(), ...this.lightOverlays(), ...this.decalSelectionOverlay(), ...this.visibilityOverlays()],
       handles: [...this.entityHandleOverlay(), ...this.smoothEdgeOverlay(mt?.brush)],
       sizeLabels: this.sizeLabels(),
       preview: [...(preview ?? []), ...(this.loopPreview ?? []), ...this.knifeOverlay(), ...this.clipOverlay(), ...this.resizeOverlay(), ...this.terrainCursor()],
@@ -1912,6 +1913,36 @@ export class ViewportPanel implements IContentRenderer {
   get drawingState(): Drawing | null { return this.drawing }
 
   /** Direction arrows of point entities and link arrows between entities (model/arrows.ts). */
+  // Visibility view: the clusters of the last export that the camera's cluster sees (green boxes, nearest 6000) and the one it is in (yellow). The Core keeps the
+  // visibility of the last export, so export first; the view follows the camera.
+  private visView: { at: [number, number, number]; own: number[]; seen: number[] } | null = null
+  private visBusy = false
+  private visibilityTick(): void {
+    if (!this.settings.showVisibility || this.visBusy) return
+    const e = this.camera.eye
+    const at: [number, number, number] = [e[0], e[1], e[2]]
+    if (this.visView && Math.hypot(at[0] - this.visView.at[0], at[1] - this.visView.at[1], at[2] - this.visView.at[2]) < 0.5) return
+    this.visBusy = true
+    this.store.visDebug(at).then((r) => {
+      this.visBusy = false
+      this.visView = { at, own: r?.own ?? [], seen: r?.seen ?? [] }
+      this.invalidate()
+    })
+  }
+  private visibilityOverlays(): { color: [number, number, number]; lines: number[] }[] {
+    if (!this.settings.showVisibility || !this.visView) return []
+    const boxes = (b: number[]): number[] => {
+      const out: number[] = []
+      for (let i = 0; i + 5 < b.length; i += 6) {
+        const [x0, y0, z0, x1, y1, z1] = [b[i], b[i + 1], b[i + 2], b[i + 3], b[i + 4], b[i + 5]]
+        const c = [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]]
+        for (const [a, d] of [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]) out.push(...c[a], ...c[d])
+      }
+      return out
+    }
+    return [{ color: [0.3, 0.85, 0.4], lines: boxes(this.visView.seen) }, { color: [1, 0.85, 0.2], lines: boxes(this.visView.own) }]
+  }
+
   private arrowOverlays(): ReturnType<typeof entityArrows> {
     const st = this.store.state
     const list = st.editMode === 'object' ? st.multi : st.selection ? [st.selection] : []
@@ -1997,10 +2028,10 @@ export class ViewportPanel implements IContentRenderer {
     this.updateLightStatus()
 
     // one "View" menu for every optional overlay (more arrive with lighting: lightvol samples, lightmap density)
-    type Opt = { label: string; key?: 'showSizes' | 'showGrid' | 'showOrigins' | 'showDirections' | 'showLinks' | 'showLightGizmos' | 'showLightvol' | 'showLightmapDensity' | 'showTexelHeat' | 'showOutlines' | 'showSubtractive' | 'showVolumes' | 'backfaceCulling'; later?: boolean }
+    type Opt = { label: string; key?: 'showSizes' | 'showGrid' | 'showOrigins' | 'showDirections' | 'showLinks' | 'showLightGizmos' | 'showLightvol' | 'showVisibility' | 'showLightmapDensity' | 'showTexelHeat' | 'showOutlines' | 'showSubtractive' | 'showVolumes' | 'backfaceCulling'; later?: boolean }
     const OPTIONS: Opt[] = [
       { label: 'Grid', key: 'showGrid' }, { label: 'Selection size', key: 'showSizes' }, { label: 'Entity origins', key: 'showOrigins' }, { label: 'Entity direction arrows', key: 'showDirections' }, { label: 'Entity link arrows (all; the selection\'s always show)', key: 'showLinks' }, { label: 'Light gizmos (icons; the selection\'s reach)', key: 'showLightGizmos' }, { label: 'Face outlines (black edges)', key: 'showOutlines' },
-      { label: 'Subtractive brush shapes', key: 'showSubtractive' }, { label: 'Editor volumes (playable area)', key: 'showVolumes' }, { label: 'Backface culling', key: 'backfaceCulling' }, { label: 'Lightvol samples (baked light probes)', key: 'showLightvol' }, { label: 'Lightmap density (texel checker)', key: 'showLightmapDensity' }, { label: 'Texel density heat map (texture pixels per meter)', key: 'showTexelHeat' },
+      { label: 'Subtractive brush shapes', key: 'showSubtractive' }, { label: 'Editor volumes (playable area)', key: 'showVolumes' }, { label: 'Backface culling', key: 'backfaceCulling' }, { label: 'Lightvol samples (baked light probes)', key: 'showLightvol' }, { label: 'Visibility (what the camera sees in the last export)', key: 'showVisibility' }, { label: 'Lightmap density (texel checker)', key: 'showLightmapDensity' }, { label: 'Texel density heat map (texture pixels per meter)', key: 'showTexelHeat' },
     ]
     const menu = h('div', { class: 'vp-menu', style: 'display:none' })
     const viewBtn = h('button', { class: 'chip', title: 'View options' }, 'View ▾')

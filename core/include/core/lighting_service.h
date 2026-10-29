@@ -1,4 +1,5 @@
 #pragma once
+#include "core/bsp_vis.h"
 #include "core/light_style_analysis.h"
 #include "core/light_styles.h"
 #include "core/lightvol.h"
@@ -73,6 +74,7 @@ public:
         // from every changed region keeps its previous answer; everything else is asked again. Switching the lighting off and on starts afresh. The export
         // never uses it (it always asks everything).
         // Editing: do not build the playable area's visibility at all (every face counts as seen); the live view only previews light.
+        std::shared_ptr<const VisResult> visibility;  // the baked visibility of the level, already built (the export shares it with the compiler); null = built when needed
         bool skipVisibility = false;
         bool stickyVisibility = false;
         double stickyVisibilityRadius = 16;

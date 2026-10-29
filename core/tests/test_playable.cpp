@@ -1,4 +1,4 @@
-// Playable area (editor-only volume, playable.h): not part of the level, distance, quality falloff of the lightmap, light volume bounds.
+﻿// Playable area (editor-only volume, playable.h): not part of the level, distance, quality falloff of the lightmap, light volume bounds.
 #include "core/derived.h"
 #include "core/lightmap_uv.h"
 #include "core/lights.h"
@@ -38,14 +38,14 @@ Document longFloor(bool withVolume) {
 
 TEST_CASE("playable: a visible patch between sparse face samples keeps the whole face") {
     Document doc;
-    // The wall at z=5 blocks the centre and the near-corner samples of the target face. Its small opening lets
-    // a ray through to an interior grid point (x=1, y=0) on the target at z=10. The old sparse point set misses it.
+    // The wall at z=2 blocks the view from the playable volume except through a small opening, behind which the target face lies
+    // (everything must be within the cells around the volume: beyond them every face is seen anyway).
     std::vector<Brush> world;
-    world.push_back(Brush::makeBox("screen_left", {-8, -5, 5}, {0.4, 5, 5.2}));
-    world.push_back(Brush::makeBox("screen_right", {0.6, -5, 5}, {8, 5, 5.2}));
-    world.push_back(Brush::makeBox("screen_bottom", {0.4, -5, 5}, {0.6, -0.25, 5.2}));
-    world.push_back(Brush::makeBox("screen_top", {0.4, 0.25, 5}, {0.6, 5, 5.2}));
-    world.push_back(Brush::makeBox("target", {-1.5, -1.5, 10}, {1.5, 1.5, 10.5}));
+    world.push_back(Brush::makeBox("screen_left", {-8, -5, 2}, {0.4, 5, 2.2}));
+    world.push_back(Brush::makeBox("screen_right", {0.6, -5, 2}, {8, 5, 2.2}));
+    world.push_back(Brush::makeBox("screen_bottom", {0.4, -5, 2}, {0.6, -0.25, 2.2}));
+    world.push_back(Brush::makeBox("screen_top", {0.4, 0.25, 2}, {0.6, 5, 2.2}));
+    world.push_back(Brush::makeBox("target", {-1.5, -1.5, 4}, {1.5, 1.5, 4.5}));
     doc.entities.push_back(ent("w", "worldspawn", std::move(world)));
     doc.entities.push_back(ent("p", "editor_playable_area", {Brush::makeBox("vol", {-0.1, -0.1, -0.1}, {0.1, 0.2, 0.1})}));
 
@@ -53,19 +53,19 @@ TEST_CASE("playable: a visible patch between sparse face samples keeps the whole
     const auto area = collectPlayableArea(doc, {});
     REQUIRE(!area->empty());
     PlayableVisibility vis(*area, surfaces, LightingClasses::defaults(), 1);
-    REQUIRE(vis.viewpointCount() == 1);
+    REQUIRE(vis.viewpointCount() > 1);
     const LightSurface* targetFace = nullptr;
     for (const LightSurface& s : surfaces) {
         if (s.brushId != "target" || s.verts.size() < 3) continue;
         bool atFront = true;
-        for (const Vec3& p : s.verts) atFront = atFront && std::abs(p.z - 10.0) < 1e-5;
+        for (const Vec3& p : s.verts) atFront = atFront && std::abs(p.z - 4.0) < 1e-5;
         if (atFront) { targetFace = &s; break; }
     }
     REQUIRE(targetFace != nullptr);
     CHECK(vis.seen(targetFace->verts, targetFace->normal));
 
     // This larger polygon extends around the four blocking panels, so it is still visible from the playable point.
-    const std::vector<Vec3> aroundScreen{{-40, -40, 10}, {40, -40, 10}, {40, 40, 10}, {-40, 40, 10}};
+    const std::vector<Vec3> aroundScreen{{-40, -40, 4}, {40, -40, 4}, {40, 40, 4}, {-40, 40, 4}};
     CHECK(vis.seen(aroundScreen, Vec3{0, 0, -1}));
 }
 
@@ -73,9 +73,9 @@ TEST_CASE("playable: culls large fully hidden faces but preserves small authored
     Document doc;
     std::vector<Brush> world;
     // This screen covers every ray from the tiny playable volume to either target.
-    world.push_back(Brush::makeBox("screen", {-100, -100, 5}, {100, 100, 5.2}));
-    world.push_back(Brush::makeBox("large_hidden", {-40, -40, 10}, {40, 40, 10.5}));
-    world.push_back(Brush::makeBox("small_hidden_detail", {45, 45, 10}, {45.2, 45.2, 10.2}));
+    world.push_back(Brush::makeBox("screen", {-6, -3, 2}, {6, 3, 2.2}));
+    world.push_back(Brush::makeBox("large_hidden", {-1.5, -1.5, 4}, {1.5, 1.5, 4.5}));
+    world.push_back(Brush::makeBox("small_hidden_detail", {3, -0.1, 4}, {3.2, 0.1, 4.2}));
     doc.entities.push_back(ent("w", "worldspawn", std::move(world)));
     doc.entities.push_back(ent("p", "editor_playable_area", {Brush::makeBox("vol", {-0.1, -0.1, -0.1}, {0.1, 0.1, 0.1})}));
 
@@ -83,7 +83,7 @@ TEST_CASE("playable: culls large fully hidden faces but preserves small authored
     const auto area = collectPlayableArea(doc, {});
     PlayableVisibility vis(*area, surfaces, LightingClasses::defaults(), 1);
     // A large concave face is also eligible for culling; concavity alone must not make it permanently visible.
-    const std::vector<Vec3> concaveHidden{{-40, -40, 10}, {40, -40, 10}, {40, 0, 10}, {0, 0, 10}, {0, 40, 10}, {-40, 40, 10}};
+    const std::vector<Vec3> concaveHidden{{-1.5, -1.5, 4}, {1.5, -1.5, 4}, {1.5, 0, 4}, {0, 0, 4}, {0, 1.5, 4}, {-1.5, 1.5, 4}};
     CHECK_FALSE(vis.seen(concaveHidden, Vec3{0, 0, -1}));
 
     bool testedLarge = false, testedSmall = false;
@@ -214,25 +214,28 @@ TEST_CASE("playable: level settings read the falloff keys") {
 }
 
 TEST_CASE("playable: a surface no point of the area can see goes to the last cascade") {
-    // a floor inside the area, a far closed room (floor, ceiling, 4 walls, 0.5 m thick) 60 m away, and a far open slab in plain view
+    // a floor inside the area, a closed room (floor, ceiling, 4 walls) just beyond it but within its cells, and a far open slab (outside the cells: always seen)
     Document doc;
     Entity w = ent("w", "worldspawn", {Brush::makeBox("floor", {-10, -1, -10}, {10, 0, 10})});
-    w.brushes.push_back(Brush::makeBox("rf", {60, -1, 0}, {70, 0, 10}));          // the room's floor
-    w.brushes.push_back(Brush::makeBox("rc", {60, 3, 0}, {70, 4, 10}));           // ceiling
-    w.brushes.push_back(Brush::makeBox("rw0", {59.5, 0, 0}, {60, 3, 10}));        // walls
-    w.brushes.push_back(Brush::makeBox("rw1", {70, 0, 0}, {70.5, 3, 10}));
-    w.brushes.push_back(Brush::makeBox("rw2", {60, 0, -0.5}, {70, 3, 0}));
-    w.brushes.push_back(Brush::makeBox("rw3", {60, 0, 10}, {70, 3, 10.5}));
-    w.brushes.push_back(Brush::makeBox("slab", {0, -1, 60}, {10, 0, 70}));        // open, in view
+    w.brushes.push_back(Brush::makeBox("rf", {11, -1, 2}, {14, 0, 8}));           // the room's floor
+    w.brushes.push_back(Brush::makeBox("rc", {11, 3, 2}, {14, 4, 8}));            // ceiling
+    w.brushes.push_back(Brush::makeBox("rw0", {10.7, 0, 2}, {11, 3, 8}));         // walls
+    w.brushes.push_back(Brush::makeBox("rw1", {14, 0, 2}, {14.3, 3, 8}));
+    w.brushes.push_back(Brush::makeBox("rw2", {11, 0, 1.7}, {14, 3, 2}));
+    w.brushes.push_back(Brush::makeBox("rw3", {11, 0, 8}, {14, 3, 8.3}));
+    w.brushes.push_back(Brush::makeBox("slab", {0, -1, 60}, {10, 0, 70}));        // open, far
     doc.entities.push_back(w);
     doc.entities.push_back(ent("p", "editor_playable_area", {Brush::makeBox("vol", {-10, 0, -10}, {10, 3, 10})}));
     const auto surfaces = collectSurfaces(doc, {});
     const auto area = collectPlayableArea(doc, {});
-    PlayableVisibility vis(*area, surfaces, LightingClasses::defaults());
+    const SolidSet solids = collectSolids(doc, {}, [](const std::string& c) { return c == "worldspawn"; });
+    PlayableVisibility vis(*area, surfaces, LightingClasses::defaults(), 0, {}, &solids);
     REQUIRE(vis.viewpointCount() > 0);
     LightmapSettings cfg;
     cfg.texelsPerMeter = 8;
     cfg.playable = area;
+    cfg.lod.radius = 0.5;  // the cells only reach a little beyond the area: the culling has to begin close to it
+    cfg.lod.removeUnseen = false;
     cfg.seen = [&](const std::vector<Vec3>& poly, const Vec3& n) { return vis.seen(poly, n); };
     const LightmapLayout l = buildLightmapLayout(surfaces, LightingClasses::defaults(), cfg);
     cfg.seen = nullptr;

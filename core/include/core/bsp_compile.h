@@ -1,5 +1,6 @@
 #pragma once
 #include "core/bsp_format.h"
+#include "core/bsp_vis.h"
 #include "core/mesh_optimize.h"
 #include "core/derived.h"
 #include "core/lightbake.h"
@@ -96,12 +97,13 @@ struct BspSettings {
     BspContentRules contents = BspContentRules::defaults();
     double decalOffset = 0.25;             // Quake units: decals are lifted this far off their surface (no depth fighting)
     std::string textureRoot = "textures";  // shader name = textureRoot + "/" + texture
-    double visCell = 2.0;                  // m: edge of a visibility cell to start with (grows until the visibility table fits maxVisBytes)
+    Vec3 visCell{5, 2, 5};                 // m: size of a visibility cell to start with (x, y up, z; grows until the visibility table fits maxVisBytes)
+    bool visDilate = false;                // a cluster also gets the view of the clusters it opens into (one ring, never through a wall)
     size_t maxVisBytes = size_t(50) << 20; // the visibility lump may be this big
     double visSplitMinWidth = 2.0;         // m: a wall splits visibility cells when its (merged, coplanar) face has no dimension below this
-    int visMaxSplitsPerCell = 8;
+    int visMaxSplitsPerCell = 16;
     int visSamplePool = 32;                // sample points per cluster
-    int visPairSegments = 16;              // segments traced per cluster pair
+    int visPairSegments = 64;              // segments traced per cluster pair
     double visApertureMax = 0.5;           // m: openings up to this wide get rays aimed through them
     std::string visDevice = "auto";        // where the segments are traced: auto | cpu | compute | rayquery (bsp_vis.h)
     bool visibility = true;                // false: every cluster sees every cluster (the clusters are still made)
@@ -159,6 +161,7 @@ struct BspInput {
     const SolidSet* visSolids = nullptr;     // the volumes that block sight (opaque, solid-contents brushes of the static world); null = `solids`
     std::function<bool(const std::string& texture)> opaque;  // textures that block sight (empty = every texture)
     BspSettings settings;
+    std::shared_ptr<const VisResult> vis;    // the baked visibility (buildBspVisibility), shared with the lighting; null = compileBsp builds it
 };
 
 struct BspLightmapPage {
@@ -181,6 +184,9 @@ struct BspOutput {
 };
 
 using ProgressFn = std::function<void(const std::string& stage, double fraction)>;
+/// The baked visibility of the level (bsp_vis.h) from the surfaces, solids, playable area and settings of `in` (what compileBsp writes). Build it once and give it to
+/// the lighting (LightingService::Options::visibility) and to the compiler (BspInput::vis).
+std::shared_ptr<const VisResult> buildBspVisibility(const BspInput& in, const ProgressFn& progress = {});
 BspOutput compileBsp(const BspInput& in, const ProgressFn& progress = {});
 
 // ---- reading back (tests, tools) ------------------------------------------------------------------------------------------------------------

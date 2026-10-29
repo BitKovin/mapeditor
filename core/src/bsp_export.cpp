@@ -201,17 +201,32 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                     }
                 }
                 if (!req.rbspLightmapEncoding) { in.settings.lightmapJpeg = false; in.settings.lightmapScale = false; }
-                if (const auto it = e.keyvalues.find("_vis_cell"); it != e.keyvalues.end()) {
-                    try { const double c = std::stod(it->second); if (c > 0) in.settings.visCell = c; } catch (...) { r.warnings.push_back("_vis_cell is not a number"); }
-                }
-                if (const auto it = e.keyvalues.find("_vis_max_mb"); it != e.keyvalues.end()) {
-                    try { in.settings.maxVisBytes = static_cast<size_t>(std::clamp(std::stod(it->second), 1.0, 512.0) * 1048576.0); } catch (...) { r.warnings.push_back("_vis_max_mb is not a number"); }
-                }
-                if (const auto it = e.keyvalues.find("_vis_split_min"); it != e.keyvalues.end()) {
-                    try { in.settings.visSplitMinWidth = std::clamp(std::stod(it->second), 0.5, 64.0); } catch (...) { r.warnings.push_back("_vis_split_min is not a number"); }
+                {  // baked visibility (bsp_vis.h); every key is optional, empty = the default
+                    auto number = [&](const char* key, double lo, double hi, double& out) {
+                        const auto it = e.keyvalues.find(key);
+                        if (it == e.keyvalues.end() || it->second.empty()) return false;
+                        try { out = std::clamp(std::stod(it->second), lo, hi); return true; } catch (...) { r.warnings.push_back(std::string(key) + " is not a number"); return false; }
+                    };
+                    double v = 0;
+                    if (number("_vis_cell", 0.25, 1000, v)) in.settings.visCell = Vec3{v, v, v};  // one edge for all three axes (the older key)
+                    if (number("_vis_cell_x", 0.25, 1000, v)) in.settings.visCell.x = v;
+                    if (number("_vis_cell_y", 0.25, 1000, v)) in.settings.visCell.y = v;
+                    if (number("_vis_cell_z", 0.25, 1000, v)) in.settings.visCell.z = v;
+                    if (number("_vis_max_mb", 1, 512, v)) in.settings.maxVisBytes = static_cast<size_t>(v * 1048576.0);
+                    if (number("_vis_split_min", 0.5, 64, v)) in.settings.visSplitMinWidth = v;
+                    if (number("_vis_splits_per_cell", 0, 32, v)) in.settings.visMaxSplitsPerCell = static_cast<int>(v);
+                    if (number("_vis_samples", 2, 256, v)) in.settings.visSamplePool = static_cast<int>(v);
+                    if (number("_vis_segments", 1, 1024, v)) in.settings.visPairSegments = static_cast<int>(v);
+                    if (number("_vis_aperture", 0, 5, v)) in.settings.visApertureMax = v;
+                    if (number("_vis_dilate", 0, 1, v)) in.settings.visDilate = v >= 0.5;
+                    if (number("_vis_enabled", 0, 1, v)) in.settings.visibility = v >= 0.5;
                 }
             }
 
+        // the baked visibility, once: the lighting uses it to find the surfaces nobody can see, the compiler writes it
+        report("visibility", 0.0);
+        in.vis = buildBspVisibility(in, [&](const std::string&, double f) { report("visibility", f * 0.1); });
+        for (const std::string& w : in.vis->warnings) r.warnings.push_back(w);
         // final bake: the live pipeline, synchronously, at the level's bake quality
         std::unique_ptr<LightingService> svc;
         LightmapLayout layout;
@@ -220,6 +235,7 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
             for (const auto& e : doc.entities) if (e.classname == "worldspawn") level = levelSettingsOf(e);
             LightingService::Options opt = req.lighting;
             opt.qualityScale = level.bakeQuality > 0 ? level.bakeQuality : 2.0;
+            opt.visibility = in.vis;
             opt.skipVisibility = false;    // the export needs the visibility (unseen faces, density)
             opt.stickyVisibility = false;  // the export asks every face's visibility itself
             opt.tiles = false;  // no client: the pages are read from the bakers when it converged
@@ -263,6 +279,7 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
         prepared.lightvol = std::move(in.lightvol);
         for (const auto& w : o.warnings) r.warnings.push_back(w);
         r.stats = o.stats;
+        r.vis = in.vis;
 
         prepared.bsp = std::move(o);
     }
@@ -335,6 +352,7 @@ bool BspExportJob::start(BspExportRequest request) {
         {
             std::lock_guard<std::mutex> lock(m_);
             result_ = std::move(res);
+            if (result_.vis) lastVis_ = result_.vis;
         }
         finished_ = true;
     });

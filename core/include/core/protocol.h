@@ -68,6 +68,9 @@ inline constexpr const char* kPrefabLibrary = "prefab_library";  // { prefabs: {
 inline constexpr const char* kExportMap = "export_map";
 inline constexpr const char* kExportBsp = "export_bsp";
 inline constexpr const char* kExportCancel = "export_cancel";
+// Visibility view: `vis_debug` { point [x, y, z] (editor space), requestId } -> response { ok, available (an export has run), cluster, own: boxes of the clusters the
+// point lies in, seen: boxes (6 numbers each: min, max) of the clusters it sees, nearest first (at most 6000), seenTotal }.
+inline constexpr const char* kVisDebug = "vis_debug";
 inline constexpr const char* kExportProgress = "export_progress";
 inline constexpr const char* kExportResult = "export_result";
 inline constexpr const char* kResponse = "response";           // { requestId, ok, ... }

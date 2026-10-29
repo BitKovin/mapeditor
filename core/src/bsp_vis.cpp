@@ -137,6 +137,7 @@ bool zoneHitsBox(const VisZone& z, const Vec3& a, const Vec3& b, double tol = 0)
     }
     return true;
 }
+constexpr double kNearZone = 64;     // m: a wall this close to a zone may cut a cell (the cells reach beyond the zone)
 constexpr double kZoneBridge = 0.5;  // m: zones closer than twice this are one area
 
 // ---- splitter walls ---------------------------------------------------------------------------------------------------------------------------
@@ -234,7 +235,7 @@ std::vector<Splitter> buildSplitters(const std::vector<LightSurface>& occ, const
                     pmn = {std::min(pmn.x, v.x), std::min(pmn.y, v.y), std::min(pmn.z, v.z)};
                     pmx = {std::max(pmx.x, v.x), std::max(pmx.y, v.y), std::max(pmx.z, v.z)};
                 }
-                for (const VisZone& z : zones) if (zoneHitsBox(z, pmn, pmx)) { relevant = true; break; }
+                for (const VisZone& z : zones) if (zoneHitsBox(z, pmn, pmx, kNearZone)) { relevant = true; break; }
                 sp.polys.push_back(su.verts);
                 sp.mn = {std::min(sp.mn.x, pmn.x), std::min(sp.mn.y, pmn.y), std::min(sp.mn.z, pmn.z)};
                 sp.mx = {std::max(sp.mx.x, pmx.x), std::max(sp.mx.y, pmx.y), std::max(sp.mx.z, pmx.z)};
@@ -296,23 +297,23 @@ double splitterAreaIn(const Splitter& s, const Vec3& a, const Vec3& b) {
 
 using CellId = std::array<int, 3>;
 
-// The cells (cubes of edge c on a grid anchored at the origin) that touch a zone; false when there would be more than `limit` candidates.
-bool enumerateCells(const std::vector<VisZone>& zones, double c, size_t limit, std::vector<CellId>& out) {
+// The cells (boxes of size c on a grid anchored at the origin) that touch a zone; false when there would be more than `limit` candidates.
+bool enumerateCells(const std::vector<VisZone>& zones, const Vec3& c, size_t limit, std::vector<CellId>& out) {
     out.clear();
     double total = 0;
     const double t = kZoneBridge;
     for (const VisZone& z : zones) {
-        const double nx = std::floor((z.mx.x + t) / c) - std::floor((z.mn.x - t) / c) + 1, ny = std::floor((z.mx.y + t) / c) - std::floor((z.mn.y - t) / c) + 1,
-                     nz = std::floor((z.mx.z + t) / c) - std::floor((z.mn.z - t) / c) + 1;
+        const double nx = std::floor((z.mx.x + t) / c.x) - std::floor((z.mn.x - t) / c.x) + 1, ny = std::floor((z.mx.y + t) / c.y) - std::floor((z.mn.y - t) / c.y) + 1,
+                     nz = std::floor((z.mx.z + t) / c.z) - std::floor((z.mn.z - t) / c.z) + 1;
         total += nx * ny * nz;
     }
     if (total > double(limit)) return false;
     for (const VisZone& z : zones)
-        for (int k = int(std::floor((z.mn.z - t) / c)); k <= int(std::floor((z.mx.z + t) / c)); ++k)
-            for (int j = int(std::floor((z.mn.y - t) / c)); j <= int(std::floor((z.mx.y + t) / c)); ++j)
-                for (int i = int(std::floor((z.mn.x - t) / c)); i <= int(std::floor((z.mx.x + t) / c)); ++i) {
-                    const Vec3 a{i * c, j * c, k * c};
-                    if (zoneHitsBox(z, a, a + Vec3{c, c, c}, t)) out.push_back({i, j, k});
+        for (int k = int(std::floor((z.mn.z - t) / c.z)); k <= int(std::floor((z.mx.z + t) / c.z)); ++k)
+            for (int j = int(std::floor((z.mn.y - t) / c.y)); j <= int(std::floor((z.mx.y + t) / c.y)); ++j)
+                for (int i = int(std::floor((z.mn.x - t) / c.x)); i <= int(std::floor((z.mx.x + t) / c.x)); ++i) {
+                    const Vec3 a{i * c.x, j * c.y, k * c.z};
+                    if (zoneHitsBox(z, a, a + c, t)) out.push_back({i, j, k});
                 }
     std::sort(out.begin(), out.end(), [](const CellId& p, const CellId& q) { return std::tie(p[2], p[1], p[0]) < std::tie(q[2], q[1], q[0]); });
     out.erase(std::unique(out.begin(), out.end()), out.end());
@@ -378,11 +379,12 @@ struct CellBuilder {
     const SolidSet* solids;
     const SplitterIndex* splitters;
     const VisSettings* cfg;
-    double c;
+    Vec3 c;
 
     Frag build(const CellId& id) const {
         Frag f;
-        const Vec3 mn{id[0] * c, id[1] * c, id[2] * c}, mx = mn + Vec3{c, c, c};
+        const Vec3 mn{id[0] * c.x, id[1] * c.y, id[2] * c.z}, mx = mn + c;
+        const double reach = 2 * std::max({c.x, c.y, c.z});
         // the splitters through the cell, the biggest part first
         std::vector<int> ids;
         for (int64_t x = coarseOf(mn.x); x <= coarseOf(mx.x); ++x)
@@ -407,8 +409,8 @@ struct CellBuilder {
         std::vector<HS> box = {{{1, 0, 0}, mx.x}, {{-1, 0, 0}, -mn.x}, {{0, 1, 0}, mx.y}, {{0, -1, 0}, -mn.y}, {{0, 0, 1}, mx.z}, {{0, 0, -1}, -mn.z}};
         Geom g;
         const Vec3 center = (mn + mx) * 0.5;
-        if (!makeGeom(box, center, 2 * c, g)) return f;
-        const double minVolume = 0.01 * c * c * c;
+        if (!makeGeom(box, center, reach, g)) return f;
+        const double minVolume = 0.01 * c.x * c.y * c.z;
         const uint32_t cellHash = hash32(uint32_t(id[0]), uint32_t(id[1]), uint32_t(id[2]));
 
         std::function<int32_t(const Geom&, size_t)> rec = [&](const Geom& r, size_t next) -> int32_t {
@@ -421,8 +423,8 @@ struct CellBuilder {
                 fs.push_back({sp.n * -1.0, -sp.d});
                 bs.push_back({sp.n, sp.d});
                 Geom fg, bg;
-                if (!makeGeom(fs, center, 2 * c, fg) || fg.volume < minVolume) continue;
-                if (!makeGeom(bs, center, 2 * c, bg) || bg.volume < minVolume) continue;
+                if (!makeGeom(fs, center, reach, fg) || fg.volume < minVolume) continue;
+                if (!makeGeom(bs, center, reach, bg) || bg.volume < minVolume) continue;
                 const int32_t me = int32_t(f.nodes.size());
                 f.nodes.push_back({});
                 const int32_t front = rec(fg, p + 1), back = rec(bg, p + 1);
@@ -458,7 +460,7 @@ struct Built {
 };
 
 // Fills `b` for cell size c; false when the clusters do not fit `maxClusters`.
-bool buildTree(const VisInput& in, const SplitterIndex& splitters, double c, int maxClusters, Built& b, std::vector<CellId>& cells, VisStats& stats) {
+bool buildTree(const VisInput& in, const SplitterIndex& splitters, const Vec3& c, int maxClusters, Built& b, std::vector<CellId>& cells, VisStats& stats) {
     const VisSettings& cfg = in.settings;
     std::vector<Frag> frags(cells.size());
     CellBuilder cb{in.solids, &splitters, &cfg, c};
@@ -484,10 +486,10 @@ bool buildTree(const VisInput& in, const SplitterIndex& splitters, double c, int
     // bounds of the cells
     Vec3 lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
     for (const CellId& id : cells) {
-        lo = {std::min(lo.x, id[0] * c), std::min(lo.y, id[1] * c), std::min(lo.z, id[2] * c)};
-        hi = {std::max(hi.x, (id[0] + 1) * c), std::max(hi.y, (id[1] + 1) * c), std::max(hi.z, (id[2] + 1) * c)};
+        lo = {std::min(lo.x, id[0] * c.x), std::min(lo.y, id[1] * c.y), std::min(lo.z, id[2] * c.z)};
+        hi = {std::max(hi.x, (id[0] + 1) * c.x), std::max(hi.y, (id[1] + 1) * c.y), std::max(hi.z, (id[2] + 1) * c.z)};
     }
-    if (cells.empty()) { lo = {0, 0, 0}; hi = {c, c, c}; }
+    if (cells.empty()) { lo = {0, 0, 0}; hi = c; }
 
     // six nodes around the cells (outside the box: cluster 0), then the tree of the cells
     r.nodes.resize(6);
@@ -559,11 +561,11 @@ bool buildTree(const VisInput& in, const SplitterIndex& splitters, double c, int
         const int32_t fc = kd(front, fa, z), bc = kd(back, a, bz);
         VisNode& nd = r.nodes[size_t(me)];
         nd.normal = axes[axis];
-        nd.dist = mid * c;
+        nd.dist = mid * (axis == 0 ? c.x : axis == 1 ? c.y : c.z);
         nd.children[0] = fc;
         nd.children[1] = bc;
-        nd.mn = {a[0] * c, a[1] * c, a[2] * c};
-        nd.mx = {(z[0] + 1) * c, (z[1] + 1) * c, (z[2] + 1) * c};
+        nd.mn = {a[0] * c.x, a[1] * c.y, a[2] * c.z};
+        nd.mx = {(z[0] + 1) * c.x, (z[1] + 1) * c.y, (z[2] + 1) * c.z};
         return me;
     };
     int32_t inner = -1;
@@ -614,9 +616,9 @@ const std::vector<int>* VisResult::indexAt(int64_t x, int64_t y, int64_t z) cons
     return it != index.end() && it->first == key ? &it->second : nullptr;
 }
 
-void VisResult::leavesForBox(const Vec3& mn, const Vec3& mx, std::vector<int>& out) const {
+void VisResult::leavesForBox(const Vec3& mn, const Vec3& mx, std::vector<int>& out, double tolerance) const {
     out.clear();
-    constexpr double g = 0.03;
+    const double g = tolerance;
     for (int64_t x = coarseOf(mn.x - g); x <= coarseOf(mx.x + g); ++x)
         for (int64_t y = coarseOf(mn.y - g); y <= coarseOf(mx.y + g); ++y)
             for (int64_t z = coarseOf(mn.z - g); z <= coarseOf(mx.z + g); ++z)
@@ -629,7 +631,19 @@ void VisResult::leavesForBox(const Vec3& mn, const Vec3& mx, std::vector<int>& o
     }), out.end());
 }
 
-void VisResult::leavesFor(const std::vector<Vec3>& polygon, std::vector<int>& out, bool& outside) const {
+bool VisResult::seen(const std::vector<Vec3>& polygon) const {
+    std::vector<int> out;
+    bool outside = false;
+    leavesFor(polygon, out, outside, 0.0);  // a leaf that only touches an edge of the polygon does not see it
+    if (outside) return true;
+    for (int li : out) {
+        const int c = leafs[size_t(li)].cluster;
+        if (c >= 0 && size_t(c / 64) < playableSees.size() && ((playableSees[size_t(c) / 64] >> (c % 64)) & 1)) return true;
+    }
+    return false;
+}
+
+void VisResult::leavesFor(const std::vector<Vec3>& polygon, std::vector<int>& out, bool& outside, double tolerance) const {
     outside = false;
     out.clear();
     if (polygon.size() < 3) return;
@@ -640,8 +654,8 @@ void VisResult::leavesFor(const std::vector<Vec3>& polygon, std::vector<int>& ou
     }
     // which leaves it touches
     std::vector<int> cand;
-    leavesForBox(mn, mx, cand);
-    constexpr double g = 0.03;
+    leavesForBox(mn, mx, cand, tolerance);
+    const double g = tolerance;
     for (int li : cand) {
         const VisLeaf& l = leafs[size_t(li)];
         Poly w = polygon;
@@ -649,10 +663,10 @@ void VisResult::leavesFor(const std::vector<Vec3>& polygon, std::vector<int>& ou
             w = clipPoly(w, s.n, s.d + g);
             if (w.empty()) break;
         }
-        if (!w.empty()) out.push_back(li);
+        if (w.size() >= 3 && polyArea(w) > 1e-9) out.push_back(li);
     }
     // does part of it lie outside the cells: points over the polygon (a lattice per fan triangle) in a leaf of cluster 0
-    const double spacing = std::max(0.5, cellSize * 0.5);
+    const double spacing = std::max(0.5, std::min({cellSize.x, cellSize.y, cellSize.z}) * 0.5);
     for (size_t t = 1; t + 1 < polygon.size() && !outside; ++t) {
         const Vec3 &a = polygon[0], &b = polygon[t], &c = polygon[t + 1];
         const double longest = std::max({(b - a).length(), (c - b).length(), (a - c).length()});
@@ -700,6 +714,166 @@ bool segmentClear(const TriangleBvh& bvh, Vec3 p, Vec3 q) {
     return !bvh.occluded(p + d * e, d * (1 - 2 * e), 1.0);
 }
 
+// ---- narrow openings ---------------------------------------------------------------------------------------------------------------------------
+
+// The clusters the segment a -> b passes through (the tree walked along it).
+void clustersAlong(const VisResult& r, Vec3 a, Vec3 b, std::vector<int>& out) {
+    struct Item { int32_t ref; Vec3 a, b; };
+    std::vector<Item> stack{{0, a, b}};
+    while (!stack.empty()) {
+        const Item it = stack.back();
+        stack.pop_back();
+        if (it.ref < 0) {
+            const int cl = r.leafs[size_t(-it.ref - 1)].cluster;
+            if (cl >= 1) out.push_back(cl);
+            continue;
+        }
+        const VisNode& n = r.nodes[size_t(it.ref)];
+        const double da = n.normal.dot(it.a) - n.dist, db = n.normal.dot(it.b) - n.dist;
+        if (da >= 0 && db >= 0) stack.push_back({n.children[0], it.a, it.b});
+        else if (da < 0 && db < 0) stack.push_back({n.children[1], it.a, it.b});
+        else {
+            const Vec3 mid = it.a + (it.b - it.a) * (da / (da - db));
+            const int first = da >= 0 ? 0 : 1;
+            stack.push_back({n.children[1 - first], mid, it.b});  // popped second
+            stack.push_back({n.children[first], it.a, mid});
+        }
+    }
+}
+
+using TraceFn = std::function<void(const std::vector<float>&, size_t, std::vector<float>&)>;
+
+// Cracks, slits and small holes: random segments hardly ever thread them, so rays are aimed through them. A point just beyond the edge of a face (a wall
+// edge with something less than `apertureMax` behind it) is the middle of a gap; lines through it in many directions, traced to what stops them, show
+// which clusters see each other along the line.
+void aperturePass(const VisInput& in, const std::vector<LightSurface>& occ, const VisResult& r, Matrix& m, const TraceFn& trace, VisStats& stats) {
+    const double maxGap = in.settings.apertureMax;
+    if (maxGap <= 0 || in.zones.empty()) return;
+    Vec3 zmn = in.zones[0].mn, zmx = in.zones[0].mx;
+    for (const VisZone& z : in.zones) {
+        zmn = {std::min(zmn.x, z.mn.x), std::min(zmn.y, z.mn.y), std::min(zmn.z, z.mn.z)};
+        zmx = {std::max(zmx.x, z.mx.x), std::max(zmx.y, z.mx.y), std::max(zmx.z, z.mx.z)};
+    }
+    const double reach = (zmx - zmn).length() + 10;
+    struct Cand { Vec3 c, w, n, e; };
+    std::vector<std::vector<Cand>> per(occ.size());
+    parallelFor(occ.size(), 16, [&](size_t i0, size_t i1) {
+        for (size_t s = i0; s < i1; ++s) {
+            const LightSurface& su = occ[s];
+            if (su.verts.size() < 3) continue;
+            Vec3 pmn = su.verts[0], pmx = su.verts[0];
+            for (const Vec3& v : su.verts) {
+                pmn = {std::min(pmn.x, v.x), std::min(pmn.y, v.y), std::min(pmn.z, v.z)};
+                pmx = {std::max(pmx.x, v.x), std::max(pmx.y, v.y), std::max(pmx.z, v.z)};
+            }
+            bool near = false;
+            for (const VisZone& z : in.zones) if (zoneHitsBox(z, pmn, pmx, 16.0)) { near = true; break; }
+            if (!near) continue;
+            const Vec3 n = su.normal.normalized();
+            for (size_t i = 0; i < su.verts.size(); ++i) {
+                const Vec3 &a = su.verts[i], &b = su.verts[(i + 1) % su.verts.size()];
+                const double len = (b - a).length();
+                if (len < 0.02) continue;
+                const Vec3 e = (b - a) * (1.0 / len), w = e.cross(n).normalized();  // w: in the plane of the face, away from it
+                const int count = std::clamp(int(std::ceil(len / 0.1)), 1, 256);
+                for (int j = 0; j < count; ++j) {
+                    const Vec3 c = a + (b - a) * ((j + 0.5) / count) + w * 0.0005 - n * 0.01;
+                    if (in.solids && in.solids->inside(c)) continue;  // the face goes on (another brush), or the edge is inside a solid
+                    per[s].push_back({c, w, n, e});
+                }
+            }
+        }
+    });
+    std::vector<Cand> cands;
+    for (auto& v : per) cands.insert(cands.end(), v.begin(), v.end());
+    per.clear();
+    auto keyOf = [](const Cand& c) { return std::array<long long, 4>{std::llround(c.c.x * 33), std::llround(c.c.y * 33), std::llround(c.c.z * 33), c.w.x > 0 ? 1 : 0}; };
+    std::sort(cands.begin(), cands.end(), [&](const Cand& a, const Cand& b) { return keyOf(a) < keyOf(b); });
+    cands.erase(std::unique(cands.begin(), cands.end(), [&](const Cand& a, const Cand& b) { return keyOf(a) == keyOf(b); }), cands.end());
+    if (cands.empty()) return;
+
+    // how wide is the gap: the distance to what is on the other side
+    struct Aperture { Vec3 mid, w, n, e; double gap; };
+    std::vector<Aperture> aps;
+    {
+        std::vector<float> rays(cands.size() * 8), t;
+        for (size_t i = 0; i < cands.size(); ++i) {
+            const Cand& c = cands[i];
+            const float v[8] = {float(c.c.x), float(c.c.y), float(c.c.z), float(maxGap), float(c.w.x), float(c.w.y), float(c.w.z), 0.f};
+            std::copy(v, v + 8, &rays[i * 8]);
+        }
+        trace(rays, cands.size(), t);
+        for (size_t i = 0; i < cands.size(); ++i)
+            if (t[i] >= 1e-3f) aps.push_back({cands[i].c + cands[i].w * (t[i] * 0.5), cands[i].w, cands[i].n, cands[i].e, t[i] + 0.0005});
+    }
+    stats.apertures = aps.size();
+    if (aps.empty()) return;
+
+    constexpr size_t kSig = size_t(1) << 22;
+    std::unique_ptr<std::atomic<uint64_t>[]> sigs(new std::atomic<uint64_t>[kSig]());
+    auto fresh = [&](uint64_t sig) {
+        if (!sig) sig = 1;
+        size_t i = size_t(sig) & (kSig - 1);
+        for (int probe = 0; probe < 64; ++probe, i = (i + 1) & (kSig - 1)) {
+            uint64_t cur = sigs[i].load(std::memory_order_relaxed);
+            if (cur == sig) return false;
+            if (cur == 0 && sigs[i].compare_exchange_strong(cur, sig)) return true;
+            if (cur == sig) return false;
+        }
+        return true;
+    };
+    const size_t perAp = size_t(std::clamp(2.0e7 / double(aps.size()), 24.0, 192.0));
+    const size_t fan = perAp * 2 / 3;
+    const size_t block = std::max<size_t>(1, 1000000 / perAp);
+    for (size_t base = 0; base < aps.size(); base += block) {
+        const size_t count = std::min(block, aps.size() - base);
+        std::vector<float> rays(count * perAp * 2 * 8), t;
+        std::vector<Vec3> dirs(count * perAp);
+        parallelFor(count, 64, [&](size_t i0, size_t i1) {
+            for (size_t i = i0; i < i1; ++i) {
+                const Aperture& ap = aps[base + i];
+                for (size_t j = 0; j < perAp; ++j) {
+                    Vec3 d;
+                    if (j < fan) {
+                        const double th = (-89.0 + 178.0 * (double(j) + 0.5) / double(fan)) * kPi / 180;
+                        d = ap.n * std::cos(th) + ap.e * std::sin(th);
+                    } else {
+                        const double u1 = hash01(uint32_t(base + i), uint32_t(j), 0), u2 = hash01(uint32_t(base + i), uint32_t(j), 1);
+                        d = (ap.n + ap.e * ((2 * u1 - 1) * 0.577) + ap.w * ((2 * u2 - 1) * std::min(0.5, ap.gap / 0.1))).normalized();
+                    }
+                    dirs[i * perAp + j] = d;
+                    for (int side = 0; side < 2; ++side) {
+                        const Vec3 dd = side ? d * -1.0 : d;
+                        const float v[8] = {float(ap.mid.x), float(ap.mid.y), float(ap.mid.z), float(reach), float(dd.x), float(dd.y), float(dd.z), 0.f};
+                        std::copy(v, v + 8, &rays[((i * perAp + j) * 2 + size_t(side)) * 8]);
+                    }
+                }
+            }
+        });
+        trace(rays, count * perAp * 2, t);
+        parallelFor(count, 64, [&](size_t i0, size_t i1) {
+            std::vector<int> cl;
+            for (size_t i = i0; i < i1; ++i)
+                for (size_t j = 0; j < perAp; ++j) {
+                    const Aperture& ap = aps[base + i];
+                    const size_t li = i * perAp + j;
+                    const double t1 = t[li * 2] < 0 ? reach : t[li * 2], t2 = t[li * 2 + 1] < 0 ? reach : t[li * 2 + 1];
+                    cl.clear();
+                    clustersAlong(r, ap.mid - dirs[li] * t2, ap.mid + dirs[li] * t1, cl);
+                    std::sort(cl.begin(), cl.end());
+                    cl.erase(std::unique(cl.begin(), cl.end()), cl.end());
+                    if (cl.size() < 2) continue;
+                    uint64_t sig = 1469598103934665603ull;
+                    for (int c : cl) sig = (sig ^ uint64_t(c)) * 1099511628211ull;
+                    if (!fresh(sig)) continue;
+                    for (size_t x = 0; x < cl.size(); ++x)
+                        for (size_t y = x + 1; y < cl.size(); ++y) { m.setAtomic(size_t(cl[x]), size_t(cl[y])); m.setAtomic(size_t(cl[y]), size_t(cl[x])); }
+                }
+        });
+        stats.apertureLines += count * perAp;
+    }
+}
+
 }  // namespace
 
 VisResult buildVisibility(const VisInput& in, const VisProgress& progress) {
@@ -720,12 +894,12 @@ VisResult buildVisibility(const VisInput& in, const VisProgress& progress) {
 
     Built b;
     std::vector<CellId> cells;
-    double c = std::max(cfg.cell, 0.25);
+    Vec3 c{std::max(cfg.cell.x, 0.25), std::max(cfg.cell.y, 0.25), std::max(cfg.cell.z, 0.25)};
     stage("cells", 0.0);
     for (int attempt = 0; attempt < 80; ++attempt) {
-        if (!enumerateCells(in.zones, c, size_t(maxClusters) * 6, cells)) { c *= 1.15; continue; }
+        if (!enumerateCells(in.zones, c, size_t(maxClusters) * 6, cells)) { c = c * 1.15; continue; }
         if (buildTree(in, splitters, c, maxClusters, b, cells, stats)) break;
-        c *= 1.15;
+        c = c * 1.15;
     }
     stats.cell = c;
     stats.secondsTree = secondsSince(t0);
@@ -790,7 +964,7 @@ VisResult buildVisibility(const VisInput& in, const VisProgress& progress) {
             for (size_t ci = i0 + 1; ci < i1 + 1; ++ci) {
                 const VisLeaf& A = r.leafs[size_t(b.leafOfCluster[ci])];
                 r.leavesForBox(A.mn, A.mx, cand);
-                const std::vector<Poly> win = windingsOf([&] { std::vector<HS> s; for (const auto& h : A.sides) s.push_back({h.n, h.d}); return s; }(), A.centroid, 2 * r.cellSize);
+                const std::vector<Poly> win = windingsOf([&] { std::vector<HS> s; for (const auto& h : A.sides) s.push_back({h.n, h.d}); return s; }(), A.centroid, 2 * std::max({r.cellSize.x, r.cellSize.y, r.cellSize.z}));
                 for (int li : cand) {
                     const VisLeaf& B = r.leafs[size_t(li)];
                     if (B.cluster == A.cluster) continue;
@@ -824,6 +998,12 @@ VisResult buildVisibility(const VisInput& in, const VisProgress& progress) {
             for (int o : adjacent[ci]) { m.set(ci, size_t(o)); m.set(size_t(o), ci); ++stats.adjacent; }
         }
         stats.secondsDilate += secondsSince(tAdj);
+
+        // narrow openings: lines through the gaps between faces and what is behind them
+        stage("visibility", 0.2);
+        const auto tAp = Clock::now();
+        aperturePass(in, occ, r, m, traceClosest, stats);
+        stats.secondsAperture = secondsSince(tAp);
 
         // all pairs: segments between sample points
         stage("visibility", 0.3);
@@ -864,6 +1044,7 @@ VisResult buildVisibility(const VisInput& in, const VisProgress& progress) {
         stage("visibility", 0.9);
         const auto tDil = Clock::now();
         symmetrize(m);
+        if (cfg.dilate) {
         Matrix d = m;
         parallelFor(N, 16, [&](size_t i0, size_t i1) {
             for (size_t ci = i0; ci < i1; ++ci)
@@ -872,6 +1053,7 @@ VisResult buildVisibility(const VisInput& in, const VisProgress& progress) {
         });
         m = std::move(d);
         symmetrize(m);
+        }
         stats.secondsDilate += secondsSince(tDil);
         for (size_t ci = 0; ci < N; ++ci) m.set(ci, ci);
 
@@ -944,6 +1126,24 @@ VisResult buildVisibility(const VisInput& in, const VisProgress& progress) {
     // the outside sees and is seen by every cluster
     for (size_t ci = 0; ci < N; ++ci) { m.set(0, ci); m.set(ci, 0); }
 
+    // what the playable zones see: the rows of the clusters that have a sample point inside a zone
+    r.playableSees.assign(m.words, 0);
+    r.playableSees[0] |= 1;
+    for (size_t ci = 1; ci < N; ++ci) {
+        bool inside = false;
+        if (!in.trace || N <= 1) inside = true;
+        else
+            for (uint32_t k = 0; k < b.ptsCount[ci] && !inside; ++k) {
+                const Vec3& p = b.pts[b.ptsFirst[ci] + k];
+                for (const VisZone& z : in.zones) {
+                    if (p.x < z.mn.x || p.x > z.mx.x || p.y < z.mn.y || p.y > z.mx.y || p.z < z.mn.z || p.z > z.mx.z) continue;
+                    bool ok = true;
+                    for (const auto& [n, d] : z.planes) if (n.dot(p) > d) { ok = false; break; }
+                    if (ok) { inside = true; break; }
+                }
+            }
+        if (inside) for (size_t w = 0; w < m.words; ++w) r.playableSees[w] |= m.bits[ci * m.words + w];
+    }
     r.words = m.words;
     r.bits = std::move(m.bits);
     stats.bytes = 8 + N * ((N + 7) / 8);

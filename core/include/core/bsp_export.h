@@ -39,6 +39,7 @@ struct BspExportResult {
     std::string bspPath, lightmapDir;  // assets relative: the main file (the .bsp, or the format's), the lightmap folder
     double seconds = 0, bakeSeconds = 0;
     std::string device;                // what baked the lightmaps
+    std::shared_ptr<const VisResult> vis;  // the baked visibility of the level (the editor's visibility view reads it)
     nlohmann::json toJson() const;
 };
 
@@ -64,6 +65,8 @@ class BspExportJob {
 public:
     ~BspExportJob();
     bool running() const { return running_; }
+    /// The baked visibility of the last export that finished (null before the first).
+    std::shared_ptr<const VisResult> lastVisibility() const { std::lock_guard<std::mutex> lock(m_); return lastVis_; }
     /// False when one is already running.
     bool start(BspExportRequest request);
     void cancel() { cancel_ = true; }
@@ -73,7 +76,8 @@ public:
 private:
     std::thread thread_;
     std::atomic<bool> running_{false}, cancel_{false}, finished_{false};
-    std::mutex m_;
+    mutable std::mutex m_;
+    std::shared_ptr<const VisResult> lastVis_;
     std::string stage_;
     double fraction_ = 0;
     bool progressDue_ = false;

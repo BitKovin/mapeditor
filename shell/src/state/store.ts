@@ -150,6 +150,7 @@ export interface StoreConnection {
   readonly updateInFlight: boolean
   readonly hasPendingUpdate: boolean
   sendLighting?(text: string): void
+  request?(build: (requestId: number) => string): Promise<any>
 }
 
 const MAX_HISTORY = 200
@@ -459,6 +460,15 @@ export class Store {
   }
 
   /** The viewport camera moved: tell Core so it refines what you look at first (throttled: 1 m or 1 s). */
+  /** The baked visibility of the last export around `point` (the viewport's Visibility view): null without a Core or an export. */
+  async visDebug(point: [number, number, number]): Promise<{ cluster: number; own: number[]; seen: number[]; seenTotal: number } | null> {
+    try {
+      const r = await this.conn.request?.((id) => msg.visDebug(id, point))
+      if (!r || !r.ok || !r.available) return null
+      return { cluster: r.cluster ?? -1, own: r.own ?? [], seen: r.seen ?? [], seenTotal: r.seenTotal ?? 0 }
+    } catch { return null }
+  }
+
   reportCamera(pos: [number, number, number], now: number = Date.now()): void {
     if (!this.lightingWanted) return
     const l = this.lastCamera

@@ -93,6 +93,7 @@ private:
     void handleLightingConfig(const nlohmann::json& req, RouterOutput& out);
     void handleLaunchGame(const nlohmann::json& req, RouterOutput& out);
     void handleExport(const nlohmann::json& req, RouterOutput& out);
+    void handleVisDebug(const nlohmann::json& req, RouterOutput& out);
     void pushDerivedAll(RouterOutput& out);  // derived_geometry to everyone, and the lighting notices the document changed
     void pushDerived(std::vector<std::string>& to);  // derived_geometry, only when the document has subtractive brushes
     void pushConfig(RouterOutput& out);  // profile + entity_defs + settings, to everyone

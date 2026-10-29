@@ -18,6 +18,7 @@
 #include "doctest.h"
 #include "test_util.h"
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <fstream>
 #include <random>
@@ -179,7 +180,7 @@ TEST_CASE("bsp compile: header, lumps, models, entities in Quake units and axes"
     d.entities.push_back(ent("d", "func_door", {door}));
     std::shared_ptr<SolidSet> solids;
     BspInput in = inputFor(d, solids);
-    in.settings.visCell = 2;
+    in.settings.visCell = Vec3{2, 2, 2};
     const BspOutput out = compileBsp(in);
     BspView v;
     std::string err;
@@ -280,7 +281,7 @@ TEST_CASE("bsp visibility: closed rooms do not see each other, a doorway lets th
         CAPTURE(door);
         std::shared_ptr<SolidSet> solids;
         BspInput in = inputFor(twoRooms(door), solids);
-        in.settings.visCell = 2;
+        in.settings.visCell = Vec3{2, 2, 2};
         const BspOutput out = compileBsp(in);
         BspView v;
         REQUIRE(v.open(out.bsp));
@@ -335,7 +336,7 @@ void compileVis(VisCase& c, Document d, double cell, const Vec3& zoneMn = {}, co
     c.doc = d;
     BspInput in = inputFor(c.doc, c.solids);
     in.playable = collectPlayableArea(c.doc, {});
-    in.settings.visCell = cell;
+    in.settings.visCell = Vec3{cell, cell, cell};
     if (tweak) tweak(in);
     c.out = compileBsp(in);
     REQUIRE(c.view.open(c.out.bsp));
@@ -389,6 +390,26 @@ TEST_CASE("bsp visibility: a thin wall that lies between the grid planes still s
         REQUIRE(east >= 1);
         CHECK(sees(c.view, west, east) == hole);
         CHECK(sees(c.view, east, west) == hole);
+    }
+}
+
+TEST_CASE("bsp visibility: a slit between two walls lets the rooms see each other, a sealed seam does not") {
+    for (const double gap : {0.0, 0.02}) {
+        CAPTURE(gap);
+        int n = 0;
+        std::vector<Brush> b = roomShell(16, 16, n);
+        b.push_back(Brush::makeBox("w0", {7.3, 0, 0}, {7.8, 4, 8 - gap / 2}, "dev/wall"));
+        b.push_back(Brush::makeBox("w1", {7.3, 0, 8 + gap / 2}, {7.8, 4, 16}, "dev/wall"));
+        Document d;
+        d.entities.push_back(ent("w", "worldspawn", b));
+        VisCase c;
+        compileVis(c, d, 2.0, {}, {}, [](BspInput& in) { in.settings.visPairSegments = 4; });
+        const int west = clusterAt(c.view, {3, 2, 8}), east = clusterAt(c.view, {12, 2, 8});
+        REQUIRE(west >= 1);
+        REQUIRE(east >= 1);
+        CHECK(sees(c.view, west, east) == (gap > 0));
+        CHECK(sees(c.view, east, west) == (gap > 0));
+        if (gap > 0) CHECK(c.out.stats.visApertures > 0);
     }
 }
 
@@ -468,10 +489,11 @@ TEST_CASE("bsp visibility: nothing that can be seen is reported hidden (random s
     }
     Document d;
     d.entities.push_back(ent("w", "worldspawn", b));
-    for (const double cell : {2.0, 3.0}) {
+    for (const auto& [cell, segs] : std::vector<std::pair<double, int>>{{2.0, 256}, {3.0, 256}}) {
         CAPTURE(cell);
+        CAPTURE(segs);
         VisCase c;
-        compileVis(c, d, cell);
+        compileVis(c, d, cell, {}, {}, [&](BspInput& in) { in.settings.visPairSegments = segs; });
         BspInput in = inputFor(c.doc, c.solids);
         const OccluderMesh mesh = buildOccluders(in.surfaces, in.classes);
         const TriangleBvh bvh(mesh);
@@ -488,7 +510,43 @@ TEST_CASE("bsp visibility: nothing that can be seen is reported hidden (random s
             if (!sees(c.view, a, o)) ++misses;
         }
         CHECK(tested > 3000);
+        MESSAGE("cell " << cell << " segments " << segs << " misses " << misses << " of " << tested);
         CHECK(misses == 0);
+    }
+}
+
+TEST_CASE("bsp visibility: the ray query path, the compute shader path and the CPU find the same views") {
+    int n = 0;
+    std::vector<Brush> b = roomShell(30, 30, n);
+    std::mt19937 rng(21);
+    std::uniform_real_distribution<double> pos(2, 28), len(1, 6);
+    for (int i = 0; i < 16; ++i) {
+        const double x = pos(rng), z = pos(rng), l = len(rng);
+        if (i % 2) b.push_back(Brush::makeBox("c" + std::to_string(i), {x, 0, z}, {x + l, 4, z + 0.3}, "dev/wall"));
+        else b.push_back(rotatedBox("c" + std::to_string(i), {x, 0, z}, {x + l, 4, z + 0.3}, 17.0 * i, {x, 0, z}));
+    }
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", b));
+    std::map<std::string, std::vector<uint8_t>> table;
+    std::map<std::string, std::string> device;
+    for (const char* dev : {"cpu", "rayquery", "compute"}) {
+        VisCase c;
+        compileVis(c, d, 3.0, {}, {}, [&](BspInput& in) { in.settings.visDevice = dev; in.settings.visPairSegments = 32; });
+        table[dev] = c.view.lump<uint8_t>(rbsp::kVisibility);
+        device[dev] = c.out.stats.visDevice;
+    }
+    for (const char* dev : {"rayquery", "compute"}) {
+        CAPTURE(dev);
+        if (device[dev] == "cpu" || device[dev].empty()) { MESSAGE(std::string(dev) << " is not available here: " << device[dev]); continue; }
+        MESSAGE(std::string(dev) << " ran on " << device[dev]);
+        REQUIRE(table[dev].size() == table["cpu"].size());
+        size_t set = 0, differ = 0;
+        for (size_t i = 8; i < table["cpu"].size(); ++i) {
+            set += size_t(std::popcount(static_cast<unsigned>(table["cpu"][i])));
+            differ += size_t(std::popcount(static_cast<unsigned>(uint8_t(table["cpu"][i] ^ table[dev][i]))));
+        }
+        CHECK(set > 100);
+        CHECK(double(differ) <= 0.005 * double(set));  // segments that graze an edge may go either way
     }
 }
 
@@ -1052,7 +1110,7 @@ TEST_CASE("bsp sky: auto sky box of 6 inward quads, no lightmap, non-solid, in e
     d.entities.push_back(ent("p", "info_player_start", {}, {2, 1, 2}));
     std::shared_ptr<SolidSet> solids;
     BspInput in = inputFor(d, solids);
-    in.settings.visCell = 4;
+    in.settings.visCell = Vec3{4, 4, 4};
     const BspOutput plain = compileBsp(in);
     in.settings.sky = {AutoSky::Box, 8, "env/test_cube"};
     const BspOutput out = compileBsp(in);

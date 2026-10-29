@@ -18,12 +18,13 @@ namespace core {
 enum class VisDevice { Auto, Cpu, Compute, RayQuery };
 
 struct VisSettings {
-    double cell = 2.0;                        // m: edge of a cell to start with (grows until the visibility table fits maxBytes)
+    Vec3 cell{5, 2, 5};                       // m: size of a cell to start with (x, y up, z; grows until the visibility table fits maxBytes)
     size_t maxBytes = size_t(50) << 20;       // the visibility lump may be this big (clusters^2 / 8)
     double splitMinWidth = 2.0;               // m: a wall splits cells when its (merged, coplanar) face has no dimension below this
-    int maxSplitsPerCell = 8;
+    int maxSplitsPerCell = 16;
+    bool dilate = false;                      // a cluster also gets the view of the clusters it opens into (one ring, never through a wall)
     int samplePool = 32;                      // sample points per cluster
-    int pairSegments = 16;                    // segments traced per cluster pair
+    int pairSegments = 64;                    // segments traced per cluster pair
     double apertureMax = 0.5;                 // m: openings up to this wide get rays aimed through them (0 = off)
     VisDevice device = VisDevice::Auto;
     size_t selfCheck = 0;                     // random segments to check the result with afterwards (the environment variable MAPEDITOR_VIS_CHECK overrides)
@@ -64,7 +65,7 @@ struct VisNode {
 struct VisStats {
     size_t checked = 0, misses = 0;                         // the self check: random segments tried / the ones between clusters that do not see each other
     size_t cells = 0, splitPlanes = 0, regions = 0, solidRegions = 0, apertures = 0, apertureLines = 0, pairs = 0, adjacent = 0, bytes = 0;
-    double cell = 0, seconds = 0, secondsTree = 0, secondsPairs = 0, secondsAperture = 0, secondsDilate = 0;
+    Vec3 cell; double seconds = 0, secondsTree = 0, secondsPairs = 0, secondsAperture = 0, secondsDilate = 0;
     std::string device;
 };
 
@@ -81,14 +82,18 @@ public:
     // The leaf the point lies in.
     int leafAt(const Vec3& p) const;
     // The leaves with a cluster >= 1 that the convex polygon (or the box) touches; `outside` when part of it lies in a leaf of cluster 0.
-    void leavesFor(const std::vector<Vec3>& polygon, std::vector<int>& out, bool& outside) const;
-    void leavesForBox(const Vec3& mn, const Vec3& mx, std::vector<int>& out) const;
+    void leavesFor(const std::vector<Vec3>& polygon, std::vector<int>& out, bool& outside, double tolerance = 0.03) const;
+    void leavesForBox(const Vec3& mn, const Vec3& mx, std::vector<int>& out, double tolerance = 0.03) const;
+    // What the playable zones themselves can see: the union of the rows of the clusters inside a zone (and the outside). Everything outside the cells is seen.
+    std::vector<uint64_t> playableSees;
+    // True when the polygon lies partly outside the cells, or touches a cluster the playable zones see.
+    bool seen(const std::vector<Vec3>& polygon) const;
     bool sees(int a, int b) const { return (bits[size_t(a) * words + size_t(b) / 64] >> (b % 64)) & 1; }
 
     // lookup of the leaves per coarse cell (built by buildVisibility)
     double indexCell = 8;
     std::vector<std::pair<uint64_t, std::vector<int>>> index;  // sorted by key
-    double cellSize = 0;
+    Vec3 cellSize;
     void buildIndex();
     const std::vector<int>* indexAt(int64_t x, int64_t y, int64_t z) const;
 };

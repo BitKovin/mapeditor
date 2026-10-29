@@ -118,6 +118,47 @@ std::vector<Placement> shelfPack(const std::vector<std::pair<int, int>>& sizes, 
 
 }  // namespace
 
+std::shared_ptr<const VisResult> buildBspVisibility(const BspInput& in, const ProgressFn& progress) {
+    const BspSettings& cfg = in.settings;
+    VisInput vin;
+    std::vector<LightSurface> occ;
+    Vec3 mn{1e300, 1e300, 1e300}, mx{-1e300, -1e300, -1e300};
+    for (const LightSurface& s : in.surfaces) {
+        if (!isWorldClass(s.classname)) continue;                              // only the static world occludes
+        if (cfg.contents.isSky(s.texture)) continue;
+        for (const Vec3& v : s.verts) {
+            mn = {std::min(mn.x, v.x), std::min(mn.y, v.y), std::min(mn.z, v.z)};
+            mx = {std::max(mx.x, v.x), std::max(mx.y, v.y), std::max(mx.z, v.z)};
+        }
+        if (in.opaque && !in.opaque(s.texture)) continue;                      // glass, grates: see-through
+        if (!cfg.contents.blocksSight(s.texture)) continue;                    // clip, triggers
+        occ.push_back(s);
+        occ.back().relief.reset();                                             // the flat faces: the view is blocked by the brushes, not by their relief
+    }
+    vin.occluders = &occ;
+    vin.solids = in.visSolids ? in.visSolids : in.solids;
+    if (in.playable && !in.playable->empty()) {
+        for (const auto& pc : in.playable->pieces()) vin.zones.push_back({pc.mn, pc.mx, pc.planes});
+    } else {  // no playable area: the whole level is one zone
+        VisZone z;
+        if (mn.x > mx.x) { mn = {-1, -1, -1}; mx = {1, 1, 1}; }
+        z.mn = mn - Vec3{1, 1, 1};
+        z.mx = mx + Vec3{1, 1, 1};
+        vin.zones.push_back(z);
+    }
+    vin.settings.cell = cfg.visCell;
+    vin.settings.dilate = cfg.visDilate;
+    vin.settings.maxBytes = cfg.maxVisBytes;
+    vin.settings.splitMinWidth = cfg.visSplitMinWidth;
+    vin.settings.maxSplitsPerCell = cfg.visMaxSplitsPerCell;
+    vin.settings.samplePool = cfg.visSamplePool;
+    vin.settings.pairSegments = cfg.visPairSegments;
+    vin.settings.apertureMax = cfg.visApertureMax;
+    vin.settings.device = cfg.visDevice == "cpu" ? VisDevice::Cpu : cfg.visDevice == "compute" ? VisDevice::Compute : cfg.visDevice == "rayquery" ? VisDevice::RayQuery : VisDevice::Auto;
+    vin.trace = cfg.visibility;
+    return std::make_shared<const VisResult>(buildVisibility(vin, progress));
+}
+
 BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     BspOutput res;
     auto stage = [&](const char* name, double f) { if (progress) progress(name, f); };
@@ -1216,57 +1257,18 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
 
     // ---- visibility: cells inside the playable zones, big walls cut them, the regions that are not solid are the clusters (bsp_vis.h) -----------
     stage("cells", 0.25);
-    const auto visT0 = std::chrono::steady_clock::now();
-    // the world's bounds in editor space (the zone of a level without a playable area)
-    Bounds worldQ;
-    for (int sf = modelSurfRange[0].first; sf < modelSurfRange[0].first + modelSurfRange[0].second; ++sf)
-        if (!outSky[static_cast<size_t>(sf)]) {
-            const auto& su = surfaces[static_cast<size_t>(sf)];
-            for (int v = 0; v < su.numVerts; ++v) { const float* p = verts[static_cast<size_t>(su.firstVert + v)].xyz; worldQ.add(Vec3{p[0], p[1], p[2]}); }
-        }
-    for (int b = modelBrushRange[0].first; b < modelBrushRange[0].first + modelBrushRange[0].second; ++b) worldQ.add(brushBounds[static_cast<size_t>(b)]);
-    if (!worldQ.valid()) { worldQ.add(Vec3{-32, -32, -32}); worldQ.add(Vec3{32, 32, 32}); }
     auto editorBox = [&](const Vec3& qa, const Vec3& qb, Vec3& mn, Vec3& mx) {
         const Vec3 a = fromQuake(qa), c = fromQuake(qb);
         mn = {std::min(a.x, c.x), std::min(a.y, c.y), std::min(a.z, c.z)};
         mx = {std::max(a.x, c.x), std::max(a.y, c.y), std::max(a.z, c.z)};
     };
-    VisInput vin;
-    std::vector<LightSurface> occ;
-    for (const LightSurface& s : in.surfaces) {
-        const auto mit = modelOf.find(entityKey(s.instance, s.entityId));
-        if (mit == modelOf.end() || mit->second != 0) continue;                // only the static world occludes
-        if (in.opaque && !in.opaque(s.texture)) continue;                      // glass, grates: see-through
-        if (!cfg.contents.blocksSight(s.texture)) continue;                    // sky, clip, triggers
-        occ.push_back(s);
-        occ.back().relief.reset();                                             // the flat faces: the view is blocked by the brushes, not by their relief
-    }
-    vin.occluders = &occ;
-    vin.solids = in.visSolids ? in.visSolids : in.solids;
-    if (in.playable && !in.playable->empty()) {
-        for (const auto& pc : in.playable->pieces()) vin.zones.push_back({pc.mn, pc.mx, pc.planes});
-    } else {
-        VisZone z;
-        editorBox(worldQ.mn, worldQ.mx, z.mn, z.mx);
-        z.mn = z.mn - Vec3{1, 1, 1};
-        z.mx = z.mx + Vec3{1, 1, 1};
-        vin.zones.push_back(z);
-    }
-    vin.settings.cell = cfg.visCell;
-    vin.settings.maxBytes = cfg.maxVisBytes;
-    vin.settings.splitMinWidth = cfg.visSplitMinWidth;
-    vin.settings.maxSplitsPerCell = cfg.visMaxSplitsPerCell;
-    vin.settings.samplePool = cfg.visSamplePool;
-    vin.settings.pairSegments = cfg.visPairSegments;
-    vin.settings.apertureMax = cfg.visApertureMax;
-    vin.settings.device = cfg.visDevice == "cpu" ? VisDevice::Cpu : cfg.visDevice == "compute" ? VisDevice::Compute : cfg.visDevice == "rayquery" ? VisDevice::RayQuery : VisDevice::Auto;
-    vin.trace = cfg.visibility;
-    VisResult vr = buildVisibility(vin, [&](const std::string& st, double f) { stage(st.c_str(), 0.3 + 0.55 * f); });
+    const std::shared_ptr<const VisResult> visPtr = in.vis ? in.vis : buildBspVisibility(in, [&](const std::string& st, double f) { stage(st.c_str(), 0.3 + 0.55 * f); });
+    const VisResult& vr = *visPtr;
     for (const std::string& w : vr.warnings) res.warnings.push_back(w);
     const int clusters = vr.clusters;
     res.stats.clusters = static_cast<size_t>(clusters);
     res.stats.leafs = vr.leafs.size();
-    res.stats.visCell = vr.stats.cell;
+    res.stats.visCell = std::cbrt(vr.stats.cell.x * vr.stats.cell.y * vr.stats.cell.z);
     res.stats.visSplits = vr.stats.splitPlanes;
     res.stats.visApertures = vr.stats.apertures;
     res.stats.visPairs = vr.stats.pairs;
@@ -1349,7 +1351,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         l.numLeafBrushes = static_cast<int32_t>(leafBrush[li].size());
         leafBrushes.insert(leafBrushes.end(), leafBrush[li].begin(), leafBrush[li].end());
     }
-    res.stats.visSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - visT0).count();
+    res.stats.visSeconds = vr.stats.seconds;
     stage("light grid", 0.88);
 
     // ---- light grid ---------------------------------------------------------------------------------------------------------------------------

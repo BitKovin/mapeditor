@@ -790,7 +790,8 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
                     std::lock_guard<std::mutex> lock(visibilityM);
                     if (!visibility) {
                         const auto v0 = Clock::now();
-                        visibility = std::make_unique<PlayableVisibility>(*in.lights.playable, in.surfaces, in.classes, layoutSettings.lod.removeUnseen ? 768 : 96, blocks);
+                        if (opt_.visibility) visibility = std::make_unique<PlayableVisibility>(opt_.visibility);
+                        else visibility = std::make_unique<PlayableVisibility>(*in.lights.playable, in.surfaces, in.classes, 0, blocks, in.solids.get());
                         timings_.visibility = msBetween(v0, Clock::now());
                     }
                     return *visibility;

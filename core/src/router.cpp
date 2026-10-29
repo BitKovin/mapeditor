@@ -129,6 +129,35 @@ void Router::handleExport(const json& req, RouterOutput& out) {
     out.toSender.push_back(res.dump());
 }
 
+void Router::handleVisDebug(const json& req, RouterOutput& out) {
+    json res = {{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"available", false}};
+    const auto vis = export_.lastVisibility();
+    if (vis && req.contains("point") && req["point"].is_array() && req["point"].size() == 3) {
+        const Vec3 p{req["point"][0].get<double>(), req["point"][1].get<double>(), req["point"][2].get<double>()};
+        const int leaf = vis->leafAt(p);
+        const int cluster = vis->leafs[static_cast<size_t>(leaf)].cluster;
+        res["available"] = true;
+        res["cluster"] = cluster;
+        json own = json::array(), seen = json::array();
+        auto box = [](json& a, const VisLeaf& l) { for (double v : {l.mn.x, l.mn.y, l.mn.z, l.mx.x, l.mx.y, l.mx.z}) a.push_back(std::round(v * 1000) / 1000); };
+        if (cluster >= 1) box(own, vis->leafs[static_cast<size_t>(leaf)]);
+        std::vector<std::pair<double, size_t>> order;
+        if (cluster >= 1) {
+            for (size_t i = 0; i < vis->leafs.size(); ++i) {
+                const VisLeaf& l = vis->leafs[i];
+                if (l.cluster < 1 || l.cluster == cluster || !vis->sees(cluster, l.cluster)) continue;
+                order.push_back({((l.mn + l.mx) * 0.5 - p).length(), i});
+            }
+            std::sort(order.begin(), order.end());
+        }
+        for (size_t k = 0; k < order.size() && k < 6000; ++k) box(seen, vis->leafs[order[k].second]);
+        res["own"] = own;
+        res["seen"] = seen;
+        res["seenTotal"] = order.size();
+    }
+    out.toSender.push_back(res.dump());
+}
+
 void Router::pushLibraryIfChanged(RouterOutput& out, bool force) {
     const std::string fp = scene_.libraryFingerprint();
     if (force || fp != lastLibraryFingerprint_) {
@@ -198,6 +227,7 @@ RouterOutput Router::onMessage(const std::string& text) {
         // for nothing and the light came seconds late), and Lit mode is for fast light iteration. The export gets the relief from here (RouterExport::relief).
         else if (type == proto::kReliefGeometry) lastRelief_ = req;
         else if (type == proto::kExportMap || type == proto::kExportBsp || type == proto::kExportCancel) handleExport(req, out);
+        else if (type == proto::kVisDebug) handleVisDebug(req, out);
         else if (type == proto::kNativeDialog) handleNativeDialog(req, out);
         else if (type == proto::kSetSettings) handleSetSettings(req, out);
         else if (type == proto::kReadGameProfile || type == proto::kWriteGameProfile) handleGameProfile(req, out);
