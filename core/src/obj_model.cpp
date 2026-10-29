@@ -142,8 +142,9 @@ std::optional<fs::path> findImageByMaterial(const fs::path& dir, const std::stri
 // "/models/props/crate" for <assets>/models/props/crate.png; "" when the file is not inside the assets root.
 std::string textureName(const fs::path& assetsRoot, const fs::path& file) {
     std::error_code ec;
-    const fs::path rel = fs::relative(fs::weakly_canonical(file, ec), fs::weakly_canonical(assetsRoot, ec), ec);
-    if (ec || rel.empty() || rel.is_absolute()) return {};
+    // lexical, not canonical: a game folder with junctions / symlinks (models linked from elsewhere) must keep the names it is reached by
+    const fs::path rel = file.lexically_normal().lexically_relative(assetsRoot.lexically_normal());
+    if (rel.empty() || rel.is_absolute()) return {};
     for (const auto& part : rel) if (part == "..") return {};
     fs::path noExt = rel;
     noExt.replace_extension();

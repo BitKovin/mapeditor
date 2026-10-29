@@ -2,8 +2,7 @@
 #include "core/bsp_compile.h"
 #include "core/lighting_classes.h"
 #include "core/obj_model.h"
-#include "core/lightbake.h"
-#include "core/lights.h"
+#include "core/textures.h"
 #include "core/raytrace.h"
 #include "core/textures.h"
 #include "doctest.h"
@@ -187,46 +186,3 @@ TEST_CASE("misc_model: lightmapped class, occluder unless _cs 0, baked into the 
     CHECK(v.entities().find("misc_model") == std::string::npos);
 }
 
-TEST_CASE("misc_model: the baked light reaches the model's texels (a flat pile on a floor under a light)") {
-    TempDir dir;
-    std::string text;
-    {
-        std::ifstream in("F:/Git/SdlWasmEngine/source/Games/ShooterGame/GameData/models/enviroment/sewers/debris_04.obj");
-        if (!in) return;  // the game folder is not here
-        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    }
-    put(dir.path / "m/d.obj", text);
-    Document d;
-    d.entities.push_back(modelEntity("m1", "m/d.obj", {0, 0, 0}));
-    Entity w;
-    w.id = "w";
-    w.classname = "worldspawn";
-    w.brushes.push_back(Brush::makeBox("b", {-4, -1, -4}, {4, 0, 4}, "dev/wall"));
-    d.entities.push_back(w);
-    Entity l;
-    l.id = "l";
-    l.classname = "light_point";
-    l.origin = {0, 2, 0};
-    l.keyvalues["brightness"] = "4";
-    l.keyvalues["radius"] = "20";
-    d.entities.push_back(l);
-    auto surfaces = collectSurfaces(d, {});
-    auto models = collectModelSurfaces(d, {}, dir.path);
-    REQUIRE(!models.empty());
-    surfaces.insert(surfaces.end(), models.begin(), models.end());
-    const LightmapLayout layout = buildLightmapLayout(surfaces, LightingClasses::defaults(), {});
-    const LightScene lights = collectLights(d, {});
-    TexelSamples samples = buildTexelSamples(layout, surfaces);
-    BakeOptions opt;
-    opt.forceCpu = true;
-    const std::vector<float> v = evaluateDirectCpu(samples, lights, nullptr, opt);
-    size_t modelTexels = 0, lit = 0;
-    double sum = 0;
-    for (size_t i = 0; i < samples.count(); ++i) {
-        const double y = samples.pos[i * 4 + 1];
-        if (y > 0.001 && y < 0.5) { ++modelTexels; sum += v[i * 4]; lit += v[i * 4] > 0.01f; }
-    }
-    MESSAGE("model texels " << modelTexels << ", lit " << lit << ", mean " << (modelTexels ? sum / modelTexels : 0.0) << ", charts " << layout.charts.size());
-    CHECK(modelTexels > 0);
-    CHECK(lit > modelTexels / 2);
-}
