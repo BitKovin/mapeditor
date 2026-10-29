@@ -43,6 +43,19 @@ describe('lit view of a brush that changed since the Core mesh', () => {
     expect(s.staleness(worldOf(b))).toBeNull()
   })
 
+  it('a misc_model triangle takes its albedo uv from its own map (face.a), not from a projection', () => {
+    const b = makeBox('a', [0, 0, 0], [2, 2, 2])
+    const tri = [0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0.1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.1, 0, 1, 0, 0]
+    const s = new LightmapStore()
+    s.mesh = Float32Array.from(tri); s.triangleCount = 1
+    s.faces = [{ i: '', e: 'm', bi: '', b: 'model', f: 0, t: '/models/x', n: 1, a: { u: [0.5, 0, 0, 0.25], v: [0, 1, 0, 0] } }]
+    const draw = buildLitDraw(s.mesh, s.faces, worldOf(b))
+    expect(draw.vertexCount).toBe(3)
+    expect(draw.groups[0].texture).toBe('/models/x')
+    expect(draw.data[12]).toBeCloseTo(0.25); expect(draw.data[LIT_TEX_FLOATS + 12]).toBeCloseTo(0.75) // vertex (1,0,0): u = 0.5 + 0.25
+    expect(draw.data[LIT_TEX_FLOATS + 13]).toBeCloseTo(0); expect(draw.data[2 * LIT_TEX_FLOATS + 13]).toBeCloseTo(1)
+  })
+
   it('a moved brush is drawn at its new position with the light it had (lightmap uv follows the brush, positions do not)', () => {
     const b = makeBox('a', [0, 0, 0], [2, 2, 2])
     const s = storeFor(b)

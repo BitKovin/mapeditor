@@ -41,7 +41,8 @@ export type RequestId = number | string | null
 /** One surface piece of the lit mesh: the authored face it lies on and how many triangles it has (in vertex order). */
 /** A face's lightmap mapping (sent with its first piece): lightmap uv = (dot(p, u.xyz) + u.w, dot(p, v.xyz) + v.w) on page `pg`, style layers as a bit mask `k`. */
 export interface LitFaceMap { u: [number, number, number, number]; v: [number, number, number, number]; pg: number; k: [number, number, number] }
-export interface LitFace { i: string; e: string; bi: string; b: string; f: number; t: string; n: number; m?: LitFaceMap }
+/** `a` = the albedo uv map of a misc_model triangle (it has no brush face): u = dot(p, a.u.xyz) + a.u.w, v likewise */
+export interface LitFace { i: string; e: string; bi: string; b: string; f: number; t: string; n: number; m?: LitFaceMap; a?: { u: [number, number, number, number]; v: [number, number, number, number] } }
 /** What a brush entity that is not lightmapped is lit with, per light style layer (linear; the x2 range already decoded): sum over styles of value(style) * (ambient + directed * max(0, n . dir)).
  *  ONE direction per entity, shared by every layer (REQUIREMENTS §27 G4: the engine's light grid has one direction per point). `dir` on a layer is the entity's, filled in by the client. */
 export interface EntityStyleLight { s: number; ambient: [number, number, number]; directed: [number, number, number]; dir: [number, number, number] }

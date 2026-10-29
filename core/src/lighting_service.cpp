@@ -336,6 +336,8 @@ std::string LightingService::litMeshMessage(bool keepPages) const {
         };
         for (size_t k = 1; k + 1 < s.verts.size(); ++k) { push(s.verts[0]); push(s.verts[k]); push(s.verts[k + 1]); }
         json entry{{"i", s.instance}, {"e", s.entityId}, {"bi", s.brushInstance}, {"b", s.brushId}, {"f", s.faceId}, {"t", s.texture}, {"n", s.verts.size() - 2}};
+        if (s.hasUvMap && s.classname == "misc_model")  // a model's own texture coordinates (the Shell has no brush face to take them from): uv = (dot(p, u.xyz) + u.w, dot(p, v.xyz) + v.w)
+            entry["a"] = json{{"u", {s.uvMap.u[0], s.uvMap.u[1], s.uvMap.u[2], s.uvMap.u[3]}}, {"v", {s.uvMap.v[0], s.uvMap.v[1], s.uvMap.v[2], s.uvMap.v[3]}}};
         if (mapped.insert(f->key()).second) {
             // The face's lightmap mapping for the Shell (decals lie on faces and take their light): uv = (dot(p, u.xyz) + u.w, dot(p, v.xyz) + v.w), page, style mask
             const double a = L.settings.atlasSize;
@@ -790,8 +792,7 @@ void LightingService::applyInputs(Inputs&& in, const Emit& emit) {
                     std::lock_guard<std::mutex> lock(visibilityM);
                     if (!visibility) {
                         const auto v0 = Clock::now();
-                        if (opt_.visibility) visibility = std::make_unique<PlayableVisibility>(opt_.visibility);
-                        else visibility = std::make_unique<PlayableVisibility>(*in.lights.playable, in.surfaces, in.classes, 0, blocks, in.solids.get());
+                        visibility = std::make_unique<PlayableVisibility>(*in.lights.playable, in.surfaces, in.classes, layoutSettings.lod.removeUnseen ? 768 : 96, blocks, opt_.visibility);
                         timings_.visibility = msBetween(v0, Clock::now());
                     }
                     return *visibility;

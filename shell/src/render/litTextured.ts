@@ -276,7 +276,7 @@ export function buildLitDraw(mesh: Float32Array, faces: readonly LitFace[], worl
       for (let k = 0; k < verts; k++) { const o = (at + k) * CORE_FLOATS; pts.push([mesh[o], mesh[o + 1], mesh[o + 2]]) }
       const o0 = at * CORE_FLOATS
       const normal: Vec3 = [mesh[o0 + 3], mesh[o0 + 4], mesh[o0 + 5]]
-      const uv = uvAt ? pts.map(uvAt) : planarCoordsProjected(normal, pts, undefined)
+      const uv = uvAt ? pts.map(uvAt) : f.a ? pts.map((p): [number, number] => [f.a!.u[0] * p[0] + f.a!.u[1] * p[1] + f.a!.u[2] * p[2] + f.a!.u[3], f.a!.v[0] * p[0] + f.a!.v[1] * p[1] + f.a!.v[2] * p[2] + f.a!.v[3]]) : planarCoordsProjected(normal, pts, undefined)
       const list: number[] = []
       for (let k = 0; k < verts; k++) {
         const o = (at + k) * CORE_FLOATS
