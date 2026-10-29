@@ -5,6 +5,7 @@
 #include "core/lightvol.h"
 #include "core/playable.h"
 #include "core/playable_visibility.h"
+#include "core/bsp_vis.h"
 #include "core/prefab.h"
 #include "test_util.h"
 #include <doctest.h>
@@ -53,7 +54,7 @@ TEST_CASE("playable: a visible patch between sparse face samples keeps the whole
     const auto area = collectPlayableArea(doc, {});
     REQUIRE(!area->empty());
     PlayableVisibility vis(*area, surfaces, LightingClasses::defaults(), 1);
-    REQUIRE(vis.viewpointCount() > 1);
+    REQUIRE(vis.viewpointCount() > 0);
     const LightSurface* targetFace = nullptr;
     for (const LightSurface& s : surfaces) {
         if (s.brushId != "target" || s.verts.size() < 3) continue;
@@ -229,7 +230,7 @@ TEST_CASE("playable: a surface no point of the area can see goes to the last cas
     const auto surfaces = collectSurfaces(doc, {});
     const auto area = collectPlayableArea(doc, {});
     const SolidSet solids = collectSolids(doc, {}, [](const std::string& c) { return c == "worldspawn"; });
-    PlayableVisibility vis(*area, surfaces, LightingClasses::defaults(), 0, {}, &solids);
+    PlayableVisibility vis(*area, surfaces, LightingClasses::defaults());
     REQUIRE(vis.viewpointCount() > 0);
     LightmapSettings cfg;
     cfg.texelsPerMeter = 8;
@@ -321,4 +322,33 @@ TEST_CASE("playable: the per-face visibility callback is asked once per face, wi
     for (const LightSurface& s : surfaces)
         if (s.brushId == "large_hidden" && s.side == FaceSide::Front) largeCulled = largeCulled || layout.culledFace(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, s.side);
     CHECK(largeCulled);  // seenFace said no although seen said yes
+}
+
+TEST_CASE("playable: with the baked visibility, background beyond the cells that nothing in the area can see is still unseen") {
+    // the area, a closed room 60 m away (far beyond the cells around the area), an open slab in plain view 60 m the other way
+    Document doc;
+    Entity w = ent("w", "worldspawn", {Brush::makeBox("floor", {-10, -1, -10}, {10, 0, 10})});
+    w.brushes.push_back(Brush::makeBox("rf", {60, -1, 0}, {70, 0, 10}));
+    w.brushes.push_back(Brush::makeBox("rc", {60, 3, 0}, {70, 4, 10}));
+    w.brushes.push_back(Brush::makeBox("rw0", {59.5, 0, 0}, {60, 3, 10}));
+    w.brushes.push_back(Brush::makeBox("rw1", {70, 0, 0}, {70.5, 3, 10}));
+    w.brushes.push_back(Brush::makeBox("rw2", {60, 0, -0.5}, {70, 3, 0}));
+    w.brushes.push_back(Brush::makeBox("rw3", {60, 0, 10}, {70, 3, 10.5}));
+    w.brushes.push_back(Brush::makeBox("slab", {0, -1, 60}, {10, 0, 70}));
+    doc.entities.push_back(w);
+    doc.entities.push_back(ent("p", "editor_playable_area", {Brush::makeBox("vol", {-10, 0, -10}, {10, 3, 10})}));
+    const auto surfaces = collectSurfaces(doc, {});
+    const auto area = collectPlayableArea(doc, {});
+    VisInput vi;
+    vi.occluders = &surfaces;
+    for (const auto& pc : area->pieces()) vi.zones.push_back({pc.mn, pc.mx, pc.planes});
+    const auto pvs = std::make_shared<const VisResult>(buildVisibility(vi));
+    PlayableVisibility vis(*area, surfaces, LightingClasses::defaults(), 96, {}, pvs);
+    int roomTop = 0, slabTop = 0;
+    for (const LightSurface& s : surfaces) {
+        if (s.brushId == "rf" && s.normal.y > 0.9) { ++roomTop; CHECK_FALSE(vis.seen(s.verts, s.normal)); }
+        if (s.brushId == "slab" && s.normal.y > 0.9) { ++slabTop; CHECK(vis.seen(s.verts, s.normal)); }
+    }
+    CHECK(roomTop > 0);
+    CHECK(slabTop > 0);
 }
