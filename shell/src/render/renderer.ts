@@ -381,7 +381,7 @@ export class Renderer {
     this.lit = this.program(LIT_VS, LIT_FS)
     this.litTexProg = this.program(LITTEX_VS, LITTEX_FS)
     this.entLit = this.program(MESH_VS, ENTLIT_FS)
-    this.models = new ModelDrawer(gl, this.program(MODEL_VS, MESH_FS), { texture: (p) => this.texture(p), transparency: (p) => drawTransparency(this.textures.info(p)) })
+    this.models = new ModelDrawer(gl, this.program(MODEL_VS, MESH_FS), this.program(MODEL_VS, ENTLIT_FS), { texture: (p) => this.texture(p), transparency: (p) => drawTransparency(this.textures.info(p)) })
     this.label = this.program(LABEL_VS, LABEL_FS)
     this.skyProg = this.program(SKY_VS, SKY_FS)
     this.skyBgProg = this.program(SKYBG_VS, SKYBG_FS)
@@ -1288,6 +1288,8 @@ export class Renderer {
     const modelShown = wire ? new Set<Entity>() : this.models.draw(vp, frame.entities.map((x) => x.entity), {
       time: nowSeconds,
       skip: (e) => litMode && classOf(e) === 'misc_model',
+      // models that are not baked into the world (pickups, characters) are lit from the light volume, as the brush entities that are not lightmapped
+      lit: litMode && frame.lightvol?.ready ? { sample: (p) => frame.lightvol!.sampleAt(p), weight: (st) => styleValue(frame.lighting!.patterns, st, nowSeconds, frame.lighting!.styleHz), exposure: frame.lighting!.exposure, brightness: frame.lighting!.brightness, lightingOnly } : undefined,
       visible: (e) => { const b = boundsOfBox(pointBox(e, (n) => boxOf(frame, n))); return boxInFrustum(planes, [...b.min, ...b.max]) },
     })
     if (modelShown.size && frame.settings.backfaceCulling) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW) }  // the models drew two-sided

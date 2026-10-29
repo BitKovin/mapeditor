@@ -6,6 +6,7 @@ import { animationIndex, isAnimated, poseModel } from '../model/gltf'
 import { modelAnimationOf, modelMatrix, modelPathOf } from '../model/modelEntity'
 import type { DecodedImage } from '../state/models'
 import { modelStore } from '../state/models'
+import type { EntityLight } from './lightvolStore'
 
 export const MODEL_VS = `#version 300 es
 uniform mat4 uViewProj; uniform mat4 uModel; layout(location = 0) in vec3 aPos; layout(location = 1) in vec3 aNormal; layout(location = 2) in vec2 aUv; out vec3 vN; out vec2 vUv;
@@ -28,6 +29,8 @@ export interface ModelDrawOptions {
   skip?: (e: Entity) => boolean
   /** Seconds, the clock the animations play on. */
   time: number
+  /** Light from the level's light volume (the lightgrid): a model is lit by the probes around it instead of drawn flat. Absent / null result = flat. */
+  lit?: { sample: (p: [number, number, number]) => EntityLight[] | null; weight: (style: number) => number; exposure: number; brightness: number; lightingOnly: boolean }
   /** Which entities are in view (a box test); undefined = all. */
   visible?: (e: Entity, bounds: { min: [number, number, number]; max: [number, number, number] }) => boolean
 }
@@ -39,7 +42,7 @@ export class ModelDrawer {
   /** True after a draw when something animated is on screen: the viewport keeps asking for frames. */
   animating = false
 
-  constructor(private gl: WebGL2RenderingContext, private prog: WebGLProgram, private look: ModelLookups) {}
+  constructor(private gl: WebGL2RenderingContext, private prog: WebGLProgram, private litProg: WebGLProgram, private look: ModelLookups) {}
 
   private imageTexture(img: DecodedImage): WebGLTexture | null {
     if (!img) return null
@@ -102,7 +105,7 @@ export class ModelDrawer {
     this.frameNo++
     this.animating = false
     const shown = new Set<Entity>()
-    type Draw = { gp: GpuPose; prim: ModelPrimitive; index: number; m: Float32Array; images: DecodedImage[] }
+    type Draw = { gp: GpuPose; prim: ModelPrimitive; index: number; m: Float32Array; images: DecodedImage[]; lights: EntityLight[] | null }
     const opaque: Draw[] = [], blended: Draw[] = []
     for (const e of entities) {
       const path = modelPathOf(e)
@@ -117,18 +120,33 @@ export class ModelDrawer {
       const gp = this.pose(model, anim, opts.time)
       if (gp.animated) this.animating = true
       const m = modelMatrix(e)
-      model.primitives.forEach((prim, index) => (prim.alphaMode === 'BLEND' ? blended : opaque).push({ gp, prim, index, m, images: slot.images }))
+      let lights: EntityLight[] | null = null
+      if (opts.lit) { // the probes around the middle of the model
+        const b = model.bounds, c = [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2]
+        lights = opts.lit.sample([m[0] * c[0] + m[4] * c[1] + m[8] * c[2] + m[12], m[1] * c[0] + m[5] * c[1] + m[9] * c[2] + m[13], m[2] * c[0] + m[6] * c[1] + m[10] * c[2] + m[14]])
+      }
+      model.primitives.forEach((prim, index) => (prim.alphaMode === 'BLEND' ? blended : opaque).push({ gp, prim, index, m, images: slot.images, lights }))
     }
     if (!opaque.length && !blended.length) return shown
-    gl.useProgram(this.prog)
-    gl.uniformMatrix4fv(gl.getUniformLocation(this.prog, 'uViewProj'), false, vp)
-    const uModel = gl.getUniformLocation(this.prog, 'uModel'), uColor = gl.getUniformLocation(this.prog, 'uColor'), uHasTex = gl.getUniformLocation(this.prog, 'uHasTex')
-    const uTransp = gl.getUniformLocation(this.prog, 'uTransp')
-    gl.uniform1i(gl.getUniformLocation(this.prog, 'uTex'), 0)
-    gl.uniform1f(gl.getUniformLocation(this.prog, 'uAlphaTex'), 0)
-    gl.activeTexture(gl.TEXTURE0)
     gl.disable(gl.CULL_FACE) // glTF materials can be double sided and a mirrored scale flips the winding: models are drawn from both sides
     gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1)
+    // the flat program and the lightgrid one share the vertex shader: each has its own uniforms, set when a draw switches to it
+    const locs = (prog: WebGLProgram) => ({
+      model: gl.getUniformLocation(prog, 'uModel'), color: gl.getUniformLocation(prog, 'uColor'), has: gl.getUniformLocation(prog, 'uHasTex'), transp: gl.getUniformLocation(prog, 'uTransp'),
+      n: gl.getUniformLocation(prog, 'uN'), amb: gl.getUniformLocation(prog, 'uAmb'), dc: gl.getUniformLocation(prog, 'uDc'), dir: gl.getUniformLocation(prog, 'uDir'),
+    })
+    const flat = locs(this.prog), litL = locs(this.litProg)
+    const amb = new Float32Array(24), dc = new Float32Array(24)
+    let current: WebGLProgram | null = null
+    const use = (prog: WebGLProgram) => {
+      if (current === prog) return
+      current = prog
+      gl.useProgram(prog)
+      gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uViewProj'), false, vp)
+      gl.uniform1i(gl.getUniformLocation(prog, 'uTex'), 0)
+      gl.uniform1f(gl.getUniformLocation(prog, 'uAlphaTex'), 0)
+      if (prog === this.litProg && opts.lit) { gl.uniform1f(gl.getUniformLocation(prog, 'uExposure'), opts.lit.exposure); gl.uniform1f(gl.getUniformLocation(prog, 'uBrightness'), opts.lit.brightness) }
+    }
     const pass = (list: Draw[], blend: boolean) => {
       gl.depthMask(!blend)
       for (const d of list) {
@@ -139,11 +157,24 @@ export class ModelDrawer {
         else if (prim.texture) { tex = this.look.texture(prim.texture); tp = this.look.transparency(prim.texture) }
         if (prim.alphaMode === 'MASK') tp = [1, prim.cutoff, 0]
         else if (prim.alphaMode === 'BLEND') tp = [2, 0, 1]
+        const lit = d.lights && opts.lit ? d.lights : null
+        use(lit ? this.litProg : this.prog)
+        const L = lit ? litL : flat
+        gl.activeTexture(gl.TEXTURE0)
         if (tex) gl.bindTexture(gl.TEXTURE_2D, tex)
-        gl.uniform1f(uHasTex, tex ? 1 : 0)
-        gl.uniform4f(uColor, prim.color[0], prim.color[1], prim.color[2], prim.alphaMode === 'BLEND' ? prim.color[3] : 1)
-        gl.uniform3f(uTransp, tp[0], tp[1], tp[2])
-        gl.uniformMatrix4fv(uModel, false, d.m)
+        gl.uniform1f(L.has, tex ? 1 : 0)
+        const flatColor = opts.lit?.lightingOnly && lit ? [1, 1, 1, 1] : prim.color
+        if (lit) {
+          gl.uniform3f(L.color, flatColor[0], flatColor[1], flatColor[2])
+          const n = Math.min(8, lit.length)
+          for (let i = 0; i < n; i++) {
+            const w = opts.lit!.weight(lit[i].s)
+            for (let c = 0; c < 3; c++) { amb[i * 3 + c] = lit[i].ambient[c] * w; dc[i * 3 + c] = lit[i].directed[c] * w }
+          }
+          gl.uniform1i(L.n, n); gl.uniform3fv(L.amb, amb); gl.uniform3fv(L.dc, dc); gl.uniform3fv(L.dir, lit[0].dir)
+        } else gl.uniform4f(L.color, prim.color[0], prim.color[1], prim.color[2], prim.alphaMode === 'BLEND' ? prim.color[3] : 1)
+        gl.uniform3f(L.transp, tp[0], tp[1], tp[2])
+        gl.uniformMatrix4fv(L.model, false, d.m)
         const g = d.gp.prims[d.index]
         gl.bindVertexArray(g.vao)
         gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0)
@@ -152,7 +183,7 @@ export class ModelDrawer {
     pass(opaque, false)
     pass(blended, true)
     gl.bindVertexArray(null)
-    gl.uniform3f(uTransp, 0, 0, 0)
+    for (const L of [flat, litL]) gl.uniform3f(L.transp, 0, 0, 0)
     gl.depthMask(true)
     gl.disable(gl.POLYGON_OFFSET_FILL)
     return shown
