@@ -42,7 +42,7 @@ import { boundsOfBox, cornersOf, drawsBox, pointBox, toWorld, worldCorners } fro
 import type { ViewportSettings } from './viewportSettings'
 import { SKY_FACES, SKY_GLSL, isSkyTexture } from '../model/sky'
 import { mat4 } from 'gl-matrix'
-import { MODEL_VS, ModelDrawer } from './modelRenderer'
+import { MODEL_LIT_FS, MODEL_VS, ModelDrawer } from './modelRenderer'
 
 /** `instanceId` = the top-level prefab instance this content belongs to (undefined for the document's own entities). */
 /** `instance` = the full instance path of prefab content ("a/b" for nested; undefined for the document's own entities), the key under which Core files its carved result. */
@@ -381,7 +381,7 @@ export class Renderer {
     this.lit = this.program(LIT_VS, LIT_FS)
     this.litTexProg = this.program(LITTEX_VS, LITTEX_FS)
     this.entLit = this.program(MESH_VS, ENTLIT_FS)
-    this.models = new ModelDrawer(gl, this.program(MODEL_VS, MESH_FS), this.program(MODEL_VS, ENTLIT_FS), { texture: (p) => this.texture(p), transparency: (p) => drawTransparency(this.textures.info(p)) })
+    this.models = new ModelDrawer(gl, this.program(MODEL_VS, MESH_FS), this.program(MODEL_VS, MODEL_LIT_FS), { texture: (p) => this.texture(p), transparency: (p) => drawTransparency(this.textures.info(p)) })
     this.label = this.program(LABEL_VS, LABEL_FS)
     this.skyProg = this.program(SKY_VS, SKY_FS)
     this.skyBgProg = this.program(SKYBG_VS, SKYBG_FS)

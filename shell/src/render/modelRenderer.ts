@@ -12,6 +12,29 @@ export const MODEL_VS = `#version 300 es
 uniform mat4 uViewProj; uniform mat4 uModel; layout(location = 0) in vec3 aPos; layout(location = 1) in vec3 aNormal; layout(location = 2) in vec2 aUv; out vec3 vN; out vec2 vUv;
 void main() { vN = mat3(uModel) * aNormal; vUv = aUv; gl_Position = uViewProj * (uModel * vec4(aPos, 1.0)); }`
 
+/**
+ * The engine's own lighting of a model (GameData/shaders/source/fs_default.sc CalculateDirectionalDiffuse, light grid values as the engine reads them: byte / 255 * 2):
+ *   colour = texture * 0.6 * (0.9 * ambient + directed * (0.5 * N.L + 0.5))
+ * in the texture's own (display) space, no sRGB round trip and no level exposure - the brush faces are lit another way (lightmaps), models are not. Backfaces light
+ * with the flipped normal. The engine's specular, rim light and dynamic point lights are not part of the preview.
+ */
+export const MODEL_LIT_FS = `#version 300 es
+precision highp float; uniform vec3 uColor; uniform sampler2D uTex; uniform float uHasTex; uniform float uAlphaTex; uniform int uN; uniform vec3 uAmb[8]; uniform vec3 uDc[8]; uniform vec3 uDir; uniform vec3 uTransp; in vec3 vN; in vec2 vUv; out vec4 o;
+float transparency(float a) {
+  if (uTransp.x > 0.5 && uTransp.x < 1.5 && a < uTransp.y) discard;
+  return uTransp.x > 1.5 ? uTransp.z * a : 1.0;
+}
+void main() {
+  vec4 t = texture(uTex, vUv);
+  vec3 albedo = mix(uColor, t.rgb, uHasTex);
+  vec3 n = normalize(vN);
+  if (!gl_FrontFacing) n = -n;
+  float f = dot(n, normalize(uDir)) * 0.5 + 0.5;
+  vec3 light = vec3(0.0);
+  for (int i = 0; i < 8; i++) { if (i >= uN) break; light += uAmb[i] * 0.9 + uDc[i] * f; }
+  o = vec4(albedo * light * 0.6, transparency(t.a * uHasTex + (1.0 - uHasTex)));
+}`
+
 interface GpuPrim { vao: WebGLVertexArrayObject; pos: WebGLBuffer; nrm: WebGLBuffer; count: number }
 /** One model in one animation: its buffers and the pose they hold. */
 interface GpuPose { prims: GpuPrim[]; posed: PosedPrimitive[]; anim: number; animated: boolean; frame: number }
@@ -162,7 +185,7 @@ export class ModelDrawer {
         const L = lit ? litL : flat
         gl.activeTexture(gl.TEXTURE0)
         if (tex) gl.bindTexture(gl.TEXTURE_2D, tex)
-        gl.uniform1f(L.has, tex ? 1 : 0)
+        gl.uniform1f(L.has, tex && !(lit && opts.lit?.lightingOnly) ? 1 : 0) // Lighting-only shows the light alone
         const flatColor = opts.lit?.lightingOnly && lit ? [1, 1, 1, 1] : prim.color
         if (lit) {
           gl.uniform3f(L.color, flatColor[0], flatColor[1], flatColor[2])
