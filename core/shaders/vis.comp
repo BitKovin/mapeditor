@@ -1,0 +1,134 @@
+#version 460
+// Baked visibility (src/bsp_vis.cpp, VISIBILITY_REWRITE.md): segments between the sample points of cluster pairs (mode 0) and closest hits along rays
+// (mode 1). Compiled twice: with RAY_QUERY the occluders are a hardware acceleration structure, without it a bounding volume hierarchy in storage buffers
+// (the same one TriangleBvh traverses on the CPU). MUST stay equivalent to the CPU passes of bsp_vis.cpp; tests compare them.
+#ifdef RAY_QUERY
+#extension GL_EXT_ray_query : require
+#endif
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Points { vec4 pts[]; };          // sample points of the clusters, cluster after cluster
+layout(std430, set = 0, binding = 1) readonly buffer Clusters { uvec2 clu[]; };        // per cluster: first point, number of points
+layout(std430, set = 0, binding = 2) buffer Matrix { uint mat[]; };                    // visibility bits: row r, bit c at mat[r * w32 + c / 32]
+#ifdef RAY_QUERY
+layout(set = 0, binding = 3) uniform accelerationStructureEXT tlas;
+#else
+layout(std430, set = 0, binding = 3) readonly buffer Nodes { vec4 nodes[]; };          // two vec4 per node: (mn, left), (mx, count) (the last two as bits)
+#endif
+layout(std430, set = 0, binding = 4) readonly buffer Tris { float tris[]; };           // 9 floats per triangle, in the order of the leaves
+layout(std430, set = 0, binding = 5) readonly buffer RaysIn { vec4 rin[]; };           // mode 1: per ray (origin, tmax) and (direction, 0)
+layout(std430, set = 0, binding = 6) writeonly buffer RaysOut { float rout[]; };       // mode 1: the closest hit t (units of |direction|) or -1
+
+layout(push_constant) uniform PC {
+    uint mode;      // 0 pairs, 1 closest hits
+    uint n;         // clusters
+    uint segments;  // segments per pair
+    uint rowBase;   // mode 0: first row (cluster a) of this dispatch
+    uint rowEnd;    // mode 0: end of the rows
+    uint w32;       // mode 0: 32 bit words per matrix row
+    uint rayCount;  // mode 1: number of rays
+    uint stride;    // mode 1: rays per row of the dispatch
+} pc;
+
+// MUST equal hashBits() in bsp_vis.cpp
+uint hashBits(uint a, uint b, uint c) {
+    uint h = (a * 0x9E3779B1u) ^ ((b + 0x7F4A7C15u) * 0x85EBCA77u) ^ ((c + 0x165667B1u) * 0xC2B2AE3Du);
+    h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+    return h;
+}
+
+#ifdef RAY_QUERY
+// closest hit t in [0, tmax] along o + t d, or -1; `anyHit`: stop at the first one (returns 0 for a hit)
+float trace(vec3 o, vec3 d, float tmax, bool anyHit) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, anyHit ? (gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT) : gl_RayFlagsOpaqueEXT, 0xFF, o, 0.0, d, tmax);
+    while (rayQueryProceedEXT(rq)) {}
+    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) return -1.0;
+    return anyHit ? 0.0 : rayQueryGetIntersectionTEXT(rq, true);
+}
+#else
+bool boxHit(vec3 mn, vec3 mx, vec3 o, vec3 inv, float tmax) {
+    vec3 t0 = (mn - o) * inv, t1 = (mx - o) * inv;
+    vec3 lo = min(t0, t1), hi = max(t0, t1);
+    float a = max(max(lo.x, lo.y), max(lo.z, 0.0));
+    float b = min(min(hi.x, hi.y), min(hi.z, tmax));
+    return a <= b;
+}
+
+float trace(vec3 o, vec3 d, float tmax, bool anyHit) {
+    vec3 dd = vec3(abs(d.x) < 1e-12 ? 1e-12 : d.x, abs(d.y) < 1e-12 ? 1e-12 : d.y, abs(d.z) < 1e-12 ? 1e-12 : d.z);
+    vec3 inv = 1.0 / dd;
+    float best = tmax;
+    bool found = false;
+    uint stack[64];
+    uint sp = 0u;
+    stack[sp++] = 0u;
+    while (sp > 0u) {
+        uint ni = stack[--sp];
+        vec4 a = nodes[ni * 2u], b = nodes[ni * 2u + 1u];
+        if (!boxHit(a.xyz, b.xyz, o, inv, best)) continue;
+        uint left = floatBitsToUint(a.w), count = floatBitsToUint(b.w);
+        if (count == 0u) {
+            stack[sp++] = left + 1u;
+            stack[sp++] = left;
+            continue;
+        }
+        for (uint k = 0u; k < count; ++k) {
+            uint t = (left + k) * 9u;
+            vec3 v0 = vec3(tris[t], tris[t + 1u], tris[t + 2u]);
+            vec3 e1 = vec3(tris[t + 3u], tris[t + 4u], tris[t + 5u]) - v0;
+            vec3 e2 = vec3(tris[t + 6u], tris[t + 7u], tris[t + 8u]) - v0;
+            vec3 p = cross(d, e2);
+            float det = dot(e1, p);
+            if (abs(det) < 1e-14) continue;
+            float invDet = 1.0 / det;
+            vec3 s = o - v0;
+            float u = dot(s, p) * invDet;
+            if (u < 0.0 || u > 1.0) continue;
+            vec3 q = cross(s, e1);
+            float v = dot(d, q) * invDet;
+            if (v < 0.0 || u + v > 1.0) continue;
+            float th = dot(e2, q) * invDet;
+            if (th >= 0.0 && th <= best) {
+                if (anyHit) return 0.0;
+                best = th;
+                found = true;
+            }
+        }
+    }
+    return found ? best : -1.0;
+}
+#endif
+
+void main() {
+    if (pc.mode == 0u) {
+        uint b = gl_GlobalInvocationID.x;
+        uint a = pc.rowBase + gl_GlobalInvocationID.y;
+        if (a >= pc.rowEnd || b >= pc.n || b <= a || a == 0u) return;
+        uint word = a * pc.w32 + (b >> 5u), bit = 1u << (b & 31u);
+        if ((mat[word] & bit) != 0u) return;
+        uvec2 fa = clu[a], fb = clu[b];
+        if (fa.y == 0u || fb.y == 0u) return;
+        for (uint k = 0u; k < pc.segments; ++k) {
+            vec3 p = pts[fa.x + hashBits(a, b, k) % fa.y].xyz;
+            vec3 q = pts[fb.x + hashBits(b, a, k) % fb.y].xyz;
+            vec3 d = q - p;
+            float len = length(d);
+            bool clear = len < 1e-6;
+            if (!clear) {
+                float e = min(0.002 / len, 0.25);
+                clear = trace(p + d * e, d * (1.0 - 2.0 * e), 1.0, true) < 0.0;
+            }
+            if (clear) {
+                atomicOr(mat[word], bit);
+                return;
+            }
+        }
+    } else {
+        uint i = gl_GlobalInvocationID.y * pc.stride + gl_GlobalInvocationID.x;
+        if (i >= pc.rayCount) return;
+        vec4 o = rin[i * 2u], d = rin[i * 2u + 1u];
+        rout[i] = trace(o.xyz, d.xyz, o.w, false);
+    }
+}

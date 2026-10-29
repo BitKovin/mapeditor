@@ -1,5 +1,5 @@
 // Command line export (REQUIREMENTS §25, §31): the same export as the editor's Export button, without the editor.
-// Usage: bsp_export_tool <assetsRoot> <map.map.json> <out> [--no-bake] [--lighting lighting.json] [--max-bake-seconds N]
+// Usage: bsp_export_tool <assetsRoot> <map.map.json> <out> [--no-bake] [--no-vis] [--lighting lighting.json] [--max-bake-seconds N]
 //   <map> and <out> are relative to the assets root (like everything the Core reads and writes). The format: the one whose extension <out> has
 //   (.bsp = rBSP, .obj = OBJ + JSON), else the game profile's.
 #include "core/exporter.h"
@@ -21,6 +21,7 @@ int main(int argc, char** argv) {
     for (int i = 4; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--no-bake") req.bake = false;
+        else if (a == "--no-vis") req.settings.visibility = false;  // the clusters are made, every cluster sees every cluster
         else if (a == "--lighting" && i + 1 < argc) req.lighting = LightingService::loadOptions(argv[++i]);
         else if (a == "--max-bake-seconds" && i + 1 < argc) req.maxBakeSeconds = std::atof(argv[++i]);
         else { std::cerr << "unknown argument " << a << "\n"; return 2; }

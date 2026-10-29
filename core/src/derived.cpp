@@ -368,12 +368,15 @@ uint64_t SolidSet::fingerprint() const {
 }
 
 SolidSet collectSolids(const Document& doc, const std::vector<ResolvedEntity>& prefabs, const std::function<bool(const std::string&)>& blocks,
-                       SolidSet::Cache* cache) {
+                       SolidSet::Cache* cache, const std::function<bool(const Brush&)>& brushOk) {
     SolidSet set;
     std::vector<std::pair<const Brush*, bool>> list;
     for (const auto& it : allEntities(doc, prefabs)) {
         if (!blocks(it.entity->classname)) continue;
-        for (const auto& b : it.entity->brushes) list.push_back({&b, b.op == BrushOp::Subtract});
+        for (const auto& b : it.entity->brushes) {
+            if (brushOk && b.op != BrushOp::Subtract && !brushOk(b)) continue;
+            list.push_back({&b, b.op == BrushOp::Subtract});
+        }
     }
     set.addAll(list, cache);
     set.finish();

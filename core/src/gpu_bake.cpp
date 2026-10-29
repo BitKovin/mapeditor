@@ -4,6 +4,8 @@
 #include <core_shaders/lightmap_direct.spv.h>
 #include <core_shaders/lightmap_direct_rq.spv.h>
 #include <core_shaders/lightmap_gather.spv.h>
+#include <core_shaders/vis_bvh.spv.h>
+#include <core_shaders/vis_rq.spv.h>
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan_core.h>
@@ -188,6 +190,12 @@ struct AoPush {  // layout of `PC` in shaders/lightmap_ao.comp
     float radius, bias, falloff;
     uint32_t pad;
 };
+struct VisPush {  // layout of `PC` in shaders/vis.comp
+    uint32_t mode, n, segments, rowBase, rowEnd, w32, rayCount, stride;
+};
+// Bindings of the visibility shader: 0 points, 1 clusters, 2 matrix, 3 tlas (ray query) or BVH nodes, 4 BVH triangles, 5 rays in, 6 rays out.
+constexpr uint32_t kVisBindings = 7;
+
 // Bindings of the ambient occlusion shader: 0 pos, 1 nrm, 2 result, 3 tlas, 4 per triangle albedo record (raw ids), 5 transparency words.
 constexpr uint32_t kAoBindings = 6;
 
@@ -320,9 +328,11 @@ struct Context {
     std::unique_ptr<DirectPipe> direct;
     std::unique_ptr<GatherPipe> gather;
     std::unique_ptr<DirectPipe> ao;
+    std::unique_ptr<DirectPipe> vis;
     const DirectPipe& directPipe();
     const GatherPipe& gatherPipe();
     const DirectPipe& aoPipe();
+    const DirectPipe& visPipe();
 };
 
 void makeContext(Context& c, bool useRT, bool wantValidation) {
@@ -642,6 +652,47 @@ const DirectPipe& Context::aoPipe() {
     d->shader = shader; d->dsl = dsl; d->pl = pl; d->pipe = pipe;
     ao = std::move(d);
     return *ao;
+}
+
+const DirectPipe& Context::visPipe() {
+    if (vis) return *vis;
+    Fns& f = this->f;
+    const VkDevice device = this->device;
+    Cleanup& cleanup = this->cleanup;
+    VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    smi.codeSize = useRT ? sizeof(core::shaders::k_vis_rq_spv) : sizeof(core::shaders::k_vis_bvh_spv);
+    smi.pCode = useRT ? core::shaders::k_vis_rq_spv : core::shaders::k_vis_bvh_spv;
+    VkShaderModule shader;
+    check(f.vkCreateShaderModule(device, &smi, nullptr, &shader), "vkCreateShaderModule(vis)");
+    cleanup.add([&f, device, shader] { f.vkDestroyShaderModule(device, shader, nullptr); });
+    VkDescriptorSetLayoutBinding binds[kVisBindings];
+    for (uint32_t i = 0; i < kVisBindings; ++i)
+        binds[i] = {i, i == 3 && useRT ? VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo dli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    dli.bindingCount = kVisBindings;
+    dli.pBindings = binds;
+    VkDescriptorSetLayout dsl;
+    check(f.vkCreateDescriptorSetLayout(device, &dli, nullptr, &dsl), "vkCreateDescriptorSetLayout(vis)");
+    cleanup.add([&f, device, dsl] { f.vkDestroyDescriptorSetLayout(device, dsl, nullptr); });
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(VisPush)};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &dsl;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    VkPipelineLayout pl;
+    check(f.vkCreatePipelineLayout(device, &pli, nullptr, &pl), "vkCreatePipelineLayout(vis)");
+    cleanup.add([&f, device, pl] { f.vkDestroyPipelineLayout(device, pl, nullptr); });
+    VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, shader, "main", nullptr};
+    cpi.layout = pl;
+    VkPipeline pipe;
+    check(f.vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &pipe), "vkCreateComputePipelines(vis)");
+    cleanup.add([&f, device, pipe] { f.vkDestroyPipeline(device, pipe, nullptr); });
+    auto d = std::make_unique<DirectPipe>();
+    d->shader = shader; d->dsl = dsl; d->pl = pl; d->pipe = pipe;
+    vis = std::move(d);
+    return *vis;
 }
 
 enum class MemKind { Host, HostCached, DeviceHost, Device };
@@ -1389,6 +1440,285 @@ Buffer allocBuffer(Context& c, Cleanup& cleanup, VkDeviceSize size, VkBufferUsag
     return b;
 }
 
+// ---- baked visibility ------------------------------------------------------------------------------------------------------------
+class VkVis final : public VisGpu {
+public:
+    std::shared_ptr<Context> ctx;  // before `cleanup`: the device outlives everything below
+    Cleanup cleanup;
+    std::string err, dev;
+    bool rq = false;
+    Buffer bNodes, bTris, bDummy;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet dset = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
+
+    ~VkVis() override {
+        if (ctx && ctx->device && ctx->f.vkDeviceWaitIdle) ctx->f.vkDeviceWaitIdle(ctx->device);
+    }
+    bool rayQuery() const override { return rq; }
+    const std::string& error() const override { return err; }
+    const std::string& device() const override { return dev; }
+
+    void init(const std::vector<float>& triangles, const std::vector<float>& nodes, const std::vector<float>& bvhTriangles, bool useRT) {
+        rq = useRT;
+        ctx = contextFor(useRT, false);
+        Context& c = *ctx;
+        c.collector.messages.clear();
+        dev = c.deviceName + (useRT ? " (ray query)" : " (compute)");
+        Fns& f = c.f;
+        const VkDevice device = c.device;
+        if (triangles.empty()) fail("no occluders");
+        const uint32_t count = static_cast<uint32_t>(triangles.size() / 9);
+        if (useRT && c.maxPrimitives && count > c.maxPrimitives) fail("more occluder triangles than the device supports");
+        const VkBufferUsageFlags kStorage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        auto mk = [&](VkDeviceSize size, MemKind kind) { return allocBuffer(c, cleanup, std::max<VkDeviceSize>(size, 16), kStorage, kind, false, true); };
+        bDummy = mk(16, MemKind::Host);
+        std::memset(bDummy.mapped, 0, 16);
+        if (!useRT) {
+            if (nodes.empty() || bvhTriangles.empty()) fail("the compute path needs the hierarchy");
+            bNodes = mk(nodes.size() * 4, MemKind::DeviceHost);
+            bTris = mk(bvhTriangles.size() * 4, MemKind::DeviceHost);
+            std::memcpy(bNodes.mapped, nodes.data(), nodes.size() * 4);
+            std::memcpy(bTris.mapped, bvhTriangles.data(), bvhTriangles.size() * 4);
+        }
+
+        VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        cpci.queueFamilyIndex = c.chosenQueue;
+        VkCommandPool cmdPool;
+        check(f.vkCreateCommandPool(device, &cpci, nullptr, &cmdPool), "vkCreateCommandPool");
+        cleanup.add([&f, device, cmdPool] { f.vkDestroyCommandPool(device, cmdPool, nullptr); });
+        VkCommandBufferAllocateInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cbi.commandPool = cmdPool;
+        cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbi.commandBufferCount = 1;
+        check(f.vkAllocateCommandBuffers(device, &cbi, &cmd), "vkAllocateCommandBuffers");
+        VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        check(f.vkCreateFence(device, &fi, nullptr, &fence), "vkCreateFence");
+        const VkFence fenceCopy = fence;
+        cleanup.add([&f, device, fenceCopy] { f.vkDestroyFence(device, fenceCopy, nullptr); });
+
+        if (useRT) {
+            const VkBufferUsageFlags kBuildInput = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+            Buffer vb = allocBuffer(c, cleanup, triangles.size() * sizeof(float), kBuildInput, MemKind::Host, true, false);
+            std::memcpy(vb.mapped, triangles.data(), triangles.size() * sizeof(float));
+            VkAccelerationStructureGeometryKHR blasGeom{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+            blasGeom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+            blasGeom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            blasGeom.geometry.triangles = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};
+            blasGeom.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+            blasGeom.geometry.triangles.vertexData.deviceAddress = vb.address;
+            blasGeom.geometry.triangles.vertexStride = 3 * sizeof(float);
+            blasGeom.geometry.triangles.maxVertex = count * 3 - 1;
+            blasGeom.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+            VkAccelerationStructureBuildGeometryInfoKHR blasBuild{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+            blasBuild.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+            blasBuild.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+            blasBuild.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+            blasBuild.geometryCount = 1;
+            blasBuild.pGeometries = &blasGeom;
+            VkAccelerationStructureBuildRangeInfoKHR blasRange{}, tlasRange{};
+            blasRange.primitiveCount = count;
+            tlasRange.primitiveCount = 1;
+            VkAccelerationStructureKHR blas = VK_NULL_HANDLE;
+            auto makeAS = [&](VkAccelerationStructureBuildGeometryInfoKHR& build, VkAccelerationStructureTypeKHR type, uint32_t primitives, VkAccelerationStructureKHR& handle) {
+                VkAccelerationStructureBuildSizesInfoKHR sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+                f.vkGetAccelerationStructureBuildSizesKHR(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build, &primitives, &sizes);
+                Buffer storage = allocBuffer(c, cleanup, sizes.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, MemKind::Device, true, false);
+                VkAccelerationStructureCreateInfoKHR ci{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+                ci.buffer = storage.buffer;
+                ci.size = sizes.accelerationStructureSize;
+                ci.type = type;
+                check(f.vkCreateAccelerationStructureKHR(device, &ci, nullptr, &handle), "vkCreateAccelerationStructureKHR");
+                VkAccelerationStructureKHR h = handle;
+                cleanup.add([&f, device, h] { f.vkDestroyAccelerationStructureKHR(device, h, nullptr); });
+                Buffer scratch = allocBuffer(c, cleanup, sizes.buildScratchSize + c.scratchAlign, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, MemKind::Device, true, false);
+                build.dstAccelerationStructure = handle;
+                build.scratchData.deviceAddress = alignUp(scratch.address, c.scratchAlign);
+            };
+            makeAS(blasBuild, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, count, blas);
+            VkAccelerationStructureDeviceAddressInfoKHR bai{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
+            bai.accelerationStructure = blas;
+            VkAccelerationStructureInstanceKHR inst{};
+            inst.transform.matrix[0][0] = inst.transform.matrix[1][1] = inst.transform.matrix[2][2] = 1.f;
+            inst.mask = 0xFF;
+            inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;  // double sided
+            inst.accelerationStructureReference = f.vkGetAccelerationStructureDeviceAddressKHR(device, &bai);
+            Buffer ib = allocBuffer(c, cleanup, sizeof(inst), kBuildInput, MemKind::Host, true, false);
+            std::memcpy(ib.mapped, &inst, sizeof(inst));
+            VkAccelerationStructureGeometryKHR tlasGeom{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+            tlasGeom.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+            tlasGeom.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            tlasGeom.geometry.instances = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
+            tlasGeom.geometry.instances.arrayOfPointers = VK_FALSE;
+            tlasGeom.geometry.instances.data.deviceAddress = ib.address;
+            VkAccelerationStructureBuildGeometryInfoKHR tlasBuild{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+            tlasBuild.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+            tlasBuild.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+            tlasBuild.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+            tlasBuild.geometryCount = 1;
+            tlasBuild.pGeometries = &tlasGeom;
+            makeAS(tlasBuild, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR, 1, tlas);
+            VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            check(f.vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
+            const VkAccelerationStructureBuildRangeInfoKHR* ranges[1] = {&blasRange};
+            f.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &blasBuild, ranges);
+            VkMemoryBarrier b1{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            b1.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+            b1.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+            f.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &b1, 0, nullptr, 0, nullptr);
+            ranges[0] = &tlasRange;
+            f.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &tlasBuild, ranges);
+            VkMemoryBarrier b2{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            b2.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+            b2.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+            f.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &b2, 0, nullptr, 0, nullptr);
+            check(f.vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
+            submitAndWait();
+        }
+
+        const DirectPipe& dp = c.visPipe();
+        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kVisBindings}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1}};
+        VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        dpi.maxSets = 1;
+        dpi.poolSizeCount = useRT ? 2 : 1;
+        dpi.pPoolSizes = ps;
+        check(f.vkCreateDescriptorPool(device, &dpi, nullptr, &pool), "vkCreateDescriptorPool");
+        const VkDescriptorPool poolCopy = pool;
+        cleanup.add([&f, device, poolCopy] { f.vkDestroyDescriptorPool(device, poolCopy, nullptr); });
+        VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        dai.descriptorPool = pool;
+        dai.descriptorSetCount = 1;
+        dai.pSetLayouts = &dp.dsl;
+        check(f.vkAllocateDescriptorSets(device, &dai, &dset), "vkAllocateDescriptorSets");
+    }
+
+    void submitAndWait() {
+        Fns& f = ctx->f;
+        const VkDevice device = ctx->device;
+        check(f.vkResetFences(device, 1, &fence), "vkResetFences");
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        check(f.vkQueueSubmit(ctx->queue, 1, &si, fence), "vkQueueSubmit");
+        check(f.vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences");
+    }
+
+    // points, clusters, matrix, rays in, rays out (the others are the dummy); written before every use
+    void bind(const Buffer& pts, const Buffer& clu, const Buffer& mat, const Buffer& rin, const Buffer& rout) {
+        Fns& f = ctx->f;
+        const Buffer* b[kVisBindings] = {&pts, &clu, &mat, rq ? &bDummy : &bNodes, rq ? &bDummy : &bTris, &rin, &rout};
+        VkDescriptorBufferInfo infos[kVisBindings];
+        VkWriteDescriptorSet w[kVisBindings];
+        uint32_t nw = 0;
+        VkWriteDescriptorSetAccelerationStructureKHR asw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+        for (uint32_t i = 0; i < kVisBindings; ++i) {
+            if (i == 3 && rq) {
+                asw.accelerationStructureCount = 1;
+                asw.pAccelerationStructures = &tlas;
+                w[nw] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, &asw, dset, 3, 0, 1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, nullptr, nullptr, nullptr};
+                ++nw;
+                continue;
+            }
+            infos[i] = {b[i]->buffer, 0, VK_WHOLE_SIZE};
+            w[nw] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dset, i, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &infos[i], nullptr};
+            ++nw;
+        }
+        f.vkUpdateDescriptorSets(ctx->device, nw, w, 0, nullptr);
+    }
+
+    void dispatch(const VisPush& pc, uint32_t gx, uint32_t gy) {
+        Fns& f = ctx->f;
+        const DirectPipe& dp = ctx->visPipe();
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(f.vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer");
+        check(f.vkBeginCommandBuffer(cmd, &bi), "vkBeginCommandBuffer");
+        f.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dp.pipe);
+        f.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dp.pl, 0, 1, &dset, 0, nullptr);
+        f.vkCmdPushConstants(cmd, dp.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+        f.vkCmdDispatch(cmd, gx, gy, 1);
+        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        f.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+        check(f.vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
+        submitAndWait();
+    }
+
+    bool pairs(const std::vector<float>& points, const std::vector<uint32_t>& first, const std::vector<uint32_t>& count, uint32_t segments, size_t words64,
+               uint64_t* matrix) override {
+        try {
+            Context& c = *ctx;
+            const uint32_t n = static_cast<uint32_t>(first.size());
+            if (n < 3) return true;
+            Cleanup local;  // the buffers of this call go back to the pool at its end
+            const VkBufferUsageFlags kStorage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            auto mk = [&](VkDeviceSize size, MemKind kind) { return allocBuffer(c, local, std::max<VkDeviceSize>(size, 16), kStorage, kind, false, true); };
+            Buffer bPts = mk(points.size() * 4, MemKind::DeviceHost), bClu = mk(size_t(n) * 8, MemKind::DeviceHost), bMat = mk(size_t(n) * words64 * 8, MemKind::DeviceHost);
+            std::memcpy(bPts.mapped, points.data(), points.size() * 4);
+            uint32_t* cl = static_cast<uint32_t*>(bClu.mapped);
+            for (uint32_t i = 0; i < n; ++i) { cl[i * 2] = first[i]; cl[i * 2 + 1] = count[i]; }
+            std::memcpy(bMat.mapped, matrix, size_t(n) * words64 * 8);
+            bind(bPts, bClu, bMat, bDummy, bDummy);
+            VisPush pc{};
+            pc.mode = 0;
+            pc.n = n;
+            pc.segments = segments;
+            pc.w32 = static_cast<uint32_t>(words64 * 2);
+            // bands of rows, each short enough for the driver's watchdog (about 0.2 s of work), resized by the time the last one took
+            double rows = std::max(8.0, 2.0e6 / n);
+            for (uint32_t row = 1; row < n;) {
+                const uint32_t take = static_cast<uint32_t>(std::min<double>(std::max(8.0, rows), double(n - row)));
+                pc.rowBase = row;
+                pc.rowEnd = row + take;
+                const auto t0 = std::chrono::steady_clock::now();
+                dispatch(pc, (n + 7) / 8, (take + 7) / 8);
+                const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                rows = std::clamp(rows * std::clamp(0.2 / std::max(sec, 1e-3), 0.5, 2.0), 8.0, 1.0e6);
+                row += take;
+            }
+            std::memcpy(matrix, bMat.mapped, size_t(n) * words64 * 8);
+            return true;
+        } catch (const std::exception& e) {
+            err = e.what();
+            return false;
+        }
+    }
+
+    bool closest(const std::vector<float>& rays, size_t count, std::vector<float>& t) override {
+        try {
+            Context& c = *ctx;
+            t.assign(count, -1.f);
+            Cleanup local;
+            const VkBufferUsageFlags kStorage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            auto mk = [&](VkDeviceSize size, MemKind kind) { return allocBuffer(c, local, std::max<VkDeviceSize>(size, 16), kStorage, kind, false, true); };
+            constexpr size_t kChunk = size_t(1) << 22;  // rays per submission
+            const size_t chunk = std::min(count, kChunk);
+            if (!chunk) return true;
+            Buffer bIn = mk(chunk * 32, MemKind::DeviceHost), bOut = mk(chunk * 4, MemKind::HostCached);
+            bind(bDummy, bDummy, bDummy, bIn, bOut);
+            for (size_t base = 0; base < count; base += kChunk) {
+                const size_t k = std::min(kChunk, count - base);
+                std::memcpy(bIn.mapped, rays.data() + base * 8, k * 32);
+                VisPush pc{};
+                pc.mode = 1;
+                pc.rayCount = static_cast<uint32_t>(k);
+                pc.stride = 4096;
+                dispatch(pc, 512, static_cast<uint32_t>((k + 4095) / 4096 + 7) / 8);
+                std::memcpy(t.data() + base, bOut.mapped, k * 4);
+            }
+            return true;
+        } catch (const std::exception& e) {
+            err = e.what();
+            return false;
+        }
+    }
+};
+
 class VkLive final : public LiveSession {
 public:
     std::shared_ptr<Context> ctx;  // before `cleanup`: members die in reverse order, so the device outlives everything below
@@ -2064,6 +2394,24 @@ std::unique_ptr<LiveSession> createLiveSession(const TexelSamples& resident, con
         return nullptr;
     }
     return session;
+}
+
+std::unique_ptr<VisGpu> createVisGpu(const std::vector<float>& triangles, const std::vector<float>& nodes, const std::vector<float>& bvhTriangles, bool allowRayQuery,
+                                     std::string& error) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    for (const bool useRT : {true, false}) {
+        if (useRT && !allowRayQuery) continue;
+        auto session = std::make_unique<VkVis>();
+        try {
+            session->init(triangles, nodes, bvhTriangles, useRT);
+            return session;
+        } catch (const std::exception& e) {
+            error += (error.empty() ? "" : "; ") + std::string(useRT ? "ray query: " : "compute: ") + e.what();
+            session.reset();
+            g_contexts.erase(useRT ? 1 : 0);
+        }
+    }
+    return nullptr;
 }
 
 void releaseContexts() {

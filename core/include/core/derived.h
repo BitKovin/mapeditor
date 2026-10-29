@@ -116,9 +116,9 @@ private:
 };
 
 /// Volumes of the brushes of classes accepted by `blocks` (a classname predicate, normally LightingClasses::castsShadows). `cache`: see SolidSet::Cache;
-/// brushes it has not been asked for in this build are dropped from it.
+/// brushes it has not been asked for in this build are dropped from it. `brushOk` (optional): which additive brushes count (subtractors always do).
 SolidSet collectSolids(const Document& doc, const std::vector<ResolvedEntity>& prefabs, const std::function<bool(const std::string&)>& blocks,
-                       SolidSet::Cache* cache = nullptr);
+                       SolidSet::Cache* cache = nullptr, const std::function<bool(const Brush&)>& brushOk = {});
 
 /// One decal fragment, typed (the same clipping as deriveGeometry's `decals`): lies on an authored face (its parent, owned by `entityId` of
 /// `instance`; the face of `brushId` of `brushInstance`), texture coordinates from the projector.

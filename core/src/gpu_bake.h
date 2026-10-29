@@ -128,4 +128,26 @@ std::unique_ptr<LiveSession> createLiveSession(const TexelSamples& resident, con
 // validation combination). A failed call drops its context. This destroys them all (tests that count validation messages, shutdown).
 void releaseContexts();
 
+// ---- baked visibility (bsp_vis.cpp) -----------------------------------------------------------------------------------------
+// The occluders of the visibility passes on the GPU: a hardware acceleration structure (ray query) or, on a device without it, the bounding volume hierarchy
+// of TriangleBvh in storage buffers (shaders/vis.comp, the same source compiled twice).
+class VisGpu {
+public:
+    virtual ~VisGpu() = default;
+    // The all-pairs pass: for every pair of clusters (a < b, both >= 1) whose bit is not set yet, `segments` segments between sample points of the two
+    // (points: 4 floats each, `first` / `count` per cluster; the point of segment k is hashBits(a, b, k) % count, see bsp_vis.cpp); the first clear one sets
+    // the bit (row a, bit b) of `matrix` (clusters x words64 words). Several submissions, each short enough for the driver's watchdog.
+    virtual bool pairs(const std::vector<float>& points, const std::vector<uint32_t>& first, const std::vector<uint32_t>& count, uint32_t segments,
+                       size_t words64, uint64_t* matrix) = 0;
+    // Closest hits: per ray 8 floats (origin, tmax, direction, 0); `t` gets the distance in units of |direction| or -1 for none.
+    virtual bool closest(const std::vector<float>& rays, size_t count, std::vector<float>& t) = 0;
+    virtual bool rayQuery() const = 0;
+    virtual const std::string& error() const = 0;
+    virtual const std::string& device() const = 0;
+};
+// `triangles`: OccluderMesh::tris. `nodes` / `bvhTriangles` (TriangleBvh::exportGpu) are only used without ray query support. Null with `error` set when
+// there is no usable device.
+std::unique_ptr<VisGpu> createVisGpu(const std::vector<float>& triangles, const std::vector<float>& nodes, const std::vector<float>& bvhTriangles, bool allowRayQuery,
+                                     std::string& error);
+
 }  // namespace core::gpu

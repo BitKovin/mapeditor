@@ -5,3 +5,5 @@ lightmap_direct|lightmap_direct.comp|vulkan1.1|
 lightmap_direct_rq|lightmap_direct.comp|vulkan1.2|RAY_QUERY
 lightmap_gather|lightmap_gather.comp|vulkan1.2|
 lightmap_ao|lightmap_ao.comp|vulkan1.2|
+vis_rq|vis.comp|vulkan1.2|RAY_QUERY
+vis_bvh|vis.comp|vulkan1.2|

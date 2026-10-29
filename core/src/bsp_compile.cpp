@@ -1,5 +1,6 @@
 ﻿// The rBSP compiler (REQUIREMENTS В§25, DESIGN В§12).
 #include "core/bsp_compile.h"
+#include "core/bsp_vis.h"
 #include "core/albedo.h"
 #include "core/jpeg.h"
 #include "core/lightmap_fit.h"
@@ -1213,258 +1214,140 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     res.stats.brushes = brushes.size();
     res.stats.models = modelCount;
 
-    // ---- cells (the leafs of an axis aligned tree) and sampled visibility ---------------------------------------------------------------------
+    // ---- visibility: cells inside the playable zones, big walls cut them, the regions that are not solid are the clusters (bsp_vis.h) -----------
     stage("cells", 0.25);
-    // the cells cover the world's geometry; the sky around it is not cut into cells (its surfaces go into every cluster's leafs)
-    Bounds world;
+    const auto visT0 = std::chrono::steady_clock::now();
+    // the world's bounds in editor space (the zone of a level without a playable area)
+    Bounds worldQ;
     for (int sf = modelSurfRange[0].first; sf < modelSurfRange[0].first + modelSurfRange[0].second; ++sf)
         if (!outSky[static_cast<size_t>(sf)]) {
             const auto& su = surfaces[static_cast<size_t>(sf)];
-            for (int v = 0; v < su.numVerts; ++v) { const float* p = verts[static_cast<size_t>(su.firstVert + v)].xyz; world.add(Vec3{p[0], p[1], p[2]}); }
+            for (int v = 0; v < su.numVerts; ++v) { const float* p = verts[static_cast<size_t>(su.firstVert + v)].xyz; worldQ.add(Vec3{p[0], p[1], p[2]}); }
         }
-    for (int b = modelBrushRange[0].first; b < modelBrushRange[0].first + modelBrushRange[0].second; ++b) world.add(brushBounds[static_cast<size_t>(b)]);
-    if (!world.valid()) { world.add(Vec3{-32, -32, -32}); world.add(Vec3{32, 32, 32}); }
-    world.mn = world.mn - Vec3{1, 1, 1};
-    world.mx = world.mx + Vec3{1, 1, 1};
-    const Vec3 ext = world.mx - world.mn;
-    double cell = std::max(cfg.visCell, 0.25) * rbsp::kUnitsPerMeter;
-    auto dimsFor = [&](double c, std::array<int, 3>& d) {
-        d = {std::max(1, int(std::ceil(ext.x / c))), std::max(1, int(std::ceil(ext.y / c))), std::max(1, int(std::ceil(ext.z / c)))};
-        return static_cast<long long>(d[0]) * d[1] * d[2];
+    for (int b = modelBrushRange[0].first; b < modelBrushRange[0].first + modelBrushRange[0].second; ++b) worldQ.add(brushBounds[static_cast<size_t>(b)]);
+    if (!worldQ.valid()) { worldQ.add(Vec3{-32, -32, -32}); worldQ.add(Vec3{32, 32, 32}); }
+    auto editorBox = [&](const Vec3& qa, const Vec3& qb, Vec3& mn, Vec3& mx) {
+        const Vec3 a = fromQuake(qa), c = fromQuake(qb);
+        mn = {std::min(a.x, c.x), std::min(a.y, c.y), std::min(a.z, c.z)};
+        mx = {std::max(a.x, c.x), std::max(a.y, c.y), std::max(a.z, c.z)};
     };
-    std::array<int, 3> dims{};
-    const long long cap = static_cast<long long>(std::max(1, cfg.maxClusters)) * 32;
-    while (dimsFor(cell, dims) > cap) cell *= 1.25;
-    std::vector<char> solidCell;
-    auto cellBox = [&](int i, int j, int k, Vec3& a, Vec3& b) {
-        a = world.mn + Vec3{i * cell, j * cell, k * cell};
-        b = a + Vec3{cell, cell, cell};
-    };
-    auto classify = [&]() {
-        const size_t total = static_cast<size_t>(dims[0]) * dims[1] * dims[2];
-        solidCell.assign(total, 0);
-        if (!in.solids) return total;
-        parallelFor(total, 256, [&](size_t b0, size_t b1) {
-            for (size_t ci = b0; ci < b1; ++ci) {
-                const int i = static_cast<int>(ci % dims[0]), j = static_cast<int>((ci / dims[0]) % dims[1]), k = static_cast<int>(ci / (static_cast<size_t>(dims[0]) * dims[1]));
-                Vec3 a, b;
-                cellBox(i, j, k, a, b);
-                bool all = true;
-                for (int s = 0; s < 27 && all; ++s) {
-                    const Vec3 q = a + Vec3{(1 + 2 * (s % 3)) / 6.0 * cell, (1 + 2 * ((s / 3) % 3)) / 6.0 * cell, (1 + 2 * (s / 9)) / 6.0 * cell};
-                    all = in.solids->inside(fromQuake(q));
-                }
-                solidCell[ci] = all ? 1 : 0;
-            }
-        });
-        size_t open = 0;
-        for (char c : solidCell) open += c == 0;
-        return open;
-    };
-    while (classify() > static_cast<size_t>(std::max(1, cfg.maxClusters))) { cell *= 1.25; dimsFor(cell, dims); }
-    const size_t cellCount = static_cast<size_t>(dims[0]) * dims[1] * dims[2];
-    std::vector<int> clusterOf(cellCount, -1);
-    int clusters = 0;
-    for (size_t ci = 0; ci < cellCount; ++ci) if (!solidCell[ci]) clusterOf[ci] = clusters++;
-    res.stats.clusters = static_cast<size_t>(clusters);
-    res.stats.leafs = cellCount;
-    res.stats.visCell = cell / rbsp::kUnitsPerMeter;
-    auto cellIndex = [&](int i, int j, int k) { return (static_cast<size_t>(k) * dims[1] + j) * dims[0] + i; };
-
-    // kd tree over the cells
-    std::vector<rbsp::Node> nodes;
-    std::vector<rbsp::Leaf> leafs(cellCount);
-    std::function<int32_t(std::array<int, 3>, std::array<int, 3>)> build = [&](std::array<int, 3> lo, std::array<int, 3> hi) -> int32_t {
-        int axis = 0;
-        for (int a = 1; a < 3; ++a) if (hi[a] - lo[a] > hi[axis] - lo[axis]) axis = a;
-        if (hi[axis] - lo[axis] <= 1) return -static_cast<int32_t>(cellIndex(lo[0], lo[1], lo[2])) - 1;
-        const int mid = (lo[axis] + hi[axis]) / 2;
-        const int32_t me = static_cast<int32_t>(nodes.size());
-        nodes.push_back({});
-        Vec3 n{0, 0, 0};
-        (axis == 0 ? n.x : axis == 1 ? n.y : n.z) = 1;
-        const double d = (axis == 0 ? world.mn.x : axis == 1 ? world.mn.y : world.mn.z) + mid * cell;
-        const int plane = planes.add(n, d);
-        std::array<int, 3> lo2 = lo, hi2 = hi;
-        lo2[axis] = mid;
-        hi2[axis] = mid;
-        const int32_t front = build(lo2, hi), back = build(lo, hi2);
-        rbsp::Node& nd = nodes[static_cast<size_t>(me)];
-        nd.plane = plane;
-        nd.children[0] = front;
-        nd.children[1] = back;
-        for (int a = 0; a < 3; ++a) {
-            const double base = a == 0 ? world.mn.x : a == 1 ? world.mn.y : world.mn.z;
-            nd.mins[a] = static_cast<int32_t>(std::floor(base + lo[a] * cell));
-            nd.maxs[a] = static_cast<int32_t>(std::ceil(base + hi[a] * cell));
-        }
-        return me;
-    };
-    const int32_t root = build({0, 0, 0}, dims);
-    if (root < 0) {  // a single cell: Quake 3 needs a node, so split it in the middle (both sides are that cell's leaf duplicated)
-        nodes.push_back({});
-        nodes[0].plane = planes.add({1, 0, 0}, world.mn.x + cell * 0.5);
-        nodes[0].children[0] = root;
-        nodes[0].children[1] = root;
-        for (int a = 0; a < 3; ++a) {
-            nodes[0].mins[a] = static_cast<int32_t>(std::floor(a == 0 ? world.mn.x : a == 1 ? world.mn.y : world.mn.z));
-            nodes[0].maxs[a] = static_cast<int32_t>(std::ceil(a == 0 ? world.mx.x : a == 1 ? world.mx.y : world.mx.z));
-        }
+    VisInput vin;
+    std::vector<LightSurface> occ;
+    for (const LightSurface& s : in.surfaces) {
+        const auto mit = modelOf.find(entityKey(s.instance, s.entityId));
+        if (mit == modelOf.end() || mit->second != 0) continue;                // only the static world occludes
+        if (in.opaque && !in.opaque(s.texture)) continue;                      // glass, grates: see-through
+        if (!cfg.contents.blocksSight(s.texture)) continue;                    // sky, clip, triggers
+        occ.push_back(s);
+        occ.back().relief.reset();                                             // the flat faces: the view is blocked by the brushes, not by their relief
     }
-
-    // leaf contents: world surfaces and world brushes whose bounds overlap the cell
-    std::vector<std::vector<int>> leafSurf(cellCount), leafBrush(cellCount);
-    auto cellRange = [&](const Bounds& b, std::array<int, 3>& lo, std::array<int, 3>& hi) {
-        const double mn[3] = {b.mn.x, b.mn.y, b.mn.z}, mx[3] = {b.mx.x, b.mx.y, b.mx.z}, base[3] = {world.mn.x, world.mn.y, world.mn.z};
-        for (int a = 0; a < 3; ++a) {
-            lo[a] = std::clamp(static_cast<int>(std::floor((mn[a] - 0.5 - base[a]) / cell)), 0, dims[a] - 1);
-            hi[a] = std::clamp(static_cast<int>(std::floor((mx[a] + 0.5 - base[a]) / cell)), 0, dims[a] - 1);
-        }
-    };
-    for (int s = modelSurfRange[0].first; s < modelSurfRange[0].first + modelSurfRange[0].second; ++s) {
-        if (outSky[static_cast<size_t>(s)]) {  // sky: seen from every cluster
-            for (size_t ci = 0; ci < cellCount; ++ci) if (clusterOf[ci] >= 0) leafSurf[ci].push_back(s);
-            continue;
-        }
-        Bounds b;
-        const auto& sf = surfaces[static_cast<size_t>(s)];
-        for (int v = 0; v < sf.numVerts; ++v) { const float* p = verts[static_cast<size_t>(sf.firstVert + v)].xyz; b.add(Vec3{p[0], p[1], p[2]}); }
-        std::array<int, 3> lo{}, hi{};
-        cellRange(b, lo, hi);
-        for (int k = lo[2]; k <= hi[2]; ++k) for (int j = lo[1]; j <= hi[1]; ++j) for (int i = lo[0]; i <= hi[0]; ++i) leafSurf[cellIndex(i, j, k)].push_back(s);
-    }
-    for (int b = modelBrushRange[0].first; b < modelBrushRange[0].first + modelBrushRange[0].second; ++b) {
-        std::array<int, 3> lo{}, hi{};
-        cellRange(brushBounds[static_cast<size_t>(b)], lo, hi);
-        for (int k = lo[2]; k <= hi[2]; ++k) for (int j = lo[1]; j <= hi[1]; ++j) for (int i = lo[0]; i <= hi[0]; ++i) leafBrush[cellIndex(i, j, k)].push_back(b);
-    }
-    std::vector<int32_t> leafSurfaces, leafBrushes;
-    for (int k = 0; k < dims[2]; ++k)
-        for (int j = 0; j < dims[1]; ++j)
-            for (int i = 0; i < dims[0]; ++i) {
-                const size_t ci = cellIndex(i, j, k);
-                rbsp::Leaf& l = leafs[ci];
-                l.cluster = clusterOf[ci];
-                l.area = 0;
-                Vec3 a, b;
-                cellBox(i, j, k, a, b);
-                l.mins[0] = int32_t(std::floor(a.x)); l.mins[1] = int32_t(std::floor(a.y)); l.mins[2] = int32_t(std::floor(a.z));
-                l.maxs[0] = int32_t(std::ceil(b.x)); l.maxs[1] = int32_t(std::ceil(b.y)); l.maxs[2] = int32_t(std::ceil(b.z));
-                l.firstLeafSurface = static_cast<int32_t>(leafSurfaces.size());
-                l.numLeafSurfaces = static_cast<int32_t>(leafSurf[ci].size());
-                leafSurfaces.insert(leafSurfaces.end(), leafSurf[ci].begin(), leafSurf[ci].end());
-                l.firstLeafBrush = static_cast<int32_t>(leafBrushes.size());
-                l.numLeafBrushes = static_cast<int32_t>(leafBrush[ci].size());
-                leafBrushes.insert(leafBrushes.end(), leafBrush[ci].begin(), leafBrush[ci].end());
-            }
-
-    // visibility: rays from sample points of every cluster cell; every cell a ray passes before it hits an occluder is visible
-    stage("visibility", 0.35);
-    const auto visT0 = std::chrono::steady_clock::now();
-    const size_t words = (static_cast<size_t>(clusters) + 63) / 64;
-    std::vector<uint64_t> vis(static_cast<size_t>(clusters) * words, 0);
-    auto setBit = [&](std::vector<uint64_t>& v, int r, int c) { v[static_cast<size_t>(r) * words + static_cast<size_t>(c) / 64] |= uint64_t(1) << (c % 64); };
-    auto getBit = [&](const std::vector<uint64_t>& v, int r, int c) { return (v[static_cast<size_t>(r) * words + static_cast<size_t>(c) / 64] >> (c % 64)) & 1; };
-    if (cfg.visibility && clusters > 0) {
-        std::vector<LightSurface> occ;
-        for (const LightSurface& s : in.surfaces) {
-            const auto mit = modelOf.find(entityKey(s.instance, s.entityId));
-            if (mit == modelOf.end() || mit->second != 0) continue;                // only the static world occludes
-            if (in.opaque && !in.opaque(s.texture)) continue;                      // glass, grates: see-through
-            if (cfg.contents.isSky(s.texture)) continue;                            // sky: open
-            occ.push_back(s);
-            occ.back().classname = "worldspawn";
-        }
-        LightingClasses occClasses;
-        occClasses.castShadows = {"worldspawn"};
-        const OccluderMesh mesh = buildOccluders(occ, occClasses);
-        const TriangleBvh bvh(mesh);
-        const double diag = (world.mx - world.mn).length() / rbsp::kUnitsPerMeter;
-        // ray directions: a Fibonacci sphere, rotated per sample point
-        const int R = std::max(8, cfg.visRays), S = std::max(1, cfg.visSamples);
-        std::vector<Vec3> dirs(static_cast<size_t>(R));
-        for (int i = 0; i < R; ++i) {
-            const double y = 1 - (i + 0.5) * 2.0 / R, r = std::sqrt(std::max(0.0, 1 - y * y)), phi = i * kPi * (3 - std::sqrt(5.0));
-            dirs[static_cast<size_t>(i)] = {r * std::cos(phi), y, r * std::sin(phi)};
-        }
-        std::vector<size_t> cellOfCluster(static_cast<size_t>(clusters));
-        for (size_t ci = 0; ci < cellCount; ++ci) if (clusterOf[ci] >= 0) cellOfCluster[static_cast<size_t>(clusterOf[ci])] = ci;
-        std::atomic<size_t> doneCount{0};
-        parallelFor(static_cast<size_t>(clusters), 1, [&](size_t c0, size_t c1) {
-            for (size_t cl = c0; cl < c1; ++cl) {
-                const size_t ci = cellOfCluster[cl];
-                const int i = static_cast<int>(ci % dims[0]), j = static_cast<int>((ci / dims[0]) % dims[1]), k = static_cast<int>(ci / (static_cast<size_t>(dims[0]) * dims[1]));
-                Vec3 a, b;
-                cellBox(i, j, k, a, b);
-                setBit(vis, static_cast<int>(cl), static_cast<int>(cl));
-                int found = 0;
-                for (int attempt = 0; attempt < S * 4 && found < S; ++attempt) {
-                    const Vec3 q = a + Vec3{hash01(uint32_t(ci), uint32_t(attempt), 0) * cell, hash01(uint32_t(ci), uint32_t(attempt), 1) * cell,
-                                            hash01(uint32_t(ci), uint32_t(attempt), 2) * cell};
-                    const Vec3 o = fromQuake(q);
-                    if (in.solids && in.solids->inside(o)) continue;
-                    ++found;
-                    // random rotation of the direction set (axis-angle)
-                    const double u1 = hash01(uint32_t(ci), uint32_t(attempt), 3), u2 = hash01(uint32_t(ci), uint32_t(attempt), 4), ang = hash01(uint32_t(ci), uint32_t(attempt), 5) * 2 * kPi;
-                    const double zz = 1 - 2 * u1, rr = std::sqrt(std::max(0.0, 1 - zz * zz));
-                    const Vec3 ax{rr * std::cos(2 * kPi * u2), rr * std::sin(2 * kPi * u2), zz};
-                    const double cs = std::cos(ang), sn = std::sin(ang);
-                    for (const Vec3& d0 : dirs) {
-                        const Vec3 d = d0 * cs + ax.cross(d0) * sn + ax * (ax.dot(d0) * (1 - cs));
-                        const TriangleBvh::Hit h = bvh.closestHit(o, d, diag);
-                        const double tEnd = h.t < 0 ? diag : h.t;
-                        // 3D DDA through the cells (Quake space; the ray parameter t is the same in both spaces)
-                        const Vec3 qo = toQuake(o), qd = toQuakeDir(d) * rbsp::kUnitsPerMeter;
-                        int cx = std::clamp(static_cast<int>(std::floor((qo.x - world.mn.x) / cell)), 0, dims[0] - 1);
-                        int cy = std::clamp(static_cast<int>(std::floor((qo.y - world.mn.y) / cell)), 0, dims[1] - 1);
-                        int cz = std::clamp(static_cast<int>(std::floor((qo.z - world.mn.z) / cell)), 0, dims[2] - 1);
-                        const double od[3] = {qd.x, qd.y, qd.z}, oo[3] = {qo.x, qo.y, qo.z}, base[3] = {world.mn.x, world.mn.y, world.mn.z};
-                        int cc[3] = {cx, cy, cz}, step[3];
-                        double tMax[3], tDelta[3];
-                        for (int ax3 = 0; ax3 < 3; ++ax3) {
-                            if (std::fabs(od[ax3]) < 1e-12) { step[ax3] = 0; tMax[ax3] = 1e300; tDelta[ax3] = 1e300; continue; }
-                            step[ax3] = od[ax3] > 0 ? 1 : -1;
-                            const double edge = base[ax3] + (cc[ax3] + (od[ax3] > 0 ? 1 : 0)) * cell;
-                            tMax[ax3] = (edge - oo[ax3]) / od[ax3];
-                            tDelta[ax3] = cell / std::fabs(od[ax3]);
-                        }
-                        for (;;) {
-                            const int target = clusterOf[cellIndex(cc[0], cc[1], cc[2])];
-                            if (target >= 0) setBit(vis, static_cast<int>(cl), target);
-                            const int m = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
-                            if (tMax[m] > tEnd) break;
-                            cc[m] += step[m];
-                            if (cc[m] < 0 || cc[m] >= dims[m]) break;
-                            tMax[m] += tDelta[m];
-                        }
-                    }
-                }
-                const size_t done = ++doneCount;
-                if (progress && cl == c0) progress("visibility", 0.35 + 0.5 * double(done) / clusters);
-            }
-        });
-        // symmetric (if A sees B, B sees A), then dilated by one cell (a camera at a cell border sees what the neighbour sees)
-        for (int r = 0; r < clusters; ++r)
-            for (int c = 0; c < clusters; ++c)
-                if (getBit(vis, r, c)) setBit(vis, c, r);
-        std::vector<uint64_t> dil = vis;
-        for (size_t ci = 0; ci < cellCount; ++ci) {
-            const int r = clusterOf[ci];
-            if (r < 0) continue;
-            const int i = static_cast<int>(ci % dims[0]), j = static_cast<int>((ci / dims[0]) % dims[1]), k = static_cast<int>(ci / (static_cast<size_t>(dims[0]) * dims[1]));
-            for (int dz = -1; dz <= 1; ++dz)
-                for (int dy = -1; dy <= 1; ++dy)
-                    for (int dx = -1; dx <= 1; ++dx) {
-                        const int x = i + dx, y = j + dy, z = k + dz;
-                        if (x < 0 || y < 0 || z < 0 || x >= dims[0] || y >= dims[1] || z >= dims[2]) continue;
-                        const int nb = clusterOf[cellIndex(x, y, z)];
-                        if (nb < 0) continue;
-                        for (size_t w = 0; w < words; ++w) dil[static_cast<size_t>(r) * words + w] |= vis[static_cast<size_t>(nb) * words + w];
-                    }
-        }
-        vis = std::move(dil);
+    vin.occluders = &occ;
+    vin.solids = in.visSolids ? in.visSolids : in.solids;
+    if (in.playable && !in.playable->empty()) {
+        for (const auto& pc : in.playable->pieces()) vin.zones.push_back({pc.mn, pc.mx, pc.planes});
     } else {
-        std::fill(vis.begin(), vis.end(), ~uint64_t(0));
+        VisZone z;
+        editorBox(worldQ.mn, worldQ.mx, z.mn, z.mx);
+        z.mn = z.mn - Vec3{1, 1, 1};
+        z.mx = z.mx + Vec3{1, 1, 1};
+        vin.zones.push_back(z);
+    }
+    vin.settings.cell = cfg.visCell;
+    vin.settings.maxBytes = cfg.maxVisBytes;
+    vin.settings.splitMinWidth = cfg.visSplitMinWidth;
+    vin.settings.maxSplitsPerCell = cfg.visMaxSplitsPerCell;
+    vin.settings.samplePool = cfg.visSamplePool;
+    vin.settings.pairSegments = cfg.visPairSegments;
+    vin.settings.apertureMax = cfg.visApertureMax;
+    vin.settings.device = cfg.visDevice == "cpu" ? VisDevice::Cpu : cfg.visDevice == "compute" ? VisDevice::Compute : cfg.visDevice == "rayquery" ? VisDevice::RayQuery : VisDevice::Auto;
+    vin.trace = cfg.visibility;
+    VisResult vr = buildVisibility(vin, [&](const std::string& st, double f) { stage(st.c_str(), 0.3 + 0.55 * f); });
+    for (const std::string& w : vr.warnings) res.warnings.push_back(w);
+    const int clusters = vr.clusters;
+    res.stats.clusters = static_cast<size_t>(clusters);
+    res.stats.leafs = vr.leafs.size();
+    res.stats.visCell = vr.stats.cell;
+    res.stats.visSplits = vr.stats.splitPlanes;
+    res.stats.visApertures = vr.stats.apertures;
+    res.stats.visPairs = vr.stats.pairs;
+    res.stats.visBytes = vr.stats.bytes;
+    res.stats.visDevice = vr.stats.device;
+    res.stats.visChecked = vr.stats.checked;
+    res.stats.visMisses = vr.stats.misses;
+
+    auto quakeBounds = [&](const Vec3& mn, const Vec3& mx, int32_t* outMin, int32_t* outMax) {
+        Bounds q;
+        for (int i = 0; i < 8; ++i) q.add(toQuake(Vec3{i & 1 ? mx.x : mn.x, i & 2 ? mx.y : mn.y, i & 4 ? mx.z : mn.z}));
+        outMin[0] = int32_t(std::floor(q.mn.x)); outMin[1] = int32_t(std::floor(q.mn.y)); outMin[2] = int32_t(std::floor(q.mn.z));
+        outMax[0] = int32_t(std::ceil(q.mx.x)); outMax[1] = int32_t(std::ceil(q.mx.y)); outMax[2] = int32_t(std::ceil(q.mx.z));
+    };
+    std::vector<rbsp::Node> nodes(vr.nodes.size());
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const VisNode& vn = vr.nodes[i];
+        nodes[i].plane = planes.add(toQuakeDir(vn.normal), vn.dist * rbsp::kUnitsPerMeter);
+        nodes[i].children[0] = vn.children[0];
+        nodes[i].children[1] = vn.children[1];
+        quakeBounds(vn.mn, vn.mx, nodes[i].mins, nodes[i].maxs);
+    }
+
+    // leaf contents: the world's surfaces and brushes go into the leaves they touch. A surface that reaches beyond the cells (the background, the sky)
+    // is seen from everywhere: it goes into the outside leaf, which every cluster sees.
+    std::vector<std::vector<int>> leafSurf(vr.leafs.size()), leafBrush(vr.leafs.size());
+    {
+        std::vector<int> found;
+        for (int s = modelSurfRange[0].first; s < modelSurfRange[0].first + modelSurfRange[0].second; ++s) {
+            if (outSky[static_cast<size_t>(s)]) { leafSurf[0].push_back(s); continue; }
+            const auto& sf = surfaces[static_cast<size_t>(s)];
+            auto vertexAt = [&](int32_t index) {
+                const float* p = verts[static_cast<size_t>(sf.firstVert + index)].xyz;
+                return fromQuake(Vec3{p[0], p[1], p[2]});
+            };
+            std::set<int> touched;
+            bool outside = false;
+            const int tris = sf.numIndexes / 3;
+            if (tris <= 24) {
+                for (int t = 0; t < tris; ++t) {
+                    const std::vector<Vec3> tri = {vertexAt(indexes[static_cast<size_t>(sf.firstIndex + 3 * t)]), vertexAt(indexes[static_cast<size_t>(sf.firstIndex + 3 * t + 1)]),
+                                                   vertexAt(indexes[static_cast<size_t>(sf.firstIndex + 3 * t + 2)])};
+                    bool o = false;
+                    vr.leavesFor(tri, found, o);
+                    outside = outside || o;
+                    touched.insert(found.begin(), found.end());
+                }
+            } else {  // a triangle soup (relief, patches): the leaves its bounds touch
+                Bounds eb;
+                for (int v = 0; v < sf.numVerts; ++v) {
+                    const Vec3 p = vertexAt(v);
+                    eb.add(p);
+                    if (vr.leafs[static_cast<size_t>(vr.leafAt(p))].cluster == 0) outside = true;
+                }
+                vr.leavesForBox(eb.mn, eb.mx, found);
+                touched.insert(found.begin(), found.end());
+            }
+            if (outside || touched.empty()) leafSurf[0].push_back(s);
+            else for (int li : touched) leafSurf[static_cast<size_t>(li)].push_back(s);
+        }
+        for (int bi = modelBrushRange[0].first; bi < modelBrushRange[0].first + modelBrushRange[0].second; ++bi) {
+            Vec3 mn, mx;
+            editorBox(brushBounds[static_cast<size_t>(bi)].mn, brushBounds[static_cast<size_t>(bi)].mx, mn, mx);
+            vr.leavesForBox(mn, mx, found);
+            if (found.empty()) leafBrush[0].push_back(bi);
+            for (int li : found) leafBrush[static_cast<size_t>(li)].push_back(bi);
+        }
+    }
+    std::vector<rbsp::Leaf> leafs(vr.leafs.size());
+    std::vector<int32_t> leafSurfaces, leafBrushes;
+    for (size_t li = 0; li < leafs.size(); ++li) {
+        rbsp::Leaf& l = leafs[li];
+        l.cluster = vr.leafs[li].cluster;
+        l.area = 0;
+        quakeBounds(vr.leafs[li].mn, vr.leafs[li].mx, l.mins, l.maxs);
+        l.firstLeafSurface = static_cast<int32_t>(leafSurfaces.size());
+        l.numLeafSurfaces = static_cast<int32_t>(leafSurf[li].size());
+        leafSurfaces.insert(leafSurfaces.end(), leafSurf[li].begin(), leafSurf[li].end());
+        l.firstLeafBrush = static_cast<int32_t>(leafBrushes.size());
+        l.numLeafBrushes = static_cast<int32_t>(leafBrush[li].size());
+        leafBrushes.insert(leafBrushes.end(), leafBrush[li].begin(), leafBrush[li].end());
     }
     res.stats.visSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - visT0).count();
     stage("light grid", 0.88);
@@ -1661,8 +1544,8 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
         std::memcpy(visLump.data(), &clusters, 4);
         std::memcpy(visLump.data() + 4, &bytesPer, 4);
         for (int r = 0; r < clusters; ++r)
-            for (int c = 0; c < clusters; ++c)
-                if (getBit(vis, r, c)) visLump[8 + static_cast<size_t>(r) * bytesPer + c / 8] |= static_cast<uint8_t>(1u << (c % 8));
+            for (int j = 0; j < bytesPer; ++j)
+                visLump[8 + static_cast<size_t>(r) * bytesPer + j] = static_cast<uint8_t>(vr.bits[static_cast<size_t>(r) * vr.words + static_cast<size_t>(j) / 8] >> (8 * (j % 8)));
     }
 
     // ---- file ---------------------------------------------------------------------------------------------------------------------------------
@@ -1807,6 +1690,12 @@ BspContentRules::Flags BspContentRules::forTexture(const std::string& texture) c
             break;
         }
     return f;
+}
+
+bool BspContentRules::blocksSight(const std::string& texture) const {
+    if (isSky(texture)) return false;
+    const auto solid = contentFlags.find("solid");
+    return (forTexture(texture).contents & (solid != contentFlags.end() ? solid->second : 1u)) != 0;
 }
 
 bool BspContentRules::forClass(const std::string& classname, uint32_t& contents) const {

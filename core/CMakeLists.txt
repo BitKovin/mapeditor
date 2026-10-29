@@ -126,7 +126,7 @@ add_library(core_lib STATIC
     src/entdef.cpp src/settings.cpp src/native_dialog.cpp src/csg.cpp src/decal.cpp src/derived.cpp src/playable.cpp src/playable_visibility.cpp src/lightmap_pack.cpp src/lightmap_fit.cpp src/jpeg.cpp
     src/lighting_classes.cpp src/lightmap_uv.cpp src/lights.cpp src/lightbake.cpp src/parallel.cpp src/gpu_bake.cpp src/raytrace.cpp src/live_bake.cpp src/lighting_service.cpp src/relief_geometry.cpp
     src/albedo.cpp src/lightvol.cpp src/light_styles.cpp src/light_style_analysis.cpp src/denoise.cpp
-    src/map_import.cpp src/exr.cpp src/bsp_convex.cpp src/bsp_compile.cpp src/bsp_export.cpp src/exporter.cpp src/smoothing.cpp
+    src/map_import.cpp src/exr.cpp src/bsp_convex.cpp src/bsp_vis.cpp src/bsp_compile.cpp src/bsp_export.cpp src/exporter.cpp src/smoothing.cpp
     src/texplan_props.cpp src/texplan_uvmesh.cpp src/texplan_layout.cpp src/texplan_relief.cpp src/mesh_optimize.cpp)
 target_include_directories(core_lib PUBLIC include)
 target_link_libraries(core_lib PUBLIC vendored meshoptimizer ${CMAKE_DL_LIBS})

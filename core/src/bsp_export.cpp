@@ -56,7 +56,8 @@ bool isStatic(const std::string& c, const LightingClasses& classes) {
 json BspExportResult::toJson() const {
     json s = {{"surfaces", stats.surfaces}, {"decals", stats.decals}, {"sky", stats.skySurfaces}, {"laidOut", stats.laidOutSurfaces}, {"droppedSurfaces", stats.droppedSurfaces}, {"degenerateTriangles", stats.degenerateTriangles}, {"reliefSkipped", stats.reliefSkipped}, {"reliefBuried", stats.reliefBuried}, {"weldedVertices", stats.weldedVertices}, {"meshSurfaces", stats.meshSurfaces}, {"meshWelded", stats.meshWelded}, {"meshRemovedVertices", stats.meshRemovedVertices}, {"meshRemovedTriangles", stats.meshRemovedTriangles}, {"meshSharedVertices", stats.meshSharedVertices}, {"drawVertsBefore", stats.drawVertsBefore}, {"drawVertsAfter", stats.drawVertsAfter}, {"lightmapJpegPages", stats.lightmapJpegPages}, {"lightmapJpegRejected", stats.lightmapJpegRejected}, {"scaledCharts", stats.scaledCharts}, {"clippedCharts", stats.clippedCharts}, {"vertexLitCharts", stats.vertexLitCharts}, {"vertexLitSurfaces", stats.vertexLitSurfaces}, {"lightmapPages", stats.lightmapPages}, {"brushes", stats.brushes}, {"models", stats.models},
               {"leafs", stats.leafs}, {"clusters", stats.clusters}, {"lightmapPages", stats.lightmapPages}, {"gridPoints", stats.gridPoints},
-              {"palette", stats.palette}, {"visCell", stats.visCell}, {"visSeconds", stats.visSeconds}};
+              {"palette", stats.palette}, {"visCell", stats.visCell}, {"visSeconds", stats.visSeconds}, {"visSplits", stats.visSplits}, {"visApertures", stats.visApertures},
+              {"visPairs", stats.visPairs}, {"visBytes", stats.visBytes}, {"visDevice", stats.visDevice}, {"visChecked", stats.visChecked}, {"visMisses", stats.visMisses}};
     return {{"type", "export_result"}, {"ok", ok}, {"cancelled", cancelled}, {"error", error}, {"warnings", warnings}, {"stats", s},
             {"format", format}, {"bsp", bspPath}, {"lightmaps", lightmapDir}, {"seconds", seconds}, {"bakeSeconds", bakeSeconds}, {"device", device}};
 }
@@ -159,6 +160,13 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
         in.settings = req.settings;
         in.settings.textureRoot = scene.profile().textureRoot;
         in.settings.contents = BspContentRules::fromJson(scene.profile().bsp, &r.warnings);
+        // the volumes that block the view: the static world's brushes whose every face blocks it (glass, water, clip and triggers do not)
+        const SolidSet visSolids = collectSolids(doc, prefabs, [](const std::string& c) { return c == "worldspawn" || c == "func_group" || c == "func_detail"; }, nullptr,
+                                                 [&](const Brush& b) {
+                                                     for (const auto& f : b.faces) if (!(in.opaque(f.texture) && in.settings.contents.blocksSight(f.texture))) return false;
+                                                     return true;
+                                                 });
+        in.visSolids = &visSolids;
         for (const auto& e : doc.entities)
             if (e.classname == "worldspawn") {
                 const LevelSettings lv = levelSettingsOf(e);  // the exposure the lightmap fit judges by (the level's, else lighting.json's)
@@ -195,6 +203,12 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                 if (!req.rbspLightmapEncoding) { in.settings.lightmapJpeg = false; in.settings.lightmapScale = false; }
                 if (const auto it = e.keyvalues.find("_vis_cell"); it != e.keyvalues.end()) {
                     try { const double c = std::stod(it->second); if (c > 0) in.settings.visCell = c; } catch (...) { r.warnings.push_back("_vis_cell is not a number"); }
+                }
+                if (const auto it = e.keyvalues.find("_vis_max_mb"); it != e.keyvalues.end()) {
+                    try { in.settings.maxVisBytes = static_cast<size_t>(std::clamp(std::stod(it->second), 1.0, 512.0) * 1048576.0); } catch (...) { r.warnings.push_back("_vis_max_mb is not a number"); }
+                }
+                if (const auto it = e.keyvalues.find("_vis_split_min"); it != e.keyvalues.end()) {
+                    try { in.settings.visSplitMinWidth = std::clamp(std::stod(it->second), 0.5, 64.0); } catch (...) { r.warnings.push_back("_vis_split_min is not a number"); }
                 }
             }
 

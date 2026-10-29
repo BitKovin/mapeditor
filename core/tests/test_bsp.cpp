@@ -1,5 +1,7 @@
 ﻿// rBSP export (REQUIREMENTS В§25, DESIGN В§12): EXR lightmaps, convex collision pieces, the compiler.
 #include "core/bsp_compile.h"
+#include "core/raytrace.h"
+#include "core/playable.h"
 #include "core/jpeg.h"
 #include "core/albedo.h"
 #include "core/parallel.h"
@@ -279,7 +281,6 @@ TEST_CASE("bsp visibility: closed rooms do not see each other, a doorway lets th
         std::shared_ptr<SolidSet> solids;
         BspInput in = inputFor(twoRooms(door), solids);
         in.settings.visCell = 2;
-        in.settings.visRays = 512;
         const BspOutput out = compileBsp(in);
         BspView v;
         REQUIRE(v.open(out.bsp));
@@ -292,6 +293,222 @@ TEST_CASE("bsp visibility: closed rooms do not see each other, a doorway lets th
         CHECK(sees(v, a, b) == door);
         CHECK(sees(v, b, a) == door);
     }
+}
+
+// ---- baked visibility (VISIBILITY_REWRITE.md) ------------------------------------------------------------------------------------------------
+
+namespace {
+
+Brush rotatedBox(const std::string& id, const Vec3& mins, const Vec3& maxs, double yawDegrees, const Vec3& pivot, const std::string& texture = "dev/wall") {
+    Brush b = Brush::makeBox(id, mins, maxs, texture);
+    const double a = yawDegrees * 3.14159265358979323846 / 180, c = std::cos(a), s = std::sin(a);
+    for (Vec3& v : b.vertices) {
+        const double x = v.x - pivot.x, z = v.z - pivot.z;
+        v = {pivot.x + x * c - z * s, v.y, pivot.z + x * s + z * c};
+    }
+    return b;
+}
+
+// a closed room (floor, ceiling, four walls) x 0..w, z 0..h, 4 m high
+std::vector<Brush> roomShell(double w, double h, int& n) {
+    std::vector<Brush> b;
+    auto box = [&](Vec3 a, Vec3 c) { b.push_back(Brush::makeBox("r" + std::to_string(n++), a, c, "dev/wall")); };
+    box({-0.5, -0.5, -0.5}, {w + 0.5, 0, h + 0.5});
+    box({-0.5, 4, -0.5}, {w + 0.5, 4.5, h + 0.5});
+    box({-0.5, 0, -0.5}, {w + 0.5, 4, 0});
+    box({-0.5, 0, h}, {w + 0.5, 4, h + 0.5});
+    box({-0.5, 0, 0}, {0, 4, h});
+    box({w, 0, 0}, {w + 0.5, 4, h});
+    return b;
+}
+
+struct VisCase {
+    BspOutput out;
+    BspView view;
+    std::shared_ptr<SolidSet> solids;
+    Document doc;
+};
+
+// zone: an editor_playable_area box (none when mn == mx)
+void compileVis(VisCase& c, Document d, double cell, const Vec3& zoneMn = {}, const Vec3& zoneMx = {}, const std::function<void(BspInput&)>& tweak = {}) {
+    if (!(zoneMn.x == zoneMx.x)) d.entities.push_back(ent("pa", "editor_playable_area", {Brush::makeBox("pab", zoneMn, zoneMx, "dev/grey")}));
+    c.doc = d;
+    BspInput in = inputFor(c.doc, c.solids);
+    in.playable = collectPlayableArea(c.doc, {});
+    in.settings.visCell = cell;
+    if (tweak) tweak(in);
+    c.out = compileBsp(in);
+    REQUIRE(c.view.open(c.out.bsp));
+}
+
+}  // namespace
+
+TEST_CASE("bsp visibility: an angled wall separates its sides (no leak through the cells it crosses)") {
+    int n = 0;
+    std::vector<Brush> b = roomShell(20, 20, n);
+    b.push_back(rotatedBox("diag", {10 - 14.7, 0, 10 - 0.15}, {10 + 14.7, 4, 10 + 0.15}, 45, {10, 0, 10}));  // from corner to corner
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", b));
+    for (const double cell : {2.0, 3.0, 4.0}) {
+        CAPTURE(cell);
+        VisCase c;
+        compileVis(c, d, cell);
+        // the diagonal x = z splits the room: x > z below it, x < z above it
+        std::vector<int> below, above;
+        for (double x = 1; x < 19.5; x += 1.3)
+            for (double z = 1; z < 19.5; z += 1.3) {
+                if (std::fabs(x - z) < 1.0) continue;
+                const int cl = clusterAt(c.view, {x, 2, z});
+                REQUIRE(cl >= 1);
+                (x > z ? below : above).push_back(cl);
+            }
+        REQUIRE(!below.empty());
+        REQUIRE(!above.empty());
+        int leaks = 0;
+        for (int a : below) for (int o : above) if (a != o && sees(c.view, a, o)) ++leaks;
+        CHECK(leaks == 0);
+        // the clusters on one side that nothing separates see each other
+        CHECK(sees(c.view, clusterAt(c.view, {17, 2, 3}), clusterAt(c.view, {12, 2, 2})));
+        CHECK(sees(c.view, clusterAt(c.view, {3, 2, 17}), clusterAt(c.view, {2, 2, 12})));
+    }
+}
+
+TEST_CASE("bsp visibility: a thin wall that lies between the grid planes still separates (and a hole in it does not)") {
+    for (const bool hole : {false, true}) {
+        CAPTURE(hole);
+        int n = 0;
+        std::vector<Brush> b = roomShell(16, 16, n);
+        if (!hole) b.push_back(Brush::makeBox("thin", {7.3, 0, 0}, {7.4, 4, 16}, "dev/wall"));
+        else { b.push_back(Brush::makeBox("t0", {7.3, 0, 0}, {7.4, 4, 6}, "dev/wall")); b.push_back(Brush::makeBox("t1", {7.3, 0, 8}, {7.4, 4, 16}, "dev/wall")); }
+        Document d;
+        d.entities.push_back(ent("w", "worldspawn", b));
+        VisCase c;
+        compileVis(c, d, 2.0);
+        const int west = clusterAt(c.view, {3, 2, 7}), east = clusterAt(c.view, {12, 2, 7});  // in line with the hole (z 6..8)
+        REQUIRE(west >= 1);
+        REQUIRE(east >= 1);
+        CHECK(sees(c.view, west, east) == hole);
+        CHECK(sees(c.view, east, west) == hole);
+    }
+}
+
+TEST_CASE("bsp visibility: the outside cluster, background faces and the invariants of the leaf lists") {
+    int n = 0;
+    std::vector<Brush> b = roomShell(16, 16, n);
+    b.push_back(Brush::makeBox("far", {60, 0, 60}, {70, 8, 70}, "dev/wall"));  // a building far away from the zone
+    b.push_back(Brush::makeBox("pillar", {6, 0, 6}, {7, 4, 7}, "dev/wall"));
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", b));
+    VisCase c;
+    compileVis(c, d, 2.0, {0, 0, 0}, {16, 4, 16});
+    // outside the cells: cluster 0, which sees and is seen by every cluster
+    const int out0 = clusterAt(c.view, {65, 4, 65});
+    CHECK(out0 == 0);
+    const int in0 = clusterAt(c.view, {3, 2, 3});
+    REQUIRE(in0 >= 1);
+    CHECK(sees(c.view, 0, in0));
+    CHECK(sees(c.view, in0, 0));
+    const int clusters = static_cast<int>(c.out.stats.clusters);
+    for (int k = 0; k < clusters; ++k) { CHECK(sees(c.view, 0, k)); CHECK(sees(c.view, k, 0)); }
+    // every face of the world is listed in a leaf with a cluster >= 0 (else the engine never draws it)
+    const auto leafs = c.view.lump<rbsp::Leaf>(rbsp::kLeafs);
+    const auto leafSurfaces = c.view.lump<int32_t>(rbsp::kLeafSurfaces);
+    const auto models = c.view.lump<rbsp::Model>(rbsp::kModels);
+    std::set<int> listed, inOutside;
+    for (const auto& l : leafs) {
+        if (l.cluster < 0) continue;
+        for (int i = 0; i < l.numLeafSurfaces; ++i) {
+            listed.insert(leafSurfaces[static_cast<size_t>(l.firstLeafSurface + i)]);
+            if (l.cluster == 0) inOutside.insert(leafSurfaces[static_cast<size_t>(l.firstLeafSurface + i)]);
+        }
+    }
+    for (int s = models[0].firstSurface; s < models[0].firstSurface + models[0].numSurfaces; ++s) CHECK(listed.count(s) == 1);
+    // the far building lies beyond the zone: its faces are seen from everywhere
+    const auto surfaces = c.view.lump<rbsp::Surface>(rbsp::kSurfaces);
+    const auto verts = c.view.lump<rbsp::DrawVert>(rbsp::kDrawVerts);
+    int farFaces = 0;
+    for (int s = models[0].firstSurface; s < models[0].firstSurface + models[0].numSurfaces; ++s) {
+        const auto& su = surfaces[static_cast<size_t>(s)];
+        const float* p = verts[static_cast<size_t>(su.firstVert)].xyz;
+        const Vec3 e{p[0] / 32.0, p[2] / 32.0, -p[1] / 32.0};  // back to editor space
+        if (e.x > 55) { ++farFaces; CHECK(inOutside.count(s) == 1); }
+    }
+    CHECK(farFaces > 0);
+}
+
+TEST_CASE("bsp visibility: only the walls that are big enough split cells") {
+    for (const double size : {1.0, 3.0}) {
+        CAPTURE(size);
+        int n = 0;
+        std::vector<Brush> b = roomShell(16, 16, n);
+        b.push_back(Brush::makeBox("block", {7.3, 0.5, 7.3}, {7.4 + (size - 0.1), 0.5 + size, 7.3 + size}, "dev/wall"));  // a wall piece of size x size
+        Document d;
+        d.entities.push_back(ent("w", "worldspawn", b));
+        VisCase c;
+        compileVis(c, d, 4.0);
+        // the room shell's walls are big (6 of them); the block adds splits only when it is 3 m
+        VisCase base;
+        Document d0;
+        d0.entities.push_back(ent("w", "worldspawn", roomShell(16, 16, n)));
+        compileVis(base, d0, 4.0);
+        if (size < 2) CHECK(c.out.stats.visSplits == base.out.stats.visSplits);
+        else CHECK(c.out.stats.visSplits > base.out.stats.visSplits);
+    }
+}
+
+TEST_CASE("bsp visibility: nothing that can be seen is reported hidden (random segments)") {
+    int n = 0;
+    std::vector<Brush> b = roomShell(30, 30, n);
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<double> pos(2, 28), len(1, 6);
+    for (int i = 0; i < 14; ++i) {  // clutter: walls and pillars at random
+        const double x = pos(rng), z = pos(rng), l = len(rng);
+        if (i % 2) b.push_back(Brush::makeBox("c" + std::to_string(i), {x, 0, z}, {x + l, 4, z + 0.3}, "dev/wall"));
+        else b.push_back(rotatedBox("c" + std::to_string(i), {x, 0, z}, {x + l, 4, z + 0.3}, 17.0 * i, {x, 0, z}));
+    }
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", b));
+    for (const double cell : {2.0, 3.0}) {
+        CAPTURE(cell);
+        VisCase c;
+        compileVis(c, d, cell);
+        BspInput in = inputFor(c.doc, c.solids);
+        const OccluderMesh mesh = buildOccluders(in.surfaces, in.classes);
+        const TriangleBvh bvh(mesh);
+        int misses = 0, tested = 0;
+        std::mt19937 r2(11);
+        std::uniform_real_distribution<double> any(0.3, 29.7), up(0.3, 3.7);
+        for (int i = 0; i < 60000; ++i) {
+            const Vec3 p{any(r2), up(r2), any(r2)}, q{any(r2), up(r2), any(r2)};
+            if (c.solids->inside(p) || c.solids->inside(q)) continue;
+            if (bvh.occluded(p, q - p, 1.0)) continue;
+            const int a = clusterAt(c.view, p), o = clusterAt(c.view, q);
+            ++tested;
+            if (a < 0 || o < 0 || a == o) continue;
+            if (!sees(c.view, a, o)) ++misses;
+        }
+        CHECK(tested > 3000);
+        CHECK(misses == 0);
+    }
+}
+
+TEST_CASE("bsp visibility: the same input gives the same file, and the table fits the byte budget") {
+    int n = 0;
+    std::vector<Brush> b = roomShell(24, 24, n);
+    b.push_back(Brush::makeBox("w1", {8, 0, 0}, {8.3, 4, 18}, "dev/wall"));
+    b.push_back(Brush::makeBox("w2", {16, 0, 6}, {16.3, 4, 24}, "dev/wall"));
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", b));
+    VisCase a, a2;
+    compileVis(a, d, 2.0);
+    compileVis(a2, d, 2.0);
+    CHECK(a.out.bsp == a2.out.bsp);
+    VisCase small;
+    compileVis(small, d, 1.0, {}, {}, [](BspInput& in) { in.settings.maxVisBytes = 4000; });
+    const auto vis = small.view.lump<uint8_t>(rbsp::kVisibility);
+    CHECK(vis.size() <= 4000);
+    CHECK(small.out.stats.clusters >= 2);
+    CHECK(small.out.stats.visCell > 1.0);
 }
 
 TEST_CASE("bsp lightmaps and light grid: base pages as baked, style layers re-packed, grid header and palette") {
@@ -874,16 +1091,19 @@ TEST_CASE("bsp sky: auto sky box of 6 inward quads, no lightmap, non-solid, in e
     CHECK(models[0].mins[2] == doctest::Approx(-8.5 * 32));
     CHECK(models[0].maxs[2] == doctest::Approx(11 * 32));
     CHECK(models[0].mins[0] == doctest::Approx(-8 * 32));
-    // every leaf with a cluster lists all six sky faces: seen from everywhere
+    // the sky faces are listed in the outside leaf (cluster 0), which every cluster sees: seen from everywhere
     const auto leafs = v.lump<rbsp::Leaf>(rbsp::kLeafs);
     const auto leafSurfaces = v.lump<int32_t>(rbsp::kLeafSurfaces);
-    int withCluster = 0;
+    int withCluster = 0, outside = 0;
     for (const auto& l : leafs) {
         if (l.cluster < 0) continue;
         ++withCluster;
+        if (l.cluster != 0) continue;
+        ++outside;
         const std::set<int> has(leafSurfaces.begin() + l.firstLeafSurface, leafSurfaces.begin() + l.firstLeafSurface + l.numLeafSurfaces);
         for (int si : sky) CHECK(has.count(si) == 1);
     }
+    CHECK(outside == 1);
     CHECK(withCluster > 1);
     CHECK(out.stats.brushes == plain.stats.brushes);  // no collision brush for the auto sky
 

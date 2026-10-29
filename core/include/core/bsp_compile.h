@@ -68,6 +68,8 @@ struct BspContentRules {
     uint32_t decalFlag() const;
     /// A sky texture (REQUIREMENTS §28 K4): a skybox (textures.h isCubemapTexture) or a texture whose rule gives it the `sky` surface flag.
     bool isSky(const std::string& texture) const;
+    /// Whether a face with this texture blocks the view: not a sky texture, and the contents (clip, trigger, water: no) have the solid bit.
+    bool blocksSight(const std::string& texture) const;
     /// What a face with this texture gets: forTexture, and for a sky texture no contents and the `sky` + `nolightmap` surface flags.
     Flags forFace(const std::string& texture) const;
 };
@@ -94,11 +96,15 @@ struct BspSettings {
     BspContentRules contents = BspContentRules::defaults();
     double decalOffset = 0.25;             // Quake units: decals are lifted this far off their surface (no depth fighting)
     std::string textureRoot = "textures";  // shader name = textureRoot + "/" + texture
-    double visCell = 4.0;                  // m: edge of a visibility cell (grows until at most maxClusters cells are not solid)
-    int maxClusters = 4096;
-    int visSamples = 16;                   // sample points per cell
-    int visRays = 256;                     // rays per sample point
-    bool visibility = true;                // false: every cluster sees every cluster
+    double visCell = 2.0;                  // m: edge of a visibility cell to start with (grows until the visibility table fits maxVisBytes)
+    size_t maxVisBytes = size_t(50) << 20; // the visibility lump may be this big
+    double visSplitMinWidth = 2.0;         // m: a wall splits visibility cells when its (merged, coplanar) face has no dimension below this
+    int visMaxSplitsPerCell = 8;
+    int visSamplePool = 32;                // sample points per cluster
+    int visPairSegments = 16;              // segments traced per cluster pair
+    double visApertureMax = 0.5;           // m: openings up to this wide get rays aimed through them
+    std::string visDevice = "auto";        // where the segments are traced: auto | cpu | compute | rayquery (bsp_vis.h)
+    bool visibility = true;                // false: every cluster sees every cluster (the clusters are still made)
     // Fit every lightmap chart to the fewest texels that look the same (lightmap_fit.h): the allowed error in 8-bit sRGB levels after `lightmapExposure`
     // (the level's _cc_exposure); 0 = store the charts as baked.
     double lightmapTolerance = 2.5;
@@ -150,6 +156,7 @@ struct BspInput {
     std::map<int, LightmapPages> pages;      // per style: the baked pages, every layer at the base layout's page / rectangle
     std::map<int, LightvolGrid> lightvol;    // per style, same geometry (empty: no light grid)
     const SolidSet* solids = nullptr;        // light-blocking volumes: buried surfaces are dropped, solid cells get no cluster
+    const SolidSet* visSolids = nullptr;     // the volumes that block sight (opaque, solid-contents brushes of the static world); null = `solids`
     std::function<bool(const std::string& texture)> opaque;  // textures that block sight (empty = every texture)
     BspSettings settings;
 };
@@ -168,6 +175,8 @@ struct BspOutput {
     struct Stats {
         size_t surfaces = 0, decals = 0, skySurfaces = 0, laidOutSurfaces = 0, droppedSurfaces = 0, brushes = 0, models = 0, leafs = 0, clusters = 0, lightmapPages = 0, lightmapTexelsBefore = 0, lightmapTexelsAfter = 0, lightmapJpegPages = 0, lightmapJpegRejected = 0, scaledCharts = 0, clippedCharts = 0, vertexLitCharts = 0, vertexLitSurfaces = 0, degenerateTriangles = 0, reliefSkipped = 0, reliefBuried = 0, weldedVertices = 0, meshSurfaces = 0, meshWelded = 0, meshRemovedVertices = 0, meshRemovedTriangles = 0, meshSharedVertices = 0, drawVertsBefore = 0, drawVertsAfter = 0, gridPoints = 0, palette = 0;
         double visCell = 0, visSeconds = 0;
+        size_t visSplits = 0, visApertures = 0, visPairs = 0, visBytes = 0, visChecked = 0, visMisses = 0;
+        std::string visDevice;
     } stats;
 };
 

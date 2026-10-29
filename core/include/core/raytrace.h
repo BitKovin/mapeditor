@@ -79,6 +79,9 @@ public:
     };
     Hit closestHit(const Vec3& origin, const Vec3& dir, double tmax) const;
     size_t nodeCount() const { return nodes_.size(); }
+    // The hierarchy for a shader: 8 floats per node (mn.xyz, the child / first triangle index as float bits, mx.xyz, the triangle count as float bits; node 0 is
+    // the root, an inner node's children are `left` and `left + 1`) and the triangles in the order of the leaves (9 floats each).
+    void exportGpu(std::vector<float>& nodes, std::vector<float>& triangles) const;
 
 private:
     struct Node {

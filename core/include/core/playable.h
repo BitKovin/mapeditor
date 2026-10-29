@@ -37,6 +37,7 @@ public:
     };
     bool empty() const { return pieces_.empty(); }
     size_t pieceCount() const { return pieces_.size(); }
+    const std::vector<Piece>& pieces() const { return pieces_; }
     void add(const Brush& b);
     void finish();
     Vec3 mn() const { return mn_; }  // bounds of all the volumes

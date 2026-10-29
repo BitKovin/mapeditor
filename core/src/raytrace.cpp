@@ -386,4 +386,17 @@ bool TriangleBvh::occluded(const Vec3& o, const Vec3& d, double tmax) const {
     return false;
 }
 
+void TriangleBvh::exportGpu(std::vector<float>& nodes, std::vector<float>& triangles) const {
+    nodes.resize(nodes_.size() * 8);
+    for (size_t i = 0; i < nodes_.size(); ++i) {
+        const Node& n = nodes_[i];
+        float* o = &nodes[i * 8];
+        o[0] = n.mn[0]; o[1] = n.mn[1]; o[2] = n.mn[2];
+        std::memcpy(&o[3], &n.left, sizeof(uint32_t));
+        o[4] = n.mx[0]; o[5] = n.mx[1]; o[6] = n.mx[2];
+        std::memcpy(&o[7], &n.count, sizeof(uint32_t));
+    }
+    triangles = tris_;
+}
+
 }  // namespace core
