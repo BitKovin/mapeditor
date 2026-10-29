@@ -31,6 +31,7 @@ import { propsToJson } from './model/texprops'
 import { restoreHideRules, rulePatterns, rulesFromGroups } from './model/visibility'
 import { setHideRules as applyHideRules } from './state/actions'
 import { TexGroupCache } from './state/texgroups'
+import { modelStore } from './state/models'
 import { TexGroupsPanel } from './ui/texGroupsPanel'
 import { toggleFastTextureTool } from './ui/fastTextureTool'
 import { openTexGroupEditor, GroupEditorEnv } from './ui/texGroupEditor'
@@ -44,7 +45,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   let groups!: TexGroupCache
   const conn = new CoreConnection(coreUrl, {
     onStatus: (s) => store.setStatus(s),
-    onMessage: (m) => { if (m.type === 'profile') { textures.setDefaultPpm(m.profile.pixelsPerMeter ?? 64); textures.clear(); groups.clear(); previews.clear(); prefabIcons.clear(); clearEntityIcons() } store.onMessage(m) },
+    onMessage: (m) => { if (m.type === 'profile') { textures.setDefaultPpm(m.profile.pixelsPerMeter ?? 64); textures.clear(); groups.clear(); previews.clear(); prefabIcons.clear(); clearEntityIcons(); modelStore.clear() } store.onMessage(m) },
     onAck: (rev, doc) => store.onAck(rev, doc),
     onRejected: (m) => store.onRejected(m),
   })
@@ -96,6 +97,19 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     if (!r.ok || !r.doc) throw new Error(r.error ?? `prefab '${path}' not found`)
     return r.doc
   }, () => store.state.library)
+  // models of entities (model_path): .glb bytes are parsed here, .obj models are read (with their textures) by Core
+  modelStore.configure({
+    readFile: async (path) => {
+      const r = await conn.request((id) => msg.readFile(id, path))
+      if (!r.ok || !r.data) throw new Error(r.error ?? `model '${path}' not found`)
+      return base64ToBytes(r.data)
+    },
+    readModel: async (path) => {
+      const r = await conn.request((id) => msg.readModel(id, path))
+      if (!r.ok || !r.groups || !r.bounds) throw new Error(r.error ?? `model '${path}' not found`)
+      return { bounds: r.bounds, warnings: r.warnings, groups: r.groups }
+    },
+  })
   const prefabIcons = new PrefabIcons({ textures, previews, entityColor: (c) => store.entityColor(c), entityBox: (c) => store.entityBox(c) })
   const listTextures = async (): Promise<string[]> => (await conn.request((id) => msg.listTextures(id))).textures ?? []
 
@@ -319,6 +333,13 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   /** True when it is fine to throw away the current document (nothing unsaved, or the person said so). */
   const okToDiscard = async (): Promise<boolean> =>
     !store.state.dirty || confirmDialog('Unsaved changes', `${store.state.path || 'The current map'} has unsaved changes. Discard them?`, 'Discard')
+  /** File > New: asks before dropping unsaved changes, then Core replaces the document (and the file name) with an empty one. */
+  async function newMap(): Promise<void> {
+    if (!store.canEdit) { store.setMessage('Not connected to Core - cannot start a new map'); return }
+    if (!(await okToDiscard())) return
+    try { await conn.whenIdle(); const r = await conn.request((id) => msg.newDocument(id)); if (!r.ok) store.setMessage(r.error ?? 'New failed') }
+    catch (e) { store.setMessage((e as Error).message) }
+  }
   async function open(): Promise<void> {
     if (!(await okToDiscard())) return
     let p = await nativePick(conn, store, { kind: 'open', title: 'Open map', startDir: mapDir(), filters: MAP_FILTERS, relative: true })
@@ -375,6 +396,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
   }
   bar.append(menuBar([
     { label: 'File', items: () => [
+      { label: 'New', shortcut: 'Ctrl+N', title: 'Start an empty map', action: () => void newMap() },
       { label: 'Open…', shortcut: 'Ctrl+O', title: 'Open a map from the game folder', action: () => void open() },
       { label: 'Open Recent', disabled: !store.state.coreSettings?.recentMaps.length, submenu: () => [
         ...(store.state.coreSettings?.recentMaps ?? []).map((p, i) => ({ label: `${i + 1}  ${p}`, checked: p === store.state.path, action: () => void openRecent(p) })),
@@ -388,7 +410,6 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
       { label: exportLabel(), title: exportTip(), action: () => void exportMap() },
       { label: 'Play Map', shortcut: 'F5', title: 'Export the map as BSP next to the map file and start the game with it (Settings > Run game)', action: () => void playMap() },
       '-',
-      { label: 'Game Folder…', title: 'Choose the game folder (textures, maps, game_profile.json)', action: () => openSettings(store, conn, 'general') },
       { label: 'Settings…', shortcut: 'Ctrl+,', title: 'Game folder, game profile, running the game, lighting, editor preferences', action: () => openSettings(store, conn) },
     ] },
     { label: 'Edit', items: () => [
@@ -479,6 +500,7 @@ export function startApp(root: HTMLElement, coreUrl: string): void {
     if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? store.redo() : store.undo() }
     else if (mod && k === 'y') { e.preventDefault(); store.redo() }
     else if (mod && k === 's') { e.preventDefault(); void (e.shiftKey ? saveAs() : save()) }
+    else if (mod && k === 'n' && !e.shiftKey) { e.preventDefault(); void newMap() }
     else if (mod && k === 'o') { e.preventDefault(); void open() }
     else if (mod && !e.shiftKey && k === 'c') { e.preventDefault(); void copySelection(store) }
     else if (mod && !e.shiftKey && k === 'x') { e.preventDefault(); void cutSelection(store) }

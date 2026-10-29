@@ -400,7 +400,7 @@ TEST_CASE("lighting classes: defaults, the game profile adds to them, and a brok
     CHECK(c.castsShadows("func_door"));
     CHECK(c.isLightmapped("worldspawn"));       // the structural classes cannot be removed
     CHECK(c.castsShadows("func_group"));
-    CHECK(c.toJson()["receiveBakedLight"].size() == 4);
+    CHECK(c.toJson()["receiveBakedLight"].size() == 5);  // worldspawn, func_detail, func_group, misc_model + the profile's func_wall
 
     TempDir dir;
     dir.write("game_profile.json", json{{"lighting", {{"blockLight", {"func_door"}}, {"receiveBakedLight", {"func_wall"}}}}});

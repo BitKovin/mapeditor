@@ -24,6 +24,27 @@ bool safePath(const std::string& p) {
 }
 }  // namespace
 
+bool isRootRelativeTexture(const std::string& name) { return !name.empty() && name.front() == '/'; }
+
+std::optional<fs::path> findTextureFile(const fs::path& assetsRoot, const GameProfile& profile, const std::string& name, std::string* extOut) {
+    const bool rooted = isRootRelativeTexture(name);
+    const std::string rel = rooted ? name.substr(1) : name;
+    if (!safePath(rel)) return std::nullopt;
+    const fs::path base = rooted ? assetsRoot : assetsRoot / profile.textureRoot;
+    std::vector<std::string> exts = profile.textureExtensions;
+    if (rooted)  // a model's image is whatever the .mtl names: the profile's extensions first, then the usual ones
+        for (const char* e : {".png", ".jpg", ".jpeg", ".tga"})
+            if (std::find_if(exts.begin(), exts.end(), [&](const std::string& x) { return lower(x) == e; }) == exts.end()) exts.push_back(e);
+    for (const auto& ext : exts) {
+        const fs::path full = base / (rel + ext);
+        std::error_code ec;
+        if (!fs::is_regular_file(full, ec)) continue;
+        if (extOut) *extOut = ext;
+        return full;
+    }
+    return std::nullopt;
+}
+
 std::vector<std::string> listTextures(const fs::path& assetsRoot, const GameProfile& profile, size_t limit) {
     std::set<std::string> found;
     for (const auto& s : listSkyboxes(assetsRoot)) found.insert(s);
@@ -45,21 +66,18 @@ std::vector<std::string> listTextures(const fs::path& assetsRoot, const GameProf
 
 std::optional<TextureFile> readTexture(const fs::path& assetsRoot, const GameProfile& profile, const std::string& path,
                                         size_t maxBytes) {
-    if (!safePath(path)) return std::nullopt;
-    for (const auto& ext : profile.textureExtensions) {
-        const fs::path full = assetsRoot / profile.textureRoot / (path + ext);
-        std::error_code ec;
-        if (!fs::is_regular_file(full, ec)) continue;
-        const auto size = fs::file_size(full, ec);
-        if (ec || size > maxBytes) return std::nullopt;
-        std::ifstream in(full, std::ios::binary);
-        TextureFile f;
-        f.ext = lower(ext);
-        f.bytes.resize(static_cast<size_t>(size));
-        if (!in.read(reinterpret_cast<char*>(f.bytes.data()), static_cast<std::streamsize>(size))) return std::nullopt;
-        return f;
-    }
-    return std::nullopt;
+    std::string ext;
+    const auto full = findTextureFile(assetsRoot, profile, path, &ext);
+    if (!full) return std::nullopt;
+    std::error_code ec;
+    const auto size = fs::file_size(*full, ec);
+    if (ec || size > maxBytes) return std::nullopt;
+    std::ifstream in(*full, std::ios::binary);
+    TextureFile f;
+    f.ext = lower(ext);
+    f.bytes.resize(static_cast<size_t>(size));
+    if (!in.read(reinterpret_cast<char*>(f.bytes.data()), static_cast<std::streamsize>(size))) return std::nullopt;
+    return f;
 }
 
 bool isCubemapTexture(const std::string& path) {
@@ -194,13 +212,9 @@ json sanitizeRelief(const json& r) {
 }
 
 std::optional<fs::path> sidecarPath(const fs::path& assetsRoot, const GameProfile& profile, const std::string& path) {
-    if (!safePath(path)) return std::nullopt;
-    for (const auto& ext : profile.textureExtensions) {
-        const fs::path full = assetsRoot / profile.textureRoot / (path + ext);
-        std::error_code ec;
-        if (fs::is_regular_file(full, ec)) return fs::path(full.string() + ".json");
-    }
-    return std::nullopt;
+    const auto full = findTextureFile(assetsRoot, profile, path);
+    if (!full) return std::nullopt;
+    return fs::path(full->string() + ".json");
 }
 }  // namespace
 

@@ -45,6 +45,8 @@ public:
     // std::runtime_error with a readable message on any failure, leaving the
     // current document untouched.
     void openDocument(const std::string& path);
+    // File > New: an empty, unnamed document (the open one is dropped; the caller has dealt with unsaved changes).
+    void newDocument() { resetToEmptyDocument(); }
 
     // Writes the canonical JSON atomically (temp file + rename). Empty `path`
     // means "the current path". Returns the normalized path written; that

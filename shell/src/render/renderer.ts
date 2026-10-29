@@ -38,10 +38,11 @@ import { AXIS_DIR, Axis, ringLines } from './gizmo'
 import type { Box } from '../model/entityBox'
 import { boxFromQuake } from '../model/entityBox'
 import type { OrientedBox } from '../model/pointBox'
-import { cornersOf, drawsBox, pointBox, toWorld, worldCorners } from '../model/pointBox'
+import { boundsOfBox, cornersOf, drawsBox, pointBox, toWorld, worldCorners } from '../model/pointBox'
 import type { ViewportSettings } from './viewportSettings'
 import { SKY_FACES, SKY_GLSL, isSkyTexture } from '../model/sky'
 import { mat4 } from 'gl-matrix'
+import { MODEL_VS, ModelDrawer } from './modelRenderer'
 
 /** `instanceId` = the top-level prefab instance this content belongs to (undefined for the document's own entities). */
 /** `instance` = the full instance path of prefab content ("a/b" for nested; undefined for the document's own entities), the key under which Core files its carved result. */
@@ -347,6 +348,9 @@ export class Renderer {
   private predictorTarget: PredictorTarget = { lmTex: null, layerOf: (page: number) => page }
   /** The direct light prediction has batches left: another frame is needed to go on with them. */
   get wantsFrame(): boolean { return !!this.predictor?.wantsFrame }
+  /** An animated model is on screen: the viewport keeps drawing frames so it plays. */
+  get wantsModelFrame(): boolean { return this.models.animating }
+  private models: ModelDrawer
   private lmStyles: number[] = []   // style of every slot of the texture array (slot 0 = base)
   private lmPages = 0
   private styleW = new Float32Array(64)
@@ -377,6 +381,7 @@ export class Renderer {
     this.lit = this.program(LIT_VS, LIT_FS)
     this.litTexProg = this.program(LITTEX_VS, LITTEX_FS)
     this.entLit = this.program(MESH_VS, ENTLIT_FS)
+    this.models = new ModelDrawer(gl, this.program(MODEL_VS, MESH_FS), { texture: (p) => this.texture(p), transparency: (p) => drawTransparency(this.textures.info(p)) })
     this.label = this.program(LABEL_VS, LABEL_FS)
     this.skyProg = this.program(SKY_VS, SKY_FS)
     this.skyBgProg = this.program(SKYBG_VS, SKYBG_FS)
@@ -1279,6 +1284,14 @@ export class Renderer {
     gl.depthMask(true)
     gl.disable(gl.POLYGON_OFFSET_FILL)
 
+    // models of entities (model_path) replace the entities' boxes; misc_model is part of the Core's lit mesh in the lit views
+    const modelShown = wire ? new Set<Entity>() : this.models.draw(vp, frame.entities.map((x) => x.entity), {
+      time: nowSeconds,
+      skip: (e) => litMode && classOf(e) === 'misc_model',
+      visible: (e) => { const b = boundsOfBox(pointBox(e, (n) => boxOf(frame, n))); return boxInFrustum(planes, [...b.min, ...b.max]) },
+    })
+    if (modelShown.size && frame.settings.backfaceCulling) { gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW) }  // the models drew two-sided
+
     // edges
     gl.useProgram(this.line)
     gl.uniformMatrix4fv(gl.getUniformLocation(this.line, 'uViewProj'), false, vp)
@@ -1312,9 +1325,11 @@ export class Renderer {
         const key = color.join(',')
         let g = point.get(key)
         if (!g) point.set(key, (g = { color, lines: [], fill: [] }))
-        const ob = pointBox(entity, (n) => boxOf(frame, n))  // the class box turned with the entity's angles
-        if (drawsBox(entity)) { const corners = worldCorners(ob); g.lines.push(...cornerLines(corners)); g.fill.push(...cornerTriangles(corners)) } // lights and decals show their gizmo / bounds instead
-        labels.push({ text: classOf(entity), at: toWorldCentre(ob) })
+        const ob = pointBox(entity, (n) => boxOf(frame, n))  // the class box turned with the entity's angles (a model's bounds once it is shown)
+        const hasModel = modelShown.has(entity)
+        // a shown model replaces the box: only a selected one gets its bounds outlined
+        if (drawsBox(entity) && (!hasModel || picked)) { const corners = worldCorners(ob); g.lines.push(...cornerLines(corners)); if (!hasModel) g.fill.push(...cornerTriangles(corners)) } // lights and decals show their gizmo / bounds instead
+        if (!hasModel || picked) labels.push({ text: classOf(entity), at: toWorldCentre(ob) })
       }
       else if (frame.settings.showOrigins && showsCustomOrigin(entity)) origins.push(...crossLines(originOf(entity), 0.25))
     }

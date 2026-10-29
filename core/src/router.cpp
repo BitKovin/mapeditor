@@ -2,6 +2,7 @@
 #include "core/exporter.h"
 #include "core/map_import.h"
 #include "core/native_dialog.h"
+#include "core/obj_model.h"
 #include "core/profile.h"
 #include "core/texgroups.h"
 #include "core/protocol.h"
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <optional>
 
@@ -208,6 +210,9 @@ RouterOutput Router::onMessage(const std::string& text) {
         const std::string type = req["type"].get<std::string>();
         if (type == proto::kDocumentUpdate) handleUpdate(req, out);
         else if (type == proto::kOpenDocument) handleOpen(req, out);
+        else if (type == proto::kNewDocument) handleNew(req, out);
+        else if (type == proto::kReadModel) handleReadModel(req, out);
+        else if (type == proto::kReadFile) handleReadFile(req, out);
         else if (type == proto::kSaveDocument) handleSave(req, out);
         else if (type == proto::kImportMap) handleImportMap(req, out);
         else if (type == proto::kListTextures) handleListTextures(req, out);
@@ -288,6 +293,66 @@ void Router::handleOpen(const json& req, RouterOutput& out) {
     out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true},
                                 {"path", scene_.currentPath()}, {"rev", scene_.revision()}}
                                .dump());
+}
+
+void Router::handleNew(const json& req, RouterOutput& out) {
+    scene_.newDocument();
+    // Like opening: the empty document replaces the open one for every window, sender included.
+    out.toAll.push_back(scene_.documentSyncJson().dump());
+    pushDerivedAll(out);
+    pushLibraryIfChanged(out, true);
+    out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"path", scene_.currentPath()}, {"rev", scene_.revision()}}.dump());
+}
+
+namespace {
+// A path of a request inside the assets root ("a/b/c.ext"); "" when it is absolute or leaves the root.
+std::string assetRelative(const std::string& raw) {
+    std::string p = raw;
+    std::replace(p.begin(), p.end(), '\\', '/');
+    if (p.empty() || p.front() == '/' || p.find(':') != std::string::npos) return {};
+    for (const auto& part : std::filesystem::path(p)) if (part == "..") return {};
+    return p;
+}
+}  // namespace
+
+void Router::handleReadModel(const json& req, RouterOutput& out) {
+    const std::string path = assetRelative(req.at("path").get<std::string>());
+    std::string error;
+    const auto model = path.empty() ? nullptr : loadObjModel(scene_.assetsRoot(), path, &error);
+    if (!model) { out.toSender.push_back(failedResponse(req, error.empty() ? "invalid model path" : error)); return; }
+    // one group per material (texture), triangles in file order
+    json groups = json::array();
+    for (size_t m = 0; m < model->materials.size(); ++m) {
+        std::vector<float> pos, uv, nrm;
+        for (const ObjTriangle& t : model->tris) {
+            if (static_cast<size_t>(t.material) != m) continue;
+            for (int k = 0; k < 3; ++k) {
+                pos.insert(pos.end(), {static_cast<float>(t.p[k].x), static_cast<float>(t.p[k].y), static_cast<float>(t.p[k].z)});
+                nrm.insert(nrm.end(), {static_cast<float>(t.n[k].x), static_cast<float>(t.n[k].y), static_cast<float>(t.n[k].z)});
+                uv.insert(uv.end(), {static_cast<float>(t.uv[k].u), static_cast<float>(t.uv[k].v)});
+            }
+        }
+        if (pos.empty()) continue;
+        auto bytes = [](const std::vector<float>& f) { std::vector<unsigned char> b(f.size() * 4); std::memcpy(b.data(), f.data(), b.size()); return base64Encode(b); };
+        groups.push_back(json{{"texture", model->textures[m]}, {"positions", bytes(pos)}, {"uvs", bytes(uv)}, {"normals", bytes(nrm)}});
+    }
+    out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"path", path},
+                                {"bounds", json::array({model->mn.x, model->mn.y, model->mn.z, model->mx.x, model->mx.y, model->mx.z})},
+                                {"warnings", model->warnings}, {"groups", groups}}.dump());
+}
+
+void Router::handleReadFile(const json& req, RouterOutput& out) {
+    const std::string path = assetRelative(req.at("path").get<std::string>());
+    if (path.empty()) { out.toSender.push_back(failedResponse(req, "read_file needs a path inside the game folder")); return; }
+    const std::filesystem::path full = scene_.assetsRoot() / pathFromUtf8(path);
+    std::error_code ec;
+    const auto size = std::filesystem::is_regular_file(full, ec) ? std::filesystem::file_size(full, ec) : 0;
+    if (ec || size == 0) { out.toSender.push_back(failedResponse(req, "file not found: " + path)); return; }
+    if (size > (std::uintmax_t(64) << 20)) { out.toSender.push_back(failedResponse(req, "file too big (64 MB limit): " + path)); return; }
+    std::ifstream in(full, std::ios::binary);
+    std::vector<unsigned char> bytes(static_cast<size_t>(size));
+    if (!in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size))) { out.toSender.push_back(failedResponse(req, "cannot read " + path)); return; }
+    out.toSender.push_back(json{{"type", proto::kResponse}, {"requestId", requestId(req)}, {"ok", true}, {"path", path}, {"data", base64Encode(bytes)}}.dump());
 }
 
 void Router::handleImportMap(const json& req, RouterOutput& out) {

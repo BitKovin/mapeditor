@@ -14,6 +14,12 @@ namespace core {
 std::vector<std::string> listTextures(const std::filesystem::path& assetsRoot, const GameProfile& profile,
                                        size_t limit = 50000);
 
+/// A texture name starting with '/' is relative to the assets root instead of the profile's textureRoot, and its extension is not limited to the profile's
+/// list (a model's image, obj_model.h): "/models/props/crate" is <assets>/models/props/crate.png.
+bool isRootRelativeTexture(const std::string& name);
+/// The image file of a texture name (extension found as described above); nullopt when unsafe or missing. `ext` receives the matching extension.
+std::optional<std::filesystem::path> findTextureFile(const std::filesystem::path& assetsRoot, const GameProfile& profile, const std::string& name, std::string* ext = nullptr);
+
 struct TextureFile {
     std::string ext;  // the extension that matched, e.g. ".tga"
     std::vector<unsigned char> bytes;

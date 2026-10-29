@@ -14,6 +14,10 @@ inline constexpr const char* kDocumentUpdate = "document_update";  // { doc }
 inline constexpr const char* kOpenDocument = "open_document";      // { requestId, path }
 inline constexpr const char* kImportMap = "import_map";            // { requestId, path (assets relative .map), overwrite?: bool } -> converts the Quake map to <name>.map.json beside it and opens that
                                                                     //   (map_import.h); response { path, warnings: [text], stats } like open_document, or { ok: false, exists: true, path } when the .map.json is there and overwrite is not set
+inline constexpr const char* kNewDocument = "new_document";        // { requestId }  -> an empty unnamed document for everyone (document_sync), like open_document
+inline constexpr const char* kReadModel = "read_model";            // { requestId, path (.obj in the assets root) } -> response { path, bounds: [min xyz, max xyz], warnings, groups: [{ texture ("/models/x/y" or ""), positions, uvs, normals }] }
+                                                                    //   positions / normals: base64 float32 x 3 per vertex, uvs: float32 x 2 (v down); three vertices per triangle; metres, Y up, model space (obj_model.h)
+inline constexpr const char* kReadFile = "read_file";              // { requestId, path } -> response { path, data: base64 }  (any file inside the assets root up to 64 MB: .glb models and their images)
 inline constexpr const char* kSaveDocument = "save_document";      // { requestId, path? }
 inline constexpr const char* kListTextures = "list_textures";      // { requestId }            -> response { textures: [path] }
 inline constexpr const char* kReadTexture = "read_texture";        // { requestId, path }      -> response { ext, data: base64, props?: <texture>.json contents }

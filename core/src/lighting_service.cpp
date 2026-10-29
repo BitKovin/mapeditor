@@ -148,7 +148,7 @@ bool sameSurface(const LightSurface& a, const LightSurface& b) {
     // The texture does not matter to the light of the face, but the bounce colour of the face comes from it (Lit view and albedo of the bounces) and
     // the projection decides which texel of it: a retexture must reach the baker as a change.
     const FaceProjection &p = a.projection, &q = b.projection;
-    return a.lightmapScale == b.lightmapScale && a.texture == b.texture && a.lookHash == b.lookHash && p.scaleU == q.scaleU && p.scaleV == q.scaleV && p.shiftU == q.shiftU && p.shiftV == q.shiftV && p.rotate == q.rotate;
+    return a.lightmapScale == b.lightmapScale && a.castsShadow == b.castsShadow && a.texture == b.texture && a.lookHash == b.lookHash && p.scaleU == q.scaleU && p.scaleV == q.scaleV && p.shiftU == q.shiftU && p.shiftV == q.shiftV && p.rotate == q.rotate;
 }
 bool sameSurfaces(const std::vector<LightSurface>& a, const std::vector<LightSurface>& b) {
     if (a.size() != b.size()) return false;

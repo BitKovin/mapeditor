@@ -25,7 +25,7 @@ OccluderMesh buildOccluders(const std::vector<LightSurface>& surfaces, const Lig
     std::unordered_map<std::string, int32_t> textureIds;
     std::unordered_set<const ReliefMesh*> reliefDone;
     for (const auto& s : surfaces) {
-        if (!classes.castsShadows(s.classname) || s.verts.size() < 3) continue;
+        if (!classes.castsShadows(s.classname) || !s.castsShadow || s.verts.size() < 3) continue;
         // A face with a relief is its relief: the flat pieces are left out (a pit would be covered by them) and the relief's triangles go in once per face
         // (all its pieces share the mesh). Lightmap and albedo coordinates of those come from each corner's footprint on the flat plane.
         const ReliefMesh* relief = s.relief.get();

@@ -1,5 +1,6 @@
 // A viewport: its own camera, its own settings, its own canvas. Any number can exist
 // (DESIGN.md §6.1, up to MAX_VIEWPORTS); each subscribes to the shared Store.
+import { modelStore } from '../state/models'
 import { styleAnimates } from '../render/lightStyles'
 import type { IContentRenderer } from 'dockview-core'
 import { Brush, MapDocument, addBrush, classOf, findEntity, isBrushEntity, mapBrush, mapEntity, moveBrushToDetail, newId, originOf, showsCustomOrigin } from '../model/document'
@@ -191,7 +192,7 @@ export class ViewportPanel implements IContentRenderer {
       this.element.append(h('div', { class: 'gl-error' }, `Viewport unavailable: ${(e as Error).message}`))
       return
     }
-    this.unsubs.push(this.store.subscribe(() => { this.checkTool(); this.updateLightStatus(); this.hideMenu?.refresh(); this.invalidate() }), this.textures.onChange(() => this.invalidate()),
+    this.unsubs.push(this.store.subscribe(() => { this.checkTool(); this.updateLightStatus(); this.hideMenu?.refresh(); this.invalidate() }), this.textures.onChange(() => this.invalidate()), modelStore.onChange(() => this.invalidate()),
       this.store.subscribeTiles(() => this.tilesArrived()))
     this.bindDocument()
     this.invalidate()
@@ -559,6 +560,7 @@ export class ViewportPanel implements IContentRenderer {
       time: this.styleTimeOverride ?? (this.element.ownerDocument.defaultView ?? window).performance.now() / 1000,
     })
     if (this.renderer?.wantsFrame) this.invalidate() // the direct light prediction works through its queue a few milliseconds per frame
+    if (this.renderer?.wantsModelFrame) this.scheduleStyleFrame() // an animated model (model_animation) plays at about 20 Hz
     // light styles play at 10 Hz: while an animated layer is shown in a lit view, redraw at 20 Hz (nothing else would trigger a frame)
     const lm = this.store.lightmap
     if (this.styleTimeOverride === null && this.needsLighting() && lm.ready && lm.styles.some((style) => styleAnimates(lm.patterns, style))) this.scheduleStyleFrame()

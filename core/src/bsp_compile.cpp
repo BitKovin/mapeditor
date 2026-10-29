@@ -30,6 +30,8 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 
 bool isWorldClass(const std::string& c) { return c == "worldspawn" || c == "func_group" || c == "func_detail"; }
+// Where a surface goes: the world model. misc_model (obj_model.h) is baked into it too, but is not a wall: it neither blocks sight nor is an entity of the map.
+bool isWorldModelClass(const std::string& c) { return isWorldClass(c) || c == "misc_model"; }
 
 std::string entityKey(const std::string& instance, const std::string& id) { return instance + '\x1f' + id; }
 
@@ -80,7 +82,8 @@ struct ShaderSet {
         const std::string key = texture + '|' + std::to_string(contents) + '|' + std::to_string(surface);
         if (const auto it = index.find(key); it != index.end()) return it->second;
         rbsp::Shader s{};
-        copyName(s.name, sizeof(s.name), root.empty() ? texture : root + "/" + texture);
+        // a model's texture ("/models/x/y", textures.h isRootRelativeTexture) is named by its path from the game root
+        copyName(s.name, sizeof(s.name), !texture.empty() && texture.front() == '/' ? texture.substr(1) : root.empty() ? texture : root + "/" + texture);
         s.contentFlags = static_cast<int32_t>(contents);
         s.surfaceFlags = static_cast<int32_t>(surface);
         index[key] = static_cast<int>(list.size());
@@ -172,7 +175,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     for (const auto& fe : in.entities) {
         const std::string key = entityKey(instanceString(fe.instancePath), fe.entity.id);
         if (fe.entity.classname == "worldspawn" && !worldspawn) worldspawn = &fe;
-        if (isWorldClass(fe.entity.classname)) modelOf[key] = 0;
+        if (isWorldModelClass(fe.entity.classname)) modelOf[key] = 0;
         else if (!fe.entity.brushes.empty()) { modelOf[key] = static_cast<int>(modelEntity.size()); modelEntity.push_back(&fe); }
     }
     const size_t modelCount = modelEntity.size();
@@ -252,7 +255,9 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
             std::set<std::string> flagged;
             for (const auto& fe : in.entities) {
                 const auto kv = fe.entity.keyvalues.find("_vertex_lit");
-                if (kv != fe.entity.keyvalues.end() && !kv->second.empty() && kv->second != "0" && kv->second != "false")
+                const bool set = kv != fe.entity.keyvalues.end() && !kv->second.empty();
+                const bool off = set && (kv->second == "0" || kv->second == "false");
+                if (fe.entity.classname == "misc_model" ? !off : set && !off)  // a model is vertex lit unless it says otherwise
                     flagged.insert(entityKey(instanceString(fe.instancePath), fe.entity.id));
             }
             size_t droppedStyles = 0;
@@ -1520,7 +1525,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     if (worldspawn) writeEntity(*worldspawn, 0);
     else ents += "{\n\"classname\" \"worldspawn\"\n}\n";
     for (const auto& fe : in.entities) {
-        if (&fe == worldspawn || isWorldClass(fe.entity.classname)) continue;
+        if (&fe == worldspawn || isWorldModelClass(fe.entity.classname)) continue;
         const auto mit = modelOf.find(entityKey(instanceString(fe.instancePath), fe.entity.id));
         writeEntity(fe, mit != modelOf.end() ? mit->second : (fe.entity.brushes.empty() ? -1 : -2));
     }

@@ -694,12 +694,9 @@ std::shared_ptr<const AlbedoImage> AlbedoLibrary::get(const std::string& texture
     fs::path file;
     std::string ext;
     std::error_code ec;
-    if (texture.empty() || texture.find("..") != std::string::npos || texture.front() == '/' || texture.find('\\') != std::string::npos || texture.find(':') != std::string::npos)
+    if (texture.empty() || texture.find("..") != std::string::npos || texture.find('\\') != std::string::npos || texture.find(':') != std::string::npos)
         return nullptr;
-    for (const auto& e : profile_.textureExtensions) {
-        const fs::path p = root_ / profile_.textureRoot / (texture + e);
-        if (fs::is_regular_file(p, ec)) { file = p; ext = e; break; }
-    }
+    if (const auto found = findTextureFile(root_, profile_, texture, &ext)) file = *found;
     std::lock_guard<std::mutex> lock(mutex_);
     if (file.empty()) { cache_.erase(texture); return nullptr; }
     const uintmax_t size = fs::file_size(file, ec);

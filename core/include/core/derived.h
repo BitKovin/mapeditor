@@ -56,6 +56,7 @@ struct LightSurface {
     bool hasUvMap = false;
     UvMap uvMap;
     double lightmapScale = 1;   // of the authored face: texel density of its lightmap relative to the level's
+    bool castsShadow = true;    // false: not an occluder (a misc_model with _cs 0); brush faces follow their class instead (LightingClasses::castShadows)
     Vec3 normal;                // unit, of this piece
     std::vector<Vec3> verts;    // convex, CCW seen from outside the resulting solid
     // The displayed relief of this piece's face (side), when the Shell sent one (relief_geometry.h). It replaces the flat pieces of the face as occluder and

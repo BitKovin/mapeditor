@@ -5,6 +5,7 @@ import { classOf, originOf } from './document'
 import { decalLocalBox } from './decal'
 import type { Box } from './entityBox'
 import { isModernLight } from './lights'
+import { entityModelBox } from './modelEntity'
 import type { Vec3 } from './math'
 import type { Mat3 } from './rotation'
 import { apply3, rotationFromAngles } from './rotation'
@@ -18,9 +19,9 @@ export interface OrientedBox { origin: Vec3; rot: Mat3; min: Vec3; max: Vec3 }
  */
 export const drawsBox = (e: Entity): boolean => !isModernLight(e.classname) && classOf(e) !== 'decal'
 
-/** The oriented box of a point entity: a decal's projector volume, otherwise the class box (`boxOf`), rotated by `angles` about the origin. */
+/** The oriented box of a point entity: a decal's projector volume, the bounds of its model (model_path, once loaded), otherwise the class box (`boxOf`), rotated by `angles` about the origin. */
 export function pointBox(e: Entity, boxOf: (classname: string) => Box): OrientedBox {
-  const local = classOf(e) === 'decal' ? decalLocalBox(e) : boxOf(classOf(e))
+  const local = classOf(e) === 'decal' ? decalLocalBox(e) : entityModelBox(e) ?? boxOf(classOf(e))
   return { origin: originOf(e), rot: rotationFromAngles(e.angles ?? [0, 0, 0]), min: local.min, max: local.max }
 }
 

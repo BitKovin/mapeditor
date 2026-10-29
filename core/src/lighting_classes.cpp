@@ -14,6 +14,9 @@ LightingClasses LightingClasses::defaults() {
             c.castShadows.insert(name);
         }
     }
+    // misc_model (obj_model.h) is baked into the world: lightmapped, and an occluder unless the entity says _cs 0 (LightSurface::castsShadow)
+    c.lightmapped.insert("misc_model");
+    c.castShadows.insert("misc_model");
     return c;
 }
 

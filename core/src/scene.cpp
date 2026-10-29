@@ -1,4 +1,5 @@
 #include "core/scene.h"
+#include "core/obj_model.h"
 #include "core/albedo.h"
 #include "core/bsp_compile.h"
 #include "core/derived.h"
@@ -278,6 +279,10 @@ json Scene::derivedGeometryJson() {
 
 std::vector<LightSurface> Scene::lightSurfaces(bool withSky) {
     std::vector<LightSurface> surfaces = collectSurfaces(doc_, resolvedInside());
+    {   // misc_model: the triangles of static models, baked into the world like brush faces (obj_model.h)
+        std::vector<LightSurface> models = collectModelSurfaces(doc_, resolvedInside(), assetsRoot_);
+        surfaces.insert(surfaces.end(), std::make_move_iterator(models.begin()), std::make_move_iterator(models.end()));
+    }
     if (!withSky) {
         const BspContentRules rules = BspContentRules::fromJson(profile_.bsp);
         surfaces.erase(std::remove_if(surfaces.begin(), surfaces.end(), [&](const LightSurface& s) { return rules.isSky(s.texture); }), surfaces.end());
