@@ -15,7 +15,7 @@ void main() { vN = mat3(uModel) * aNormal; vUv = aUv; gl_Position = uViewProj * 
 /**
  * The engine's own lighting of a model (GameData/shaders/source/fs_default.sc CalculateDirectionalDiffuse, light grid values as the engine reads them: byte / 255 * 2):
  *   colour = texture * 0.6 * (0.9 * ambient + directed * (0.5 * N.L + 0.5))
- * in the texture's own (display) space, no sRGB round trip and no level exposure - the brush faces are lit another way (lightmaps), models are not. Backfaces light
+ * in the texture's own (display) space and no level exposure - the brush faces are lit another way (lightmaps), models are not. Backfaces light
  * with the flipped normal. The engine's specular, rim light and dynamic point lights are not part of the preview.
  */
 export const MODEL_LIT_FS = `#version 300 es

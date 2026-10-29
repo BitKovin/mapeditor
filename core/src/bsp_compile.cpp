@@ -572,7 +572,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
                 decoded.resize(pg.rgb.size());
                 for (size_t i = 0; i < used.size(); ++i)
                     for (int q = 0; q < 3; ++q) decoded[i * 3 + q] = byteToLight(back->rgba[i * 4 + q]);
-                // judged like the fit: what the engine shows (bicubic read) of each chart's original against that of the decoded page, as sRGB levels
+                // judged like the fit: what the engine shows (bicubic read) of each chart's original against that of the decoded page, as display levels
                 double over = 0, judged = 0, worst = 0;
                 for (const auto& r : pageRects[pi]) {
                     const int iw = r[4], ih = r[5];

@@ -191,7 +191,7 @@ void frameOf(vec3 n, out vec3 t, out vec3 b) {
 
 
 // ---- transparency (REQUIREMENTS §23). MUST equal surfaceAt() in src/raytrace.cpp ----------------------------------------------
-float srgbChannel(uint v) { float c = float(v) / 255.0; return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
+float unitChannel(uint v) { return float(v) / 255.0; }
 // -1 = hole (the ray passes), 0 = solid, 1 = translucent (the ray passes, light times `transmit`) for triangle `tri` hit at barycentrics `bc`
 int surfaceAt(uint tri, vec2 bc, out vec3 transmit) {
     transmit = vec3(1.0);
@@ -209,7 +209,7 @@ int surfaceAt(uint tri, vec2 bc, out vec3 transmit) {
     float a = float(px >> 24) / 255.0;
     if (mode == 1u) return a < uintBitsToFloat(alphaWords[h + 4u]) ? -1 : 0;
     if ((px >> 24) < 16u) return -1;  // translucent: a clear texel is no surface, whatever rgb is stored under it
-    vec3 c = vec3(srgbChannel(px & 255u), srgbChannel((px >> 8) & 255u), srgbChannel((px >> 16) & 255u));
+    vec3 c = vec3(unitChannel(px & 255u), unitChannel((px >> 8) & 255u), unitChannel((px >> 16) & 255u));
     transmit = mix(vec3(1.0), c, uintBitsToFloat(alphaWords[h + 6u])) * (1.0 - uintBitsToFloat(alphaWords[h + 5u]) * a);
     return 1;
 }

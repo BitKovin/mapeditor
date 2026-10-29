@@ -1024,7 +1024,7 @@ void chunk(std::ofstream& f, const char* type, const std::vector<uint8_t>& data)
     be32(buf, c ^ 0xFFFFFFFFu);
     f.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
 }
-uint8_t srgb8(float v) {
+uint8_t byte8(float v) {
     v = std::clamp(v, 0.f, 1.f);
     const float s = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.f / 2.4f) - 0.055f;
     return static_cast<uint8_t>(std::lround(s * 255.f));
@@ -1040,7 +1040,7 @@ bool writePagePng(const LightmapPages& P, int page, const std::string& path) {
             const size_t i = (static_cast<size_t>(y) * P.atlas + x) * 3;
             // untouched texels show as dark magenta so unused atlas space is distinguishable from black light
             if (!P.valid[static_cast<size_t>(page)][static_cast<size_t>(y) * P.atlas + x]) { raw.insert(raw.end(), {40, 0, 40}); continue; }
-            for (int c = 0; c < 3; ++c) raw.push_back(srgb8(P.rgb[static_cast<size_t>(page)][i + c]));
+            for (int c = 0; c < 3; ++c) raw.push_back(byte8(P.rgb[static_cast<size_t>(page)][i + c]));
         }
     }
     std::vector<uint8_t> z{0x78, 0x01};

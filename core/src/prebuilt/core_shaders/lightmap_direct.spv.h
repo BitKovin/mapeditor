@@ -1,5 +1,5 @@
 // Generated from shaders/ (see shaders/manifest.txt). Do not edit.
-// source-sha256: b5aacb844161c2c7adf6de1fec891fea158f2968bf6c7b4f19914aa0898d4f59
+// source-sha256: 9c5b6c948e89c8aec235e6f36e9dee1b1418a88534e327071769929d75d5f1f7
 #pragma once
 #include <cstdint>
 namespace core::shaders {

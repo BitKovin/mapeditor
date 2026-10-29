@@ -6,7 +6,7 @@ namespace core {
 
 // Fitting a baked lightmap chart to fewer texels (export only). A chart that is flat, a plain gradient or just smooth does not need the density it was
 // baked at: the engine reads a lightmap with a bicubic B-spline (4 bilinear fetches), so a few texels reproduce it. The size is searched by trying fewer
-// texels per axis and comparing, texel by texel, what the engine would show: B(original) against B(smaller), as 8-bit sRGB after the exposure.
+// texels per axis and comparing, texel by texel, what the engine would show: B(original) against B(smaller), as 8-bit display values after the exposure.
 
 // One light style layer of one chart: the interior of the chart's rectangle in a page (the padding is not part of it).
 struct FitLayer {
@@ -22,7 +22,7 @@ struct FitLayer {
 
 struct FitSettings {
     double exposure = 1;      // the display multiplier the error is judged after (the level's _cc_exposure)
-    double tolerance = 2.5;   // allowed error in 8-bit sRGB levels: 99% of the texels within it, every texel within 2.4x it
+    double tolerance = 2.5;   // allowed error in 8-bit display levels: 99% of the texels within it, every texel within 2.4x it
     int minSide = 1;          // fewest texels per side
 };
 
@@ -34,7 +34,7 @@ struct ChartFit {
 // The smallest size at which every layer still looks the same (max over layers). Never larger than the original.
 ChartFit fitChart(const std::vector<FitLayer>& layers, const FitSettings& settings);
 
-// Whether every layer, stored at w x h texels (as from resampleLayer) in 8 bits (linear: the byte is the light, byte / 255 - the engine reads no sRGB
+// Whether every layer, stored at w x h texels (as from resampleLayer) in 8 bits (the byte is the light, byte / 255 - the engine reads no sRGB
 // lightmaps), still looks the same by the fit's measure, and none of it is brighter than 1 (what a JPEG page can hold).
 // `scale` (optional, rgb): the chart's light scale (light_scale.h). The layers hold the light itself; what is stored (and tested against 1) is light / scale.
 bool fitsEightBits(const std::vector<FitLayer>& layers, int w, int h, const FitSettings& settings, const float* scale = nullptr);
@@ -51,7 +51,7 @@ float fitTap(const std::vector<float>& img, int w, int h, int x, int y, int chan
 std::vector<float> resampleLayer(const FitLayer& layer, int w, int h);
 
 // The error of showing `small` (w x h, from resampleLayer) instead of the original: fraction of texels beyond 1/2 of the tolerance bound and the largest
-// error, in sRGB levels. Exposed for tests.
+// error, in display levels. Exposed for tests.
 struct FitError {
     double over = 0;   // fraction of baked texels whose error exceeds `tolerance`
     double worst = 0;  // largest error in levels

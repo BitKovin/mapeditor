@@ -19,7 +19,7 @@ Vec3 fromAngles(double lon, double elev) { return {std::sin(lon) * std::cos(elev
 Vec3 texel(const DecodedImage& img, double u, double v) {
     const int x = std::clamp(static_cast<int>(u * img.width), 0, img.width - 1), y = std::clamp(static_cast<int>(v * img.height), 0, img.height - 1);
     const uint8_t* p = &img.rgba[(static_cast<size_t>(y) * img.width + x) * 4];
-    return {srgbToLinear(p[0]), srgbToLinear(p[1]), srgbToLinear(p[2])};
+    return {byteToUnit(p[0]), byteToUnit(p[1]), byteToUnit(p[2])};
 }
 }  // namespace
 

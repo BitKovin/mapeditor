@@ -31,9 +31,9 @@ std::optional<DecodedImage> decodeTga(const std::vector<unsigned char>& bytes);
 std::optional<DecodedImage> decodePng(const std::vector<unsigned char>& bytes);
 std::optional<DecodedImage> decodeJpeg(const std::vector<unsigned char>& bytes);
 
-/// sRGB (8 bit) -> linear, and back.
-float srgbToLinear(uint8_t v);
-uint8_t linearToSrgb(float v);
+/// 8 bit channel -> 0..1 (byte / 255), and back. No sRGB curve: albedo and light are multiplied in the textures' own space.
+float byteToUnit(uint8_t v);
+uint8_t unitToByte(float v);
 
 /// How light passes a texture (REQUIREMENTS §23), resolved for one image (the stored mode "auto" becomes Cutout or Opaque).
 ///   Cutout: alpha < cutoff is a hole, the rest is solid. Translucent: transmission = (1 - opacity * alpha) * mix(white, colour, tint).
@@ -55,7 +55,7 @@ inline constexpr int kAlphaMaskMaxSize = 1024;
 
 struct AlbedoImage {
     int width = 0, height = 0;                 // size of mip 0
-    std::vector<std::vector<uint8_t>> mips;    // RGBA8, sRGB encoded (alpha unused), mip l is max(1, w >> l) x max(1, h >> l)
+    std::vector<std::vector<uint8_t>> mips;    // RGBA8 (alpha unused), mip l is max(1, w >> l) x max(1, h >> l)
     // Alpha of the source image at up to kAlphaMaskMaxSize on the long side (nearest texels: cutouts stay crisp), rows top to bottom; empty when the
     // image's alpha is AlphaKind::None. Read by the light baker's transparency (OccluderMesh::alphaWords).
     int alphaWidth = 0, alphaHeight = 0;

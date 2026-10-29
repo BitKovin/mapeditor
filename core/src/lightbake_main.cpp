@@ -1,4 +1,4 @@
-// Command line baker: opens a map, lays out lightmap UVs, bakes the lights and writes one PNG per page (sRGB, clamped,
+// Command line baker: opens a map, lays out lightmap UVs, bakes the lights and writes one PNG per page (clamped,
 // debug view only) plus layout.json. Usage:
 //   lightbake_tool <assetsRoot> <map.map.json> <outDir> [--cpu] [--validate] [--tpm N] [--atlas N] [--merge DEG] [--bounces N] [--gi-samples N] [--albedo A] [--no-shadows] [--supersample N] [--gi-scale 1|2|4] [--no-denoise] [--denoise-quality 0|1|2]
 #include <algorithm>

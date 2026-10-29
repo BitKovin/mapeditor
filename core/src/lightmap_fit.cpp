@@ -9,10 +9,9 @@ namespace {
 inline size_t at(const FitLayer& l, int x, int y) { return (static_cast<size_t>(l.y0 + y) * l.atlas + (l.x0 + x)) * 3; }
 inline bool baked(const FitLayer& l, int x, int y) { return !l.valid || l.valid[static_cast<size_t>(l.y0 + y) * l.atlas + (l.x0 + x)] == 1; }
 
-// linear value -> 8-bit sRGB level (float) after the exposure
+// value -> 8-bit display level (float) after the exposure
 inline float level(float v, double exposure) {
-    const double c = std::clamp(static_cast<double>(v) * exposure, 0.0, 1.0);
-    return static_cast<float>((c <= 0.0031308 ? 12.92 * c : 1.055 * std::pow(c, 1.0 / 2.4) - 0.055) * 255.0);
+    return static_cast<float>(std::clamp(static_cast<double>(v) * exposure, 0.0, 1.0) * 255.0);
 }
 
 // cubic B-spline weights of the four taps at ix - 1 .. ix + 2 for the fraction f
@@ -48,7 +47,7 @@ std::vector<float> copyLayer(const FitLayer& l) {
 }
 
 struct Reference {
-    std::vector<float> levels;  // sRGB levels of what the engine shows for the original, per texel
+    std::vector<float> levels;  // display levels of what the engine shows for the original, per texel
     std::vector<char> counts;   // 1 = a baked texel (judged)
     size_t judged = 0;
 };

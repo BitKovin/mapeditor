@@ -32,7 +32,7 @@ struct OccluderMesh {
     std::vector<float> albedoMeta;
     // Transparency (REQUIREMENTS §23), set by attachAlbedo when some texture of the mesh is not opaque. One uint array the CPU tracer and the shaders
     // read the same way (surfaceAt / surfaceAt() in the shaders): 8 words per albedo texture id = (data offset, width, height, mode, cutoff bits,
-    // opacity bits, tint bits, 0), then the texels of the non-opaque ones, one word each = r | g << 8 | b << 16 | a << 24 (sRGB colour, alpha),
+    // opacity bits, tint bits, 0), then the texels of the non-opaque ones, one word each = r | g << 8 | b << 16 | a << 24 (colour, alpha),
     // rows top to bottom, read with the nearest texel (u * width, v * height, wrapped). Mode 0 opaque, 1 cutout, 2 translucent.
     std::vector<uint32_t> alphaWords;
     size_t transparentTriangles = 0;

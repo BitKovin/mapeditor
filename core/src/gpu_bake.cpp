@@ -699,7 +699,7 @@ enum class MemKind { Host, HostCached, DeviceHost, Device };
 Buffer allocBuffer(Context& c, Cleanup& cleanup, VkDeviceSize size, VkBufferUsageFlags usage, MemKind kind, bool address, bool storageRange);
 
 // ---- bindless albedo textures ---------------------------------------------------------------------------------------------------
-// Every texture of an AlbedoSet as a sampled image (RGBA8 sRGB: the hardware decodes to linear before filtering, like AlbedoImage::sample does on the
+// Every texture of an AlbedoSet as a sampled image (RGBA8 UNORM: the bytes are filtered as they are, like AlbedoImage::sample does on the
 // CPU), full mip chain, in one or few memory blocks (a level may have thousands of textures; allocations are limited to a few thousand). One sampler.
 // Built once per set and kept by the context, so a geometry edit that re-creates a session does not upload them again.
 struct GpuTextures {
@@ -754,7 +754,7 @@ std::shared_ptr<GpuTextures> uploadTextures(Context& c, const AlbedoSet* set) {
         const AlbedoImage& im = *src[i];
         VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         ii.imageType = VK_IMAGE_TYPE_2D;
-        ii.format = VK_FORMAT_R8G8B8A8_SRGB;
+        ii.format = VK_FORMAT_R8G8B8A8_UNORM;
         ii.extent = {static_cast<uint32_t>(im.width), static_cast<uint32_t>(im.height), 1};
         ii.mipLevels = static_cast<uint32_t>(im.mipCount());
         ii.arrayLayers = 1;
@@ -798,7 +798,7 @@ std::shared_ptr<GpuTextures> uploadTextures(Context& c, const AlbedoSet* set) {
         VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         vi.image = gt->images[i];
         vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vi.format = VK_FORMAT_R8G8B8A8_SRGB;
+        vi.format = VK_FORMAT_R8G8B8A8_UNORM;
         vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, static_cast<uint32_t>(src[i]->mipCount()), 0, 1};
         VkImageView v = VK_NULL_HANDLE;
         check(f.vkCreateImageView(device, &vi, nullptr, &v), "vkCreateImageView");

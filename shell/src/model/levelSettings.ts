@@ -107,7 +107,7 @@ export function ambientKey(color: [number, number, number], intensity: number): 
   return color.map((c) => String(+(Math.max(0, c) * intensity).toFixed(6))).join(' ')
 }
 
-/** #rrggbb <-> 0..1 colour (sRGB bytes as stored: the light colour keys of this editor are plain 0..1 values, like `color`). */
+/** #rrggbb <-> 0..1 colour (colour bytes as stored: the light colour keys of this editor are plain 0..1 values, like `color`). */
 export const hexOf = (c: [number, number, number]): string => '#' + c.map((x) => Math.round(Math.min(1, Math.max(0, x)) * 255).toString(16).padStart(2, '0')).join('')
 export const colorOfHex = (hex: string): [number, number, number] => {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)

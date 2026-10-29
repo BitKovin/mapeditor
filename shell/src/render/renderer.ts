@@ -122,18 +122,16 @@ void main() {
   float a = uColor.a * mix(1.0, t.a, uAlphaTex * uHasTex); // decals take their alpha from the image
   o = vec4(base * s, a * transparency(t.a * uHasTex + (1.0 - uHasTex)));
 }`
-// 'Lighting only': the Core's lit mesh (positions + lightmap coordinates) sampled from the lightmap page array. The pixels are already
-// sRGB-encoded 8 bit values (retro low dynamic range), so they go to the framebuffer as they are.
+// 'Lighting only': the Core's lit mesh (positions + lightmap coordinates) sampled from the lightmap page array.
 // ---- lit views (Lighting-only, Lit) --------------------------------------------------------------------------------------------------------------
 // Lightmap pages are linear half floats exactly as baked (RGBA16F): nothing is clamped, scaled or encoded on the way, so brightness above 1 reaches the
-// shader. `uExposure` is the level's own exposure setting (1 = none), `uBrightness` its brightness offset added after it (0 = none); the only clamp is the display's, in linearToSrgb, at the very end.
+// shader. `uExposure` is the level's own exposure setting (1 = none), `uBrightness` its brightness offset added after it (0 = none); the only clamp is the display's (`displayColor`), at the very end. Light and albedo are multiplied as they are, in the textures' own space.
 //
 // Light styles (core/light_styles.h): every light style is a layer of the same pages, stored as extra slices of one texture array (slice = slot * pageCount +
 // page; slot 0 is the base, the other slots are compact, only for styles that exist). A chart carries its layers as a bit mask (styles 1..63 = bit style-1,
 // 21 bits per float, per vertex): the fragment samples the base and the layers in its mask:  light = sum over layers of  value(style, time) * lightmap_layer.
-const SRGB_GLSL = `
-vec3 srgbToLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }
-vec3 linearToSrgb(vec3 c) { c = clamp(c, 0.0, 1.0); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)); }`
+const DISPLAY_GLSL = `
+vec3 displayColor(vec3 c) { return clamp(c, 0.0, 1.0); }`
 const LAYERS_GLSL = `
 uniform sampler2DArray uLightmap; uniform float uPages; uniform float uSlot[64]; uniform float uW[64];
 // Bicubic B-spline lookup from 4 bilinear fetches (GPU Gems 2, ch. 20): smooth across texel borders, where bilinear's slope jumps and soft
@@ -173,10 +171,10 @@ uniform mat4 uViewProj; layout(location = 0) in vec3 aPos; layout(location = 1) 
 void main() { vLm = aLm; vMask = aMask; vShade = reliefShade(aNrm); gl_Position = uViewProj * vec4(aPos, 1.0); }`
 const LIT_FS = `#version 300 es
 precision highp float; precision highp sampler2DArray; uniform float uExposure; uniform float uBrightness; in vec3 vLm; flat in vec3 vMask; flat in float vShade; out vec4 o;
-${SRGB_GLSL}
+${DISPLAY_GLSL}
 ${LAYERS_GLSL}
-void main() { o = vec4(linearToSrgb(lightmapLight(vLm, vMask) * vShade * uExposure + uBrightness), 1.0); }`
-// 'Lit': albedo x light multiplied in linear light (the texture is sRGB, the light is linear HDR), encoded to sRGB at the end. Lightmapped surfaces take the
+void main() { o = vec4(displayColor(lightmapLight(vLm, vMask) * vShade * uExposure + uBrightness), 1.0); }`
+// 'Lit': albedo x light multiplied as they are (the texture's own space, the light HDR), clamped at the end. Lightmapped surfaces take the
 // light from the lightmap layers as stored; entities that are not lightmapped take, per style layer, ambient + directed * max(0, n . dir) from the Core's light
 // volume (the x2 range decoded, nothing else applied), per vertex normal, like the engine's dynamic lighting does. No tone mapping, no brightness constants.
 const LITTEX_VS = `#version 300 es
@@ -186,24 +184,24 @@ out vec3 vLm; out vec2 vUv; flat out vec3 vMask; flat out float vShade;
 void main() { vLm = aLm; vUv = aUv; vMask = aMask; vShade = reliefShade(aNrm); gl_Position = uViewProj * vec4(aPos, 1.0); }`
 const LITTEX_FS = `#version 300 es
 precision highp float; precision highp sampler2DArray; uniform sampler2D uTex; uniform float uHasTex; uniform float uAlphaTex; uniform float uExposure; uniform float uBrightness; uniform vec3 uColor; uniform vec3 uTransp; in vec3 vLm; in vec2 vUv; flat in vec3 vMask; flat in float vShade; out vec4 o;
-${SRGB_GLSL}
+${DISPLAY_GLSL}
 ${LAYERS_GLSL}
 ${TRANSP_GLSL}
 void main() {
   vec4 t = texture(uTex, vUv);
-  vec3 albedo = srgbToLinear(mix(uColor, t.rgb, uHasTex));
-  o = vec4(linearToSrgb(albedo * lightmapLight(vLm, vMask) * vShade * uExposure + uBrightness), mix(1.0, t.a, uAlphaTex) * transparency(t.a * uHasTex + (1.0 - uHasTex))); // decals blend by their texture's alpha
+  vec3 albedo = mix(uColor, t.rgb, uHasTex);
+  o = vec4(displayColor(albedo * lightmapLight(vLm, vMask) * vShade * uExposure + uBrightness), mix(1.0, t.a, uAlphaTex) * transparency(t.a * uHasTex + (1.0 - uHasTex))); // decals blend by their texture's alpha
 }`
 const ENTLIT_FS = `#version 300 es
 precision highp float; uniform vec3 uColor; uniform sampler2D uTex; uniform float uHasTex; uniform float uAlphaTex; uniform int uN; uniform vec3 uAmb[8]; uniform vec3 uDc[8]; uniform vec3 uDir; uniform float uExposure; uniform float uBrightness; uniform vec3 uTransp; in vec3 vN; in vec2 vUv; out vec4 o;
-${SRGB_GLSL}
+${DISPLAY_GLSL}
 ${TRANSP_GLSL}
 void main() {
   vec4 t = texture(uTex, vUv);
-  vec3 albedo = srgbToLinear(mix(uColor, t.rgb, uHasTex));
+  vec3 albedo = mix(uColor, t.rgb, uHasTex);
   vec3 n = normalize(vN), light = vec3(0.0);
   for (int i = 0; i < 8; i++) { if (i >= uN) break; light += uAmb[i] + uDc[i] * max(0.0, dot(n, uDir)); } // weights (style values) are already in uAmb / uDc; ONE direction for every layer (REQUIREMENTS §27 G4)
-  o = vec4(linearToSrgb(albedo * light * uExposure + uBrightness), mix(1.0, t.a, uAlphaTex) * transparency(t.a * uHasTex + (1.0 - uHasTex)));
+  o = vec4(displayColor(albedo * light * uExposure + uBrightness), mix(1.0, t.a, uAlphaTex) * transparency(t.a * uHasTex + (1.0 - uHasTex)));
 }`
 // Sky faces (REQUIREMENTS §28 K10): the skybox sampled by the view direction, exactly as the engine's bsp/fs_bsp_cube does (model/sky.ts), no light,
 // no fog. SKYBG draws the level's sky behind everything (a full-screen triangle at the far plane).

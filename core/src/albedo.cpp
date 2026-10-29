@@ -8,26 +8,12 @@
 
 namespace core {
 
-// ---- sRGB ------------------------------------------------------------------------------------------------------------------
-namespace {
-const std::array<float, 256>& srgbTable() {
-    static const std::array<float, 256> t = [] {
-        std::array<float, 256> a{};
-        for (int i = 0; i < 256; ++i) {
-            const double c = i / 255.0;
-            a[static_cast<size_t>(i)] = static_cast<float>(c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4));
-        }
-        return a;
-    }();
-    return t;
-}
-}  // namespace
-
-float srgbToLinear(uint8_t v) { return srgbTable()[v]; }
-uint8_t linearToSrgb(float v) {
+// ---- 8 bit channel <-> 0..1 ---------------------------------------------------------------------------------------------------
+// The editor and the engine work in the textures' own (display) space: a channel is its byte / 255, with no sRGB curve anywhere.
+float byteToUnit(uint8_t v) { return static_cast<float>(v) / 255.f; }
+uint8_t unitToByte(float v) {
     v = std::clamp(v, 0.f, 1.f);
-    const double c = v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(static_cast<double>(v), 1.0 / 2.4) - 0.055;
-    return static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround(c * 255.0)), 0, 255));
+    return static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround(static_cast<double>(v) * 255.0)), 0, 255));
 }
 
 // ---- inflate (RFC 1951) for PNG ---------------------------------------------------------------------------------------------
@@ -553,11 +539,11 @@ std::optional<DecodedImage> decodeImage(const std::vector<unsigned char>& bytes,
 
 // ---- image -> mip chain --------------------------------------------------------------------------------------------------------
 AlbedoImage makeAlbedoImage(const DecodedImage& in) {
-    // linear float working copy
+    // float working copy
     int w = in.width, h = in.height;
     std::vector<float> cur(static_cast<size_t>(w) * static_cast<size_t>(h) * 3);
     for (size_t i = 0; i < static_cast<size_t>(w) * static_cast<size_t>(h); ++i)
-        for (size_t c = 0; c < 3; ++c) cur[i * 3 + c] = srgbToLinear(in.rgba[i * 4 + c]);
+        for (size_t c = 0; c < 3; ++c) cur[i * 3 + c] = byteToUnit(in.rgba[i * 4 + c]);
     auto halve = [&](const std::vector<float>& src, int sw, int sh, int& dw, int& dh) {
         dw = std::max(1, sw / 2);
         dh = std::max(1, sh / 2);
@@ -599,7 +585,7 @@ AlbedoImage makeAlbedoImage(const DecodedImage& in) {
     for (;;) {
         std::vector<uint8_t> level(static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 255);
         for (size_t i = 0; i < static_cast<size_t>(w) * static_cast<size_t>(h); ++i)
-            for (size_t c = 0; c < 3; ++c) level[i * 4 + c] = linearToSrgb(cur[i * 3 + c]);
+            for (size_t c = 0; c < 3; ++c) level[i * 4 + c] = unitToByte(cur[i * 3 + c]);
         img.mips.push_back(std::move(level));
         if (w == 1 && h == 1) break;
         int nw, nh;
@@ -613,7 +599,7 @@ AlbedoImage makeAlbedoImage(const DecodedImage& in) {
 Vec3 AlbedoImage::average() const {
     if (mips.empty()) return {1, 1, 1};
     const auto& m = mips.back();
-    return {srgbToLinear(m[0]), srgbToLinear(m[1]), srgbToLinear(m[2])};
+    return {byteToUnit(m[0]), byteToUnit(m[1]), byteToUnit(m[2])};
 }
 
 Vec3 AlbedoImage::sample(double u, double v, double lod) const {
@@ -637,7 +623,7 @@ Vec3 AlbedoImage::sample(double u, double v, double lod) const {
         for (int j = 0; j < 2; ++j)
             for (int i = 0; i < 2; ++i) {
                 const size_t o = (static_cast<size_t>(ys[j]) * static_cast<size_t>(w) + static_cast<size_t>(xs[i])) * 4;
-                acc = acc + Vec3{srgbToLinear(m[o]), srgbToLinear(m[o + 1]), srgbToLinear(m[o + 2])} * (wx[i] * wy[j]);
+                acc = acc + Vec3{byteToUnit(m[o]), byteToUnit(m[o + 1]), byteToUnit(m[o + 2])} * (wx[i] * wy[j]);
             }
         return acc;
     };

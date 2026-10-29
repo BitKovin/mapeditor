@@ -107,17 +107,17 @@ struct BspSettings {
     double visApertureMax = 0.5;           // m: openings up to this wide get rays aimed through them
     std::string visDevice = "auto";        // where the segments are traced: auto | cpu | compute | rayquery (bsp_vis.h)
     bool visibility = true;                // false: every cluster sees every cluster (the clusters are still made)
-    // Fit every lightmap chart to the fewest texels that look the same (lightmap_fit.h): the allowed error in 8-bit sRGB levels after `lightmapExposure`
+    // Fit every lightmap chart to the fewest texels that look the same (lightmap_fit.h): the allowed error in 8-bit display levels after `lightmapExposure`
     // (the level's _cc_exposure); 0 = store the charts as baked.
     double lightmapTolerance = 2.5;
     double lightmapExposure = 1;
     // Pages whose light fits 8 bits (nothing above 1, within the tolerance above) are stored as .jpg instead of .exr, in pages of their own: the charts are
-    // grouped by that. The engine has to find lm_NNNN.jpg. The bytes are the light itself (byte / 255): the engine reads no sRGB lightmaps.
+    // grouped by that. The engine has to find lm_NNNN.jpg. The bytes are the light itself (byte / 255): the engine reads the byte as the light.
     // Needs lightmapTolerance > 0 (its error budget is also the JPEG's).
     bool lightmapJpeg = true;
     int lightmapJpegQuality = 98;
-    // The error a chart may have in a .jpg (sRGB levels after the exposure, same measure as lightmapTolerance; 99% of the texels within it, all within twice it).
-    // Looser than the fit's: a byte of linear light is 12 levels next to black, so near-black texels always differ by that much; the engine reads no sRGB lightmaps.
+    // The error a chart may have in a .jpg (display levels after the exposure, same measure as lightmapTolerance; 99% of the texels within it, all within twice it).
+    // Looser than the fit's: a byte of linear light is 12 levels next to black, so near-black texels always differ by that much; the engine reads the byte as the light.
     double lightmapJpegTolerance = 8;
     // HDR light from 8 bit pages (light_scale.h, DESIGN §12 "Light scale"): every chart is stored divided by one colour (the peak of all its style layers),
     // which goes into the colour of its vertices (rgb mantissa, A shared exponent, multiplier 1..32). Dark charts then use the page's whole range and

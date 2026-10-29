@@ -23,7 +23,7 @@ const std::string kTextures = std::string(TESTDATA_DIR) + "/../core/assets/textu
 
 std::vector<unsigned char> bytesOf(const unsigned char* p, size_t n) { return std::vector<unsigned char>(p, p + n); }
 
-// A solid colour texture (sRGB bytes).
+// A solid colour texture (bytes).
 std::shared_ptr<const AlbedoImage> solid(uint8_t r, uint8_t g, uint8_t b, int size = 4) {
     DecodedImage d;
     d.width = d.height = size;
@@ -81,10 +81,10 @@ TEST_CASE("albedo: mip chain, trilinear sampling and repeat match what the GPU s
     CHECK(img.width == 128);
     CHECK(img.mipCount() == 8);  // 128 .. 1
     CHECK(img.mipWidth(7) == 1);
-    // texel centre at lod 0 = the texel (linear)
+    // texel centre at lod 0 = the texel (unit)
     const Vec3 c = img.sample((27 + 0.5) / 128.0, (7 + 0.5) / 128.0, 0);
-    CHECK(c.x == doctest::Approx(srgbToLinear(150)).epsilon(1e-4));
-    CHECK(c.y == doctest::Approx(srgbToLinear(110)).epsilon(1e-4));
+    CHECK(c.x == doctest::Approx(byteToUnit(150)).epsilon(1e-4));
+    CHECK(c.y == doctest::Approx(byteToUnit(110)).epsilon(1e-4));
     // repeat
     const Vec3 a = img.sample(0.3, 0.7, 1.5), b = img.sample(2.3, -0.3, 1.5);
     CHECK(a.x == doctest::Approx(b.x).epsilon(1e-6));
@@ -93,7 +93,7 @@ TEST_CASE("albedo: mip chain, trilinear sampling and repeat match what the GPU s
     const Vec3 avg = img.average();
     const Vec3 top = img.sample(0.123, 0.456, 20);
     CHECK(top.x == doctest::Approx(avg.x).epsilon(1e-6));
-    // box filtering in LINEAR light: a 50% black / white checker averages to 0.5 linear (not the sRGB mid grey 0.21)
+    // box filtering of the bytes: a 50% black / white checker averages to 0.5
     DecodedImage d;
     d.width = d.height = 8;
     d.rgba.assign(8 * 8 * 4, 255);

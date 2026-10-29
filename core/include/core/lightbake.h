@@ -194,7 +194,7 @@ LightmapPages assemblePages(const LightmapLayout& layout, const TexelSamples& sa
 LightmapPages bakeLightmaps(const LightmapLayout& layout, const std::vector<LightSurface>& surfaces, const LightScene& lights,
                             const BakeOptions& options = {}, BakeStats* stats = nullptr);
 
-// Debug output: a page as an sRGB PNG (values clamped to 0..1). Returns false on I/O failure.
+// Debug output: a page as a PNG (values clamped to 0..1). Returns false on I/O failure.
 bool writePagePng(const LightmapPages& pages, int page, const std::string& path);
 
 }  // namespace core

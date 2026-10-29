@@ -18,11 +18,8 @@ export const PROBE_PREVIEW_MAX = 8000
 export const PREVIEW_STRIDE = 9
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v))
-/** Display colour of linear light `v` (the Lit view's own transfer: exposure, clamp, sRGB). */
-export const displayChannel = (v: number, exposure: number): number => {
-  const c = clamp01(v * exposure)
-  return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055
-}
+/** Display colour of light `v` (the Lit view's own transfer: exposure, clamp). */
+export const displayChannel = (v: number, exposure: number): number => clamp01(v * exposure)
 
 /** Subdivisions of the icosahedron the probe spheres start from: 0 = 20 triangles, 1 = 80, 2 = 320. */
 const SPHERE_LEVEL = 1
