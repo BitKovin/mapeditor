@@ -34,6 +34,15 @@ describe('lit view of a brush that changed since the Core mesh', () => {
     expect(storeFor(b).staleness(worldOf(b))).toBeNull()
   })
 
+  it('the triangles of a misc_model belong to no brush of the document and are never stale', () => {
+    const b = makeBox('a', [0, 0, 0], [2, 2, 2])
+    const s = storeFor(b)
+    const tri = [0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0.1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.1, 0, 1, 0, 0] // three vertices, 12 floats each
+    s.mesh = Float32Array.from([...Array.from(s.mesh!), ...tri])
+    s.faces = [...s.faces, { i: '', e: 'm', bi: '', b: 'model', f: 0, t: '/models/x', n: 1 }]
+    expect(s.staleness(worldOf(b))).toBeNull()
+  })
+
   it('a moved brush is drawn at its new position with the light it had (lightmap uv follows the brush, positions do not)', () => {
     const b = makeBox('a', [0, 0, 0], [2, 2, 2])
     const s = storeFor(b)

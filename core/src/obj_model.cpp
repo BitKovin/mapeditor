@@ -370,7 +370,7 @@ std::vector<LightSurface> collectModelSurfaces(const Document& doc, const std::v
     for (const Item& it : items) {
         const Entity& e = *it.e;
         auto mp = e.keyvalues.find("model_path");
-        if (mp == e.keyvalues.end()) mp = e.keyvalues.find("model");
+        if (mp == e.keyvalues.end() || trim(mp->second).empty()) mp = e.keyvalues.find("model");  // the classic key when model_path is unset or empty
         if (mp == e.keyvalues.end() || trim(mp->second).empty()) continue;
         const auto model = loadObjModel(assetsRoot, mp->second);
         if (!model) continue;

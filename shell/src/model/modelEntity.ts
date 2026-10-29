@@ -14,7 +14,7 @@ const kv = (e: Entity, key: string): string | undefined => e.keyvalues?.[key] ??
 /** The model file of an entity: `model_path`, else the classic `model` key (relative to the game folder, forward slashes); '' when it has none or is a brush entity. */
 export function modelPathOf(e: Entity): string {
   if (isBrushEntity(e) || classOf(e) === 'worldspawn') return ''
-  return (kv(e, 'model_path') ?? kv(e, 'model') ?? '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
+  return (kv(e, 'model_path') || kv(e, 'model') || '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
 }
 /** The animation to play: a name, or an index; '' = the rest pose. */
 export const modelAnimationOf = (e: Entity): string => (kv(e, 'model_animation') ?? '').trim()

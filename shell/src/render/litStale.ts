@@ -17,6 +17,8 @@ const CORE_FLOATS = 12
 const EPS = 2e-3
 const COS = 0.999
 
+/** The brush id the Core gives the surfaces of a misc_model (core/obj_model.h collectModelSurfaces). */
+export const MODEL_BRUSH = 'model'
 export const staleKey = (brushInstance: string, brushId: string): string => `${brushInstance}|${brushId}`
 const mapKey = (f: LitFace): string => `${f.i}|${f.e}|${f.b}|${f.f}`
 
@@ -65,6 +67,7 @@ export function analyzeLit(mesh: Float32Array, faces: readonly LitFace[], world:
   for (const f of faces) {
     const verts = f.n * 3
     if (at + verts > total) break
+    if (f.b === MODEL_BRUSH) { at += verts; continue } // a misc_model's triangles belong to no brush of the document: the Core's mesh is all there is (it follows the next bake)
     const key = staleKey(f.bi, f.b)
     let g = byBrush.get(key)
     if (!g) { g = { brush: owner(f.bi).get(f.b)?.brush, pieces: [], first: f }; byBrush.set(key, g) }
