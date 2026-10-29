@@ -117,6 +117,6 @@ describe('Details: typed fields and references', () => {
     expect(k('boolean')).toBe('boolean'); expect(k('color')).toBe('color01'); expect(k('color1')).toBe('color01'); expect(k('color255')).toBe('color255')
     expect(k('real3')).toBe('vec3'); expect(k('angles')).toBe('vec3')
     expect(k('list', [{ name: 'a', value: '1' }])).toBe('list')
-    expect(k('string')).toBe('text'); expect(k('model')).toBe('text'); expect(k('array')).toBe('text')
+    expect(k('string')).toBe('text'); expect(k('model')).toBe('asset'); expect(k('asset')).toBe('asset'); expect(k('array')).toBe('text')
   })
 })
