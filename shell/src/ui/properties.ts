@@ -6,18 +6,26 @@ import type { Entity } from '../model/document'
 import { h } from './dom'
 
 /** How a key is edited. 'ref' is the entity picker; the caller builds it (it needs the document), see InspectorPanel.refRow. */
-export type FieldKind = 'ref' | 'boolean' | 'list' | 'color01' | 'color255' | 'integer' | 'real' | 'vec3' | 'text'
+export type FieldKind = 'ref' | 'asset' | 'boolean' | 'list' | 'color01' | 'color255' | 'integer' | 'real' | 'vec3' | 'text'
 
 const REF_TYPES = new Set(['target', 'target_destination', 'killtarget'])
 const REAL_TYPES = new Set(['real', 'float', 'angle', 'direction'])
 const INT_TYPES = new Set(['integer', 'int'])
 const VEC_TYPES = new Set(['real3', 'vector', 'vec3', 'angles', 'origin'])
 const COLOR01_TYPES = new Set(['color1', 'color'])
+// a file of the game folder (any format): the text of its path and a button that opens the file picker. `model` is the classic .ent name for a model file.
+const ASSET_TYPES = new Set(['asset', 'model'])
+
+/** Opens the file picker for an asset key; resolves to the game-folder relative path, or null when cancelled. Installed by the app (it owns the connection). */
+export type AssetPicker = (key: Pick<EntityKeyDef, 'key' | 'name' | 'type'>, current: string) => Promise<string | null>
+let assetPicker: AssetPicker | null = null
+export const setAssetPicker = (fn: AssetPicker | null): void => { assetPicker = fn }
 
 export const isRefType = (type: string): boolean => REF_TYPES.has(type)
 
 export function fieldKind(k: Pick<EntityKeyDef, 'type' | 'items'>): FieldKind {
   if (isRefType(k.type)) return 'ref'
+  if (ASSET_TYPES.has(k.type)) return 'asset'
   if (k.items?.length) return 'list'
   if (k.type === 'boolean' || k.type === 'bool') return 'boolean'
   if (COLOR01_TYPES.has(k.type)) return 'color01'
@@ -79,6 +87,19 @@ function widgetFor(k: EntityKeyDef, value: string, isSet: boolean, onChange: (va
     cb.checked = isChecked(value)
     cb.addEventListener('change', () => onChange(cb.checked ? '1' : '0'))
     return cb
+  }
+  if (kind === 'asset') {
+    const row = h('div', { class: 'asset' })
+    const inp = h('input', { value, ...(k.default === undefined && !isSet ? { placeholder: 'unset' } : {}) })
+    inp.addEventListener('keydown', (ev) => ev.stopPropagation())
+    inp.addEventListener('change', () => onChange(inp.value === '' && k.default === undefined ? null : inp.value))
+    const browse = h('button', { class: 'browse', title: `Choose the file (${k.name}) in the game folder`, ...(assetPicker ? {} : { disabled: '' }) }, '…')
+    browse.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      void assetPicker?.(k, inp.value).then((p) => { if (p !== null && p !== '') { inp.value = p; onChange(p) } })
+    })
+    row.append(inp, browse)
+    return row
   }
   if (kind === 'color01' || kind === 'color255') {
     const raw = parseColor1(value)

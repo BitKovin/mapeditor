@@ -33,6 +33,7 @@ import { setHideRules as applyHideRules } from './state/actions'
 import { TexGroupCache } from './state/texgroups'
 import { modelStore } from './state/models'
 import { setKeyDefaultProvider } from './model/modelEntity'
+import { setAssetPicker } from './ui/properties'
 import { TexGroupsPanel } from './ui/texGroupsPanel'
 import { toggleFastTextureTool } from './ui/fastTextureTool'
 import { openTexGroupEditor, GroupEditorEnv } from './ui/texGroupEditor'
@@ -121,6 +122,14 @@ ${k.key}`, k.default] as [string, string]] : [])))) }
 ${key}`)
     })
   }
+  // the file picker of `asset` / `model` keys in Details: the system's dialog when Core can show one, else the in-page browser; any file of the game folder
+  setAssetPicker(async (k, current) => {
+    const norm = current.replace(/\\/g, '/')
+    const startDir = norm.includes('/') ? parentDir(norm) : ''
+    let p = await nativePick(conn, store, { kind: 'open', title: `Choose ${k.name}`, startDir, relative: true })
+    if (p === undefined) p = await chooseFile({ mode: 'open', title: `Choose ${k.name}`, ext: '', startDir, startName: norm.split('/').pop(), list: listDir })
+    return p ? p.replace(/\\/g, '/') : null
+  })
   const prefabIcons = new PrefabIcons({ textures, previews, entityColor: (c) => store.entityColor(c), entityBox: (c) => store.entityBox(c) })
   const listTextures = async (): Promise<string[]> => (await conn.request((id) => msg.listTextures(id))).textures ?? []
 

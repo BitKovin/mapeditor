@@ -413,7 +413,8 @@ export class InspectorPanel extends Panel {
 
     // every key the class defines, in .ent order, with a widget chosen by its type (properties.ts); a target key is the entity picker with its pipette.
     // Keys the form edits elsewhere are left out: targetname (top), angle / angles (the angles row), modelscale_vec (the scale row), spawnflags (the checkboxes)
-    const hidden = new Set(['classname', 'targetname', 'origin', 'angle', 'angles', '_vertex_lit'])
+    const hidden = new Set(['classname', 'targetname', 'origin', 'angle', 'angles'])
+    if (isBrushEntity(e)) hidden.add('_vertex_lit') // a brush entity has its own checkbox above; a misc_model's is an ordinary property
     if (!isBrushEntity(e) && e.classname !== 'decal') hidden.add('modelscale_vec')
     if (def?.flags.length) hidden.add('spawnflags')
     const typed = propertyKeys(def, hidden)

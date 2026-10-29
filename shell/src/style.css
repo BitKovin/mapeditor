@@ -121,7 +121,7 @@ input, select, textarea { user-select: text; }
 .problems { margin: 8px; padding: 6px 8px; border: 1px solid var(--bad); border-radius: 4px; color: var(--bad); }
 .form { padding: 6px 10px; display: grid; gap: 5px; } .form .section { padding: 0; }
 .field { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: center; } .field.kv { grid-template-columns: 92px 1fr auto; }
-.field input, .field select { min-width: 0; } .vec { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.field input, .field select { min-width: 0; } .asset { display: flex; gap: 2px; min-width: 0; } .asset input { flex: 1; } .asset .browse { padding: 0 8px; } .vec { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
 .checks { display: grid; gap: 2px; } .check { display: flex; gap: 6px; align-items: center; }
 
 /* place / mesh edit */

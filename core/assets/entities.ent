@@ -162,7 +162,7 @@ same as func_group but isn't part of visibility
     </group>
     <point name="misc_model" color="1 0.5 0.25" box="-16 -16 -16 16 16 16">
 Static model baked into the level (worldspawn). The triangles of the .obj in model_path become world geometry: textured (the .mtl's map_Kd, or an image named like the material in the model's folder), lit by the baked light, optionally casting shadows. Models are in metres, Y up.
-        <string key="model_path" name="Model Path" value="">The .obj, relative to the game folder (e.g. models/props/crate.obj). Textures are found beside it.</string>
+        <asset key="model_path" name="Model Path" value="">The .obj, relative to the game folder (e.g. models/props/crate.obj). Textures are found beside it.</string>
         <real key="model_scale" name="Model Scale" value="1">One number, or "x y z" for a different scale per axis.</real>
         <angles key="angles" name="Pitch Yaw Roll" value="0 0 0">Full rotation: Pitch Yaw Roll in degrees.</angles>
         <boolean key="_cs" name="Cast Shadows" value="1">The model blocks light and casts shadows on the world.</boolean>
