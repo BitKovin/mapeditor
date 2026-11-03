@@ -157,6 +157,7 @@ std::shared_ptr<const VisResult> buildBspVisibility(const BspInput& in, const Pr
     vin.settings.samplePool = cfg.visSamplePool;
     vin.settings.pairSegments = cfg.visPairSegments;
     vin.settings.apertureMax = cfg.visApertureMax;
+    vin.settings.extendRounds = cfg.visExtendRounds;
     vin.settings.device = cfg.visDevice == "cpu" ? VisDevice::Cpu : cfg.visDevice == "compute" ? VisDevice::Compute : cfg.visDevice == "rayquery" ? VisDevice::RayQuery : VisDevice::Auto;
     vin.trace = cfg.visibility;
     return std::make_shared<const VisResult>(buildVisibility(vin, progress));
@@ -1276,6 +1277,7 @@ BspOutput compileBsp(const BspInput& in, const ProgressFn& progress) {
     res.stats.visCell = std::cbrt(vr.stats.cell.x * vr.stats.cell.y * vr.stats.cell.z);
     res.stats.visSplits = vr.stats.splitPlanes;
     res.stats.visApertures = vr.stats.apertures;
+    res.stats.visExtendedPairs = vr.stats.extendedPairs;
     res.stats.visPairs = vr.stats.pairs;
     res.stats.visBytes = vr.stats.bytes;
     res.stats.visDevice = vr.stats.device;

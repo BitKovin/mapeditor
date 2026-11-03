@@ -56,7 +56,7 @@ bool isStatic(const std::string& c, const LightingClasses& classes) {
 json BspExportResult::toJson() const {
     json s = {{"surfaces", stats.surfaces}, {"decals", stats.decals}, {"sky", stats.skySurfaces}, {"laidOut", stats.laidOutSurfaces}, {"droppedSurfaces", stats.droppedSurfaces}, {"degenerateTriangles", stats.degenerateTriangles}, {"reliefSkipped", stats.reliefSkipped}, {"reliefBuried", stats.reliefBuried}, {"weldedVertices", stats.weldedVertices}, {"meshSurfaces", stats.meshSurfaces}, {"meshWelded", stats.meshWelded}, {"meshRemovedVertices", stats.meshRemovedVertices}, {"meshRemovedTriangles", stats.meshRemovedTriangles}, {"meshSharedVertices", stats.meshSharedVertices}, {"drawVertsBefore", stats.drawVertsBefore}, {"drawVertsAfter", stats.drawVertsAfter}, {"lightmapJpegPages", stats.lightmapJpegPages}, {"lightmapJpegRejected", stats.lightmapJpegRejected}, {"scaledCharts", stats.scaledCharts}, {"clippedCharts", stats.clippedCharts}, {"vertexLitCharts", stats.vertexLitCharts}, {"vertexLitSurfaces", stats.vertexLitSurfaces}, {"lightmapPages", stats.lightmapPages}, {"brushes", stats.brushes}, {"models", stats.models},
               {"leafs", stats.leafs}, {"clusters", stats.clusters}, {"lightmapPages", stats.lightmapPages}, {"gridPoints", stats.gridPoints},
-              {"palette", stats.palette}, {"visCell", stats.visCell}, {"visSeconds", stats.visSeconds}, {"visSplits", stats.visSplits}, {"visApertures", stats.visApertures},
+              {"palette", stats.palette}, {"visCell", stats.visCell}, {"visSeconds", stats.visSeconds}, {"visSplits", stats.visSplits}, {"visApertures", stats.visApertures}, {"visExtendedPairs", stats.visExtendedPairs},
               {"visPairs", stats.visPairs}, {"visBytes", stats.visBytes}, {"visDevice", stats.visDevice}, {"visChecked", stats.visChecked}, {"visMisses", stats.visMisses}};
     return {{"type", "export_result"}, {"ok", ok}, {"cancelled", cancelled}, {"error", error}, {"warnings", warnings}, {"stats", s},
             {"format", format}, {"bsp", bspPath}, {"lightmaps", lightmapDir}, {"seconds", seconds}, {"bakeSeconds", bakeSeconds}, {"device", device}};
@@ -218,6 +218,7 @@ bool prepareExport(const BspExportRequest& req, const ProgressFn& progress, cons
                     if (number("_vis_samples", 2, 256, v)) in.settings.visSamplePool = static_cast<int>(v);
                     if (number("_vis_segments", 1, 1024, v)) in.settings.visPairSegments = static_cast<int>(v);
                     if (number("_vis_aperture", 0, 5, v)) in.settings.visApertureMax = v;
+                    if (number("_vis_extend", 0, 8, v)) in.settings.visExtendRounds = static_cast<int>(v);
                     if (number("_vis_dilate", 0, 1, v)) in.settings.visDilate = v >= 0.5;
                     if (number("_vis_enabled", 0, 1, v)) in.settings.visibility = v >= 0.5;
                 }

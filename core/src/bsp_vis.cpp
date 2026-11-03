@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <tuple>
@@ -323,6 +324,7 @@ bool enumerateCells(const std::vector<VisZone>& zones, const Vec3& c, size_t lim
 struct FragLeaf {
     Geom g;
     bool solid = true;
+    double freeFraction = 1;
     std::vector<Vec3> pts;
 };
 struct FragNode { Vec3 n; double d = 0; int32_t child[2] = {0, 0}; Vec3 mn, mx; };
@@ -333,8 +335,12 @@ struct Frag {
     bool ok = false;
 };
 
+// A region this much solid or more is narrow: the slab of a wall with a doorway in it, whose few free points are all in the opening.
+constexpr double kNarrowFree = 0.5;
+
 // Sample points of a region: its corners, points on its boundary and inside; none inside a solid. No point at all = the region is solid.
-void makeSamples(const Geom& g, const SolidSet* solids, int pool, Rng rng, std::vector<Vec3>& out) {
+// `freeFraction`: the part of the region that is not inside a solid (a separate set of draws, so the samples do not depend on it).
+void makeSamples(const Geom& g, const SolidSet* solids, int pool, Rng rng, std::vector<Vec3>& out, double* freeFraction = nullptr) {
     constexpr double pull = 0.01;
     auto valid = [&](const Vec3& p) { return !(solids && solids->inside(p)); };
     const size_t half = size_t(std::max(2, pool / 2));
@@ -372,6 +378,19 @@ void makeSamples(const Geom& g, const SolidSet* solids, int pool, Rng rng, std::
         bool in = true;
         for (const HS& s : g.sides) if (s.n.dot(p) > s.d - 0.005) { in = false; break; }
         if (in && valid(p)) out.push_back(p);
+    }
+    if (freeFraction) {
+        Rng est{rng.a ^ 0x5BD1E995u, rng.b, 0};
+        int inside = 0, free = 0;
+        for (int i = 0; i < 256 && inside < 64; ++i) {
+            const Vec3 p{g.mn.x + est.next() * (g.mx.x - g.mn.x), g.mn.y + est.next() * (g.mx.y - g.mn.y), g.mn.z + est.next() * (g.mx.z - g.mn.z)};
+            bool in = true;
+            for (const HS& s : g.sides) if (s.n.dot(p) > s.d) { in = false; break; }
+            if (!in) continue;
+            ++inside;
+            if (valid(p)) ++free;
+        }
+        *freeFraction = inside >= 8 ? double(free) / double(inside) : 1.0;  // too few draws inside (a sliver of its box): not known to be narrow
     }
 }
 
@@ -439,7 +458,7 @@ struct CellBuilder {
             }
             FragLeaf leaf;
             leaf.g = r;
-            makeSamples(r, solids, cfg->samplePool, Rng{cellHash, uint32_t(f.leaves.size())}, leaf.pts);
+            makeSamples(r, solids, cfg->samplePool, Rng{cellHash, uint32_t(f.leaves.size())}, leaf.pts, &leaf.freeFraction);
             leaf.solid = leaf.pts.empty();
             f.leaves.push_back(std::move(leaf));
             return -int32_t(f.leaves.size());
@@ -457,6 +476,7 @@ struct Built {
     std::vector<Vec3> pts;                  // sample points, cluster after cluster
     std::vector<uint32_t> ptsFirst, ptsCount;  // per cluster
     std::vector<int> leafOfCluster;
+    std::vector<char> narrow;               // per cluster: mostly solid (kNarrowFree)
 };
 
 // Fills `b` for cell size c; false when the clusters do not fit `maxClusters`.
@@ -480,6 +500,7 @@ bool buildTree(const VisInput& in, const SplitterIndex& splitters, const Vec3& c
     b.ptsFirst.assign(1, 0);
     b.ptsCount.assign(1, 0);
     b.leafOfCluster.assign(1, 0);
+    b.narrow.assign(1, 0);
     stats.splitPlanes = 0;
     stats.solidRegions = 0;
 
@@ -525,6 +546,7 @@ bool buildTree(const VisInput& in, const SplitterIndex& splitters, const Vec3& c
                 for (const HS& s : fl.g.sides) leaf.sides.push_back({s.n, s.d});
                 b.ptsFirst.push_back(uint32_t(b.pts.size()));
                 b.ptsCount.push_back(uint32_t(fl.pts.size()));
+                b.narrow.push_back(fl.freeFraction < kNarrowFree ? 1 : 0);
                 b.pts.insert(b.pts.end(), fl.pts.begin(), fl.pts.end());
                 b.leafOfCluster.push_back(int(r.leafs.size()));
             }
@@ -581,6 +603,7 @@ bool buildTree(const VisInput& in, const SplitterIndex& splitters, const Vec3& c
     r.leafs[0].mn = lo;
     r.leafs[0].mx = hi;
     stats.regions = size_t(nextCluster - 1);
+    stats.narrowRegions = size_t(std::count(b.narrow.begin(), b.narrow.end(), char(1)));
     stats.cells = cells.size();
     return true;
 }
@@ -691,6 +714,8 @@ struct Matrix {
     void set(size_t r, size_t c) { bits[r * words + c / 64] |= uint64_t(1) << (c % 64); }
     bool get(size_t r, size_t c) const { return (bits[r * words + c / 64] >> (c % 64)) & 1; }
     void setAtomic(size_t r, size_t c) { std::atomic_ref<uint64_t>(bits[r * words + c / 64]).fetch_or(uint64_t(1) << (c % 64), std::memory_order_relaxed); }
+    // for a table that other threads are setting bits of: a plain read of a word is a data race, this is not (and costs the same)
+    bool getAtomic(size_t r, size_t c) { return (std::atomic_ref<uint64_t>(bits[r * words + c / 64]).load(std::memory_order_relaxed) >> (c % 64)) & 1; }
 };
 
 // V |= V^T
@@ -716,10 +741,13 @@ bool segmentClear(const TriangleBvh& bvh, Vec3 p, Vec3 q) {
 
 // ---- narrow openings ---------------------------------------------------------------------------------------------------------------------------
 
-// The clusters the segment a -> b passes through (the tree walked along it).
-void clustersAlong(const VisResult& r, Vec3 a, Vec3 b, std::vector<int>& out) {
-    struct Item { int32_t ref; Vec3 a, b; };
-    std::vector<Item> stack{{0, a, b}};
+struct SegmentItem { int32_t ref; Vec3 a, b; };
+
+// The clusters the segment a -> b passes through (the tree walked along it). `stack`: scratch space, kept by a caller that walks many segments.
+void clustersAlong(const VisResult& r, Vec3 a, Vec3 b, std::vector<int>& out, std::vector<SegmentItem>& stack) {
+    using Item = SegmentItem;
+    stack.clear();
+    stack.push_back({0, a, b});
     while (!stack.empty()) {
         const Item it = stack.back();
         stack.pop_back();
@@ -739,6 +767,10 @@ void clustersAlong(const VisResult& r, Vec3 a, Vec3 b, std::vector<int>& out) {
             stack.push_back({n.children[first], it.a, mid});
         }
     }
+}
+void clustersAlong(const VisResult& r, Vec3 a, Vec3 b, std::vector<int>& out) {
+    std::vector<SegmentItem> stack;
+    clustersAlong(r, a, b, out, stack);
 }
 
 using TraceFn = std::function<void(const std::vector<float>&, size_t, std::vector<float>&)>;
@@ -872,6 +904,189 @@ void aperturePass(const VisInput& in, const std::vector<LightSurface>& occ, cons
         });
         stats.apertureLines += count * perAp;
     }
+}
+
+// ---- views that run on ------------------------------------------------------------------------------------------------------------------------
+
+// A clear line joins every cluster it passes through, not only the two it was traced between, and goes on past them to whatever stops it. The pair pass cannot
+// use that (it learns whether a segment was clear and nothing more, and from a GPU nothing else comes back), and the random segments it traces seldom thread a
+// view that passes several narrow openings: of all the segments between two clusters, the ones that go through two doorways in a row, or through one far
+// from both, are a few hundredths of a percent. Nothing else finds those views, so a player in the first room did not see what stood behind the second doorway.
+// Every round has two phases, each aimed at what the rounds before it found (so it is repeated):
+//   1. rays from the sample points of every cluster at sample points of clusters it already sees, run on past the target until they hit something;
+//   2. rays from the sample points of the narrow clusters (the slab of a wall with a doorway: all its samples lie in the opening), at clusters they see, traced
+//      both ways from the sample: the lines that go through an opening, seen from the middle of it.
+// The clusters along the clear part of a ray all see each other.
+void extendPass(const VisInput& in, const VisResult& r, const Built& b, Matrix& m, const TraceFn& trace, VisStats& stats) {
+    const int rounds = in.settings.extendRounds;
+    const size_t N = size_t(r.clusters);
+    if (rounds <= 0 || N <= 2 || in.zones.empty()) return;
+    Vec3 zmn = in.zones[0].mn, zmx = in.zones[0].mx;
+    for (const VisZone& z : in.zones) {
+        zmn = {std::min(zmn.x, z.mn.x), std::min(zmn.y, z.mn.y), std::min(zmn.z, z.mn.z)};
+        zmx = {std::max(zmx.x, z.mx.x), std::max(zmx.y, z.mx.y), std::max(zmx.z, z.mx.z)};
+    }
+    const double reach = (zmx - zmn).length() + 10;
+    size_t samples = 0;
+    for (size_t ci = 1; ci < N; ++ci) samples += b.ptsCount[ci];
+    if (!samples) return;
+    const size_t perPoint = size_t(std::clamp(2.0e6 / double(samples), 2.0, 8.0));  // phase 1: rays per sample point (about 2 million a round, 2 to 8 each)
+    constexpr double kLineBudget = 1.0e6;                                           // phase 2: lines a round, shared by the narrow clusters
+    constexpr double kMaxLinesPerTarget = 8;                                        // ... and at most this many to each cluster a narrow cluster sees
+    const size_t before = [&] { size_t n = 0; for (uint64_t w : m.bits) n += size_t(std::popcount(w)); return n; }();
+
+    // clusters that were joined by an earlier ray are not joined again (the table is shared by every round)
+    constexpr size_t kSig = size_t(1) << 22;
+    std::unique_ptr<std::atomic<uint64_t>[]> sigs(new std::atomic<uint64_t>[kSig]());
+    auto fresh = [&](uint64_t sig) {
+        if (!sig) sig = 1;
+        size_t i = size_t(sig) & (kSig - 1);
+        for (int probe = 0; probe < 64; ++probe, i = (i + 1) & (kSig - 1)) {
+            uint64_t cur = sigs[i].load(std::memory_order_relaxed);
+            if (cur == sig) return false;
+            if (cur == 0 && sigs[i].compare_exchange_strong(cur, sig)) return true;
+            if (cur == sig) return false;
+        }
+        return true;
+    };
+    // the clear part of the line through p along d, from `back` behind p to `fwd` in front of it: every cluster on it sees every other
+    struct Scratch { std::vector<int> cl; std::vector<SegmentItem> stack; };
+    auto credit = [&](const Vec3& p, const Vec3& d, double back, double fwd, Scratch& sc) {
+        if (back + fwd <= 0.001) return;
+        std::vector<int>& cl = sc.cl;
+        cl.clear();
+        clustersAlong(r, p - d * back, p + d * fwd, cl, sc.stack);
+        std::sort(cl.begin(), cl.end());
+        cl.erase(std::unique(cl.begin(), cl.end()), cl.end());
+        if (cl.size() < 2) return;
+        uint64_t sig = 1469598103934665603ull;
+        for (int c : cl) sig = (sig ^ uint64_t(c)) * 1099511628211ull;
+        if (!fresh(sig)) return;
+        for (size_t x = 0; x < cl.size(); ++x)
+            for (size_t y = x + 1; y < cl.size(); ++y) {
+                if (!m.getAtomic(size_t(cl[x]), size_t(cl[y]))) m.setAtomic(size_t(cl[x]), size_t(cl[y]));
+                if (!m.getAtomic(size_t(cl[y]), size_t(cl[x]))) m.setAtomic(size_t(cl[y]), size_t(cl[x]));
+            }
+    };
+    // the clusters row `ci` of `snap` sees (not the outside, not itself)
+    auto seenBy = [&](const Matrix& snap, size_t ci, std::vector<int>& out) {
+        out.clear();
+        for (size_t w = 0; w < snap.words; ++w) {
+            uint64_t x = snap.bits[ci * snap.words + w];
+            while (x) {
+                const size_t c = w * 64 + size_t(std::countr_zero(x));
+                x &= x - 1;
+                if (c != 0 && c != ci && c < N) out.push_back(int(c));
+            }
+        }
+    };
+    auto rayOf = [&](const Vec3& p, const Vec3& q, float* o, bool back) {
+        Vec3 d = q - p;
+        const double len = d.length();
+        d = len > 1e-6 ? d * (1.0 / len) : Vec3{0, 1, 0};
+        if (back) d = d * -1.0;
+        const float v[8] = {float(p.x), float(p.y), float(p.z), float(reach), float(d.x), float(d.y), float(d.z), 0.f};
+        std::copy(v, v + 8, o);
+    };
+    constexpr double kEdge = 0.002;  // stop this short of the face a ray hits: not into the wall behind it
+    std::vector<size_t> narrowList;
+    for (size_t ci = 1; ci < N; ++ci) if (b.narrow[ci] && b.ptsCount[ci]) narrowList.push_back(ci);
+
+    for (int round = 0; round < rounds; ++round) {
+        const Matrix snap = m;  // the targets of a round are what the rounds before it found: the same whatever order the threads run in
+
+        // ---- phase 1: from every cluster, at the clusters it sees, and on past them
+        {
+            std::vector<size_t> first(N + 1, 0);  // the first ray of each cluster
+            for (size_t ci = 1; ci < N; ++ci) first[ci + 1] = first[ci] + size_t(b.ptsCount[ci]) * perPoint;
+            for (size_t start = 1; start < N;) {
+                size_t end = start + 1;
+                while (end < N && first[end + 1] - first[start] <= 1000000) ++end;
+                const size_t count = first[end] - first[start];
+                if (count == 0) { start = end; continue; }
+                std::vector<float> rays(count * 8, 0.f), t;
+                parallelFor(end - start, 4, [&](size_t i0, size_t i1) {
+                    std::vector<int> seen;
+                    for (size_t k = i0; k < i1; ++k) {
+                        const size_t ci = start + k;
+                        if (!b.ptsCount[ci]) continue;
+                        seenBy(snap, ci, seen);
+                        size_t ray = first[ci] - first[start];
+                        for (uint32_t s = 0; s < b.ptsCount[ci]; ++s)
+                            for (size_t j = 0; j < perPoint; ++j, ++ray) {
+                                float* o = &rays[ray * 8];
+                                if (seen.empty()) { o[3] = -1.f; continue; }  // sees nothing but itself: no ray
+                                const uint32_t h = hash32(uint32_t(ci) * 1013u + s, uint32_t(j) + 7919u * uint32_t(round), 0x51ED270Bu);
+                                const int tc = seen[h % seen.size()];
+                                rayOf(b.pts[b.ptsFirst[ci] + s], b.pts[b.ptsFirst[size_t(tc)] + hash32(h, uint32_t(ci), uint32_t(j)) % b.ptsCount[size_t(tc)]], o, false);
+                            }
+                    }
+                });
+                trace(rays, count, t);
+                parallelFor(count, 1024, [&](size_t i0, size_t i1) {
+                    Scratch sc;
+                    for (size_t i = i0; i < i1; ++i) {
+                        const float* q = &rays[i * 8];
+                        if (q[3] < 0.f) continue;
+                        credit(Vec3{q[0], q[1], q[2]}, Vec3{q[4], q[5], q[6]}, 0, (t[i] < 0 ? reach : double(t[i])) - kEdge, sc);
+                    }
+                });
+                stats.extendRays += count;
+                start = end;
+            }
+        }
+
+        // ---- phase 2: from the narrow clusters, both ways through the opening
+        if (!narrowList.empty()) {
+            size_t seenTotal = 0;
+            std::vector<int> tmp;
+            for (size_t ci : narrowList) { seenBy(snap, ci, tmp); seenTotal += tmp.size(); }
+            if (seenTotal == 0) continue;
+            const size_t perTarget = size_t(std::clamp(kLineBudget / double(seenTotal), 2.0, kMaxLinesPerTarget));
+            std::vector<size_t> first(narrowList.size() + 1, 0);  // the first line of each narrow cluster
+            {
+                std::vector<int> row;
+                for (size_t k = 0; k < narrowList.size(); ++k) { seenBy(snap, narrowList[k], row); first[k + 1] = first[k] + row.size() * perTarget; }
+            }
+            for (size_t start = 0; start < narrowList.size();) {
+                size_t end = start + 1;
+                while (end < narrowList.size() && (first[end + 1] - first[start]) * 2 <= 1000000) ++end;
+                const size_t lines = first[end] - first[start];
+                if (lines == 0) { start = end; continue; }
+                std::vector<float> rays(lines * 2 * 8, 0.f), t;  // line l: ray 2l goes on from the sample towards the target, ray 2l + 1 the other way
+                parallelFor(end - start, 1, [&](size_t i0, size_t i1) {
+                    std::vector<int> seen;
+                    for (size_t k = i0; k < i1; ++k) {
+                        const size_t ci = narrowList[start + k];
+                        seenBy(snap, ci, seen);
+                        size_t line = first[start + k] - first[start];
+                        for (size_t l = 0; l < seen.size() * perTarget; ++l, ++line) {
+                            const int tc = seen[l % seen.size()];
+                            const uint32_t h = hash32(uint32_t(ci) * 1013u + uint32_t(l), uint32_t(round) + 40503u, 0x2545F491u);
+                            const Vec3& p = b.pts[b.ptsFirst[ci] + h % b.ptsCount[ci]];
+                            const Vec3& q = b.pts[b.ptsFirst[size_t(tc)] + hash32(h, uint32_t(tc), 17u) % b.ptsCount[size_t(tc)]];
+                            rayOf(p, q, &rays[line * 16], false);
+                            rayOf(p, q, &rays[line * 16 + 8], true);
+                        }
+                    }
+                });
+                trace(rays, lines * 2, t);
+                parallelFor(lines, 512, [&](size_t i0, size_t i1) {
+                    Scratch sc;
+                    for (size_t i = i0; i < i1; ++i) {
+                        const float* q = &rays[i * 16];
+                        const double fwd = (t[i * 2] < 0 ? reach : double(t[i * 2])) - kEdge, back = (t[i * 2 + 1] < 0 ? reach : double(t[i * 2 + 1])) - kEdge;
+                        credit(Vec3{q[0], q[1], q[2]}, Vec3{q[4], q[5], q[6]}, std::max(back, 0.0), std::max(fwd, 0.0), sc);
+                    }
+                });
+                stats.extendRays += lines * 2;
+                start = end;
+            }
+        }
+    }
+    size_t after = 0;
+    for (uint64_t w : m.bits) after += size_t(std::popcount(w));
+    stats.extendedPairs = (after - before) / 2;
 }
 
 }  // namespace
@@ -1040,10 +1255,17 @@ VisResult buildVisibility(const VisInput& in, const VisProgress& progress) {
         }
         stats.secondsPairs = secondsSince(tPairs);
 
+        symmetrize(m);
+
+        // views that run on: rays from every cluster at the clusters it sees, past them
+        stage("visibility", 0.8);
+        const auto tExt = Clock::now();
+        extendPass(in, r, b, m, traceClosest, stats);
+        stats.secondsExtend = secondsSince(tExt);
+
         // view of the neighbours: symmetric, one ring of open neighbours, symmetric again
         stage("visibility", 0.9);
         const auto tDil = Clock::now();
-        symmetrize(m);
         if (cfg.dilate) {
         Matrix d = m;
         parallelFor(N, 16, [&](size_t i0, size_t i1) {

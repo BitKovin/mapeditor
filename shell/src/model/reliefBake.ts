@@ -16,7 +16,7 @@ import type { DerivedEntry, World } from './derived'
 import { brushIndex, carvedKey, instanceOf } from './derived'
 import { faceNormal } from './geometry'
 import type { Vec3 } from './math'
-import { fanBorder, neighbourFn, newBudget, planHasRelief, pieceBorder, polygonBorders, reliefOf, reliefTriangle } from './reliefApply'
+import { fanBorder, neighbourFn, newBudget, planHasRelief, pieceBorder, polygonBorders, reliefCorners, reliefOf, reliefTriangle } from './reliefApply'
 import { faceUvAt, lerpVec3, planForFace, retexture } from './uvmesh'
 import { texEnv } from './texprops'
 
@@ -64,6 +64,7 @@ function pieceTriangles(brush: Brush, face: Face, verts: readonly Vec3[], border
   const uv = plan ? [] : (verts as Vec3[]).map(faceUvAt(brush, face)) // the face's own UVs (stored before projection), see faceUvAt
   const flat = (p: readonly [Vec3, Vec3, Vec3]): void => { for (const q of p) out.push(q[0], q[1], q[2]) }
   const take = (got: number[]): void => { for (let i = 0; i + 7 < got.length; i += 8) out.push(got[i], got[i + 1], got[i + 2]) }
+  if (relief && !plan) take(reliefCorners(verts, uv, normal, relief, border, nb, budget))
   for (let i = 1; i + 1 < verts.length; i++) {
     const tri: [Vec3, Vec3, Vec3] = [verts[0], verts[i], verts[i + 1]]
     const edges = fanBorder(i, verts.length, border)

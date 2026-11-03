@@ -10,7 +10,7 @@ import { classOf, isBrushEntity, isEditorOnly, originOf, showsCustomOrigin } fro
 import { faceNormal, triangulateFace } from '../model/geometry'
 import { uvsForDraw } from '../model/uv'
 import { drawTransparency, texEnv } from '../model/texprops'
-import { loopBorder, neighbourFn, newBudget, planHasRelief, planWithRelief, reliefOf, reliefTriangle } from '../model/reliefApply'
+import { loopBorder, neighbourFn, newBudget, planHasRelief, planWithRelief, reliefCorners, reliefOf, reliefTriangle } from '../model/reliefApply'
 import { HEAT_BUCKETS, bucketColor, faceHeat, heatBucket } from '../model/texelDensity'
 import { brushTextureSignature, lerpVec3, planForFace, retexture } from '../model/uvmesh'
 import type { TextureCache } from '../state/textures'
@@ -451,6 +451,7 @@ export class Renderer {
         const nb = neighbourFn(b, f) // at a corner with a face that has a relief too, the relief's outline wall bevels across to it
         const list = byTex.get(f.texture ?? 'dev/grey') ?? []
         byTex.set(f.texture ?? 'dev/grey', list)
+        for (const x of reliefCorners(f.loop.map((i) => b.vertices[i]), uv, n, relief, f.loop.map(() => true), nb, budget)) list.push(x)
         for (const [a, c, d] of tris) {
           const k = [a, c, d].map((i) => f.loop.indexOf(i))
           const got = reliefTriangle([b.vertices[a], b.vertices[c], b.vertices[d]], [uv[k[0]], uv[k[1]], uv[k[2]]], n, relief, budget, loopBorder(f.loop, [a, c, d]), nb)

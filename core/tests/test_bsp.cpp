@@ -515,6 +515,55 @@ TEST_CASE("bsp visibility: nothing that can be seen is reported hidden (random s
     }
 }
 
+TEST_CASE("bsp visibility: a view through narrow doorways in a row is not reported hidden") {
+    // A hall 36 m long cut by three walls. Each has a doorway 1.2 m wide, a little to the side of the one before, so the lines that go through all three are a
+    // sliver of the lines between the first room and the last: random segments between samples of the two clusters almost never find one.
+    int n = 0;
+    std::vector<Brush> b = roomShell(36, 12, n);
+    constexpr double kDoorWidth = 1.2, kDoorHeight = 3, kDoorZ[3] = {4.6, 5.0, 5.4};
+    for (int i = 0; i < 3; ++i) {
+        const double x = 9.0 * (i + 1), z0 = kDoorZ[i], z1 = kDoorZ[i] + kDoorWidth;
+        const std::string id = "wall" + std::to_string(i);
+        b.push_back(Brush::makeBox(id + "a", {x, 0, 0}, {x + 0.5, 4, z0}, "dev/wall"));
+        b.push_back(Brush::makeBox(id + "b", {x, 0, z1}, {x + 0.5, 4, 12}, "dev/wall"));
+        b.push_back(Brush::makeBox(id + "c", {x, kDoorHeight, z0}, {x + 0.5, 4, z1}, "dev/wall"));
+    }
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", b));
+
+    // lines through a random point of the first and of the last doorway, from the first room into the last one
+    auto misses = [&](int extendRounds, int& clear) {
+        VisCase c;
+        compileVis(c, d, 3.0, {}, {}, [&](BspInput& in) { in.settings.visExtendRounds = extendRounds; });
+        BspInput in = inputFor(c.doc, c.solids);
+        const OccluderMesh mesh = buildOccluders(in.surfaces, in.classes);
+        const TriangleBvh bvh(mesh);
+        std::mt19937 rng(5);
+        std::uniform_real_distribution<double> u(0, 1);
+        int bad = 0;
+        clear = 0;
+        for (int i = 0; i < 20000; ++i) {
+            const Vec3 a{9.25, 0.3 + 2.6 * u(rng), kDoorZ[0] + kDoorWidth * u(rng)}, e{27.25, 0.3 + 2.6 * u(rng), kDoorZ[2] + kDoorWidth * u(rng)};
+            const Vec3 dir = (e - a).normalized();
+            const double tEye = (a.x - (1.0 + 7.0 * u(rng))) / dir.x, tTarget = (28.0 + 7.0 * u(rng) - a.x) / dir.x;  // eye in the first room, target in the last
+            const Vec3 p = a - dir * tEye, q = a + dir * tTarget;
+            if (p.y < 0.2 || p.y > 3.8 || q.y < 0.2 || q.y > 3.8 || p.z < 0.2 || p.z > 11.8 || q.z < 0.2 || q.z > 11.8) continue;
+            if (c.solids->inside(p) || c.solids->inside(q) || bvh.occluded(p, q - p, 1.0)) continue;
+            const int from = clusterAt(c.view, p), to = clusterAt(c.view, q);
+            if (from < 1 || to < 1) continue;
+            ++clear;
+            if (!sees(c.view, from, to)) ++bad;
+        }
+        return bad;
+    };
+    int clearWithout = 0, clearWith = 0;
+    const int without = misses(0, clearWithout), with = misses(3, clearWith);
+    MESSAGE("clear lines " << clearWith << ", hidden by the table: " << without << " without the extension rounds, " << with << " with them");
+    CHECK(clearWith > 1000);  // the hall does have a view through all three doorways
+    CHECK(without > 0);       // ... and the pair pass alone misses it: if this fails, the hall no longer shows what the rounds are for (narrow the doorways)
+    CHECK(with == 0);
+}
+
 TEST_CASE("bsp visibility: the ray query path, the compute shader path and the CPU find the same views") {
     int n = 0;
     std::vector<Brush> b = roomShell(30, 30, n);

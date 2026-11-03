@@ -6,6 +6,7 @@ shell/dist/
 shell/node_modules/
 *.exe
 *.obj
+!samples/integration/data/**/*.obj
 *.o
 *.a
 *.lib

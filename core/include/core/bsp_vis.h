@@ -26,6 +26,7 @@ struct VisSettings {
     int samplePool = 32;                      // sample points per cluster
     int pairSegments = 64;                    // segments traced per cluster pair
     double apertureMax = 0.5;                 // m: openings up to this wide get rays aimed through them (0 = off)
+    int extendRounds = 3;                     // rounds of rays that run on past the clusters a cluster already sees (what a doorway shows beyond it; 0 = off)
     VisDevice device = VisDevice::Auto;
     size_t selfCheck = 0;                     // random segments to check the result with afterwards (the environment variable MAPEDITOR_VIS_CHECK overrides)
     size_t gpuMinPairs = 200000;              // Auto: cluster pairs below this are traced on the CPU (starting a GPU costs more)
@@ -65,7 +66,8 @@ struct VisNode {
 struct VisStats {
     size_t checked = 0, misses = 0;                         // the self check: random segments tried / the ones between clusters that do not see each other
     size_t cells = 0, splitPlanes = 0, regions = 0, solidRegions = 0, apertures = 0, apertureLines = 0, pairs = 0, adjacent = 0, bytes = 0;
-    Vec3 cell; double seconds = 0, secondsTree = 0, secondsPairs = 0, secondsAperture = 0, secondsDilate = 0;
+    size_t narrowRegions = 0, extendRays = 0, extendedPairs = 0;   // regions that are mostly solid (a doorway's slab) / rays of the extension pass / cluster pairs it added
+    Vec3 cell; double seconds = 0, secondsTree = 0, secondsPairs = 0, secondsAperture = 0, secondsExtend = 0, secondsDilate = 0;
     std::string device;
 };
 

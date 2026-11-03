@@ -405,6 +405,59 @@ export function reliefTriangle(tri: readonly [Vec3, Vec3, Vec3], uv: readonly [V
 }
 
 /**
+ * Where the outline of a polygon turns at a point where it meets two faces behind it that have a relief too, each pair of reliefs is joined by a bevel that
+ * ends at the corner; the three bevels leave a small triangular opening between the three relief points there. This closes it (interleaved vertices,
+ * RELIEF_FLOATS each). `border[k]` = the polygon's edge k (vertex k to k + 1) is on the outline, `uv` the polygon's own UVs. Of the three faces that meet at
+ * the corner only the one whose normal comes first adds the triangle (all three work out the same one). Same as texturePolygon's corners in the Core.
+ */
+export function reliefCorners(pts: readonly Vec3[], uv: readonly V2[], normal: Vec3, relief: Relief, border: readonly boolean[], neighbour: NeighbourFn | undefined, budget?: ReliefBudget): number[] {
+  const out: number[] = []
+  const n = pts.length
+  if (!neighbour || n < 3 || border.length !== n || uv.length !== n) return out
+  const surface = surfaceTris(reliefTris(relief))
+  let cu = 0, cv = 0
+  for (const t of uv) { cu += t[0] / n; cv += t[1] / n }
+  const endHeight = (spans: readonly Span[], atEnd: boolean): number | null => {
+    for (const sp of spans) {
+      if (atEnd && sp.t1 >= 1 - 1e-6) return sp.z1
+      if (!atEnd && sp.t0 <= 1e-6) return sp.z0
+    }
+    return null
+  }
+  const before = (x: Vec3, y: Vec3): boolean => {
+    for (let m = 0; m < 3; m++) { if (x[m] < y[m] - 1e-6) return true; if (x[m] > y[m] + 1e-6) return false }
+    return false
+  }
+  for (let i = 0; i < n; i++) {
+    const prev = (i + n - 1) % n, next = (i + 1) % n
+    if (!border[prev] || !border[i]) continue
+    const nbB = neighbour(pts[prev], pts[i]), nbC = neighbour(pts[i], pts[next])
+    if (!nbB || !nbC || nbB.spans.length === 0 || nbC.spans.length === 0) continue
+    if (!before(normal, nbB.n) || !before(normal, nbC.n)) continue
+    const ua = uv[prev], ub = uv[i]
+    let side: V2 = [-(ub[1] - ua[1]), ub[0] - ua[0]]
+    const sl = Math.hypot(side[0], side[1])
+    if (sl < 1e-12) continue
+    side = [side[0] / sl, side[1] / sl]
+    if ((cu - ua[0]) * side[0] + (cv - ua[1]) * side[1] < 0) side = [-side[0], -side[1]]
+    const hA = endHeight(profile(surface, ua, ub, side), true), hB = endHeight(nbB.spans, true), hC = endHeight(nbC.spans, false)
+    if (hA === null || hB === null || hC === null) continue
+    const v = pts[i]
+    const pa: Vec3 = [v[0] + normal[0] * hA, v[1] + normal[1] * hA, v[2] + normal[2] * hA]
+    const pb: Vec3 = [v[0] + nbB.n[0] * hB, v[1] + nbB.n[1] * hB, v[2] + nbB.n[2] * hB]
+    const pc: Vec3 = [v[0] + nbC.n[0] * hC, v[1] + nbC.n[1] * hC, v[2] + nbC.n[2] * hC]
+    let nn = unit(cross(sub(pb, pa), sub(pc, pa)))
+    if (!nn) continue
+    const facing: Vec3 = [normal[0] + nbB.n[0] + nbC.n[0], normal[1] + nbB.n[1] + nbC.n[1], normal[2] + nbB.n[2] + nbC.n[2]]
+    const flip = dot(nn, facing) < 0
+    if (flip) nn = [-nn[0], -nn[1], -nn[2]]
+    if (budget) { if (budget.left < 1) break; budget.left -= 1 }
+    for (const q of flip ? [pa, pc, pb] : [pa, pb, pc]) out.push(q[0], q[1], q[2], nn[0], nn[1], nn[2], uv[i][0], uv[i][1])
+  }
+  return out
+}
+
+/**
  * For the polygons that make up one face (the fragments a cut leaves of it): which edge of which polygon is on the outline of their union (true), and which
  * is shared with another of them (false: the relief goes on over it). `edge k` of a polygon runs from its vertex k to k + 1. An edge a neighbour only
  * partly shares counts as outline.

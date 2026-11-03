@@ -16,7 +16,7 @@ import { planarCoordsProjected } from './uv'
 import { brushTextureSignature, faceUvAt, lerpVec3, planForFace, retexture } from './uvmesh'
 import { texEnv } from './texprops'
 import type { NeighbourFn } from './reliefApply'
-import { fanBorder, neighbourFn, newBudget, planHasRelief, planWithRelief, polygonBorders, reliefOf, reliefTriangle } from './reliefApply'
+import { fanBorder, neighbourFn, newBudget, planHasRelief, planWithRelief, polygonBorders, reliefCorners, reliefOf, reliefTriangle } from './reliefApply'
 
 /** `instance` = the instance that owns `brush` (a prefab's subtractor may cut the world, so it differs from the carved brush's own). Absent = the entry's instance. */
 export interface DerivedFragment { brush: string; instance?: string; face: number; v: number[] }
@@ -110,6 +110,7 @@ export function buildCarvedMesh(entry: DerivedEntry, w: World): CarvedMesh {
     const edgeB = relief || (plan && planHasRelief(plan)) ? bordersOf(f) : undefined
     let nb: NeighbourFn | undefined
     if (edgeB && parent && owned) { nb = neighbours.get(parent); if (!nb) { nb = neighbourFn(owned.brush, parent); neighbours.set(parent, nb) } }
+    if (relief && !plan && edgeB) for (const x of reliefCorners(pts, uv, normal, relief, edgeB, nb, budget)) list.push(x)
     for (let i = 1; i + 1 < n; i++) {
       const border = edgeB ? fanBorder(i, n, edgeB) : 0
       if (relief && !plan) {

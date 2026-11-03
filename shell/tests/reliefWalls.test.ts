@@ -3,7 +3,7 @@ import { faceNormal, makeBox } from '../src/model/geometry'
 import { defaultProps, texEnv } from '../src/model/texprops'
 import type { Vec3 } from '../src/model/math'
 import type { Relief } from '../src/model/relief'
-import { RELIEF_FLOATS, fanBorder, loopBorder, neighbourFn, pieceBorder, polygonBorders, reliefTriangle } from '../src/model/reliefApply'
+import { RELIEF_FLOATS, fanBorder, loopBorder, neighbourFn, pieceBorder, polygonBorders, reliefCorners, reliefTriangle } from '../src/model/reliefApply'
 
 type V2 = [number, number]
 // a tile whose surface is tilted along x: 0.1 high at its left border, 0 at its right one (so repeats do not join), over the quad (0..w, 0..h), uv = (x, 1 - y)
@@ -169,5 +169,32 @@ describe('neighbourFn', () => {
     const { b, top } = setup('t')
     for (const f of b.faces) if (f.id !== top.id) f.texture = 'plain'
     expect(neighbourFn(b, top)([0, 0, 1], [0, 1, 1])).toBeNull()
+  })
+})
+
+describe('relief corners', () => {
+  const quad: Vec3[] = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]
+  const uv: V2[] = quad.map((p) => [p[0], 1 - p[1]])
+  const spans = [{ t0: 0, t1: 1, z0: 0.2, z1: 0.2 }]
+  const nbr = (a: Vec3, b: Vec3) => {
+    if (Math.abs(a[0]) < 1e-9 && Math.abs(b[0]) < 1e-9) return { n: [1, 0, 0] as Vec3, spans }
+    if (Math.abs(a[1]) < 1e-9 && Math.abs(b[1]) < 1e-9) return { n: [0, 1, 0] as Vec3, spans }
+    return null
+  }
+  it('joins the three relief points where two outline edges meet two relief neighbours', () => {
+    const out = reliefCorners(quad, uv, [0, 0, 1], raised, [true, true, true, true], nbr)
+    expect(out).toHaveLength(3 * RELIEF_FLOATS)
+    const pts = [0, 1, 2].map((k) => out.slice(k * RELIEF_FLOATS, k * RELIEF_FLOATS + 3))
+    for (const want of [[0, 0, 0.2], [0.2, 0, 0], [0, 0.2, 0]]) expect(pts.some((p) => p.every((c, i) => Math.abs(c - want[i]) < 1e-9))).toBe(true)
+    const [a, b, c] = pts as Vec3[]
+    const nrm = out.slice(3, 6)
+    const geo = [(b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]), (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]), (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])]
+    expect(geo[0] * nrm[0] + geo[1] * nrm[1] + geo[2] * nrm[2]).toBeGreaterThan(0) // winding follows the normal
+    expect(nrm[0] + nrm[1] + nrm[2]).toBeGreaterThan(0) // looks away from the brush
+  })
+  it('is left to the neighbour whose normal comes first, and needs relief on both sides', () => {
+    expect(reliefCorners(quad, uv, [0, 0, 1], raised, [true, true, true, true], (a, b) => { const r = nbr(a, b); return r ? { ...r, n: [r.n[0] - 2, r.n[1] - 2, r.n[2]] as Vec3 } : null })).toHaveLength(0)
+    expect(reliefCorners(quad, uv, [0, 0, 1], raised, [true, true, true, true], (a, b) => (Math.abs(a[0]) < 1e-9 && Math.abs(b[0]) < 1e-9 ? nbr(a, b) : null))).toHaveLength(0)
+    expect(reliefCorners(quad, uv, [0, 0, 1], raised, [false, true, true, true], nbr)).toHaveLength(0)
   })
 })

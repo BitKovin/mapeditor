@@ -570,6 +570,61 @@ std::vector<TexturedTri> texturePolygon(const std::vector<V3>& pts, const V3& no
             flatTri(out, tex, tri, {uv[0], uv[i], uv[i + 1]}, normal);
         }
     }
+    // Corners: where the outline of the face turns at a point where it meets two faces behind it that have a relief too, each pair of reliefs is joined by a
+    // bevel (wall()) that ends at the corner. The three bevels leave a small triangular opening between the three relief points there: closed here, by the
+    // one of the three faces whose normal comes first (all three work out the same triangle).
+    if (relief && !plan && neighbour && border && border->size() == n) {
+        const auto rtsPtr = trisOf(*relief);
+        std::vector<const RTri*> surface;
+        for (const RTri& rt : *rtsPtr) if (!rt.wall) surface.push_back(&rt);
+        V2 centre{0, 0};
+        for (const V2& t : uv) { centre[0] += t[0] / static_cast<double>(n); centre[1] += t[1] / static_cast<double>(n); }
+        // the height of the relief at the end of a span list (t = 1: last span, t = 0: first)
+        const auto endHeight = [](const std::vector<Span>& spans, bool atEnd, double& z) {
+            for (const Span& sp : spans) {
+                if (atEnd && sp.t1 >= 1 - 1e-6) { z = sp.z1; return true; }
+                if (!atEnd && sp.t0 <= 1e-6) { z = sp.z0; return true; }
+            }
+            return false;
+        };
+        const auto before = [](const V3& x, const V3& y) {  // x comes before y
+            for (size_t m = 0; m < 3; ++m) { if (x[m] < y[m] - 1e-6) return true; if (x[m] > y[m] + 1e-6) return false; }
+            return false;
+        };
+        for (size_t i = 0; i < n; ++i) {
+            const size_t prev = (i + n - 1) % n, next = (i + 1) % n;
+            if (!(*border)[prev] || !(*border)[i]) continue;
+            const auto nbB = neighbour(pts[prev], pts[i]);
+            const auto nbC = neighbour(pts[i], pts[next]);
+            if (!nbB || !nbC || nbB->spans.empty() || nbC->spans.empty()) continue;
+            if (!before(normal, nbB->n) || !before(normal, nbC->n)) continue;
+            // the heights at the corner: of this face's relief along the edge that arrives there, of B's along it, of C's along the edge that leaves
+            const V2 ua = uv[prev], ub = uv[i];
+            V2 side{-(ub[1] - ua[1]), ub[0] - ua[0]};
+            const double sl = std::hypot(side[0], side[1]);
+            if (sl < 1e-12) continue;
+            side = {side[0] / sl, side[1] / sl};
+            if ((centre[0] - ua[0]) * side[0] + (centre[1] - ua[1]) * side[1] < 0) side = {-side[0], -side[1]};
+            double hA = 0, hB = 0, hC = 0;
+            if (!endHeight(profile(surface, ua, ub, side), true, hA) || !endHeight(nbB->spans, true, hB) || !endHeight(nbC->spans, false, hC)) continue;
+            const V3 v = pts[i];
+            const V3 pa{v[0] + normal[0] * hA, v[1] + normal[1] * hA, v[2] + normal[2] * hA};
+            const V3 pb{v[0] + nbB->n[0] * hB, v[1] + nbB->n[1] * hB, v[2] + nbB->n[2] * hB};
+            const V3 pc{v[0] + nbC->n[0] * hC, v[1] + nbC->n[1] * hC, v[2] + nbC->n[2] * hC};
+            auto nn = unit(cross(sub(pb, pa), sub(pc, pa)));
+            if (!nn) continue;
+            const V3 facing{normal[0] + nbB->n[0] + nbC->n[0], normal[1] + nbB->n[1] + nbC->n[1], normal[2] + nbC->n[2] + nbB->n[2]};
+            const bool flip = dot(*nn, facing) < 0;
+            if (flip) nn = V3{-(*nn)[0], -(*nn)[1], -(*nn)[2]};
+            if (budget) { if (budget->left < 1) break; budget->left -= 1; }
+            TexturedTri tt;
+            tt.texture = tex;
+            tt.pos = flip ? std::array<V3, 3>{pa, pc, pb} : std::array<V3, 3>{pa, pb, pc};
+            tt.uv = {uv[i], uv[i], uv[i]};
+            tt.normal = {*nn, *nn, *nn};
+            out.push_back(tt);
+        }
+    }
     return out;
 }
 
