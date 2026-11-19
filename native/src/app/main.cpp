@@ -80,6 +80,11 @@ int main(int argc, char** argv) {
     services.vulkanInstance = &vulkanInstance;
     services.settings = screenshotRun ? nullptr : &layoutSettings;
     services.forceViewports = parsed.options.layoutViewports;
+    // Keys: the shipped preset next to the exe, the person's changes in %APPDATA%\mapeditor_native\keymaps (none in a screenshot run).
+    services.keymapPresetPath = (QCoreApplication::applicationDirPath() + QStringLiteral("/keymaps/default.json")).toStdString();
+    const QString appData = qEnvironmentVariable("APPDATA");
+    if (!screenshotRun && !appData.isEmpty())
+        services.userKeymapPath = (appData + QStringLiteral("/mapeditor_native/keymaps/default.json")).toStdString();
     native::ui::MainWindow window(services);
     window.setStatsRows(device->caps().rows());
     window.show();

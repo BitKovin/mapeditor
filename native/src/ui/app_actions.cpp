@@ -1,0 +1,253 @@
+// ui/app_actions -- see app_actions.h.
+#include "ui/app_actions.h"
+
+#include <DockWidget.h>
+
+#include <algorithm>
+
+#include "render/viewport_window.h"
+#include "ui/main_window.h"
+
+namespace native::ui {
+
+namespace {
+
+using actions::ActionDef;
+using actions::ActionEnv;
+using actions::ActionKind;
+using actions::InputEvent;
+using actions::Invocation;
+using json = nlohmann::json;
+
+bool isRelease(const InputEvent& e) {
+    return e.type == InputEvent::Type::KeyRelease || e.type == InputEvent::Type::MouseRelease;
+}
+
+render::ViewportWindow* viewportOf(const ActionEnv& env) {
+    const UiEnv* u = env.as<UiEnv>();
+    return u ? u->viewport : nullptr;
+}
+
+bool haveViewport(const ActionEnv& env, const json&) { return viewportOf(env) != nullptr; }
+
+render::CameraMode modeFromName(const std::string& name) {
+    if (name == "orbit") return render::CameraMode::Orbit;
+    if (name == "top") return render::CameraMode::Top;
+    if (name == "front") return render::CameraMode::Front;
+    if (name == "side") return render::CameraMode::Side;
+    return render::CameraMode::Fly;
+}
+
+void add(actions::Registry& r, ActionDef d) { r.add(std::move(d)); }
+
+// A drag of the active viewport's camera: `pan` = middle-button style panning, else look / orbit / ortho pan.
+void dragAction(actions::Registry& r, const char* id, const char* label, const char* context, bool pan, const char* holdContext = "") {
+    ActionDef d;
+    d.id = id;
+    d.label = label;
+    d.category = "Camera";
+    d.kind = ActionKind::Hold;
+    d.contexts = {context};
+    d.holdContext = holdContext;
+    d.enabled = haveViewport;
+    d.run = [pan](ActionEnv& env, const Invocation& inv) {
+        render::ViewportWindow* vp = viewportOf(env);
+        if (!vp) return;
+        if (isRelease(inv.event)) {
+            vp->stopFlight();   // the fly keys belong to the camera only while the look button is held
+            return;
+        }
+        if (inv.event.type != InputEvent::Type::MouseMove) return;
+        const double h = std::max(1, vp->height());
+        if (pan) vp->rig().pan(inv.event.dx, inv.event.dy, h);
+        else vp->rig().drag(inv.event.dx, inv.event.dy, h);
+        vp->viewChanged();
+    };
+    add(r, std::move(d));
+}
+
+void flyKeyAction(actions::Registry& r, const char* id, const char* label, render::FlyKey key) {
+    ActionDef d;
+    d.id = id;
+    d.label = label;
+    d.category = "Camera";
+    d.description = "Moves the fly camera while the key is held and the look button is down (Shift = x3).";
+    d.kind = ActionKind::Hold;
+    d.contexts = {"hold:camera.fly"};
+    d.enabled = haveViewport;
+    d.run = [key](ActionEnv& env, const Invocation& inv) {
+        render::ViewportWindow* vp = viewportOf(env);
+        if (!vp) return;
+        if (isRelease(inv.event)) {
+            vp->flyKey(key, false);
+            return;
+        }
+        vp->setBoost((inv.event.mods & actions::kShift) != 0);
+        vp->flyKey(key, true);
+    };
+    add(r, std::move(d));
+}
+
+} // namespace
+
+std::vector<std::string> viewportContexts(const render::ViewportWindow& viewport) {
+    std::vector<std::string> c = {"area:viewport"};
+    switch (viewport.rig().mode()) {
+        case render::CameraMode::Fly: c.push_back("view:perspective"); c.push_back("view:fly"); break;
+        case render::CameraMode::Orbit: c.push_back("view:perspective"); c.push_back("view:orbit"); break;
+        default: c.push_back("view:ortho"); break;
+    }
+    return c;
+}
+
+void registerAppActions(actions::Registry& r) {
+    // ---- file / edit ----
+    {
+        ActionDef d;
+        d.id = "file.exit";
+        d.label = "Exit";
+        d.category = "File";
+        d.menu = "&File";
+        d.run = [](ActionEnv& env, const Invocation&) {
+            if (auto* u = env.as<UiEnv>(); u && u->window) u->window->close();
+        };
+        add(r, std::move(d));
+    }
+    // Undo and redo exist from the start so the keys and the menu are in place; they are disabled until a document exists (M2).
+    for (const char* which : {"undo", "redo"}) {
+        ActionDef d;
+        d.id = std::string("edit.") + which;
+        d.label = which[0] == 'u' ? "Undo" : "Redo";
+        d.category = "Edit";
+        d.menu = "&Edit";
+        d.enabled = [](const ActionEnv&, const json&) { return false; };
+        d.run = [](ActionEnv&, const Invocation&) {};
+        add(r, std::move(d));
+    }
+
+    // ---- view ----
+    {
+        ActionDef d;
+        d.id = "view.layout";
+        d.label = "Viewport layout";
+        d.category = "View";
+        d.description = "Shows 1, 2 or 4 viewports (perspective, top, front, side).";
+        d.menu = "&View/&Layout";
+        d.params = {{"count", 1}};
+        d.variants = {{"&1 viewport", {{"count", 1}}}, {"&2 viewports", {{"count", 2}}}, {"&4 viewports", {{"count", 4}}}};
+        d.enabled = [](const ActionEnv& env, const json&) { auto* u = env.as<UiEnv>(); return u && u->window && u->window->canLayout(); };
+        d.checked = [](const ActionEnv& env, const json& p) {
+            auto* u = env.as<UiEnv>();
+            return u && u->window && static_cast<int>(u->window->layoutPreset()) == p.value("count", 1);
+        };
+        d.kind = ActionKind::Toggle;
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            auto* u = env.as<UiEnv>();
+            if (!u || !u->window) return;
+            const int n = inv.params.value("count", 1);
+            u->window->setLayoutPreset(n == 4 ? LayoutPreset::Four : (n == 2 ? LayoutPreset::Two : LayoutPreset::One));
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "camera.mode";
+        d.label = "Camera mode";
+        d.category = "Camera";
+        d.description = "Switches the active viewport between the perspective cameras (fly, orbit) and the orthographic views.";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&View/&Camera (active viewport)";
+        d.params = {{"mode", "fly"}};
+        d.variants = {{"&Fly", {{"mode", "fly"}}},     {"&Orbit", {{"mode", "orbit"}}}, {"&Top", {{"mode", "top"}}},
+                      {"F&ront", {{"mode", "front"}}}, {"&Side", {{"mode", "side"}}}};
+        d.enabled = haveViewport;
+        d.checked = [](const ActionEnv& env, const json& p) {
+            const auto* vp = viewportOf(env);
+            return vp && vp->rig().mode() == modeFromName(p.value("mode", "fly"));
+        };
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            if (auto* vp = viewportOf(env)) vp->setCameraMode(modeFromName(inv.params.value("mode", "fly")));
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "view.stats.toggle";
+        d.label = "Stats";
+        d.category = "View";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&View";
+        d.menuSeparatorBefore = true;
+        d.enabled = [](const ActionEnv& env, const json&) { auto* u = env.as<UiEnv>(); return u && u->window; };
+        d.checked = [](const ActionEnv& env, const json&) {
+            auto* u = env.as<UiEnv>();
+            return u && u->window && !u->window->statsDock()->isClosed();
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            auto* u = env.as<UiEnv>();
+            if (u && u->window) u->window->statsDock()->toggleView(u->window->statsDock()->isClosed());
+        };
+        add(r, std::move(d));
+    }
+
+    // ---- cameras (the input of a viewport) ----
+    dragAction(r, "camera.look", "Look (fly camera)", "view:fly", false, "hold:camera.fly");
+    dragAction(r, "camera.orbit", "Orbit", "view:orbit", false);
+    dragAction(r, "camera.pan2d", "Pan (orthographic view)", "view:ortho", false);
+    dragAction(r, "camera.pan", "Pan", "area:viewport", true);
+    {
+        ActionDef d;
+        d.id = "camera.dolly";
+        d.label = "Dolly / zoom";
+        d.category = "Camera";
+        d.kind = ActionKind::Axis;
+        d.contexts = {"area:viewport"};
+        d.enabled = haveViewport;
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            if (auto* vp = viewportOf(env)) {
+                vp->rig().wheel(inv.event.wheel, false);
+                vp->viewChanged();
+            }
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "camera.fly.speed";
+        d.label = "Fly speed";
+        d.category = "Camera";
+        d.description = "Changes the fly speed by x1.2 per notch while flying.";
+        d.kind = ActionKind::Axis;
+        d.contexts = {"hold:camera.fly"};
+        d.enabled = haveViewport;
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            if (auto* vp = viewportOf(env)) {
+                vp->rig().wheel(inv.event.wheel, true);
+                vp->viewChanged();
+            }
+        };
+        add(r, std::move(d));
+    }
+    flyKeyAction(r, "camera.fly.forward", "Fly forward", render::FlyKey::Forward);
+    flyKeyAction(r, "camera.fly.back", "Fly back", render::FlyKey::Back);
+    flyKeyAction(r, "camera.fly.left", "Fly left", render::FlyKey::Left);
+    flyKeyAction(r, "camera.fly.right", "Fly right", render::FlyKey::Right);
+    flyKeyAction(r, "camera.fly.up", "Fly up", render::FlyKey::Up);
+    flyKeyAction(r, "camera.fly.down", "Fly down", render::FlyKey::Down);
+    {
+        ActionDef d;
+        d.id = "camera.fly.boost";
+        d.label = "Fly boost";
+        d.category = "Camera";
+        d.description = "Flies 3x faster while held.";
+        d.kind = ActionKind::Hold;
+        d.contexts = {"hold:camera.fly"};
+        d.enabled = haveViewport;
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            if (auto* vp = viewportOf(env)) vp->setBoost(!isRelease(inv.event));
+        };
+        add(r, std::move(d));
+    }
+}
+
+} // namespace native::ui

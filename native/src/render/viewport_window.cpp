@@ -23,7 +23,6 @@ ViewportWindow::ViewportWindow(RenderThread& renderThread, QVulkanInstance& inst
 }
 
 ViewportWindow::~ViewportWindow() {
-    setKeyFilter(false);
     flightTimer_.stop();
     releasePointer();
     dropViewport();
@@ -111,13 +110,10 @@ void ViewportWindow::resizeEvent(QResizeEvent*) {
     pushView();
 }
 
-// ---- camera input (T1.4) ----------------------------------------------------------------------------------------------------
-// The Shell's bindings: RMB drag looks (fly) / orbits (orbit) / pans (ortho), MMB drag pans, the wheel dollies / zooms, RMB held +
-// W A S D Q E flies (Shift x3), RMB held + wheel changes the fly speed. The pointer is hidden and put back after every move so
-// it never hits the screen edge (the Shell's pointer lock).
+// ---- pointer lock, flight and input forwarding (T1.4, input moved to the router in T1.6) --------------------------------------
+// The pointer is hidden and put back after every move so it never hits the screen edge (the Shell's pointer lock).
 
 void ViewportWindow::grabPointer(const QPoint& globalPos) {
-    if (!rmb_ && !mmb_) return;
     lockPos_ = globalPos;
     if (!cursorHidden_) {
         setCursor(Qt::BlankCursor);
@@ -138,128 +134,70 @@ void ViewportWindow::stopFlight() {
     flightTimer_.stop();
 }
 
+void ViewportWindow::flyKey(FlyKey key, bool down) {
+    rig_.setFlyKey(key, down);
+    if (down) {
+        if (!flightTimer_.isActive()) {
+            flightClock_.start();
+            flightTimer_.start();
+        }
+    } else if (!rig_.flying()) {
+        flightTimer_.stop();
+    }
+}
+
 void ViewportWindow::mousePressEvent(QMouseEvent* e) {
     requestActivate();
     if (onActivated_) onActivated_();
-    if (e->button() == Qt::RightButton) rmb_ = true;
-    else if (e->button() == Qt::MiddleButton) mmb_ = true;
-    else return;
-    grabPointer(e->globalPosition().toPoint());
-    setKeyFilter(true);
-    e->accept();
+    lastPos_ = e->position();
+    const bool handled = hook_ && hook_(e, QPointF());
+    const Qt::MouseButton b = e->button();
+    if (handled && (b == Qt::RightButton || b == Qt::MiddleButton)) {
+        lockedButtons_ |= 1u << (b == Qt::RightButton ? 2 : 3);
+        grabPointer(e->globalPosition().toPoint());
+    }
+    if (handled) e->accept();
 }
 
 void ViewportWindow::mouseMoveEvent(QMouseEvent* e) {
-    if (!rmb_ && !mmb_) return;
-    const QPoint now = e->globalPosition().toPoint();
-    const QPoint d = now - lockPos_;
-    if (d.isNull()) return;
-    const double h = std::max(1, height());
-    bool changed = false;
-    if (mmb_) {
-        rig_.pan(d.x(), d.y(), h);
-        changed = true;
-    } else if (rmb_) {
-        rig_.drag(d.x(), d.y(), h);
-        changed = true;
+    if (e->buttons() == Qt::NoButton && lockedButtons_ == 0) {
+        lastPos_ = e->position();
+        return;
     }
-    QCursor::setPos(lockPos_);
-    if (changed) viewChanged();
-    e->accept();
+    QPointF delta;
+    if (lockedButtons_ != 0) {
+        delta = QPointF(e->globalPosition().toPoint() - lockPos_);
+        if (delta.isNull()) return;
+    } else {
+        delta = e->position() - lastPos_;
+    }
+    lastPos_ = e->position();
+    const bool handled = hook_ && hook_(e, delta);
+    if (lockedButtons_ != 0) QCursor::setPos(lockPos_);
+    if (handled) e->accept();
 }
 
 void ViewportWindow::mouseReleaseEvent(QMouseEvent* e) {
-    if (e->button() == Qt::RightButton) {
-        rmb_ = false;
-        stopFlight();           // the fly keys belong to the camera only while the right button is held
-    } else if (e->button() == Qt::MiddleButton) {
-        mmb_ = false;
-    } else {
-        return;
-    }
-    if (!rmb_ && !mmb_) {
-        releasePointer();
-        setKeyFilter(false);
-    }
-    e->accept();
+    const bool handled = hook_ && hook_(e, QPointF());
+    const Qt::MouseButton b = e->button();
+    if (b == Qt::RightButton) lockedButtons_ &= ~(1u << 2);
+    else if (b == Qt::MiddleButton) lockedButtons_ &= ~(1u << 3);
+    if (lockedButtons_ == 0) releasePointer();
+    if (handled) e->accept();
 }
 
 void ViewportWindow::wheelEvent(QWheelEvent* e) {
-    // Qt: 120 per notch, positive = away from the user. Shell (browser): ~100 per notch, positive = towards the user.
-    const double deltaY = -e->angleDelta().y() * (100.0 / 120.0);
-    if (deltaY == 0) return;
-    rig_.wheel(deltaY, rmb_);
-    viewChanged();
-    e->accept();
-}
-
-namespace {
-bool flyKeyOf(int key, FlyKey& out) {
-    switch (key) {
-        case Qt::Key_W: out = FlyKey::Forward; return true;
-        case Qt::Key_S: out = FlyKey::Back; return true;
-        case Qt::Key_D: out = FlyKey::Right; return true;
-        case Qt::Key_A: out = FlyKey::Left; return true;
-        case Qt::Key_E: out = FlyKey::Up; return true;
-        case Qt::Key_Q: out = FlyKey::Down; return true;
-        default: return false;
-    }
-}
-} // namespace
-
-bool ViewportWindow::handleKey(QKeyEvent* e, bool press) {
-    rig_.setBoost(e->modifiers().testFlag(Qt::ShiftModifier));
-    FlyKey k;
-    if (!flyKeyOf(e->key(), k)) return false;
-    if (!press) {
-        if (e->isAutoRepeat()) return true;
-        rig_.setFlyKey(k, false);
-        if (!rig_.flying()) flightTimer_.stop();
-        return true;
-    }
-    if (!rmb_ || rig_.mode() != CameraMode::Fly) return false;
-    if (e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) return false;
-    if (e->isAutoRepeat()) return true;
-    rig_.setFlyKey(k, true);
-    if (!flightTimer_.isActive()) {
-        flightClock_.start();
-        flightTimer_.start();
-    }
-    return true;
-}
-
-void ViewportWindow::keyPressEvent(QKeyEvent* e) {
-    if (handleKey(e, true)) e->accept();
-}
-
-void ViewportWindow::keyReleaseEvent(QKeyEvent* e) {
-    if (handleKey(e, false)) e->accept();
-}
-
-void ViewportWindow::setKeyFilter(bool on) {
-    if (on == keyFilter_ || !QCoreApplication::instance()) return;
-    keyFilter_ = on;
-    if (on) QCoreApplication::instance()->installEventFilter(this);
-    else QCoreApplication::instance()->removeEventFilter(this);
-}
-
-bool ViewportWindow::eventFilter(QObject* watched, QEvent* e) {
-    if (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) {
-        auto* ke = static_cast<QKeyEvent*>(e);
-        FlyKey k;
-        if (flyKeyOf(ke->key(), k) && (rmb_ || rig_.flying())) return handleKey(ke, e->type() == QEvent::KeyPress);
-    }
-    return QWindow::eventFilter(watched, e);
+    if (hook_ && hook_(e, QPointF())) e->accept();
 }
 
 void ViewportWindow::focusOutEvent(QFocusEvent*) {
-    // Focus may merely move to the widget hosting this window while a button is held: the mouse stays captured and the keys are
-    // taken by the application filter. Only losing the application itself ends the gesture.
+    // Focus may merely move to the widget hosting this window while a button is held: the mouse stays captured. Only losing the
+    // application itself ends the gesture.
     if (QGuiApplication::applicationState() == Qt::ApplicationActive) return;
-    rmb_ = mmb_ = false;
-    stopFlight();
+    lockedButtons_ = 0;
     releasePointer();
-    setKeyFilter(false);
+    stopFlight();
+    if (onCancel_) onCancel_();
 }
 
 void ViewportWindow::flightTick() {

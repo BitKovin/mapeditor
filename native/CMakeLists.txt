@@ -127,25 +127,37 @@ native_module(render SOURCES src/render/module_info.cpp src/render/render_thread
                      DEPENDS native_scene native_gpu Qt6::Gui)
 add_dependencies(native_render native_shaders)
 target_include_directories(native_render PRIVATE "${NATIVE_SHADER_GEN_DIR}")
+# The action system (registry, contexts, keymap layers, input router) is Qt-free and sits next to base: the viewport glue (render),
+# the Qt adapter and menus (ui) and the tools all use it. 10_UI_AND_INPUT.md.
+native_module(actions SOURCES src/app/actions/input.cpp src/app/actions/registry.cpp src/app/actions/contexts.cpp
+                      src/app/actions/keymap.cpp src/app/actions/router.cpp DEPENDS native_base)
 native_module(tools  SOURCES src/tools/module_info.cpp  DEPENDS native_render native_light)
 native_module(ui     SOURCES src/ui/module_info.cpp src/ui/main_window.cpp src/ui/main_window.h src/ui/stats_panel.cpp src/ui/stats_panel.h
-                     DEPENDS native_tools Qt6::Widgets ads::qtadvanceddocking)
+                     src/ui/input_adapter.cpp src/ui/input_adapter.h src/ui/app_actions.cpp src/ui/app_actions.h
+                     src/ui/registry_menus.cpp src/ui/registry_menus.h
+                     DEPENDS native_tools native_actions Qt6::Widgets ads::qtadvanceddocking)
 
 # ---- the application ----------------------------------------------------------------------------------------------------
 add_executable(mapeditor_native WIN32 src/app/main.cpp src/app/app_options.cpp src/app/app_options.h)
 target_link_libraries(mapeditor_native PRIVATE native_ui Qt6::Widgets)
 native_warnings(mapeditor_native)
+# Shipped keymap presets next to the exe (<exe dir>/keymaps/default.json).
+add_custom_command(TARGET mapeditor_native POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets/keymaps" "${CMAKE_BINARY_DIR}/keymaps"
+  COMMENT "keymap presets")
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src)
+target_compile_definitions(native_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
 target_link_libraries(native_tests PRIVATE native_ui Qt6::Widgets Qt6::Test)
 native_warnings(native_tests)
 
 # Tests that need real windows and the GPU (Qt "windows" platform): viewports in docks, re-docking, resizing.
-add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp)
+add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp)
 target_include_directories(native_gui_tests PRIVATE src)
+target_compile_definitions(native_gui_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
 target_link_libraries(native_gui_tests PRIVATE native_ui Qt6::Widgets)
 native_warnings(native_gui_tests)
 

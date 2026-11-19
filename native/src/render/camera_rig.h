@@ -45,6 +45,7 @@ public:
     // Held fly keys; Shift = x3. Keys only act while flying is allowed (right button held) - the caller decides, see clearFlyKeys.
     void setFlyKey(FlyKey key, bool down);
     void setBoost(bool on) { boost_ = on; }
+    bool boosting() const { return boost_; }
     void clearFlyKeys();
     bool flying() const { return keys_ != 0; }
     // Moves the fly camera for dt seconds along the held keys; true when it moved.

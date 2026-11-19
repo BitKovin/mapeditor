@@ -73,7 +73,9 @@ mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--
   layout, so a visual check is always the default layout (or the one named by `--layout`).
 - `--layout <1|2|4>` (T1.4) starts with that many viewports (perspective, top, front, side) instead of the saved layout. The
   layout (preset, dock arrangement, window geometry, every viewport's settings and camera poses) is kept in
-  `%APPDATA%/MapEditor/MapEditorNative.ini` and restored at the next start.
+  `%APPDATA%/MapEditor/MapEditorNative.ini` and restored at the next start. Keys: the shipped preset is copied next to the exe
+  (`<exe dir>/keymaps/default.json`, from `native/assets/keymaps/`); the user's changes are read from
+  `%APPDATA%/mapeditor_native/keymaps/default.json` (not used by `--screenshot`).
 - `--automation-port` opens the local JSON socket (08_MILESTONES.md M9). Default: off.
 
 ## 7. Running tests

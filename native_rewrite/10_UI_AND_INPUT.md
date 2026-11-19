@@ -15,6 +15,13 @@ can rebind almost anything.
 
 ## 2. Actions (`native/src/app/actions/registry.h`)
 
+*Where it lives (T1.6):* the registry, contexts, keymap layers and the router are the Qt-free static library `native_actions`
+(`native/src/app/actions/`, depends on `native_base` only; linked by `native_ui`, so the viewport glue and the tools can use
+it). The Qt side is `ui/input_adapter` (Qt events -> `InputEvent`), `ui/app_actions` (the shell's own actions: file, edit,
+view / layout, cameras) and `ui/registry_menus` (menus generated from the registry). `MainWindow` owns the registry, keymap and
+router and filters every key event of the application; `ViewportWindow` forwards mouse / wheel events through a hook and keeps
+only the pointer lock and the flight timer. A parameterised action lists `variants` (label + params) to get one menu entry each.
+
 ```cpp
 enum class ActionKind {
     Trigger,     // runs once on press (Save, Delete, Extrude starts a modal operator ...)

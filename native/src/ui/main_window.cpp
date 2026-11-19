@@ -5,21 +5,31 @@
 #include <DockManager.h>
 #include <DockWidget.h>
 
-#include <QAction>
-#include <QActionGroup>
+#include <QApplication>
 #include <QByteArray>
 #include <QCloseEvent>
-#include <QMenu>
+#include <QCursor>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QGuiApplication>
+#include <QKeyEvent>
 #include <QMenuBar>
+#include <QMouseEvent>
+#include <QSaveFile>
 #include <QSettings>
 #include <QString>
+#include <QWheelEvent>
 #include <QWidget>
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 
+#include "base/log.h"
 #include "render/viewport_window.h"
+#include "ui/input_adapter.h"
+#include "ui/registry_menus.h"
 #include "ui/stats_panel.h"
 
 namespace native::ui {
@@ -108,10 +118,20 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     } else {
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, statsDock_);   // widget-only tests
     }
-    buildMenus();
+    registerAppActions(registry_);
+    loadKeymap();
+    menus_ = new RegistryMenus(menuBar(), registry_, keymap_, [this] { return currentUiEnv(); }, this);
+    menus_->build();
+    if (QCoreApplication::instance()) {
+        QCoreApplication::instance()->installEventFilter(this);
+        QObject::connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+            if (state != Qt::ApplicationActive) cancelInput();
+        });
+    }
 }
 
 MainWindow::~MainWindow() {
+    if (QCoreApplication::instance()) QCoreApplication::instance()->removeEventFilter(this);
     saveTimer_.stop();
     // The dock manager (a child) deletes the docks, the containers and so the viewport windows, which release their swapchains.
 }
@@ -151,6 +171,8 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
             scheduleSave();
         });
         window->setActivatedCallback([this, index] { active_ = static_cast<int>(index); });
+        window->setInputHook([this, index](QEvent* e, QPointF delta) { return routeViewportEvent(index, e, delta); });
+        window->setCancelCallback([this] { cancelInput(); });
         updateDockTitle(index);
     }
     // 1 = one viewport; 2 = side by side; 4 = a 2 x 2 grid (perspective top-left, top, front, side).
@@ -178,9 +200,12 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
 }
 
 void MainWindow::destroyViewports() {
+    cancelInput();
     for (const ViewportPanel& p : panels_) {
         p.window->setChangedCallback({});
         p.window->setActivatedCallback({});
+        p.window->setInputHook({});
+        p.window->setCancelCallback({});
         dockManager_->removeDockWidget(p.dock);
         delete p.dock;   // deletes the container and with it the viewport window (its swapchain is released first)
     }
@@ -201,8 +226,7 @@ void MainWindow::setLayoutPreset(LayoutPreset preset) {
     dockManager_->removeDockWidget(statsDock_);
     destroyViewports();
     buildViewports(preset, saved);
-    if (layoutGroup_)
-        for (QAction* a : layoutGroup_->actions()) a->setChecked(a->data().toInt() == static_cast<int>(preset));
+    if (menus_) menus_->refresh();
     scheduleSave();
 }
 
@@ -211,46 +235,111 @@ void MainWindow::updateDockTitle(size_t index) {
     panels_[index].dock->setWindowTitle(titleFor(*panels_[index].window));
 }
 
-// ---- menus ------------------------------------------------------------------------------------------------------------------
+// ---- actions and input --------------------------------------------------------------------------------------------------------
 
-void MainWindow::buildMenus() {
-    QMenu* view = menuBar()->addMenu(QStringLiteral("&View"));
-    if (!panels_.empty()) {
-        QMenu* layout = view->addMenu(QStringLiteral("&Layout"));
-        layoutGroup_ = new QActionGroup(this);
-        const std::pair<const char*, LayoutPreset> items[] = {
-            {"&1 viewport", LayoutPreset::One}, {"&2 viewports", LayoutPreset::Two}, {"&4 viewports", LayoutPreset::Four}};
-        for (const auto& [text, preset] : items) {
-            QAction* a = layout->addAction(QString::fromLatin1(text));
-            a->setCheckable(true);
-            a->setData(static_cast<int>(preset));
-            a->setChecked(preset == preset_);
-            layoutGroup_->addAction(a);
-            QObject::connect(a, &QAction::triggered, this, [this, preset] { setLayoutPreset(preset); });
+UiEnv MainWindow::currentUiEnv() const {
+    UiEnv u;
+    u.window = const_cast<MainWindow*>(this);
+    u.viewport = activeViewport();
+    return u;
+}
+
+void MainWindow::loadKeymap() {
+    keymapError_.clear();
+    const auto readFile = [](const std::string& path, std::string& out) {
+        QFile f(QString::fromStdString(path));
+        if (path.empty() || !f.open(QIODevice::ReadOnly)) return false;
+        out = f.readAll().toStdString();
+        return true;
+    };
+    std::string text;
+    if (!services_.keymapPresetPath.empty()) {
+        if (!readFile(services_.keymapPresetPath, text)) {
+            keymapError_ = "keymap preset not found: " + services_.keymapPresetPath;
+        } else if (!keymap_.loadPreset(text, &keymapError_)) {
+            keymapError_ = services_.keymapPresetPath + ": " + keymapError_;
         }
-        QMenu* camera = view->addMenu(QStringLiteral("&Camera (active viewport)"));
-        cameraGroup_ = new QActionGroup(this);
-        const std::pair<const char*, render::CameraMode> modes[] = {
-            {"&Fly", render::CameraMode::Fly}, {"&Orbit", render::CameraMode::Orbit}, {"&Top", render::CameraMode::Top},
-            {"F&ront", render::CameraMode::Front}, {"&Side", render::CameraMode::Side}};
-        for (const auto& [text, mode] : modes) {
-            QAction* a = camera->addAction(QString::fromLatin1(text));
-            a->setCheckable(true);
-            cameraGroup_->addAction(a);
-            QObject::connect(a, &QAction::triggered, this, [this, mode] {
-                if (auto* v = activeViewport()) v->setCameraMode(mode);
-            });
-        }
-        QObject::connect(camera, &QMenu::aboutToShow, this, [this, camera] {
-            const auto* v = activeViewport();
-            const auto acts = camera->actions();
-            const render::CameraMode order[] = {render::CameraMode::Fly, render::CameraMode::Orbit, render::CameraMode::Top,
-                                                render::CameraMode::Front, render::CameraMode::Side};
-            for (int i = 0; i < acts.size() && i < 5; ++i) acts[i]->setChecked(v && v->rig().mode() == order[i]);
-        });
-        view->addSeparator();
     }
-    view->addAction(statsDock_->toggleViewAction());
+    if (keymapError_.empty() && readFile(services_.userKeymapPath, text) && !keymap_.loadUser(text, &keymapError_))
+        keymapError_ = services_.userKeymapPath + ": " + keymapError_;
+    if (!keymapError_.empty()) base::logError("keymap: " + keymapError_);
+}
+
+bool MainWindow::saveUserKeymap() const {
+    if (services_.userKeymapPath.empty()) return false;
+    const QFileInfo info(QString::fromStdString(services_.userKeymapPath));
+    QDir().mkpath(info.absolutePath());
+    QSaveFile f(info.absoluteFilePath());
+    if (!f.open(QIODevice::WriteOnly)) return false;
+    const std::string text = keymap_.userToJson();
+    f.write(text.data(), static_cast<qint64>(text.size()));
+    return f.commit();
+}
+
+render::ViewportWindow* MainWindow::viewportUnderCursor() const {
+    const QPoint global = QCursor::pos();
+    for (const ViewportPanel& p : panels_)
+        if (p.container->isVisible() && p.container->rect().contains(p.container->mapFromGlobal(global))) return p.window;
+    return nullptr;
+}
+
+void MainWindow::setContextsFor(render::ViewportWindow* vp) {
+    std::vector<std::string> contexts = {"window:main"};
+    if (vp) {
+        const std::vector<std::string> v = viewportContexts(*vp);
+        contexts.insert(contexts.end(), v.begin(), v.end());
+    }
+    router_.contexts().set(contexts);
+}
+
+bool MainWindow::routeKey(const QKeyEvent& e, bool press) {
+    // A hold in progress keeps the viewport it started in; otherwise the viewport under the pointer gives the contexts.
+    render::ViewportWindow* vp = router_.holding() && holdViewport_ ? holdViewport_ : viewportUnderCursor();
+    setContextsFor(vp);
+    UiEnv ui{this, vp ? vp : activeViewport()};
+    actions::ActionEnv env{&ui};
+    const auto r = router_.handle(fromKeyEvent(e, press, isTextInput(QApplication::focusWidget())), env);
+    if (!router_.holding()) holdViewport_ = nullptr;
+    return r.handled;
+}
+
+bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
+    if (index >= panels_.size()) return false;
+    render::ViewportWindow* vp = panels_[index].window;
+    actions::InputEvent ev;
+    switch (e->type()) {
+        case QEvent::Wheel: ev = fromWheelEvent(*static_cast<QWheelEvent*>(e)); break;
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonDblClick:
+        case QEvent::MouseButtonRelease:
+        case QEvent::MouseMove: ev = fromMouseEvent(*static_cast<QMouseEvent*>(e), delta); break;
+        default: return false;
+    }
+    setContextsFor(vp);
+    UiEnv ui{this, vp};
+    actions::ActionEnv env{&ui};
+    const bool before = router_.holding();
+    const auto r = router_.handle(ev, env);
+    if (ev.type == actions::InputEvent::Type::MousePress && r.handled && router_.holding() && !before) holdViewport_ = vp;
+    if (!router_.holding()) holdViewport_ = nullptr;
+    return r.handled;
+}
+
+void MainWindow::cancelInput() {
+    if (!router_.holding() && !router_.sequencePending()) return;
+    UiEnv ui{this, holdViewport_ ? holdViewport_ : activeViewport()};
+    actions::ActionEnv env{&ui};
+    router_.cancelAll(env, nowMs());
+    holdViewport_ = nullptr;
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
+    if ((e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) && watched->isWindowType() && !QApplication::activePopupWidget() &&
+        !QApplication::activeModalWidget()) {
+        // A window gets the event first and then hands it to its focus widget (which the filter sees again): only the window pass counts.
+        if (routeKey(*static_cast<QKeyEvent*>(e), e->type() == QEvent::KeyPress)) return true;
+    }
+    return QMainWindow::eventFilter(watched, e);
 }
 
 // ---- persistence ------------------------------------------------------------------------------------------------------------

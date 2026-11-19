@@ -1,0 +1,24 @@
+{
+  "name": "default",
+  "bindings": [
+    { "action": "file.exit",   "context": "global", "input": "Ctrl+Q" },
+    { "action": "edit.undo",   "context": "global", "input": "Ctrl+Z" },
+    { "action": "edit.redo",   "context": "global", "input": "Ctrl+Shift+Z" },
+    { "action": "edit.redo",   "context": "global", "input": "Ctrl+Y" },
+
+    { "action": "camera.look",  "context": "view:fly",      "input": "RMB drag" },
+    { "action": "camera.orbit", "context": "view:orbit",    "input": "RMB drag" },
+    { "action": "camera.pan2d", "context": "view:ortho",    "input": "RMB drag" },
+    { "action": "camera.pan",   "context": "area:viewport", "input": "MMB drag" },
+    { "action": "camera.dolly", "context": "area:viewport", "input": "Wheel" },
+
+    { "action": "camera.fly.speed",    "context": "hold:camera.fly", "input": "Wheel" },
+    { "action": "camera.fly.forward",  "context": "hold:camera.fly", "input": "Hold phys:W", "ignoreShift": true },
+    { "action": "camera.fly.back",     "context": "hold:camera.fly", "input": "Hold phys:S", "ignoreShift": true },
+    { "action": "camera.fly.left",     "context": "hold:camera.fly", "input": "Hold phys:A", "ignoreShift": true },
+    { "action": "camera.fly.right",    "context": "hold:camera.fly", "input": "Hold phys:D", "ignoreShift": true },
+    { "action": "camera.fly.up",       "context": "hold:camera.fly", "input": "Hold phys:E", "ignoreShift": true },
+    { "action": "camera.fly.down",     "context": "hold:camera.fly", "input": "Hold phys:Q", "ignoreShift": true },
+    { "action": "camera.fly.boost",    "context": "hold:camera.fly", "input": "Hold Shift" }
+  ]
+}

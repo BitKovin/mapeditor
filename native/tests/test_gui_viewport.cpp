@@ -23,6 +23,7 @@
 #include <string>
 
 #include "gpu/device.h"
+#include "gui_support.h"
 #include "render/camera_rig.h"
 #include "render/render_thread.h"
 #include "render/viewport_window.h"
@@ -32,90 +33,13 @@ using namespace native;
 
 namespace {
 
-struct Rgb { int r, g, b; };
-Rgb pixel(const render::CapturedImage& img, uint32_t x, uint32_t y) {
-    const size_t i = (static_cast<size_t>(y) * img.width + x) * 4;
-    return {img.rgba[i], img.rgba[i + 1], img.rgba[i + 2]};
-}
-bool closeTo(Rgb a, Rgb b, int tol) { return std::abs(a.r - b.r) <= tol && std::abs(a.g - b.g) <= tol && std::abs(a.b - b.b) <= tol; }
-
-void pumpFor(int ms) {
-    QElapsedTimer t;
-    t.start();
-    while (t.elapsed() < ms) {
-        QApplication::processEvents(QEventLoop::AllEvents, 20);
-        QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-    }
-}
-
-bool waitUntil(const std::function<bool()>& cond, int timeoutMs = 4000) {
-    QElapsedTimer t;
-    t.start();
-    while (t.elapsed() < timeoutMs) {
-        if (cond()) return true;
-        QApplication::processEvents(QEventLoop::AllEvents, 10);
-    }
-    return cond();
-}
-
-// Device, Qt's wrapper of its VkInstance and the render thread, in the order main() creates them.
-struct App {
-    std::unique_ptr<gpu::Device> device;
-    QVulkanInstance qvk;
-    std::unique_ptr<render::RenderThread> rt;
-    bool ok = false;
-    App() {
-        gpu::DeviceOptions o;
-        o.validation = true;
-        std::string err;
-        device = gpu::Device::create(o, &err);
-        if (!device) { MESSAGE("no Vulkan device (" << err << "): GUI GPU test skipped"); return; }
-        qvk.setVkInstance(device->instance());
-        QByteArrayList ext = {"VK_KHR_surface", "VK_KHR_win32_surface"};
-        if (device->validationActive()) ext.push_back("VK_EXT_debug_utils");
-        qvk.setExtensions(ext);
-        if (!qvk.create()) { MESSAGE("QVulkanInstance::create failed: GUI GPU test skipped"); return; }
-        rt = std::make_unique<render::RenderThread>(*device);
-        ok = true;
-    }
-    ui::Services services() {
-        ui::Services s;
-        s.device = device.get();
-        s.renderThread = rt.get();
-        s.vulkanInstance = &qvk;
-        return s;
-    }
-};
+using namespace guitest;
 
 // The scene's 1 m box seen from above (top view): its +Y face. Sampled a few pixels off the centre so the axis lines do not cover it.
 constexpr Rgb kBoxTop{126, 183, 126};
 
 bool boxAtCentreOfTopView(const render::CapturedImage& img) {
     return closeTo(pixel(img, img.width / 2 - 5, img.height / 2 - 5), kBoxTop, 10);
-}
-
-void sendMouse(QWindow* w, QEvent::Type type, Qt::MouseButton button, Qt::MouseButtons buttons, QPoint local) {
-    const QPoint global = w->mapToGlobal(local);
-    QMouseEvent e(type, QPointF(local), QPointF(global), button, buttons, Qt::NoModifier);
-    QApplication::sendEvent(w, &e);
-}
-
-void sendKey(QWindow* w, QEvent::Type type, int key, Qt::KeyboardModifiers mods = Qt::NoModifier) {
-    QKeyEvent e(type, key, mods);
-    QApplication::sendEvent(w, &e);
-}
-
-void sendWheel(QWindow* w, int angleY, Qt::MouseButtons buttons) {
-    const QPoint local(w->width() / 2, w->height() / 2);
-    QWheelEvent e(QPointF(local), QPointF(w->mapToGlobal(local)), QPoint(), QPoint(0, angleY), buttons, Qt::NoModifier,
-                  Qt::NoScrollPhase, false);
-    QApplication::sendEvent(w, &e);
-}
-
-bool allReady(ui::MainWindow& window) {
-    for (const auto& p : window.viewports())
-        if (p.window->viewportId() == 0) return false;
-    return !window.viewports().empty();
 }
 
 } // namespace

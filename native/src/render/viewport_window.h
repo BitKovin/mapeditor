@@ -3,15 +3,19 @@
 // Owns: the Qt side of one viewport: it asks Qt for the VkSurfaceKHR (QVulkanInstance wraps the app's VkInstance), registers
 // the surface with the RenderThread, forwards resize / expose events and drops the viewport *before* Qt destroys the surface
 // (the render thread owns the swapchain, 05_RENDERER.md §3). Not QVulkanWindow: that creates its own device and frame loop.
-// T1.4 adds the camera: the window owns the viewport's CameraRig, turns mouse / key events into rig calls (RMB look / orbit /
-// ortho pan with the pointer hidden and held in place, MMB pan, wheel, RMB + WASDQE flight, Shift x3) and sends the resulting view
-// to the render thread. The keys are fixed here; the action registry and input router of T1.6 take them over.
+// T1.4 added the camera; T1.6 moved its input out: the window forwards mouse and wheel events to an input hook (the router of the
+// main window turns them into actions: RMB look, MMB pan, wheel dolly...) and keeps only the services an action cannot do from a
+// callback: hiding the pointer and holding it in place while a dragging button is down (the Shell's pointer lock, delta reported to
+// the hook) and the flight timer that moves the fly camera while keys are held. Keys reach the router through the application filter
+// of the main window, not through this window.
 // Thread: UI thread. The only file below ui/ that includes Qt headers (01_ARCHITECTURE.md §4).
 // Spec: 05_RENDERER.md §3, 08_MILESTONES.md T1.3 and T1.4.
 #pragma once
 
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QPoint>
+#include <QPointF>
 #include <QTimer>
 #include <QVulkanInstance>
 #include <QWindow>
@@ -44,8 +48,20 @@ public:
     void setChangedCallback(std::function<void()> cb) { onChanged_ = std::move(cb); }
     // Called when a mouse button is pressed in this viewport (the UI marks it as the active one).
     void setActivatedCallback(std::function<void()> cb) { onActivated_ = std::move(cb); }
-    // True while a mouse button that grabs the pointer is down.
-    bool pointerGrabbed() const { return rmb_ || mmb_; }
+    // Mouse press / move / release and wheel events (QMouseEvent / QWheelEvent) go here first. `lockedDelta` is the pointer motion
+    // since the lock position while the pointer is locked, else since the previous event. Returns true when an action took the event;
+    // a handled right / middle press locks the pointer until the button is released.
+    using InputHook = std::function<bool(QEvent* event, QPointF delta)>;
+    void setInputHook(InputHook hook) { hook_ = std::move(hook); }
+    // Called when the gesture is cancelled from outside (the application lost the focus): the router ends its holds.
+    void setCancelCallback(std::function<void()> cb) { onCancel_ = std::move(cb); }
+    // True while the pointer is locked (a dragging button is down).
+    bool pointerGrabbed() const { return lockedButtons_ != 0; }
+
+    // Flight service: the fly camera moves (in 8 ms ticks) while any fly key is down.
+    void flyKey(FlyKey key, bool down);
+    void setBoost(bool on) { rig_.setBoost(on); }
+    void stopFlight();
 
     // Renders the next frame and returns it (device pixels); empty on failure. Blocks the UI thread: tests / screenshots.
     CapturedImage capture();
@@ -58,12 +74,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
-    void keyPressEvent(QKeyEvent* e) override;
-    void keyReleaseEvent(QKeyEvent* e) override;
     void focusOutEvent(QFocusEvent* e) override;
-    // While a mouse button is held the fly keys are taken from the whole application: keyboard focus may sit on another widget
-    // (the container hosting this window) without that stopping the flight.
-    bool eventFilter(QObject* watched, QEvent* e) override;
 
 private:
     void ensureViewport();
@@ -72,9 +83,6 @@ private:
     void pushView();
     void grabPointer(const QPoint& globalPos);
     void releasePointer();
-    void stopFlight();
-    bool handleKey(QKeyEvent* e, bool press);
-    void setKeyFilter(bool on);
     void flightTick();
     QSize pixelSize() const;
 
@@ -82,9 +90,12 @@ private:
     ViewportId id_ = 0;
     float clear_[3] = {0.105f, 0.105f, 0.115f};
     CameraRig rig_;
-    std::function<void()> onChanged_, onActivated_;
-    bool rmb_ = false, mmb_ = false, cursorHidden_ = false, keyFilter_ = false;
+    std::function<void()> onChanged_, onActivated_, onCancel_;
+    InputHook hook_;
+    unsigned lockedButtons_ = 0;        // bit per mouse button (1 << button number) that locked the pointer
+    bool cursorHidden_ = false;
     QPoint lockPos_;
+    QPointF lastPos_;
     QTimer flightTimer_;
     QElapsedTimer flightClock_;
 };
