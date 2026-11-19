@@ -7,6 +7,7 @@
 #include <chrono>
 
 #include "base/hash.h"
+#include "scene/relief.h"
 
 namespace native::scene {
 
@@ -28,6 +29,31 @@ struct SceneBuilder::Build {
     std::vector<ObjectKey> keys;                           // the affected ones: one job each
     std::unordered_map<ObjectKey, ObjectProducts, ObjectKey::Hash> done;
     size_t finished = 0;
+
+    // phase 2 (T3.3): relief, after every surface of the build is known
+    int phase = 1;
+    bool reliefAll = false;
+    ReliefEnv env;
+    std::shared_ptr<const SceneSnapshot> baseAtStart;       // the complete snapshot the unaffected objects come from
+    std::unordered_map<std::string, const core::Brush*> parents;   // instance + 0x1f + brush id -> the authored brush (nodes held by `version` / `prefabs`)
+    std::vector<ObjectKey> reliefKeys;
+    std::vector<std::pair<ObjectKey, const BrushInfo*>> solids;    // every solid object: the neighbour search of the relief jobs
+    struct ReliefDone {
+        std::shared_ptr<const ReliefList> list;
+        uint64_t hash = 0;
+    };
+    std::unordered_map<ObjectKey, ReliefDone, ObjectKey::Hash> reliefDone;
+    size_t reliefFinished = 0;
+
+    const ObjectProducts* productsOf(const ObjectKey& key) const {
+        const auto d = done.find(key);
+        if (d != done.end()) return &d->second;
+        if (baseAtStart) {
+            const auto b = baseAtStart->objects.find(key);
+            if (b != baseAtStart->objects.end()) return &b->second;
+        }
+        return nullptr;
+    }
 };
 
 namespace {
@@ -86,7 +112,7 @@ const std::shared_ptr<const std::vector<core::LightSurface>>& noSurfaces() {
 
 } // namespace
 
-SceneBuilder::SceneBuilder(base::JobPool& pool, size_t cacheBudgetBytes) : pool_(pool), cache_(cacheBudgetBytes) {}
+SceneBuilder::SceneBuilder(base::JobPool& pool, size_t cacheBudgetBytes) : pool_(pool), cache_(cacheBudgetBytes / 4 * 3), reliefCache_(cacheBudgetBytes / 4) {}
 
 SceneBuilder::~SceneBuilder() {
     std::unique_lock<std::mutex> lock(mutex_);
@@ -123,6 +149,9 @@ BuilderStats SceneBuilder::stats() const {
     s.computed = computed_;
     s.cacheHits = hits_;
     s.abandoned = abandoned_;
+    s.reliefJobs = reliefJobs_;
+    s.reliefComputed = reliefComputed_;
+    s.reliefHits = reliefHits_;
     return s;
 }
 
@@ -143,7 +172,7 @@ void SceneBuilder::submit(std::shared_ptr<const doc::DocumentVersion> version, c
         mergeInto(sincePublish_, changes);
         if (outstanding_ > 0) {
             // Jobs of the running build read the core::Document: they are cancelled, and the next build starts when the last one is out.
-            if (!pending_) pending_ = Pending{std::move(version), std::move(prefabs), changes};
+            if (!pending_) pending_ = Pending{std::move(version), std::move(prefabs), changes, false};
             else {
                 pending_->version = std::move(version);
                 pending_->prefabs = std::move(prefabs);
@@ -289,14 +318,143 @@ void SceneBuilder::startBuildLocked(Pending p, std::vector<std::function<void()>
 
     patchCoreDocLocked(p, p.changes);
 
+    build->env = env_;
+    build->reliefAll = p.reliefAll;
+    build->baseAtStart = base_;
+    if (build->env) {
+        // the authored brushes the relief of a piece looks its face up in
+        for (const auto& en : p.version->entities)
+            for (const auto& bn : en->brushes) build->parents.emplace(std::string() + '\x1f' + bn->brush.id, &bn->brush);
+        if (p.prefabs)
+            for (const auto& inst : p.prefabs->instances)
+                for (const core::ResolvedEntity& re : *inst->entities)
+                    for (const core::Brush& b : re.entity.brushes) build->parents.emplace(core::instanceString(re.instancePath) + '\x1f' + b.id, &b);
+    }
+
+    current_ = build;
     if (build->keys.empty()) {
-        publishLocked(build, true, afterUnlock);
+        afterSurfacesLocked(build, afterUnlock);
         idleCv_.notify_all();
         return;
     }
-    current_ = build;
     outstanding_ = static_cast<int>(build->keys.size());
     for (size_t i = 0; i < build->keys.size(); ++i) pool_.submit([this, build, i] { runJob(build, i); }, 4);
+}
+
+// Every surface of the build is known: the relief wave (objects whose own surfaces or neighbours' changed), or the end of the build.
+void SceneBuilder::afterSurfacesLocked(const std::shared_ptr<Build>& build, std::vector<std::function<void()>>& afterUnlock) {
+    build->phase = 2;
+    if (build->env) {
+        const Index& index = *build->index;
+        build->solids.reserve(index.size());
+        for (const auto& [key, info] : index)
+            if (info.additive) build->solids.emplace_back(key, &info);
+        std::unordered_set<ObjectKey, ObjectKey::Hash> wanted;
+        const bool everything = build->reliefAll || !build->baseAtStart || build->keys.size() * 4 > index.size();
+        if (everything) {
+            for (const auto& [key, info] : build->solids) wanted.insert(key);
+        } else {
+            // the changed objects, and the solid objects that touch them (old or new place): their outlines may continue across the edge
+            for (const ObjectKey& k : build->keys) {
+                const auto now = index.find(k);
+                if (now != index.end() && now->second.additive) wanted.insert(k);
+                std::vector<doc::Box> boxes;
+                if (now != index.end()) boxes.push_back(now->second.box);
+                const auto was = baseIndex_->find(k);
+                if (was != baseIndex_->end()) boxes.push_back(was->second.box);
+                for (const auto& [key, info] : build->solids)
+                    for (const doc::Box& b : boxes)
+                        if (overlaps(info->box, b)) {
+                            wanted.insert(key);
+                            break;
+                        }
+            }
+        }
+        build->reliefKeys.assign(wanted.begin(), wanted.end());
+        std::sort(build->reliefKeys.begin(), build->reliefKeys.end());
+    }
+    if (build->reliefKeys.empty()) {
+        publishLocked(build, true, afterUnlock);
+        return;
+    }
+    outstanding_ += static_cast<int>(build->reliefKeys.size());
+    for (size_t i = 0; i < build->reliefKeys.size(); ++i) pool_.submit([this, build, i] { runReliefJob(build, i); }, 3);
+}
+
+void SceneBuilder::runReliefJob(const std::shared_ptr<Build>& build, size_t index) {
+    const ObjectKey& key = build->reliefKeys[index];
+    std::shared_ptr<const ReliefList> list;
+    uint64_t hash = 0;
+    const bool abandoned = generation_.load() != build->generation;
+    if (!abandoned) {
+        try {
+            const ObjectProducts* own = build->productsOf(key);
+            static const std::vector<core::LightSurface> none;
+            const std::vector<core::LightSurface>& ownSurfaces = own && own->surfaces ? *own->surfaces : none;
+            const doc::Box box = build->index->at(key).box;
+            // the solid objects that touch this one: their pieces take part in the outline test
+            std::vector<std::pair<const ObjectKey*, const ObjectProducts*>> near;
+            for (const auto& entry : build->solids) {
+                const ObjectKey& k = entry.first;
+                if (k == key || !overlaps(entry.second->box, box)) continue;
+                const ObjectProducts* p = build->productsOf(k);
+                if (p && p->surfaces && !p->surfaces->empty()) near.emplace_back(&k, p);
+            }
+            std::sort(near.begin(), near.end(), [](const auto& a, const auto& b) { return *a.first < *b.first; });
+            hash = mix(mix(own ? own->inputsHash : 0, build->env.revision), ownSurfaces.empty() ? 0 : 1);
+            for (const auto& [k, p] : near) hash = mix(mix(hash, ObjectKey::Hash()(*k)), p->inputsHash);
+            if (ownSurfaces.empty()) {
+                list = std::make_shared<const ReliefList>();
+            } else if (auto hit = reliefCache_.get(key, hash)) {
+                list = std::move(hit);
+                ++reliefHits_;
+            } else {
+                std::vector<const std::vector<core::LightSurface>*> around;
+                around.reserve(near.size());
+                for (const auto& [k, p] : near) around.push_back(p->surfaces.get());
+                const ParentFaceFn parent = [&](const std::string& inst, const std::string& brush, uint32_t face) {
+                    std::pair<const core::Brush*, const core::BrushFace*> r{nullptr, nullptr};
+                    const auto it = build->parents.find(inst + '\x1f' + brush);
+                    if (it == build->parents.end()) return r;
+                    r.first = it->second;
+                    for (const core::BrushFace& f : it->second->faces)
+                        if (f.id == face) {
+                            r.second = &f;
+                            break;
+                        }
+                    return r;
+                };
+                auto built = buildRelief(ownSurfaces, around, parent, build->env);
+                reliefCache_.put(key, hash, built, reliefBytes(*built));
+                list = std::move(built);
+                ++reliefComputed_;
+            }
+        } catch (...) {
+            list = std::make_shared<const ReliefList>();   // a face the Core cannot lay out: drawn flat
+        }
+    }
+    reliefJobFinished(build, index, std::move(list), hash, abandoned);
+}
+
+void SceneBuilder::reliefJobFinished(const std::shared_ptr<Build>& build, size_t index, std::shared_ptr<const ReliefList> relief, uint64_t hash, bool abandoned) {
+    std::vector<std::function<void()>> after;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (abandoned) {
+            ++abandoned_;
+        } else {
+            ++reliefJobs_;
+            build->reliefDone[build->reliefKeys[index]] = Build::ReliefDone{std::move(relief), hash};
+            ++build->reliefFinished;
+        }
+        --outstanding_;
+        if (!abandoned && generation_.load() == build->generation) {
+            if (build->reliefFinished == build->reliefKeys.size()) publishLocked(build, true, after);
+            else if (Clock::now() - lastPublish_ >= std::chrono::milliseconds(8)) publishLocked(build, false, after);
+        }
+        finishLocked(after);
+    }
+    for (auto& f : after) f();
 }
 
 // ---- jobs --------------------------------------------------------------------------------------------------------------------------
@@ -368,20 +526,55 @@ void SceneBuilder::jobFinished(const std::shared_ptr<Build>& build, size_t index
         }
         --outstanding_;
         if (!abandoned && generation_.load() == build->generation) {
-            if (build->finished == build->keys.size()) publishLocked(build, true, after);
+            if (build->finished == build->keys.size()) afterSurfacesLocked(build, after);
             else if (Clock::now() - lastPublish_ >= std::chrono::milliseconds(8)) publishLocked(build, false, after);
         }
-        if (outstanding_ == 0) {
-            current_.reset();
-            if (pending_ && !shuttingDown_) {
-                Pending next = std::move(*pending_);
-                pending_.reset();
-                startBuildLocked(std::move(next), after);
-            }
-            idleCv_.notify_all();
-        }
+        finishLocked(after);
     }
     for (auto& f : after) f();
+}
+
+// After a job: when none is left, the next build (the merged submits that arrived meanwhile) starts.
+void SceneBuilder::finishLocked(std::vector<std::function<void()>>& after) {
+    if (outstanding_ != 0) return;
+    current_.reset();
+    if (pending_ && !shuttingDown_) {
+        Pending next = std::move(*pending_);
+        pending_.reset();
+        startBuildLocked(std::move(next), after);
+    }
+    idleCv_.notify_all();
+}
+
+void SceneBuilder::setReliefEnv(ReliefEnv env) {
+    std::vector<std::function<void()>> after;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const bool changed = static_cast<bool>(env) != static_cast<bool>(env_) || env.revision != env_.revision;
+        env_ = std::move(env);
+        if (changed) queueRefreshLocked(after);
+    }
+    for (auto& f : after) f();
+}
+
+void SceneBuilder::refreshRelief() {
+    std::vector<std::function<void()>> after;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queueRefreshLocked(after);
+    }
+    for (auto& f : after) f();
+}
+
+void SceneBuilder::queueRefreshLocked(std::vector<std::function<void()>>& after) {
+    if (shuttingDown_ || !appliedVersion_) return;
+    if (outstanding_ > 0) {
+        if (!pending_) pending_ = Pending{appliedVersion_, appliedExpansion_, doc::ChangeSet(), true};
+        else pending_->reliefAll = true;
+        ++generation_;
+        return;
+    }
+    startBuildLocked(Pending{appliedVersion_, appliedExpansion_, doc::ChangeSet(), true}, after);
 }
 
 void SceneBuilder::publishLocked(const std::shared_ptr<Build>& build, bool complete, std::vector<std::function<void()>>& afterUnlock) {
@@ -393,11 +586,28 @@ void SceneBuilder::publishLocked(const std::shared_ptr<Build>& build, bool compl
     snap->objects.reserve(build->index->size());
     for (const auto& [key, info] : *build->index) {
         const auto d = build->done.find(key);
-        if (d != build->done.end()) {
-            snap->objects.emplace(key, d->second);
-        } else if (base_) {
+        const auto r = build->reliefDone.find(key);
+        const ObjectProducts* old = nullptr;
+        if (base_) {
             const auto b = base_->objects.find(key);
-            if (b != base_->objects.end()) snap->objects.emplace(key, b->second);
+            if (b != base_->objects.end()) old = &b->second;
+        }
+        if (d != build->done.end()) {
+            ObjectProducts p = d->second;
+            if (r == build->reliefDone.end() && old) {   // new surfaces whose relief is not rebuilt yet: the previous relief
+                p.relief = old->relief;
+                p.reliefHash = old->reliefHash;
+            }
+            snap->objects.emplace(key, std::move(p));
+        } else if (old) {
+            snap->objects.emplace(key, *old);
+        }
+        if (r != build->reliefDone.end()) {
+            const auto o = snap->objects.find(key);
+            if (o != snap->objects.end()) {
+                o->second.relief = r->second.list;
+                o->second.reliefHash = r->second.hash;
+            }
         }
     }
     snap->sincePrevious = std::move(sincePublish_);

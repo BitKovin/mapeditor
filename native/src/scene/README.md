@@ -16,3 +16,15 @@ Turns document versions into scene snapshots (T3.2). Spec: `native_rewrite/04_SC
   or went). Jobs read it; it is only patched while no job runs. A submit while jobs run cancels them (generation counter), merges its changes into
   `pending_` and the last finishing job starts the next build.
 - Not yet derived here (later tasks add their inputs to the affected set): relief meshes (T3.3), render meshes (T3.4), decals.
+
+## Relief (T3.3)
+
+- `relief.h/.cpp` — `buildRelief(own, around, parent, env)`: the displaced triangles of an object's pieces as `core::ReliefMesh` (via `ReliefSet::make`, BVH
+  included), one per authored face side, made with `texplan::texturePolygon` exactly like the Core's export (`bsp_export.cpp`) and the Shell's `reliefFaces`.
+  `around` = pieces of touching objects, only for the outline test. A face key can occur in several objects (a subtractor cutting several brushes):
+  every object holds its own part; a consumer that wants one mesh per key concatenates them.
+- The builder's second wave runs when all surfaces of a build are known: the changed objects, plus every solid object touching their old or new box
+  (outline continuation across the shared edge), or everything for a full build, `refreshRelief()` or an environment change. Relief hash = the object's
+  surface hash + the touching objects' (key, surface hash) + the environment revision; `DerivedCache` (separate instance, a quarter of the budget).
+- `setReliefEnv(env)`: no environment = `ObjectProducts::relief` stays null (also null for subtractors / editor volumes); an empty list = looked at, no relief.
+  Per-object triangle budget `kObjectReliefBudget` (100 000).

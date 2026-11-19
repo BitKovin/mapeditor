@@ -11,7 +11,7 @@
 // while jobs run cancels them (they stop at their next step), waits for the last one and then starts the next build from the merged changes.
 // Thread: submit / snapshot / stats from any thread (the UI thread submits); jobs run on the pool; the publish listener is called on the
 // thread that finished the last job (post to the UI thread there).
-// Spec: 04_SCENE_AND_DERIVED.md §2 - §5, 08_MILESTONES.md T3.2.
+// Spec: 04_SCENE_AND_DERIVED.md §2 - §6, 08_MILESTONES.md T3.2, T3.3.
 #pragma once
 
 #include <atomic>
@@ -37,6 +37,9 @@ struct BuilderStats {
     uint64_t computed = 0;        // collectSurfacesFor calls (cache misses of additive brushes)
     uint64_t cacheHits = 0;       // additive brushes served from the cache
     uint64_t abandoned = 0;       // jobs that stopped because a newer submit superseded them
+    uint64_t reliefJobs = 0;      // relief jobs run to completion
+    uint64_t reliefComputed = 0;  // buildRelief calls (cache misses)
+    uint64_t reliefHits = 0;      // relief served from the cache
     uint64_t publishes = 0;
     uint64_t partialPublishes = 0;
 };
@@ -68,7 +71,14 @@ public:
     // Called after every publish, on a worker thread.
     void setListener(Listener l);
 
+    // The textures' environment for relief (T3.3). Without one no relief is built. Setting an environment (or one with another revision) rebuilds the
+    // relief of every object of the current version.
+    void setReliefEnv(ReliefEnv env);
+    // Rebuilds the relief of everything (textures changed on disk).
+    void refreshRelief();
+
     DerivedCache<ObjectKey, std::vector<core::LightSurface>, ObjectKey::Hash>& cache() { return cache_; }
+    DerivedCache<ObjectKey, ReliefList, ObjectKey::Hash>& reliefCache() { return reliefCache_; }
 
 private:
     struct BrushInfo;
@@ -79,17 +89,25 @@ private:
         std::shared_ptr<const doc::DocumentVersion> version;
         std::shared_ptr<const doc::Expansion> prefabs;
         doc::ChangeSet changes;
+        bool reliefAll = false;   // rebuild the relief of every object (the texture environment changed)
     };
 
     void startBuildLocked(Pending p, std::vector<std::function<void()>>& afterUnlock);
     void patchCoreDocLocked(const Pending& p, const doc::ChangeSet& sinceBase);
     void runJob(const std::shared_ptr<Build>& build, size_t index);
+    void afterSurfacesLocked(const std::shared_ptr<Build>& build, std::vector<std::function<void()>>& afterUnlock);
+    void runReliefJob(const std::shared_ptr<Build>& build, size_t index);
+    void queueRefreshLocked(std::vector<std::function<void()>>& afterUnlock);
+    void finishLocked(std::vector<std::function<void()>>& afterUnlock);
     void produce(const Build& build, const ObjectKey& key, ObjectProducts& out);
     void jobFinished(const std::shared_ptr<Build>& build, size_t index, ObjectProducts products, bool abandoned);
+    void reliefJobFinished(const std::shared_ptr<Build>& build, size_t index, std::shared_ptr<const ReliefList> relief, uint64_t hash, bool abandoned);
     void publishLocked(const std::shared_ptr<Build>& build, bool complete, std::vector<std::function<void()>>& afterUnlock);
 
     base::JobPool& pool_;
     DerivedCache<ObjectKey, std::vector<core::LightSurface>, ObjectKey::Hash> cache_;
+    DerivedCache<ObjectKey, ReliefList, ObjectKey::Hash> reliefCache_;
+    ReliefEnv env_;
 
     mutable std::mutex mutex_;
     std::condition_variable idleCv_;
@@ -116,7 +134,7 @@ private:
     std::shared_ptr<const doc::DocumentVersion> appliedVersion_;
 
     // Counters the jobs bump without the lock.
-    std::atomic<uint64_t> computed_{0}, hits_{0}, jobsDone_{0}, abandoned_{0};
+    std::atomic<uint64_t> computed_{0}, hits_{0}, jobsDone_{0}, abandoned_{0}, reliefJobs_{0}, reliefComputed_{0}, reliefHits_{0};
 };
 
 } // namespace native::scene
