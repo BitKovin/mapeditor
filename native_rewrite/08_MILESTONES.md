@@ -436,7 +436,7 @@ Each needs a measurement before and after in the commit message.
 | T0.4 | yes (clean build, 6 tests, `--screenshot` of the empty window exits 0) | `native: T0.4` |
 | T1.1 | yes (20 tests: priority order, cancellation, throwing jobs, xxHash64 vectors, canonical JSON hash, log, trace JSON validity) | `native: T1.1` |
 | T1.2 | yes (every 05 §2 row on except graphics HIGH priority, which the driver does not list for this family; 0 validation errors; 3 create/destroy cycles leave 0 VMA allocations; Stats panel checked in a screenshot) | `native: T1.2` |
-| T1.3 | | |
+| T1.3 | yes (11 `[gpu]` cases incl. pixel checks of clear colour + triangle, idle = 0 frames, dirty = exactly 1 frame, resize, 2 viewports, re-add on one window; Qt `native_gui_tests`: dock shows triangle, window resize, 3x float / re-dock, hide / show; 0 validation errors; app screenshot checked) | `native: T1.3` |
 | T1.4 | | |
 | T1.5 | | |
 | T1.6 | | |

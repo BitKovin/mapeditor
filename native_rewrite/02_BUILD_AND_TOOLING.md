@@ -75,6 +75,11 @@ mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--
 
 - Native: `native\build\native_tests.exe -tc="*<case>*"`. GPU cases are tagged `[gpu]` and skip themselves (with a message)
   when no ray-tracing device is found.
+- `nativeuild
+ative_gui_tests.exe` (T1.3): tests that need real windows and the GPU (viewport in a dock, re-docking, resizing; Qt's
+  normal platform). They flash windows on the desktop; run them on the development machine. `native_tests` stays headless (offscreen
+  Qt platform; the render-thread tests use a plain Win32 window).
+- Visual checks: `mapeditor_native.exe --screenshot <png>` (viewport frames are pasted into the window image), then look at the PNG.
 - Core (only when a task changed Core code): `cmake --build native\build --target core_tests`, then
   `native\build\core\core_tests.exe -tc="*<case>*"` with the cases the task names. Never the full suite.
 - Export parity (09_TESTING_AND_PERF.md §2) uses `bsp_export_tool` (`cmake --build native\build --target bsp_export_tool`).

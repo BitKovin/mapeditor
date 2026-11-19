@@ -56,7 +56,7 @@ echo === Configuring (%CONFIG%) ===
 cmake -S "%ROOT%native" -B "%BUILD%" -G Ninja -DCMAKE_BUILD_TYPE=%CONFIG%
 if errorlevel 1 goto fail
 echo === Building ===
-cmake --build "%BUILD%" --target mapeditor_native native_tests
+cmake --build "%BUILD%" --target mapeditor_native native_tests native_gui_tests
 if errorlevel 1 goto fail
 echo.
 echo Native editor built OK: %BUILD%\mapeditor_native.exe
