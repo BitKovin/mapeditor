@@ -41,3 +41,4 @@ CMakeUserPresets.json
 release/
 desktop/node_modules/
 desktop/out/
+native/build/

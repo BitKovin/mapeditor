@@ -64,9 +64,11 @@ path, so there is exactly one copy.
 
 ```
 mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
-                     [--no-lighting] [--validation] [--log <file>]
+                     [--no-lighting] [--validation] [--log <file>] [--screenshot <png>]
 ```
 - `--validation` enables `VK_LAYER_KHRONOS_validation` and counts its messages (tests and debugging).
+- `--screenshot <png>` (development aid, T0.4): after the first paint the main window is saved as a PNG and the program exits
+  with code 0. Used for the visual checks of every UI / viewport task (look at the PNG).
 - `--automation-port` opens the local JSON socket (08_MILESTONES.md M9). Default: off.
 
 ## 7. Running tests

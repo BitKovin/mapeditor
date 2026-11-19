@@ -432,8 +432,8 @@ Each needs a measurement before and after in the commit message.
 |---|---|---|
 | T0.1 | yes (Qt 6.11.1 at `D:\Qt.11.1\msvc2022_64`, found by `build_native.bat` when `QT_DIR` is unset) | with T0.2 |
 | T0.2 | yes (demo_lit / demo / engine_test `--no-bake` exports byte-identical; 40 `*gpu*,*vis*,*raytrace*` cases pass) | `native: T0.2` |
-| T0.3 | | |
-| T0.4 | | |
+| T0.3 | yes (Qt ADS 5.1.1, VMA 3.5.0, volk 1.4.363) | `native: T0.3` |
+| T0.4 | yes (clean build, 6 tests, `--screenshot` of the empty window exits 0) | `native: T0.4` |
 | T1.1 | | |
 | T1.2 | | |
 | T1.3 | | |
