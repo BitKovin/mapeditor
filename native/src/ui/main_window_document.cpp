@@ -415,7 +415,11 @@ void MainWindow::setupScene() {
     if (!builder_) {
         builder_ = std::make_unique<scene::SceneBuilder>(*services_.jobs);
         render::RenderThread* rt = services_.renderThread;
-        builder_->setListener([rt](const std::shared_ptr<const scene::SceneSnapshot>& snapshot) { rt->setSnapshot(snapshot); });
+        builder_->setListener([this, rt](const std::shared_ptr<const scene::SceneSnapshot>& snapshot) {
+            rt->setSnapshot(snapshot);
+            // picking and the outline live on the UI thread
+            QMetaObject::invokeMethod(this, [this, snapshot] { onSnapshot(snapshot); }, Qt::QueuedConnection);
+        });
     }
     if (assetsRoot_.empty()) return;
     const fs::path root(assetsRoot_);

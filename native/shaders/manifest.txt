@@ -7,3 +7,5 @@ viewport_scene_frag|viewport_scene.frag|vulkan1.3|
 mesh_vert|mesh.vert|vulkan1.3|
 sky_bg_vert|sky_bg.vert|vulkan1.3|
 mesh_frag|mesh.frag|vulkan1.3|
+overlay_vert|overlay.vert|vulkan1.3|
+overlay_frag|overlay.frag|vulkan1.3|

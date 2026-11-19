@@ -57,6 +57,8 @@ struct RenderThread::Viewport {
     bool removing = false, removed = false;
     float clear[3] = {0.105f, 0.105f, 0.115f};
     ViewState view;
+    bool band = false;
+    float bandRect[4] = {0, 0, 0, 0};
     std::shared_ptr<std::promise<CapturedImage>> capture;     // pending capture request
     uint64_t frames = 0, recreations = 0;
     // Render thread only.
@@ -226,6 +228,28 @@ void RenderThread::setView(ViewportId id, const ViewState& view) {
     wake_.notify_all();
 }
 
+void RenderThread::setSelectionLines(std::shared_ptr<const std::vector<LineVertex>> lines) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        selectionLines_ = std::move(lines);
+        for (auto& kv : viewports_) kv.second->dirty = true;
+    }
+    wake_.notify_all();
+}
+
+void RenderThread::setRubberBand(ViewportId id, bool active, float x0, float y0, float x1, float y1) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = viewports_.find(id);
+        if (it == viewports_.end()) return;
+        Viewport& v = *it->second;
+        v.band = active;
+        v.bandRect[0] = x0; v.bandRect[1] = y0; v.bandRect[2] = x1; v.bandRect[3] = y1;
+        v.dirty = true;
+    }
+    wake_.notify_all();
+}
+
 void RenderThread::setClearColor(ViewportId id, float r, float g, float b) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -304,6 +328,9 @@ void RenderThread::loop() {
             float clear[3];
             ViewState view;
             std::shared_ptr<std::promise<CapturedImage>> capture;
+            std::shared_ptr<const std::vector<LineVertex>> selection;
+            bool band = false;
+            float bandRect[4] = {0, 0, 0, 0};
         };
         std::vector<Work> work;
         bool doUpload = false;
@@ -327,7 +354,8 @@ void RenderThread::loop() {
                     Viewport& v = *kv.second;
                     if (v.removing) { toRelease.push_back(kv.second); continue; }
                     if (!v.dirty && !v.capture && !doUpload) continue;
-                    work.push_back({kv.second, v.width, v.height, {v.clear[0], v.clear[1], v.clear[2]}, v.view, std::move(v.capture)});
+                    work.push_back({kv.second, v.width, v.height, {v.clear[0], v.clear[1], v.clear[2]}, v.view, std::move(v.capture), selectionLines_, v.band,
+                                    {v.bandRect[0], v.bandRect[1], v.bandRect[2], v.bandRect[3]}});
                     v.capture.reset();
                     v.dirty = false;
                 }
@@ -470,7 +498,31 @@ void RenderThread::loop() {
                 vkCmdSetViewport(f.cmd, 0, 1, &viewport);
                 vkCmdSetScissor(f.cmd, 0, 1, &scissor);
             }
-            if (mesh_) mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true);
+            LineList selLines, bandLines;
+            const auto uploadLines = [&](const LineVertex* v, size_t n) {
+                LineList l;
+                if (n == 0) return l;
+                const gpu::UploadRing::Allocation a = ring_->allocate(n * sizeof(LineVertex), 16);
+                if (!a.ok()) return l;
+                std::memcpy(a.data, v, n * sizeof(LineVertex));
+                ring_->flush(a);
+                l.buffer = a.buffer;
+                l.offset = a.offset;
+                l.count = static_cast<uint32_t>(n);
+                return l;
+            };
+            if (w.selection && !w.selection->empty()) selLines = uploadLines(w.selection->data(), w.selection->size() & ~size_t(1));
+            if (w.band) {
+                // pixels -> Vulkan NDC; the frame is the rectangle's outline, a white line over a translucent dark one so it reads on any background
+                const auto nx = [&](float x) { return x / static_cast<float>(extent.width) * 2.0f - 1.0f; };
+                const auto ny = [&](float y) { return y / static_cast<float>(extent.height) * 2.0f - 1.0f; };
+                const float x0 = nx(w.bandRect[0]), y0 = ny(w.bandRect[1]), x1 = nx(w.bandRect[2]), y1 = ny(w.bandRect[3]);
+                const uint32_t c = packColor(1.0f, 1.0f, 1.0f, 0.9f);
+                const LineVertex q[8] = {{{x0, y0, 0}, c}, {{x1, y0, 0}, c}, {{x1, y0, 0}, c}, {{x1, y1, 0}, c},
+                                         {{x1, y1, 0}, c}, {{x0, y1, 0}, c}, {{x0, y1, 0}, c}, {{x0, y0, 0}, c}};
+                bandLines = uploadLines(q, 8);
+            }
+            if (mesh_) mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true, selLines, bandLines);
             if (pass_) pass_->record(f.cmd, extent, w.view, !scene_->hasObjects());
             vkCmdEndRendering(f.cmd);
 

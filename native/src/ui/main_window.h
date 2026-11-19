@@ -48,12 +48,14 @@ struct Expansion;
 struct LoadResult;
 } // namespace native::doc
 namespace native::scene {
+struct SceneSnapshot;
 class SceneBuilder;
 } // namespace native::scene
 namespace core::texplan {
 class TexEnvironment;
 } // namespace core::texplan
 namespace native::render {
+class Picker;
 class RenderThread;
 class ViewportWindow;
 } // namespace native::render
@@ -183,6 +185,19 @@ public:
     // Points every viewport's camera at the whole scene (the solid brushes of the latest snapshot); false while there is none.
     bool frameScene();
 
+    // ---- picking and selecting in the viewports (T3.5) ----
+    // Replace = click selects (nothing under the cursor clears), Toggle (Ctrl) adds or removes, Face (Shift) selects the face under the cursor.
+    enum class PickOp { Replace, Toggle, Face };
+    // The picker over the latest scene snapshot the UI thread has seen; null without a scene builder.
+    render::Picker* picker() const { return picker_.get(); }
+    // Pick under `p` / everything inside the rectangle a-b (logical pixels of the viewport window) and apply the Radiant rules to the selection.
+    void pickAt(render::ViewportWindow* viewport, QPointF p, PickOp op);
+    void boxSelectIn(render::ViewportWindow* viewport, QPointF a, QPointF b, PickOp op);
+    // The select.pick action: press starts, moves past 4 px turn it into a box select (with a rubber band), release applies it.
+    void pickInput(render::ViewportWindow* viewport, const actions::InputEvent& event, PickOp op);
+    // The outline lines of the selection are recomputed (the selection or the snapshot changed).
+    void refreshOutline();
+
 signals:
     // The current document changed (opened, saved under a new path, replaced): panels refresh their title and contents.
     void documentChanged();
@@ -238,6 +253,7 @@ private:
     void setupScene();
     void submitScene(const doc::ChangeSet& changes);
     void updateSky();
+    void onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);   // UI thread: the picker and the outline follow the builder
     // Like runJob, but invisible to busy(): housekeeping that must not disable the file actions.
     void runBackground(std::function<void()> work, std::function<void()> done);
 
@@ -264,6 +280,12 @@ private:
     std::shared_ptr<doc::PrefabResolver> prefabResolver_;
     std::shared_ptr<const doc::Expansion> expansion_;
     std::unique_ptr<scene::SceneBuilder> builder_;
+    std::unique_ptr<render::Picker> picker_;
+    struct PickDrag {
+        render::ViewportWindow* viewport = nullptr;
+        QPointF start, current;
+        bool dragging = false;
+    } pickDrag_;
     std::shared_ptr<core::texplan::TexEnvironment> texEnv_;
     uint64_t reliefRevision_ = 0;
     QTimer prefabTimer_;

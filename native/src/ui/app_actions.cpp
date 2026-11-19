@@ -66,6 +66,27 @@ void dragAction(actions::Registry& r, const char* id, const char* label, const c
     add(r, std::move(d));
 }
 
+// Click = pick under the cursor, drag = box select (T3.5). `op` is the binding's parameter: replace (plain), toggle (Ctrl), face (Shift).
+void selectAction(actions::Registry& r) {
+    ActionDef d;
+    d.id = "select.pick";
+    d.label = "Select (click / box)";
+    d.category = "Selection";
+    d.description = "Click selects what is under the cursor, Ctrl+click toggles it, Shift+click selects the face; dragging a box selects what lies inside it.";
+    d.kind = ActionKind::Hold;
+    d.contexts = {"area:viewport"};
+    d.params = json{{"op", "replace"}};
+    d.enabled = haveViewport;
+    d.run = [](ActionEnv& env, const Invocation& inv) {
+        const UiEnv* u = env.as<UiEnv>();
+        if (!u || !u->window || !u->viewport) return;
+        const std::string op = inv.params.is_object() ? inv.params.value("op", std::string("replace")) : std::string("replace");
+        const MainWindow::PickOp pick = op == "toggle" ? MainWindow::PickOp::Toggle : op == "face" ? MainWindow::PickOp::Face : MainWindow::PickOp::Replace;
+        u->window->pickInput(u->viewport, inv.event, pick);
+    };
+    add(r, std::move(d));
+}
+
 void flyKeyAction(actions::Registry& r, const char* id, const char* label, render::FlyKey key) {
     ActionDef d;
     d.id = id;
@@ -279,6 +300,7 @@ void registerAppActions(actions::Registry& r) {
     dragAction(r, "camera.orbit", "Orbit", "view:orbit", false);
     dragAction(r, "camera.pan2d", "Pan (orthographic view)", "view:ortho", false);
     dragAction(r, "camera.pan", "Pan", "area:viewport", true);
+    selectAction(r);
     {
         ActionDef d;
         d.id = "camera.dolly";

@@ -126,7 +126,7 @@ target_compile_definitions(native_vk PUBLIC VK_NO_PROTOTYPES VK_USE_PLATFORM_WIN
 target_link_libraries(native_vk PUBLIC vendored)   # the Core's copy of the Vulkan headers (one copy, T0.2)
 native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/swapchain.cpp src/gpu/upload_ring.cpp src/gpu/arena.cpp DEPENDS native_base native_vk)
 native_module(light  SOURCES src/light/module_info.cpp  DEPENDS native_scene native_gpu)
-native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp
+native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp src/render/picking.cpp src/render/picking.h src/render/selection_outline.cpp src/render/selection_outline.h src/render/line_vertex.h
                      src/render/viewport_window.cpp src/render/viewport_window.h
                      src/render/camera.cpp src/render/camera_rig.cpp src/render/viewport_settings.cpp
                      DEPENDS native_scene native_gpu Qt6::Gui)
@@ -153,7 +153,7 @@ add_custom_command(TARGET mapeditor_native POST_BUILD
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_scene_relief.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_scene_relief.cpp tests/test_picking.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src)
 target_compile_definitions(native_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
                            NATIVE_CORE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/assets")
@@ -161,7 +161,7 @@ target_link_libraries(native_tests PRIVATE native_ui Qt6::Widgets Qt6::Test)
 native_warnings(native_tests)
 
 # Tests that need real windows and the GPU (Qt "windows" platform): viewports in docks, re-docking, resizing.
-add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp tests/test_gui_document.cpp)
+add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp tests/test_gui_document.cpp tests/test_gui_select.cpp)
 target_include_directories(native_gui_tests PRIVATE src)
 target_compile_definitions(native_gui_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
                            NATIVE_CORE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/assets")

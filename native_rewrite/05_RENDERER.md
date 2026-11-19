@@ -101,6 +101,20 @@ bounds of the snapshot (rebuilt incrementally on publish) → exact ray / triang
 (two-sided Möller–Trumbore as `shell/src/render/picking.ts`). Mesh mode: nearest vertex / edge in screen space
 (`shell/src/tools/meshPick.ts`). Objects without a render mesh yet are picked on their raw brush.
 
+**As built (T3.5).** `render/picking`: `Picker` builds a bounding-volume tree (leaf of at most four, median split on the longest axis) over the objects of a scene
+snapshot on `setSnapshot()` (0.3 ms for the 2124 items of lvl2, so it is rebuilt, not updated: the incremental update of this section is not needed yet) and
+tests the candidates two-sided Moller-Trumbore. A solid brush is hit on its carved `core::LightSurface` pieces (a hole is clickable, a cut wall names the
+subtractor's brush and face), a subtractive brush on its authored faces from the document, prefab content on its pieces and then reported as the instance. Point
+entities are hit by a 0.5 m box until the entity definitions (T5) give the real boxes (no `angles` turn yet). Lvl2: 0.01 ms average, 0.035 ms worst per ray
+over 400 rays. `boxSelect` takes what lies completely inside the screen rectangle (item boxes against the four side planes of the rectangle and the depth range,
+built from the rows of the view-projection). The Radiant rules live in `ui/main_window` (`pickAt`, `boxSelectIn`, `pickInput`) and the action `select.pick`
+(`LMB drag` / `Ctrl+LMB drag` / `Shift+LMB drag`, rebindable): a click selects the brush (a sole brush of an entity selects the entity), nothing under the cursor
+clears, Ctrl toggles, Shift selects the face under the cursor, a drag of more than 4 px selects the box (Ctrl / Shift add to the selection). The outline
+(`render/selection_outline`: brush edges orange, selected face yellow, prefab instance and point entity boxes) and the rubber band are coloured line lists
+(`LineVertex`, 16 B) written into the upload ring per frame and drawn by two more `mesh_pass` pipelines (world lines: depth-tested with a bias, no depth write;
+screen lines: no depth, identity matrix). The picker follows the builder's listener through a queued call on the UI thread; the render thread gets the lines
+through `setSelectionLines` and `setRubberBand`.
+
 ## 7. Frame timing
 
 - Target: the display rate with up to 4 viewports on lvl2 (09_TESTING_AND_PERF.md §3).

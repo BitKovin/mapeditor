@@ -9,6 +9,10 @@
     { "action": "edit.redo",   "context": "global", "input": "Ctrl+Shift+Z" },
     { "action": "edit.redo",   "context": "global", "input": "Ctrl+Y" },
 
+    { "action": "select.pick", "context": "area:viewport", "input": "LMB drag" },
+    { "action": "select.pick", "context": "area:viewport", "input": "Ctrl+LMB drag", "params": { "op": "toggle" } },
+    { "action": "select.pick", "context": "area:viewport", "input": "Shift+LMB drag", "params": { "op": "face" } },
+
     { "action": "camera.look",  "context": "view:fly",      "input": "RMB drag" },
     { "action": "camera.orbit", "context": "view:orbit",    "input": "RMB drag" },
     { "action": "camera.pan2d", "context": "view:ortho",    "input": "RMB drag" },

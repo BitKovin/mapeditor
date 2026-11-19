@@ -83,9 +83,10 @@ struct App {
     }
 };
 
-inline void sendMouse(QWindow* w, QEvent::Type type, Qt::MouseButton button, Qt::MouseButtons buttons, QPoint local) {
+inline void sendMouse(QWindow* w, QEvent::Type type, Qt::MouseButton button, Qt::MouseButtons buttons, QPoint local,
+                      Qt::KeyboardModifiers mods = Qt::NoModifier) {
     const QPoint global = w->mapToGlobal(local);
-    QMouseEvent e(type, QPointF(local), QPointF(global), button, buttons, Qt::NoModifier);
+    QMouseEvent e(type, QPointF(local), QPointF(global), button, buttons, mods);
     QApplication::sendEvent(w, &e);
 }
 

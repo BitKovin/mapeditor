@@ -15,6 +15,7 @@
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMenuBar>
+#include <QMetaObject>
 #include <QMouseEvent>
 #include <QSaveFile>
 #include <QSettings>
@@ -30,7 +31,9 @@
 #include "doc/commands.h"
 #include "doc/prefabs.h"
 #include "doc/selection.h"
+#include "render/picking.h"
 #include "render/render_thread.h"
+#include "render/selection_outline.h"
 #include "render/viewport_window.h"
 #include "scene/builder.h"
 #include "ui/input_adapter.h"
@@ -136,6 +139,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     prefabTimer_.start();
     selection_ = std::make_unique<doc::Selection>();
     selection_->setListener([this] { emit selectionChanged(); });
+    QObject::connect(this, &MainWindow::selectionChanged, this, [this] { refreshOutline(); });
     history_ = std::make_unique<doc::History>();
     history_->setListener([this](const std::shared_ptr<const doc::DocumentVersion>& current, const doc::ChangeSet& changes, doc::ChangeCause cause) {
         document_ = current;
@@ -376,6 +380,91 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
     if (ev.type == actions::InputEvent::Type::MousePress && r.handled && router_.holding() && !before) holdViewport_ = vp;
     if (!router_.holding()) holdViewport_ = nullptr;
     return r.handled;
+}
+
+// ---- picking and selecting (T3.5) -----------------------------------------------------------------------------------------------
+
+void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
+    if (!picker_) picker_ = std::make_unique<render::Picker>();
+    picker_->setSnapshot(std::move(snapshot));
+    refreshOutline();
+}
+
+void MainWindow::refreshOutline() {
+    if (!services_.renderThread) return;
+    std::vector<render::LineVertex> lines;
+    if (picker_ && picker_->snapshot()) lines = render::selectionOutline(*picker_->snapshot(), selection_->items());
+    services_.renderThread->setSelectionLines(lines.empty() ? nullptr : std::make_shared<const std::vector<render::LineVertex>>(std::move(lines)));
+}
+
+namespace {
+doc::SelRef objectRef(const doc::DocumentVersion& d, const doc::SelRef& r) { return doc::wholeEntityIfSole(d, r); }
+} // namespace
+
+void MainWindow::pickAt(render::ViewportWindow* vp, QPointF p, PickOp op) {
+    if (!vp || !picker_ || !document_) return;
+    const QSizeF size = vp->size();
+    if (size.width() < 1 || size.height() < 1) return;
+    const render::ViewState view = vp->currentView();
+    const render::Ray ray = render::rayThrough(view.viewProj, p.x() / size.width() * 2.0 - 1.0, p.y() / size.height() * 2.0 - 1.0);
+    const std::optional<render::PickHit> hit = picker_->pick(ray);
+    switch (op) {
+        case PickOp::Replace:
+            if (hit) selection_->select(objectRef(*document_, hit->toSelRef(false)));
+            else selection_->clear();
+            break;
+        case PickOp::Face:
+            if (hit) selection_->select(hit->faceId && hit->instance.empty() ? hit->toSelRef(true) : objectRef(*document_, hit->toSelRef(false)));
+            else selection_->clear();
+            break;
+        case PickOp::Toggle:
+            if (hit) selection_->toggle(*document_, objectRef(*document_, hit->toSelRef(false)));
+            break;
+    }
+}
+
+void MainWindow::boxSelectIn(render::ViewportWindow* vp, QPointF a, QPointF b, PickOp op) {
+    if (!vp || !picker_ || !document_) return;
+    const QSizeF size = vp->size();
+    if (size.width() < 1 || size.height() < 1) return;
+    const render::ViewState view = vp->currentView();
+    const auto nx = [&](double x) { return x / size.width() * 2.0 - 1.0; };
+    const auto ny = [&](double y) { return y / size.height() * 2.0 - 1.0; };
+    std::vector<doc::SelRef> list = picker_->boxSelect(view.viewProj, nx(a.x()), ny(a.y()), nx(b.x()), ny(b.y()));
+    if (op != PickOp::Replace) {
+        // Ctrl / Shift add to what is selected
+        std::vector<doc::SelRef> all = selection_->items();
+        for (const doc::SelRef& r : list)
+            if (std::find(all.begin(), all.end(), r) == all.end()) all.push_back(r);
+        list = std::move(all);
+    }
+    selection_->selectMany(*document_, list);
+}
+
+void MainWindow::pickInput(render::ViewportWindow* vp, const actions::InputEvent& e, PickOp op) {
+    using Type = actions::InputEvent::Type;
+    const QPointF p(e.x, e.y);
+    if (e.type == Type::MousePress) {
+        pickDrag_ = {vp, p, p, false};
+        return;
+    }
+    if (pickDrag_.viewport != vp) return;
+    if (e.type == Type::MouseMove) {
+        pickDrag_.current = p;
+        if (!pickDrag_.dragging && (p - pickDrag_.start).manhattanLength() >= 4) pickDrag_.dragging = true;
+        if (pickDrag_.dragging) vp->setRubberBand(true, pickDrag_.start, p);
+        return;
+    }
+    if (e.type == Type::MouseRelease) {
+        const PickDrag drag = pickDrag_;
+        pickDrag_ = {};
+        if (drag.dragging) {
+            vp->setRubberBand(false);
+            boxSelectIn(vp, drag.start, p, op);
+        } else {
+            pickAt(vp, p, op);
+        }
+    }
 }
 
 void MainWindow::cancelInput() {

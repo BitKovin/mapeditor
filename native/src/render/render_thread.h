@@ -26,6 +26,7 @@
 #include "base/jobs.h"
 #include "gpu/device.h"
 #include "render/gpu_scene.h"
+#include "render/line_vertex.h"
 #include "render/view_state.h"
 
 namespace native::render {
@@ -65,6 +66,10 @@ public:
     void setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);
     // Where textures are read from and which pool decodes them.
     void setTextureSource(const std::filesystem::path& assetsRoot, base::JobPool* pool);
+    // The selection outline drawn in every viewport (world space line list, two vertices a line; empty = none).
+    void setSelectionLines(std::shared_ptr<const std::vector<LineVertex>> lines);
+    // The rubber band of a box select in a viewport, in pixels of the viewport (x0, y0, x1, y1); `active` false hides it.
+    void setRubberBand(ViewportId id, bool active, float x0 = 0, float y0 = 0, float x1 = 0, float y1 = 0);
     // The skybox ("env/<name> cube") drawn behind the scene in perspective views; "" = none.
     void setSkyTexture(const std::string& name);
     // What the scene holds on the GPU and how the textures stand (refreshed every loop iteration).
@@ -107,6 +112,7 @@ private:
     uint64_t iteration_ = 0;
     uint32_t skyIndex_ = 0;
     std::string skyName_;                 // guarded by mutex_
+    std::shared_ptr<const std::vector<LineVertex>> selectionLines_;   // guarded by mutex_
     bool workPending_ = false;            // guarded by mutex_: a snapshot or a decoded texture is waiting
     SceneInfo info_;                      // guarded by mutex_
 

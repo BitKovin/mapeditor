@@ -64,6 +64,17 @@ void ViewportWindow::viewChanged() {
     if (onChanged_) onChanged_();
 }
 
+ViewState ViewportWindow::currentView() {
+    const QSize px = pixelSize();
+    return rig_.viewState(px.width(), px.height());
+}
+
+void ViewportWindow::setRubberBand(bool on, QPointF a, QPointF b) {
+    if (id_ == 0) return;
+    const double s = devicePixelRatio();
+    renderThread_.setRubberBand(id_, on, static_cast<float>(a.x() * s), static_cast<float>(a.y() * s), static_cast<float>(b.x() * s), static_cast<float>(b.y() * s));
+}
+
 void ViewportWindow::setCameraMode(CameraMode mode) {
     if (mode == rig_.mode()) return;
     rig_.setMode(mode);

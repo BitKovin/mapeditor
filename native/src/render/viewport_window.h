@@ -43,6 +43,10 @@ public:
     const CameraRig& rig() const { return rig_; }
     // Sends the rig's view to the render thread (one frame) and calls the change callback.
     void viewChanged();
+    // The view the next frame uses (matrices for picking). Positions of input events are in the logical pixels of size(): ndc = p / size * 2 - 1.
+    ViewState currentView();
+    // The box-select rectangle in logical window pixels; `on` false hides it.
+    void setRubberBand(bool on, QPointF a = QPointF(), QPointF b = QPointF());
     void setCameraMode(CameraMode mode);
     // Called after every change made by user input (so the layout can be saved); UI thread.
     void setChangedCallback(std::function<void()> cb) { onChanged_ = std::move(cb); }

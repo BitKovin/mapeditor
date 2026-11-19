@@ -37,3 +37,6 @@ Turns document versions into scene snapshots (T3.2). Spec: `native_rewrite/04_SC
   own uv map; the others come from `texturePolygon`. Sky textures set `kFlagSky`.
 - `ObjectProducts::render` = the object's mesh (null until its geometry job finished), `raw` = the authored brush, the stand-in the renderer draws until
   then; subtractive brushes and editor volumes carry a Volume mesh in `render`.
+
+## Picking (T3.5)
+`render/picking` reads the snapshot (objects' surfaces, bounds, raw / render meshes and the document) and never changes it; see 05_RENDERER.md §6 "As built (T3.5)".
