@@ -430,8 +430,8 @@ Each needs a measurement before and after in the commit message.
 
 | Task | Done | Commit |
 |---|---|---|
-| T0.1 | | |
-| T0.2 | | |
+| T0.1 | yes (Qt 6.11.1 at `D:\Qt.11.1\msvc2022_64`, found by `build_native.bat` when `QT_DIR` is unset) | with T0.2 |
+| T0.2 | yes (demo_lit / demo / engine_test `--no-bake` exports byte-identical; 40 `*gpu*,*vis*,*raytrace*` cases pass) | `native: T0.2` |
 | T0.3 | | |
 | T0.4 | | |
 | T1.1 | | |

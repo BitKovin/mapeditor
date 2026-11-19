@@ -6,11 +6,11 @@
 |---|---|---|
 | Visual Studio 2022 (or Build Tools) with "Desktop development with C++" | 17.x | `vswhere` (as `build_core.bat` does) |
 | Vulkan SDK | 1.4.363.0 (installed at `D:\VulkanSDK\1.4.363.0`) | env `VULKAN_SDK`; `glslangValidator` in `%VULKAN_SDK%\Bin` |
-| Qt | 6.8 LTS or newer, component "MSVC 2022 64-bit" | env `QT_DIR` = the folder holding `lib\cmake\Qt6` (e.g. `C:\Qt\6.8.3\msvc2022_64`) |
+| Qt | 6.8 or newer (6.11.1 installed), component "MSVC 2022 64-bit" | env `QT_DIR` = the folder holding `lib\cmake\Qt6` (e.g. `C:\Qt\6.8.3\msvc2022_64`) |
 | Ninja, CMake | the ones shipped with Visual Studio | PATH inside the vcvars environment |
 
-At the time of writing Qt is **not installed** on the development machine (`C:\Qt` does not exist). Task T0.1 asks the
-user to install it.
+Qt 6.11.1 (MSVC 2022 64-bit) is installed on the development machine at `D:\Qt\6.11.1\msvc2022_64`; `QT_DIR` is not set
+there, so `build_native.bat` falls back to that folder (and to `C:\Qt\*\msvc2022_64`) when the variable is empty.
 
 ## 2. Third-party code added by this rewrite
 
