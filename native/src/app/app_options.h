@@ -2,7 +2,8 @@
 //
 // Owns: parsing only (no Qt, no I/O), so it is unit-testable. Thread: any.
 //   mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
-//                        [--no-lighting] [--validation] [--log <file>] [--screenshot <png>]
+//                        [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]
+// --trace writes a Chrome trace-event file (chrome://tracing, Perfetto) of jobs / frames / bake steps.
 // --screenshot is a development aid (added with T0.4 for visual checks): after the window is shown and has painted once the
 // window is saved as a PNG and the program exits with code 0.
 #pragma once
@@ -19,6 +20,7 @@ struct AppOptions {
     bool noLighting = false;      // --no-lighting
     bool validation = false;      // --validation
     std::string logFile;          // --log
+    std::string traceFile;        // --trace
     std::string screenshotPath;   // --screenshot
     bool help = false;            // --help / -h
 };

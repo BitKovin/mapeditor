@@ -434,7 +434,7 @@ Each needs a measurement before and after in the commit message.
 | T0.2 | yes (demo_lit / demo / engine_test `--no-bake` exports byte-identical; 40 `*gpu*,*vis*,*raytrace*` cases pass) | `native: T0.2` |
 | T0.3 | yes (Qt ADS 5.1.1, VMA 3.5.0, volk 1.4.363) | `native: T0.3` |
 | T0.4 | yes (clean build, 6 tests, `--screenshot` of the empty window exits 0) | `native: T0.4` |
-| T1.1 | | |
+| T1.1 | yes (20 tests: priority order, cancellation, throwing jobs, xxHash64 vectors, canonical JSON hash, log, trace JSON validity) | `native: T1.1` |
 | T1.2 | | |
 | T1.3 | | |
 | T1.4 | | |

@@ -12,6 +12,8 @@
 #include <vector>
 
 #include "app/app_options.h"
+#include "base/log.h"
+#include "base/trace.h"
 #include "ui/main_window.h"
 
 int main(int argc, char** argv) {
@@ -28,6 +30,12 @@ int main(int argc, char** argv) {
         return parsed.error.empty() ? 0 : 2;
     }
 
+    if (!parsed.options.logFile.empty() && !native::base::setLogFile(parsed.options.logFile))
+        native::base::logWarning("cannot open the log file " + parsed.options.logFile);
+    if (!parsed.options.traceFile.empty() && !native::base::traceStart(parsed.options.traceFile))
+        native::base::logWarning("cannot write the trace file " + parsed.options.traceFile);
+    native::base::traceSetThreadName("ui");
+
     native::ui::MainWindow window;
     window.show();
 
@@ -41,5 +49,6 @@ int main(int argc, char** argv) {
         });
     }
     const int rc = qtApp.exec();
+    native::base::traceStop();
     return shotResult != 0 ? shotResult : rc;
 }

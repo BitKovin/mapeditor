@@ -16,7 +16,7 @@ TEST_CASE("empty command line gives the defaults") {
 
 TEST_CASE("all options are read") {
     const auto r = parseArgs({"--assets", "D:/a", "--map", "maps/x.map.json", "--automation-port", "8123", "--no-lighting",
-                              "--validation", "--log", "l.txt", "--screenshot", "s.png"});
+                              "--validation", "--log", "l.txt", "--trace", "t.json", "--screenshot", "s.png"});
     REQUIRE(r.error.empty());
     CHECK(r.options.assetsRoot == "D:/a");
     CHECK(r.options.map == "maps/x.map.json");
@@ -24,6 +24,7 @@ TEST_CASE("all options are read") {
     CHECK(r.options.noLighting);
     CHECK(r.options.validation);
     CHECK(r.options.logFile == "l.txt");
+    CHECK(r.options.traceFile == "t.json");
     CHECK(r.options.screenshotPath == "s.png");
 }
 

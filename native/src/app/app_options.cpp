@@ -7,7 +7,7 @@ namespace native::app {
 
 const char* usageText() {
     return "mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]\n"
-           "                     [--no-lighting] [--validation] [--log <file>] [--screenshot <png>]\n";
+           "                     [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]\n";
 }
 
 ParseResult parseArgs(const std::vector<std::string>& args) {
@@ -26,6 +26,7 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
         if (a == "--assets") { if (!value(o.assetsRoot)) return r; }
         else if (a == "--map") { if (!value(o.map)) return r; }
         else if (a == "--log") { if (!value(o.logFile)) return r; }
+        else if (a == "--trace") { if (!value(o.traceFile)) return r; }
         else if (a == "--screenshot") { if (!value(o.screenshotPath)) return r; }
         else if (a == "--automation-port") {
             std::string v;

@@ -44,7 +44,9 @@ function(native_module name)
 endfunction()
 
 # ---- module libraries ---------------------------------------------------------------------------------------------------
-native_module(base   SOURCES src/base/module_info.cpp)
+find_package(Threads REQUIRED)
+native_module(base   SOURCES src/base/module_info.cpp src/base/hash.cpp src/base/jobs.cpp src/base/log.cpp src/base/trace.cpp
+                     DEPENDS vendored Threads::Threads)
 native_module(doc    SOURCES src/doc/module_info.cpp    DEPENDS native_base core_lib)
 native_module(scene  SOURCES src/scene/module_info.cpp  DEPENDS native_doc)
 native_module(gpu    SOURCES src/gpu/module_info.cpp    DEPENDS native_base)
@@ -61,7 +63,7 @@ native_warnings(mapeditor_native)
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src)
 target_link_libraries(native_tests PRIVATE native_ui Qt6::Widgets Qt6::Test)
 native_warnings(native_tests)

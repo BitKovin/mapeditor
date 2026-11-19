@@ -64,7 +64,7 @@ path, so there is exactly one copy.
 
 ```
 mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
-                     [--no-lighting] [--validation] [--log <file>] [--screenshot <png>]
+                     [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]
 ```
 - `--validation` enables `VK_LAYER_KHRONOS_validation` and counts its messages (tests and debugging).
 - `--screenshot <png>` (development aid, T0.4): after the first paint the main window is saved as a PNG and the program exits
