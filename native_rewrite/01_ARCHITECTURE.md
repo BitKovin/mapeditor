@@ -8,8 +8,9 @@ Goals, in priority order:
 2. **Lit mode is the real bake, live.** Moving a light: its final direct light (shadows included) on screen within 1–2
    frames for what the camera sees; bounces converge in about 1–2 s. Moving / reshaping a brush: the same, plus geometry
    re-lit around it. Numbers in 09_TESTING_AND_PERF.md §3.
-3. **One copy of everything.** One document, one geometry pipeline, one lighting model, one GPU device. No serialization in
-   the edit path (JSON only for load / save / clipboard / automation).
+3. **One uniform program — no frontend / backend split.** One process, one document, one geometry pipeline, one lighting
+   model, one GPU device. UI, tools, renderer, bake and export share the same memory; nothing is serialized or sent between
+   them (JSON only for files, the clipboard and the optional automation socket that lets *outside* scripts drive the editor).
 4. **Export unchanged.** File > Export produces the same files as `core/src/bsp_export.cpp` does today.
 
 Non-goals (for this rewrite): Linux/macOS builds, a non-ray-tracing GPU fallback for Lit (Unlit must still work without ray
@@ -93,10 +94,10 @@ Dependency rule (enforced by CMake target structure): `base` ← `doc` ← `scen
 `gpu` depends only on `base`. `light` and `render` depend on `gpu` and `scene`. Nothing below `ui` includes a Qt header
 except `render/viewport_window.*` (the Vulkan surface) — so `doc`, `scene`, `light` are testable without Qt.
 
-Core is linked as `core_lib`. Native code includes `core/...` headers and calls them. Core keeps its own Vulkan context for
-the export bake (`core/src/gpu_bake.cpp`); the native app has its own device (`native/src/gpu`) for the viewport and the live
-bake. Running an export while editing is therefore two devices on one GPU — acceptable (export is rare); the live bake
-pauses during an export.
+Core is linked as `core_lib` (a static library: the same process, the same memory). Native code includes `core/...` headers
+and calls them. The Core's own GPU code (`core/src/gpu_bake.cpp`: export bake, visibility) is given **the app's Vulkan
+device** instead of creating its own (task T9.2), so there is one device. The Core's networking and transport parts
+(`ws_server`, `router`, the tile / mirror side of `lighting_service`) are not used by the native app.
 
 ## 5. GPU model
 

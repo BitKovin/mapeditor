@@ -55,7 +55,7 @@ and REQUIREMENTS give the intent. Use Qt widgets, no QML.
 
 | Shell UI | Qt |
 |---|---|
-| `app.ts`, `ui/menuBar.ts`, `ui/bindings.ts` | `app/main_window.*`, `app/actions.*` (QAction per command; key map from DESIGN §17 and `bindings.ts`) |
+| `app.ts`, `ui/menuBar.ts`, `ui/bindings.ts`, every `keydown` handler | `app/main_window.*`, the action registry and input router of 10_UI_AND_INPUT.md (menus, toolbars and key help generated from it; keys rebindable) |
 | Dockview layout, layout presets (REQUIREMENTS §35) | Qt ADS dock manager; saved layouts in QSettings |
 | `ui/viewport.ts` (2100 lines: input routing, tools, overlays) | `ui/viewport_widget.*` + `render/` + `tools/` — split by concern, not one file |
 | `ui/panels.ts` (outliner, details) | `ui/outliner.*` (QTreeView + model), `ui/details.*` | 

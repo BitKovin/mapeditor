@@ -24,6 +24,7 @@ estimator and layout rules as the export) refined live on the GPU into the very 
 | UI toolkit | **Qt 6** (Widgets). Docking with Qt Advanced Docking System. |
 | Migration | **Clean break.** The Shell is frozen (kept runnable, not deleted, not edited). The native editor is built up to parity. |
 | Priority | **Light edits and brush edits in Lit** must become instant first. |
+| **One program** | **One process, one address space, one GPU device.** No frontend / backend split, no IPC, no socket, no serialization between the UI and the engine: tools, renderer, bake and export all work on the same in-memory objects. The Core becomes a library linked into the app. Sending data between halves is what made the current editor slow. |
 | Visibility (PVS) | Stays baked at export (`core/src/bsp_vis.cpp`). Not part of this work. |
 | Platform | Windows 10/11, MSVC, Vulkan 1.3+ with ray query. Development GPU: RTX 4070 Ti, driver 610.88, Vulkan SDK 1.4.363 at `D:\VulkanSDK\1.4.363.0`. |
 
@@ -38,6 +39,7 @@ estimator and layout rules as the export) refined live on the GPU into the very 
 7. [07_EDITOR_PORT.md](07_EDITOR_PORT.md) — inventory of Shell features and where each goes.
 8. [08_MILESTONES.md](08_MILESTONES.md) — **the task list.** Work through it in order.
 9. [09_TESTING_AND_PERF.md](09_TESTING_AND_PERF.md) — test strategy, performance gates, parity checks.
+10. [10_UI_AND_INPUT.md](10_UI_AND_INPUT.md) — actions, rebindable keys, command palette, UI improvements.
 
 Background that stays authoritative: `DESIGN.md` (behaviour of every feature), `REQUIREMENTS.md` (what the user asked for,
 with the user's words), `MCP_DESIGN.md` (AI level design). When this folder and DESIGN.md disagree about *behaviour*, DESIGN.md
@@ -45,6 +47,9 @@ wins; about *architecture of the native app*, this folder wins.
 
 ## Rules for the implementer
 
+0. **Never add a process boundary.** No helper process, no local server between parts of the editor, no JSON (or any
+   other encoding) to hand data from one part to another. Data moves by pointer (immutable snapshots, 01_ARCHITECTURE.md §3).
+   JSON is only for files on disk, the clipboard and the optional automation socket for outside scripts (M9).
 1. **One task at a time** from `08_MILESTONES.md`, in order. A task is done only when its acceptance checks pass. Tick it in
    the status table at the end of `08_MILESTONES.md` in the same commit.
 2. **Only what the task asks.** No extra features, no refactors outside the task, no changes to the Shell (`shell/`) or the

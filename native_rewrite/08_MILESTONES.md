@@ -71,6 +71,19 @@ Performance numbers refer to the development machine (RTX 4070 Ti, 1440p) and lv
   `gpu/arena.*` (VMA virtual blocks over big device buffers).
 - **Accept:** test `[gpu]`: 10 000 random allocate / free / upload cycles, data read back equal, no leaks.
 
+### T1.6 Action registry and input router
+- **Read:** 10_UI_AND_INPUT.md §1–§4.
+- **Do:** `app/actions/registry.*` (ActionDef, kinds, parameterised actions), `app/actions/contexts.*` (the context stack
+  of 10 §3), `app/actions/router.*` (resolution most specific first, text fields first, sequences, hold, double tap,
+  mouse and wheel chords, logical / physical keys, non-Latin layouts matched by US key position), keymap layers (preset +
+  user diff, 10 §4.2) loaded from JSON, the `default` preset with the bindings that exist so far (file, edit, camera,
+  layout). Menus and toolbars are built from the registry. From this task on, **every** new command is an action; no
+  widget or tool handles a key itself.
+- **Accept:** tests: the same input resolves to different actions in different contexts; a more specific context
+  shadows a general one; a user diff adds / removes bindings over the preset; `Ctrl+Z` works with a Cyrillic layout
+  active (simulated scan code); sequences time out after 1 s; a focused text field receives letters while Ctrl chords still
+  reach the router.
+
 ---
 
 ## M2 — Document
@@ -178,6 +191,21 @@ Performance numbers refer to the development machine (RTX 4070 Ti, 1440p) and lv
 ### T4.5 Status bar, settings dialog (basic)
 - **Do:** assets root, game profile, editor prefs pages (others come with their features).
 - **Accept:** settings persist; changing the assets root reloads profile and entity definitions.
+
+### T4.6 Binding editor and keymap presets
+- **Read:** 10 §4–§5.
+- **Do:** Settings > Keymap (table, filters, record, conflict dialog, reverse lookup, reset, import / export, several user
+  keymaps), the `default` preset completed with every binding of DESIGN §17, REQUIREMENTS (texture keys, nudge, selection
+  keys) and `shell/src/ui/bindings.ts` that exists so far. Ask the user whether to ship the `blender`, `hammer`,
+  `radiant`, `unreal` presets now or later.
+- **Accept:** every action registered so far can be rebound, including camera navigation and modal operator keys;
+  rebinding applies without restart; the conflicts filter is empty for the `default` preset; a keymap exported and
+  imported on a clean profile gives the same effective keymap.
+
+### T4.7 Command palette, hints, key help
+- **Do:** command palette (10 §6), bindings in menus and tooltips, status-bar hints of the active tool / modal operator,
+  the key help overlay.
+- **Accept:** every enabled action can be found and run from the palette; the hints change when the binding changes.
 
 **M4 gate:** block out a small level from scratch (boxes, a light, a player start), save, reopen in the old Shell: it
 opens and looks the same.
@@ -310,15 +338,31 @@ opens and looks the same.
 
 ---
 
-## M9 — Export and automation
+## M9 — Export in-process, one GPU device, automation
 
-### T9.1 Export, play map, import
+### T9.1 Typed export input (Core)
+- **Why:** one program, no serialization between its parts (README decision "One program").
+- **Read:** `core/include/core/bsp_export.h` (`BspExportRequest` takes the document as JSON), `core/src/bsp_export.cpp`
+  (`prepareExport`).
+- **Do:** add a request form that takes a typed `std::shared_ptr<const core::Document>`, the resolved prefabs and the relief
+  meshes; the JSON form parses and calls it. No behaviour change.
+- **Accept:** export parity (09 §2) through both forms; `core_tests -tc="*export*"` passes.
+
+### T9.2 The Core's GPU code on the app's device (Core)
+- **Read:** `core/src/gpu_bake.cpp` (`Context`, `makeContext`, `contextFor`), `core/src/gpu_bake.h`.
+- **Do:** `core::gpu::useExternalDevice(...)` (instance, physical device, device, a compute queue + family, the loader's
+  `vkGetInstanceProcAddr`): from then on `contextFor` wraps those handles without owning them; pipelines and pools are
+  created on that device. Without the call the Core behaves as today (its own tools and tests).
+- **Accept:** a native test `[gpu]` runs the Core's GPU tests' scenes through the injected device with the same results;
+  only one `VkDevice` exists in the native process (log at start-up and during an export).
+
+### T9.3 Export, play map, import
 - **Read:** 06 §13, `core/exporter.h`, `bsp_export.h`, `map_import.h`, REQUIREMENTS §25–§31, §38.
 - **Accept:** exporting lvl2 from native gives the same files as `bsp_export_tool` on the saved map (09 §2); progress and
   cancel work; Play map launches the game set in settings; File > Import Quake Map works on `core/assets` samples.
 
-### T9.2 Automation socket
-- **Why:** the `level-blockout` skill (`.claude/skills/level-blockout/SKILL.md`) drives the editor through Core + Shell
+### T9.4 Automation socket (for outside scripts only)
+- **Why:** this is not a split of the editor (it is off by default and the editor never uses it itself). The `level-blockout` skill (`.claude/skills/level-blockout/SKILL.md`) drives the editor through Core + Shell
   today (open a map, set the camera, take shots). The native app must offer the same without a browser.
 - **Do:** `automation/server.*` (QTcpServer on 127.0.0.1 only, `--automation-port`), newline-delimited JSON:
   `open {path}`, `save {path?}`, `get_document`, `set_document {doc}` (validated, one undo step), `camera {viewport, eye,
@@ -356,6 +400,10 @@ tests pass and the user has tried it):
 8. Terrain.
 9. Decals, models (`misc_model`, .glb previews).
 10. Level settings panel, full settings dialog (lighting config), hide menu, context menus, remaining key bindings.
+11. UI improvements marked **[plan]** in 10_UI_AND_INPUT.md §7 (U1 adjust last operation, U2 tool options, U3 undo
+    history, U5 snapping menu, U6 view cube, U7 camera bookmarks, U8 multi-object details, U9 selection tools, U11 texture
+    browser, U12 lighting panel, U13 measure, U14 notifications, U15 theme and scale). Items marked **[ask]**: ask the user
+    first.
 
 ---
 
@@ -391,6 +439,7 @@ Each needs a measurement before and after in the commit message.
 | T1.3 | | |
 | T1.4 | | |
 | T1.5 | | |
+| T1.6 | | |
 | T2.1 | | |
 | T2.2 | | |
 | T2.3 | | |
@@ -408,6 +457,8 @@ Each needs a measurement before and after in the commit message.
 | T4.3 | | |
 | T4.4 | | |
 | T4.5 | | |
+| T4.6 | | |
+| T4.7 | | |
 | T5.1 | | |
 | T5.2 | | |
 | T5.3 | | |
@@ -430,7 +481,9 @@ Each needs a measurement before and after in the commit message.
 | T8.5 | | |
 | T9.1 | | |
 | T9.2 | | |
+| T9.3 | | |
+| T9.4 | | |
 | T10.1–T10.3 | | |
-| M11 (T11.1–T11.10) | | |
+| M11 (T11.1–T11.11) | | |
 | M12 | | |
 | M13 | | |

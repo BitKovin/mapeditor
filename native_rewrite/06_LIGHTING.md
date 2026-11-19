@@ -240,8 +240,9 @@ deterministic function of (scene, pass count) for a fixed schedule — tests rel
 
 ## 13. Export
 
-File > Export / Play map: flatten the current `DocumentVersion` to JSON and call the Core's exporter (`core/exporter.h`,
-`bsp_export.h`) with the lighting options, on a worker thread, with progress in the status bar (the Shell's
+File > Export / Play map: hand the scene builder's typed `core::Document`, resolved prefabs and relief meshes **directly**
+(no JSON: task T9.1 adds that entry point to `prepareExport`) to the Core's exporter (`core/exporter.h`, `bsp_export.h`)
+with the lighting options, running on the app's Vulkan device (task T9.2), on a worker thread, with progress in the status bar (the Shell's
 `exportStatus.ts` behaviour). The live bake pauses during an export (frees the GPU) and resumes after. The export does its
 own full bake; the live results are not written to the export.
 
