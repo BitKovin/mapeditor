@@ -3,6 +3,8 @@
 #include "core/router.h"
 #include "test_util.h"
 #include <doctest.h>
+#include <fstream>
+#include <sstream>
 
 using namespace core;
 using namespace testutil;
@@ -360,4 +362,116 @@ TEST_CASE("router: the document's own brushes are carved once even when prefabs 
     int walls = 0;
     for (const auto& c : j["carved"]) if (c["brushId"] == "wall") { ++walls; CHECK(c["subtractors"] == json::array({"hole"})); }
     CHECK(walls == 1);
+}
+
+// ---- collectSurfacesFor / carversOf (native editor T3.1) -----------------------------------------------------------------------------
+
+namespace {
+std::string surfaceKey(const LightSurface& s) {
+    std::string k = s.instance + "|" + s.entityId + "|" + s.brushInstance + "|" + s.brushId + "|" + std::to_string(s.faceId) + "|" +
+                    (s.side == FaceSide::Front ? "F" : "B") + "|" + s.texture + "|";
+    for (const Vec3& v : s.verts) k += std::to_string(v.x) + "," + std::to_string(v.y) + "," + std::to_string(v.z) + ";";
+    return k;
+}
+
+// Every additive brush of the document and of the resolved prefabs, in the order collectSurfaces visits them.
+std::vector<BrushRef> additiveBrushes(const Document& doc, const std::vector<ResolvedEntity>& prefabs) {
+    std::vector<BrushRef> out;
+    for (const auto& e : doc.entities)
+        if (!EntityClassRegistry::isEditorOnly(e.classname))
+            for (const auto& b : e.brushes)
+                if (b.op == BrushOp::Add) out.push_back({"", e.id, b.id});
+    for (const auto& r : prefabs)
+        if (!EntityClassRegistry::isEditorOnly(r.entity.classname))
+            for (const auto& b : r.entity.brushes)
+                if (b.op == BrushOp::Add) out.push_back({instanceString(r.instancePath), r.entity.id, b.id});
+    return out;
+}
+
+// The union of collectSurfacesFor over single brushes must be collectSurfaces: same pieces, same order.
+void checkPartition(const Document& doc, const std::vector<ResolvedEntity>& prefabs) {
+    const std::vector<LightSurface> all = collectSurfaces(doc, prefabs);
+    std::vector<std::string> want;
+    for (const auto& s : all) want.push_back(surfaceKey(s));
+    std::vector<std::string> got;
+    for (const BrushRef& ref : additiveBrushes(doc, prefabs)) {
+        const auto part = collectSurfacesFor(doc, prefabs, [&](const std::string& i, const std::string& e, const std::string& b) {
+            return i == ref.instance && e == ref.entityId && b == ref.brushId;
+        });
+        for (const auto& s : part) {
+            CHECK(s.instance == ref.instance);
+            CHECK(s.entityId == ref.entityId);
+            got.push_back(surfaceKey(s));
+        }
+    }
+    CHECK(got.size() == want.size());
+    CHECK(got == want);
+    std::sort(got.begin(), got.end());
+    std::sort(want.begin(), want.end());
+    CHECK(got == want);
+}
+}  // namespace
+
+TEST_CASE("collectSurfacesFor: the union over single brushes equals collectSurfaces (demo map)") {
+    std::ifstream in(std::string(TESTDATA_DIR) + "/../core/assets/maps/demo.map.json", std::ios::binary);
+    REQUIRE(in);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const Document doc = documentFromJson(json::parse(ss.str()));
+    REQUIRE(!collectSurfaces(doc, {}).empty());
+    checkPartition(doc, {});
+}
+
+TEST_CASE("collectSurfacesFor: the union equals collectSurfaces with subtractors, a dynamic entity and prefab instances") {
+    Document doc;
+    doc.entities = {ent("w", "worldspawn", {Brush::makeBox("wall", {0, 0, 0}, {4, 4, 1}), Brush::makeBox("floor", {0, -1, 0}, {10, 0, 10}),
+                                            sub("hole", {1, 1, -1}, {3, 3, 2}), sub("pit", {6, -2, 6}, {8, 1, 8})}),
+                    ent("door", "func_door", {Brush::makeBox("leaf", {5, 0, 1}, {6, 3, 2})}),
+                    ent("d", "func_detail", {Brush::makeBox("crate", {7, 0, 7}, {9, 2, 9})})};
+    Entity inside = ent("pe", "func_detail", {Brush::makeBox("pwall", {20, 0, 0}, {24, 4, 1}), sub("phole", {21, 1, -1}, {23, 3, 2})});
+    Entity other = ent("pe", "func_detail", {Brush::makeBox("pwall", {30, 0, 0}, {34, 4, 1})});
+    const std::vector<ResolvedEntity> prefabs = {inPrefab(inside, {"root", "inst1"}), inPrefab(other, {"root", "inst2"})};
+    REQUIRE(!collectSurfaces(doc, prefabs).empty());
+    checkPartition(doc, prefabs);
+
+    // a filter that accepts nothing makes nothing; one that accepts the wall makes exactly the wall's carved pieces
+    CHECK(collectSurfacesFor(doc, prefabs, [](const std::string&, const std::string&, const std::string&) { return false; }).empty());
+    const auto wallOnly = collectSurfacesFor(doc, prefabs, [](const std::string& i, const std::string& e, const std::string& b) {
+        return i.empty() && e == "w" && b == "wall";
+    });
+    REQUIRE(!wallOnly.empty());
+    bool cutWall = false;
+    for (const auto& s : wallOnly) {
+        CHECK(s.entityId == "w");
+        if (s.brushId == "hole") cutWall = true;   // the walls of the hole belong to the subtractor, and are part of the wall's pieces
+    }
+    CHECK(cutWall);
+}
+
+TEST_CASE("carversOf: the subtractors that can carve a brush, by box overlap and carve scope") {
+    Document doc;
+    doc.entities = {ent("w", "worldspawn", {Brush::makeBox("wall", {0, 0, 0}, {4, 4, 1}), Brush::makeBox("far", {50, 0, 0}, {54, 4, 1}),
+                                            sub("hole", {1, 1, -1}, {3, 3, 2}), sub("elsewhere", {100, 0, 0}, {101, 1, 1})}),
+                    ent("door", "func_door", {Brush::makeBox("leaf", {1, 1, 0}, {3, 3, 1})})};
+    const auto wall = carversOf(doc, {}, {"", "w", "wall"});
+    REQUIRE(wall.size() == 1);
+    CHECK(wall[0] == BrushRef{"", "w", "hole"});
+    CHECK(carversOf(doc, {}, {"", "w", "far"}).empty());              // no overlap
+    CHECK(carversOf(doc, {}, {"", "w", "hole"}).empty());             // a subtractor is not a target
+    CHECK(carversOf(doc, {}, {"", "w", "nope"}).empty());
+    CHECK(carversOf(doc, {}, {"", "door", "leaf"}).empty());          // a dynamic entity is out of the default carve scope
+
+    // prefabs: a prefab's subtractor reaches its own instance and the root, never a sibling instance
+    Entity cutter = ent("pe", "func_detail", {Brush::makeBox("pwall", {0, 0, 0}, {4, 4, 1}), sub("phole", {1, 1, -1}, {3, 3, 2})});
+    Entity victim = ent("pv", "func_detail", {Brush::makeBox("vwall", {0, 0, 0}, {4, 4, 1})});
+    const std::vector<ResolvedEntity> prefabs = {inPrefab(cutter, {"root", "one"}), inPrefab(victim, {"root", "two"})};
+    const auto own = carversOf(doc, prefabs, {"one", "pe", "pwall"});
+    bool ownHole = false, rootHole = false;
+    for (const auto& c : own) {
+        if (c == BrushRef{"one", "pe", "phole"}) ownHole = true;
+        if (c == BrushRef{"", "w", "hole"}) rootHole = true;
+    }
+    CHECK(ownHole);
+    CHECK(rootHole);                                                   // the root document's subtractor carves into the prefab as well
+    for (const auto& c : carversOf(doc, prefabs, {"two", "pv", "vwall"})) CHECK(c.instance != "one");
 }

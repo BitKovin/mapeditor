@@ -45,8 +45,29 @@ struct Piece {
 // surfaces per (instance, entity, brush): the carved result when there is one, else the authored faces
 struct Target { const Item* owner; const Brush* brush; std::vector<Piece> pieces; };
 
-// Shared by the derived_geometry message and the lightmap code: resolves every additive brush to its final surface pieces.
-void buildTargets(const std::vector<Item>& items, std::vector<Target>& targets, json& carved, json& skipped);
+using BrushFilter = std::function<bool(const std::string& instance, const std::string& entityId, const std::string& brushId)>;
+
+// Shared by the derived_geometry message and the lightmap code: resolves every additive brush (accepted by `which`, when given) to its final
+// surface pieces. The carving always sees every subtractor.
+void buildTargets(const std::vector<Item>& items, std::vector<Target>& targets, json& carved, json& skipped, const BrushFilter* which = nullptr);
+
+struct Sub { const Item* owner; const Brush* brush; };
+
+// Can the subtractor `s` carve the additive brush `b` of `target`? (Partitions: the root document's subtractors carve anything (per carve
+// scope); a prefab's subtractors carve their own instance and the root document, never a sibling prefab.)
+bool carves(const Sub& s, const Item& target, const Brush& b) {
+    if (s.owner->instance != target.instance && !s.owner->instance.empty() && !target.instance.empty()) return false;
+    const bool same = s.owner->entity->id == target.entity->id && s.owner->instance == target.instance;
+    return carveScopeApplies(s.brush->carve, same, *target.entity) && brushesMayOverlap(b, *s.brush);
+}
+
+std::vector<Sub> subtractorsOf(const std::vector<Item>& items) {
+    std::vector<Sub> subs;
+    for (const auto& it : items)
+        for (const auto& b : it.entity->brushes)
+            if (b.op == BrushOp::Subtract) subs.push_back({&it, &b});
+    return subs;
+}
 
 }  // namespace
 
@@ -68,25 +89,18 @@ bool hasDerivedWork(const Document& doc, const std::vector<ResolvedEntity>& pref
 }
 
 namespace {
-void buildTargets(const std::vector<Item>& items, std::vector<Target>& targets, json& carved, json& skipped) {
-    struct Sub { const Item* owner; const Brush* brush; };
-    std::vector<Sub> subs;
-    for (const auto& it : items)
-        for (const auto& b : it.entity->brushes)
-            if (b.op == BrushOp::Subtract) subs.push_back({&it, &b});
+void buildTargets(const std::vector<Item>& items, std::vector<Target>& targets, json& carved, json& skipped, const BrushFilter* which) {
+    const std::vector<Sub> subs = subtractorsOf(items);
 
     for (const auto& target : items) {
         for (const auto& b : target.entity->brushes) {
             if (b.op != BrushOp::Add) continue;
+            if (which && !(*which)(target.instance, target.entity->id, b.id)) continue;
             Target t{&target, &b, {}};
             std::vector<const Sub*> active;
             json ids = json::array(), idInstances = json::array();
             for (const auto& s : subs) {
-                // Partitions: the root document's subtractors carve anything (per scope); a prefab's subtractors carve
-                // their own instance and the root document (the world around the prefab), never a sibling prefab.
-                if (s.owner->instance != target.instance && !s.owner->instance.empty() && !target.instance.empty()) continue;
-                const bool same = s.owner->entity->id == target.entity->id && s.owner->instance == target.instance;
-                if (!carveScopeApplies(s.brush->carve, same, *target.entity) || !brushesMayOverlap(b, *s.brush)) continue;
+                if (!carves(s, target, b)) continue;
                 active.push_back(&s);
                 ids.push_back(s.brush->id);
                 idInstances.push_back(s.owner->instance);
@@ -391,10 +405,29 @@ Vec2 albedoUvAt(const LightSurface& s, const Vec3& p) {
 }
 
 std::vector<LightSurface> collectSurfaces(const Document& doc, const std::vector<ResolvedEntity>& prefabs) {
+    return collectSurfacesFor(doc, prefabs, nullptr);
+}
+
+std::vector<BrushRef> carversOf(const Document& doc, const std::vector<ResolvedEntity>& prefabs, const BrushRef& target) {
+    const std::vector<Item> items = allEntities(doc, prefabs);
+    std::vector<BrushRef> out;
+    for (const auto& item : items) {
+        if (item.instance != target.instance || item.entity->id != target.entityId) continue;
+        for (const auto& b : item.entity->brushes) {
+            if (b.id != target.brushId || b.op != BrushOp::Add) continue;
+            for (const Sub& s : subtractorsOf(items))
+                if (carves(s, item, b)) out.push_back({s.owner->instance, s.owner->entity->id, s.brush->id});
+            return out;
+        }
+    }
+    return out;
+}
+
+std::vector<LightSurface> collectSurfacesFor(const Document& doc, const std::vector<ResolvedEntity>& prefabs, const BrushFilter& which) {
     const std::vector<Item> items = allEntities(doc, prefabs);
     std::vector<Target> targets;
     json carved = json::array(), skipped = json::array();
-    buildTargets(items, targets, carved, skipped);
+    buildTargets(items, targets, carved, skipped, which ? &which : nullptr);
     std::vector<LightSurface> out;
     std::map<const Brush*, std::shared_ptr<const BrushSmoothing>> smoothingOf;
     for (const auto& t : targets) {

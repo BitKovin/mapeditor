@@ -74,6 +74,23 @@ Vec2 albedoUvAt(const LightSurface& s, const Vec3& p);
 /// Final surface pieces of every additive brush (the same carving as deriveGeometry, nothing skipped).
 std::vector<LightSurface> collectSurfaces(const Document& doc, const std::vector<ResolvedEntity>& prefabs);
 
+/// A brush of the document or of a prefab instance: `instance` = instanceString() of its instance path ("" = the document itself).
+struct BrushRef {
+    std::string instance, entityId, brushId;
+    bool operator==(const BrushRef& o) const { return instance == o.instance && entityId == o.entityId && brushId == o.brushId; }
+};
+
+/// The pieces collectSurfaces() makes, for the target (additive) brushes accepted by `which(instance, entityId, brushId)` only. The carving
+/// still sees every subtractor of the document, so the pieces of an accepted brush are exactly those collectSurfaces() makes for it, in the same
+/// order; the union over a partition of all brushes equals collectSurfaces(). (The native editor builds the surfaces of the changed brushes only.)
+std::vector<LightSurface> collectSurfacesFor(const Document& doc, const std::vector<ResolvedEntity>& prefabs,
+                                             const std::function<bool(const std::string& instance, const std::string& entityId,
+                                                                      const std::string& brushId)>& which);
+
+/// The subtractive brushes that can carve `target` (their boxes overlap and their carve scope applies, in the order collectSurfaces() applies
+/// them): the carving dependencies of that brush. Empty when `target` is not an additive brush of the document or the resolved prefabs.
+std::vector<BrushRef> carversOf(const Document& doc, const std::vector<ResolvedEntity>& prefabs, const BrushRef& target);
+
 // The solid volumes of the level: where a point is INSIDE matter (as opposed to on its surface). A lightmap texel that lies inside a
 // solid is invisible (a face buried in another brush, e.g. the floor under a wall) and its rays would start inside geometry, so the
 // baker skips it. A point is solid when it is inside a light-blocking additive brush and outside every subtractive brush.
