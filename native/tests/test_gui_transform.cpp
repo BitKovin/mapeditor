@@ -269,6 +269,8 @@ TEST_CASE("modal G / R / S and the gizmo transform the selection as one undo ste
             CHECK(doc->entities[static_cast<size_t>(ei)]->typed.origin.x > 5.0);   // the origin moved ...
             CHECK(minOf(window, "door").x == doctest::Approx(3.0));                // ... the brush stayed
             CHECK(window.history().undoLabel() == "Move origin");
+            QCursor::setPos(vp->mapToGlobal(mid));   // keys go to the viewport under the cursor
+            pumpFor(50);
             key(Qt::Key_Escape);
             CHECK(window.originSelected().empty());
             CHECK(window.selection().items().size() == 1);   // Esc left the origin editing and kept the entity selected

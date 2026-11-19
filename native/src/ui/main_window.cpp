@@ -43,6 +43,7 @@
 #include "ui/glyph_atlas_qt.h"
 #include "ui/input_adapter.h"
 #include "ui/registry_menus.h"
+#include "ui/box_drawing.h"
 #include "ui/stats_panel.h"
 #include "ui/transform_session.h"
 
@@ -359,12 +360,14 @@ void MainWindow::setContextsFor(render::ViewportWindow* vp) {
     } else if (vp) {
         const std::vector<std::string> v = viewportContexts(*vp);
         contexts.insert(contexts.end(), v.begin(), v.end());
+        contexts.push_back(tool_ == Tool::Box ? "tool:box" : "tool:select");
     }
     router_.contexts().set(contexts);
 }
 
 bool MainWindow::routeKey(const QKeyEvent& e, bool press) {
     // A hold in progress keeps the viewport it started in; otherwise the viewport under the pointer gives the contexts.
+    if (box_ && (e.key() == Qt::Key_Shift)) updateBoxPreview();   // Shift squares the rectangle / makes the cube
     if (transformKey(e, press)) return true;
     render::ViewportWindow* vp = router_.holding() && holdViewport_ ? holdViewport_ : viewportUnderCursor();
     setContextsFor(vp);
@@ -387,6 +390,7 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
         case QEvent::MouseMove: ev = fromMouseEvent(*static_cast<QMouseEvent*>(e), delta); break;
         default: return false;
     }
+    if (boxMouse(index, ev)) return true;
     if (transformMouse(index, ev)) return true;
     setContextsFor(vp);
     UiEnv ui{this, vp};

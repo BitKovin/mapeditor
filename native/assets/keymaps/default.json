@@ -9,12 +9,19 @@
     { "action": "edit.redo",   "context": "global", "input": "Ctrl+Shift+Z" },
     { "action": "edit.redo",   "context": "global", "input": "Ctrl+Y" },
 
-    { "action": "select.pick", "context": "area:viewport", "input": "LMB drag" },
-    { "action": "select.pick", "context": "area:viewport", "input": "Ctrl+LMB drag", "params": { "op": "toggle" } },
-    { "action": "select.pick", "context": "area:viewport", "input": "Shift+LMB drag", "params": { "op": "face" } },
+    { "action": "select.pick", "context": "tool:select", "input": "LMB drag" },
+    { "action": "select.pick", "context": "tool:select", "input": "Ctrl+LMB drag", "params": { "op": "toggle" } },
+    { "action": "select.pick", "context": "tool:select", "input": "Shift+LMB drag", "params": { "op": "face" } },
 
     { "action": "grid.smaller", "context": "area:viewport", "input": "[" },
     { "action": "grid.larger",  "context": "area:viewport", "input": "]" },
+
+    { "action": "tool.set",   "context": "area:viewport", "input": "V", "params": { "tool": "select" } },
+    { "action": "shape.set",  "context": "area:viewport", "input": "B", "params": { "shape": "box" } },
+    { "action": "shape.turn", "context": "tool:box",      "input": "T" },
+    { "action": "box.draw",   "context": "tool:box",      "input": "LMB drag" },
+    { "action": "box.draw",   "context": "tool:box",      "input": "Shift+LMB drag" },
+    { "action": "box.cancel", "context": "tool:box",      "input": "Escape" },
 
     { "action": "transform.grab",   "context": "area:viewport", "input": "G" },
     { "action": "transform.rotate", "context": "area:viewport", "input": "R" },

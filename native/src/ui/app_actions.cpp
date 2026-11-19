@@ -74,7 +74,7 @@ void selectAction(actions::Registry& r) {
     d.category = "Selection";
     d.description = "Click selects what is under the cursor, Ctrl+click toggles it, Shift+click selects the face; dragging a box selects what lies inside it.";
     d.kind = ActionKind::Hold;
-    d.contexts = {"area:viewport"};
+    d.contexts = {"tool:select"};
     d.params = json{{"op", "replace"}};
     d.enabled = haveViewport;
     d.run = [](ActionEnv& env, const Invocation& inv) {
@@ -279,6 +279,99 @@ void transformActions(actions::Registry& r) {
     }
 }
 
+// The box / shape tool (T4.2): the tool and the shape of the block tools, the drawing itself (a left drag, then the height), cancelling.
+void boxActions(actions::Registry& r) {
+    const auto windowOf = [](const ActionEnv& env) { auto* u = env.as<UiEnv>(); return u ? u->window : nullptr; };
+    {
+        ActionDef d;
+        d.id = "tool.set";
+        d.label = "Tool";
+        d.category = "Tools";
+        d.description = "Switches between the select tool and the box tool.";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&Tools";
+        d.params = json{{"tool", "select"}};
+        d.variants = {{"&Select", {{"tool", "select"}}}, {"&Box", {{"tool", "box"}}}};
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
+        const auto toolOf = [](const json& p) { return p.value("tool", std::string("select")) == "box" ? MainWindow::Tool::Box : MainWindow::Tool::Select; };
+        d.checked = [windowOf, toolOf](const ActionEnv& env, const json& p) {
+            auto* w = windowOf(env);
+            return w && w->tool() == toolOf(p);
+        };
+        d.run = [windowOf, toolOf](ActionEnv& env, const Invocation& inv) {
+            if (auto* w = windowOf(env)) w->setTool(toolOf(inv.params));
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "shape.set";
+        d.label = "Shape";
+        d.category = "Tools";
+        d.description = "The solid the box tool draws: a box, cylinder, wedge, arch, stairs or sphere (selecting one switches to the box tool).";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&Tools/S&hape";
+        d.params = json{{"shape", "box"}};
+        d.variants = {{"&Box", {{"shape", "box"}}},     {"&Cylinder", {{"shape", "cylinder"}}}, {"&Wedge", {{"shape", "wedge"}}},
+                      {"&Arch", {{"shape", "arch"}}},   {"S&tairs", {{"shape", "stairs"}}},     {"&Sphere", {{"shape", "sphere"}}}};
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
+        const auto shapeOf = [](const json& p) {
+            const std::string s = p.value("shape", std::string("box"));
+            for (const auto id : {tools::ShapeId::Cylinder, tools::ShapeId::Wedge, tools::ShapeId::Arch, tools::ShapeId::Stairs, tools::ShapeId::Sphere})
+                if (s == tools::shapeName(id)) return id;
+            return tools::ShapeId::Box;
+        };
+        d.checked = [windowOf, shapeOf](const ActionEnv& env, const json& p) {
+            auto* w = windowOf(env);
+            return w && w->shape() == shapeOf(p);
+        };
+        d.run = [windowOf, shapeOf](ActionEnv& env, const Invocation& inv) {
+            if (auto* w = windowOf(env)) w->setShape(shapeOf(inv.params));
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "shape.turn";
+        d.label = "Turn shape";
+        d.category = "Tools";
+        d.description = "Turns the shape being drawn a quarter turn about its height: which way a ramp rises, stairs climb, an arch spans.";
+        d.menu = "&Tools";
+        d.contexts = {"tool:box"};
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->turnShape(1); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "box.draw";
+        d.label = "Draw box";
+        d.category = "Tools";
+        d.description = "Drag a rectangle on the surface under the pointer, move the pointer for the height and click to finish.";
+        d.kind = ActionKind::Hold;
+        d.contexts = {"tool:box"};
+        d.enabled = haveViewport;
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            const UiEnv* u = env.as<UiEnv>();
+            if (u && u->window && u->viewport) u->window->boxInput(u->viewport, inv.event);
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "box.cancel";
+        d.label = "Cancel drawing";
+        d.category = "Tools";
+        d.contexts = {"tool:box"};
+        d.enabled = [windowOf](const ActionEnv& env, const json&) {
+            auto* w = windowOf(env);
+            return w && w->drawingBox();
+        };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->cancelBox(); };
+        add(r, std::move(d));
+    }
+}
+
 } // namespace
 
 std::vector<std::string> viewportContexts(const render::ViewportWindow& viewport) {
@@ -472,6 +565,7 @@ void registerAppActions(actions::Registry& r) {
     dragAction(r, "camera.pan", "Pan", "area:viewport", true);
     selectAction(r);
     transformActions(r);
+    boxActions(r);
     gridActions(r);
     {
         ActionDef d;

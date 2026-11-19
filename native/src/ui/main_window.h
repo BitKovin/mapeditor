@@ -28,6 +28,7 @@
 #include "render/math3d.h"
 #include "tools/gizmo.h"
 #include "tools/modal.h"
+#include "tools/shapes.h"
 #include "ui/app_actions.h"
 
 class QSettings;
@@ -73,6 +74,7 @@ namespace native::render { struct LineVertex; enum class GizmoMode; }
 
 namespace native::ui {
 
+struct BoxDrawing;
 struct TransformSession;
 class StatsPanel;
 class RegistryMenus;
@@ -236,7 +238,29 @@ public:
     // Press on a gizmo handle / the origin square of `viewport` at `p` (what the left button does before the pick); false when nothing was hit.
     bool beginGizmoDrag(render::ViewportWindow* viewport, QPointF p);
 
+    // ---- the box / shape tool (T4.2) ----
+    enum class Tool { Select, Box };
+    Tool tool() const { return tool_; }
+    void setTool(Tool tool);
+    tools::ShapeId shape() const { return shape_; }
+    void setShape(tools::ShapeId shape);   // also switches to the box tool
+    const tools::ShapeParams& shapeParams() const { return shapeParams_; }
+    void setShapeParams(const tools::ShapeParams& params);
+    void turnShape(int quarterTurns = 1);
+    const std::string& activeTexture() const { return activeTexture_; }
+    void setActiveTexture(const std::string& texture) { activeTexture_ = texture; }
+    bool drawingBox() const;
+    // The box.draw action: press starts the rectangle, moves follow, release moves on to the height.
+    void boxInput(render::ViewportWindow* viewport, const actions::InputEvent& event);
+    // The second click (or a call from a test) finishes the drawing: one undo step, the new brushes selected. False when nothing was built.
+    bool commitBox();
+    void cancelBox();
+    // The lines of the drawing in progress for a viewport (the rectangle, then the shape); empty when it is drawn elsewhere.
+    std::vector<render::LineVertex> boxPreviewLines(size_t panelIndex) const;
+
 signals:
+    // The tool, the shape or its parameters changed.
+    void toolChanged();
     // The current document changed (opened, saved under a new path, replaced): panels refresh their title and contents.
     void documentChanged();
     // The current version changed (an edit, undo, redo, or a new document: `all`): what differs from the previous one.
@@ -311,6 +335,10 @@ private:
     void endTransform(bool confirm);
     bool transformKey(const QKeyEvent& e, bool press);
     bool transformMouse(size_t panelIndex, const actions::InputEvent& e);
+    bool boxMouse(size_t panelIndex, const actions::InputEvent& e);
+    void boxMove(QPointF p);
+    void updateBoxPreview();
+    void statusBox();
     // Like runJob, but invisible to busy(): housekeeping that must not disable the file actions.
     void runBackground(std::function<void()> work, std::function<void()> done);
 
@@ -344,6 +372,11 @@ private:
         bool dragging = false;
     } pickDrag_;
     std::unique_ptr<TransformSession> transform_;
+    std::unique_ptr<BoxDrawing> box_;
+    Tool tool_ = Tool::Select;
+    tools::ShapeId shape_ = tools::ShapeId::Box;
+    tools::ShapeParams shapeParams_;
+    std::string activeTexture_ = "dev/grey";
     std::string originSel_;
     struct GizmoHover {
         size_t panel = 0;

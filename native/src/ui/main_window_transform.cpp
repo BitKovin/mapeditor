@@ -19,6 +19,7 @@
 #include "tools/transform.h"
 #include "ui/main_window.h"
 #include "ui/transform_session.h"
+#include "ui/view_helpers.h"
 
 namespace native::ui {
 
@@ -29,15 +30,6 @@ constexpr double kOriginHitPx = 8;   // the origin square of a brush entity
 
 render::Vec3 asVec(const tools::V3& v) { return {v[0], v[1], v[2]}; }
 tools::V3 asV3(const render::Vec3& v) { return {v.x, v.y, v.z}; }
-
-render::Ray rayAt(const render::ViewState& view, QSizeF size, QPointF p) {
-    return render::rayThrough(view.viewProj, p.x() / std::max(1.0, size.width()) * 2.0 - 1.0, p.y() / std::max(1.0, size.height()) * 2.0 - 1.0);
-}
-
-tools::Pixel screenOf(const render::ViewState& view, QSizeF size, const render::Vec3& p) {
-    const render::Vec3 n = render::mat4Transform(view.viewProj, p);
-    return {(n.x * 0.5 + 0.5) * size.width(), (n.y * 0.5 + 0.5) * size.height()};
-}
 
 const char* labelOf(tools::ModalKind k) { return k == tools::ModalKind::Grab ? "Move" : (k == tools::ModalKind::Rotate ? "Rotate" : "Scale"); }
 
@@ -310,7 +302,7 @@ bool MainWindow::transformMouse(size_t index, const actions::InputEvent& e) {
 
 MainWindow::GizmoTarget MainWindow::gizmoTarget(render::ViewportWindow* vp) {
     GizmoTarget g;
-    if (!document_ || transform_ || !vp) return g;
+    if (!document_ || transform_ || !vp || tool_ != Tool::Select || box_) return g;
     const std::vector<doc::SelRef> sels = transformSelection();
     if (sels.empty()) return g;
     if (!originSel_.empty()) {
@@ -362,6 +354,7 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesFor(size_t index) {
     if (index >= panels_.size()) return {};
     render::ViewportWindow* vp = panels_[index].window;
     if (!vp) return {};
+    if (box_) return boxPreviewLines(index);   // the drawing in progress replaces the gizmo
     if (transform_ && transform_->source == TransformSession::Source::Modal) return {};   // the modal operators show no gizmo
     GizmoTarget g;
     tools::Axis active = -1;
@@ -406,7 +399,7 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesFor(size_t index) {
 
 // Where the origin square of the one selected brush entity with a custom origin is; none otherwise.
 std::optional<render::Vec3> MainWindow::originHandle() const {
-    if (!document_ || transform_) return std::nullopt;
+    if (!document_ || transform_ || tool_ != Tool::Select || box_) return std::nullopt;
     const std::vector<doc::SelRef> sels = transformSelection();
     if (sels.size() != 1 || !sels[0].instancePath.empty() || sels[0].entityId.empty()) return std::nullopt;
     const int ei = document_->findEntity(sels[0].entityId);
