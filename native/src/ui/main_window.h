@@ -40,6 +40,7 @@ namespace native::base { class JobPool; }
 namespace native::doc {
 class DocumentVersion;
 class History;
+class Selection;
 struct ChangeSet;
 struct LoadResult;
 } // namespace native::doc
@@ -130,6 +131,10 @@ public:
     // Makes `version` the current document (after a load, and for undo / redo / edits from T2.4 on). `saved` marks it as the saved
     // state (a load or a save), otherwise it counts as modified when it differs from the saved one.
     void setDocument(std::shared_ptr<const doc::DocumentVersion> version, bool saved);
+    // ---- selection (T2.5) ----
+    // What is selected and the edit mode. Follows the document: an edit, undo or redo keeps what still exists, a new document clears it.
+    doc::Selection& selection() { return *selection_; }
+
     // ---- edits and undo (T2.4) ----
     // The undo history of the document (reset whenever a document is opened or saved under another path).
     doc::History& history() { return *history_; }
@@ -162,6 +167,8 @@ signals:
     void documentChanged();
     // The current version changed (an edit, undo, redo, or a new document: `all`): what differs from the previous one.
     void documentEdited(const native::doc::ChangeSet& changes);
+    // The selection, the edit mode or the mesh selection changed.
+    void selectionChanged();
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -219,6 +226,7 @@ private:
 
     std::shared_ptr<const doc::DocumentVersion> document_;
     std::unique_ptr<doc::History> history_;
+    std::unique_ptr<doc::Selection> selection_;
     uint64_t savedVersion_ = 0;
     std::string assetsRoot_;
     std::vector<std::string> recent_;

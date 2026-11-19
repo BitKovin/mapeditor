@@ -28,6 +28,7 @@
 
 #include "base/log.h"
 #include "doc/commands.h"
+#include "doc/selection.h"
 #include "render/viewport_window.h"
 #include "ui/input_adapter.h"
 #include "ui/registry_menus.h"
@@ -125,9 +126,14 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         if (assetsRoot_.empty()) assetsRoot_ = st->value("assets/root").toString().toStdString();
         for (const QString& r : st->value("files/recent").toStringList()) recent_.push_back(r.toStdString());
     }
+    selection_ = std::make_unique<doc::Selection>();
+    selection_->setListener([this] { emit selectionChanged(); });
     history_ = std::make_unique<doc::History>();
-    history_->setListener([this](const std::shared_ptr<const doc::DocumentVersion>& current, const doc::ChangeSet& changes, doc::ChangeCause) {
+    history_->setListener([this](const std::shared_ptr<const doc::DocumentVersion>& current, const doc::ChangeSet& changes, doc::ChangeCause cause) {
         document_ = current;
+        // The selection follows the document before anyone is told about the new version: panels then see both consistent.
+        if (!current || cause == doc::ChangeCause::Reset) selection_->reset();
+        else selection_->follow(*current, cause == doc::ChangeCause::Undo || cause == doc::ChangeCause::Redo);
         updateTitle();
         if (menus()) menus()->refresh();
         emit documentChanged();

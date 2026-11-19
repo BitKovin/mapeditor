@@ -160,6 +160,8 @@ struct SelRef {
 Modes: object (entities / brushes), face, mesh (vertex / edge / face), as in `shell/src/state/store.ts` and DESIGN §8.
 Selection changes notify panels and the renderer (outline), never the scene builder.
 
+*As built (T2.5):* `SelRef` has one `std::optional<uint32_t> faceId` (as the Shell: several faces = several refs) instead of a `faces` vector, and the mesh picks are a separate `MeshSel {vertices, edges, faces}` of the primary brush (as the Shell's `meshSel`; `edges` are opaque ids of the mesh tools). A prefab instance of the document is `{instancePath = {id}, entityId = ""}`. `doc::Selection` (UI thread, one listener, `revision()`) ports `select` / `toggleSelect` / `selectMany` / `setEditMode` and the `applyDoc` follow rule; the main window owns it (`selection()`, signal `selectionChanged`) and calls `follow` from the history listener before `documentChanged` / `documentEdited` are emitted (undo / redo also drop the mesh picks, a new document resets). Converting mesh picks between vertex / edge / face kinds is left to the mesh tools (picks are dropped).
+
 ## 9. View state that is not document
 
 Hidden objects (`shell/src/model/visibility.ts` rules), per-viewport settings (`shell/src/render/viewportSettings.ts`),

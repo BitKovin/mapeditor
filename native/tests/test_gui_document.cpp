@@ -17,6 +17,7 @@
 #include "doc/document.h"
 #include "doc/edit.h"
 #include "doc/io.h"
+#include "doc/selection.h"
 #include "gui_support.h"
 #include "ui/registry_menus.h"
 
@@ -341,4 +342,38 @@ TEST_CASE("Edit > Undo / Redo name the step, switch versions and follow the dirt
     window.menus()->refresh();
     CHECK_FALSE(undo->isEnabled());
     CHECK_FALSE(redo->isEnabled());
+}
+
+TEST_CASE("the main window's selection follows edits, undo and new documents, and tells its listeners") {
+    Assets assets;
+    ui::Services sv = docServices(assets, nullptr);
+    ui::MainWindow window(sv);
+    window.openDocument("maps/demo.map.json");
+    const auto opened = window.document();
+    REQUIRE(opened);
+    int heard = 0;
+    QObject::connect(&window, &ui::MainWindow::selectionChanged, [&] { ++heard; });
+    CHECK(window.selection().empty());
+
+    size_t e = 0;
+    while (opened->entities[e]->brushes.empty()) ++e;
+    const std::string entityId = opened->entities[e]->typed.id;
+
+    // an edit that adds a brush; select it; undo removes it and the selection with it
+    core::Brush added = opened->entities[e]->brushes[0]->brush;
+    added.id = "b_added_by_test";
+    doc::VersionEditor ed(opened);
+    REQUIRE(ed.addBrush(entityId, added));
+    REQUIRE(window.commitEdit("Add brush", ed.finish()));
+    window.selection().select(doc::SelRef::brush(entityId, added.id));
+    CHECK(heard == 1);
+    CHECK_FALSE(window.selection().empty());
+    window.undo();
+    CHECK(window.selection().empty());
+    CHECK(heard == 2);
+
+    window.selection().select(doc::SelRef::brush(entityId, opened->entities[e]->brushes[0]->brush.id));
+    CHECK_FALSE(window.selection().empty());
+    window.openDocument("maps/engine_test.map.json");
+    CHECK(window.selection().empty());                 // a new document clears the selection
 }
