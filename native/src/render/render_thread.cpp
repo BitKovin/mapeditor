@@ -59,6 +59,7 @@ struct RenderThread::Viewport {
     ViewState view;
     bool band = false;
     float bandRect[4] = {0, 0, 0, 0};
+    std::shared_ptr<const std::vector<TextItem>> sizeLabels;
     std::shared_ptr<std::promise<CapturedImage>> capture;     // pending capture request
     uint64_t frames = 0, recreations = 0;
     // Render thread only.
@@ -237,6 +238,36 @@ void RenderThread::setSelectionLines(std::shared_ptr<const std::vector<LineVerte
     wake_.notify_all();
 }
 
+void RenderThread::setEntityOverlay(std::shared_ptr<const EntityOverlay> overlay) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        entityOverlay_ = std::move(overlay);
+        for (auto& kv : viewports_) kv.second->dirty = true;
+    }
+    wake_.notify_all();
+}
+
+void RenderThread::setGlyphAtlas(std::shared_ptr<const GlyphAtlas> atlas) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        glyphAtlas_ = std::move(atlas);
+        workPending_ = true;
+        for (auto& kv : viewports_) kv.second->dirty = true;
+    }
+    wake_.notify_all();
+}
+
+void RenderThread::setSizeLabels(ViewportId id, std::shared_ptr<const std::vector<TextItem>> labels) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = viewports_.find(id);
+        if (it == viewports_.end()) return;
+        it->second->sizeLabels = std::move(labels);
+        it->second->dirty = true;
+    }
+    wake_.notify_all();
+}
+
 void RenderThread::setRubberBand(ViewportId id, bool active, float x0, float y0, float x1, float y1) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -331,10 +362,13 @@ void RenderThread::loop() {
             std::shared_ptr<const std::vector<LineVertex>> selection;
             bool band = false;
             float bandRect[4] = {0, 0, 0, 0};
+            std::shared_ptr<const std::vector<TextItem>> sizeLabels;
         };
         std::vector<Work> work;
         bool doUpload = false;
         std::string skyName;
+        std::shared_ptr<const EntityOverlay> overlay;
+        std::shared_ptr<const GlyphAtlas> atlas;
         std::vector<std::shared_ptr<Viewport>> toRelease;
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -347,6 +381,8 @@ void RenderThread::loop() {
             doUpload = workPending_;
             workPending_ = false;
             skyName = skyName_;
+            overlay = entityOverlay_;
+            atlas = glyphAtlas_;
             if (stop_) {
                 for (auto& kv : viewports_) toRelease.push_back(kv.second);
             } else {
@@ -355,7 +391,7 @@ void RenderThread::loop() {
                     if (v.removing) { toRelease.push_back(kv.second); continue; }
                     if (!v.dirty && !v.capture && !doUpload) continue;
                     work.push_back({kv.second, v.width, v.height, {v.clear[0], v.clear[1], v.clear[2]}, v.view, std::move(v.capture), selectionLines_, v.band,
-                                    {v.bandRect[0], v.bandRect[1], v.bandRect[2], v.bandRect[3]}});
+                                    {v.bandRect[0], v.bandRect[1], v.bandRect[2], v.bandRect[3]}, v.sizeLabels});
                     v.capture.reset();
                     v.dirty = false;
                 }
@@ -396,6 +432,10 @@ void RenderThread::loop() {
             VkCommandBufferBeginInfo ubi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             ubi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             vkBeginCommandBuffer(uploadCmd_[slot], &ubi);
+            if (atlas.get() != atlasSeen_) {
+                atlasSeen_ = atlas.get();
+                atlasIndex_ = atlas && atlas->ok() ? textures_->addImage("glyphs" + std::to_string(++atlasSerial_), atlas->width, atlas->height, atlas->rgba) : 0;
+            }
             skyIndex_ = skyName.empty() ? 0 : textures_->skyIndex(skyName);
             bool more = scene_->sync(uploadCmd_[slot], *ring_, completedFrames(), nextTimelineValue_.load());
             more = textures_->upload(uploadCmd_[slot], *ring_) || more;
@@ -522,7 +562,35 @@ void RenderThread::loop() {
                                          {{x1, y1, 0}, c}, {{x0, y1, 0}, c}, {{x0, y1, 0}, c}, {{x0, y0, 0}, c}};
                 bandLines = uploadLines(q, 8);
             }
-            if (mesh_) mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true, selLines, bandLines);
+            FrameOverlays ov;
+            ov.selection = selLines;
+            ov.screen = bandLines;
+            if (overlay) {
+                ov.entityLines = uploadLines(overlay->lines.data(), overlay->lines.size() & ~size_t(1));
+                ov.fills = uploadLines(overlay->fills.data(), overlay->fills.size() / 3 * 3);
+            }
+            if (atlas && atlas->ok() && atlasIndex_ != 0) {
+                const auto uploadText = [&](const std::vector<TextItem>& items) {
+                    std::vector<LabelVertex> verts;
+                    for (const TextItem& t : items) layoutText(*atlas, t.text, t.at.data(), t.rgba, verts);
+                    LineList l;
+                    if (verts.empty()) return l;
+                    const gpu::UploadRing::Allocation a = ring_->allocate(verts.size() * sizeof(LabelVertex), 16);
+                    if (!a.ok()) return l;
+                    std::memcpy(a.data, verts.data(), verts.size() * sizeof(LabelVertex));
+                    ring_->flush(a);
+                    l.buffer = a.buffer;
+                    l.offset = a.offset;
+                    l.count = static_cast<uint32_t>(verts.size());
+                    return l;
+                };
+                if (overlay) ov.labels = uploadText(overlay->labels);
+                if (w.sizeLabels) ov.sizeLabels = uploadText(*w.sizeLabels);
+                ov.atlasTexture = atlasIndex_;
+            }
+            ov.extent[0] = static_cast<float>(extent.width);
+            ov.extent[1] = static_cast<float>(extent.height);
+            if (mesh_) mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true, ov);
             if (pass_) pass_->record(f.cmd, extent, w.view, !scene_->hasObjects());
             vkCmdEndRendering(f.cmd);
 

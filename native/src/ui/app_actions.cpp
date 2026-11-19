@@ -87,6 +87,60 @@ void selectAction(actions::Registry& r) {
     add(r, std::move(d));
 }
 
+// Grid size of the active viewport: an exact size (grid.set {size}) or one step along gridSizes() (grid.smaller / grid.larger).
+void gridActions(actions::Registry& r) {
+    const auto apply = [](render::ViewportWindow* vp, double size) {
+        render::ViewportSettings s = vp->rig().settings();
+        if (s.gridSize == size) return;
+        s.gridSize = size;
+        vp->rig().applySettings(s);
+        vp->viewChanged();
+    };
+    {
+        ActionDef d;
+        d.id = "grid.set";
+        d.label = "Set grid size";
+        d.category = "Grid";
+        d.description = "Sets the grid size (metres) of the active viewport; the size is the binding's parameter.";
+        d.params = json{{"size", 0.5}};
+        d.enabled = [](const ActionEnv& env, const json& p) {
+            return viewportOf(env) && p.is_object() && p.value("size", 0.0) > 0;
+        };
+        d.run = [apply](ActionEnv& env, const Invocation& inv) {
+            if (auto* vp = viewportOf(env)) apply(vp, inv.params.value("size", vp->rig().settings().gridSize));
+        };
+        add(r, std::move(d));
+    }
+    const auto step = [apply](int dir) {
+        return [apply, dir](ActionEnv& env, const Invocation&) {
+            auto* vp = viewportOf(env);
+            if (!vp) return;
+            const std::vector<double>& sizes = render::gridSizes();
+            const double cur = vp->rig().settings().gridSize;
+            // the nearest listed size at or below / above the current one
+            double next = cur;
+            if (dir < 0) {
+                for (double g : sizes)
+                    if (g < cur - 1e-9) next = g;
+            } else {
+                for (auto it = sizes.rbegin(); it != sizes.rend(); ++it)
+                    if (*it > cur + 1e-9) next = *it;
+            }
+            apply(vp, next);
+        };
+    };
+    for (const int dir : {-1, 1}) {
+        ActionDef d;
+        d.id = dir < 0 ? "grid.smaller" : "grid.larger";
+        d.label = dir < 0 ? "Smaller grid" : "Larger grid";
+        d.category = "Grid";
+        d.description = "Steps the grid size of the active viewport along the list of grid sizes.";
+        d.enabled = haveViewport;
+        d.run = step(dir);
+        add(r, std::move(d));
+    }
+}
+
 void flyKeyAction(actions::Registry& r, const char* id, const char* label, render::FlyKey key) {
     ActionDef d;
     d.id = id;
@@ -301,6 +355,7 @@ void registerAppActions(actions::Registry& r) {
     dragAction(r, "camera.pan2d", "Pan (orthographic view)", "view:ortho", false);
     dragAction(r, "camera.pan", "Pan", "area:viewport", true);
     selectAction(r);
+    gridActions(r);
     {
         ActionDef d;
         d.id = "camera.dolly";

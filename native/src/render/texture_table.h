@@ -55,6 +55,10 @@ public:
     // finds out which from meta[first].x (3 = faces, 4 = panorama; 0 while not loaded: the placeholder). 0 for a name that is not a skybox.
     uint32_t skyIndex(const std::string& name);
 
+    // Adds an image made in memory (one mip level, RGBA8) under `name` (the glyph atlas); it is uploaded by the next upload(). Returns its index, or 0 when
+    // the table is full or the name is taken by a file texture. Asking again for the same name returns the same index. Render thread.
+    uint32_t addImage(const std::string& name, int width, int height, std::vector<uint8_t> rgba);
+
     // Uploads the images decoded since the last call. Returns true when more are waiting (the ring slice was full): call again next frame.
     bool upload(VkCommandBuffer cmd, gpu::UploadRing& ring);
 

@@ -149,7 +149,10 @@ ViewState CameraRig::viewState(double widthPx, double heightPx) {
         const double d = f.y < -1e-3 ? clampd(-e.y / f.y, 1.0, 5000.0) : cam.distanceTo(t);
         mpp = (2 * d * std::tan(cam.fovY / 2)) / std::max(1.0, heightPx);
     }
-    s.gridSpacing = adaptiveGridSpacing(settings_.gridSize, mpp);
+    // Orthographic views (shell/src/render/orthoGrid.ts): lines at least 8 px apart, and far enough apart that the grid's 100 steps each side of the centre
+    // cover the whole window.
+    const double minPx = s.perspective ? 14.0 : std::max(8.0, 0.5 * std::max(widthPx, heightPx) / 98.0);
+    s.gridSpacing = adaptiveGridSpacing(settings_.gridSize, mpp, minPx);
     return s;
 }
 

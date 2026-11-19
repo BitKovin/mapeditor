@@ -11,6 +11,7 @@
 #include "doc/io.h"
 #include "doc/selection.h"
 #include "gui_support.h"
+#include "render/entity_overlay.h"
 #include "render/picking.h"
 
 using namespace native;
@@ -87,8 +88,16 @@ TEST_CASE("clicks and drags in a viewport select, and the selection is outlined"
         REQUIRE(outlined.ok());
         CHECK(countOrange(outlined) > 40);   // the edges of the selected box
 
+        // the size of the selected box: one label per axis (the box is 2 m each way, every number once), none without a selection
+        {
+            const auto labels = window.sizeLabelsFor(0);
+            REQUIRE(!labels.empty());
+            CHECK(labels.size() <= 3);
+            for (const auto& l : labels) CHECK(l.text == "2 m");
+        }
         click(corner);                       // nothing there: clears
         CHECK(window.selection().empty());
+        CHECK(window.sizeLabelsFor(0).empty());
 
         click(mid, Qt::ShiftModifier);       // Shift: the face under the cursor
         REQUIRE(window.selection().items().size() == 1);
@@ -136,5 +145,6 @@ TEST_CASE("clicks and drags in a viewport select, and the selection is outlined"
         sendMouse(vp, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, QPoint(40, 40));
         CHECK(window.selection().empty());
     }
-    CHECK(app.device->allocationStats().allocationCount == app.baseAllocations);
+    // nothing leaks but the glyph atlas image, which stays in the render thread's texture table for the life of the application
+    CHECK(app.device->allocationStats().allocationCount <= app.baseAllocations + 1);
 }

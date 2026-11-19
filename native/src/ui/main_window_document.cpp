@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <set>
 
+#include <core/entdef.h>
 #include <core/profile.h>
 #include <core/textures.h>
 #include <core/texplan.h>
@@ -27,9 +28,11 @@
 #include "doc/changeset.h"
 #include "doc/io.h"
 #include "doc/prefabs.h"
+#include "render/picking.h"
 #include "render/render_thread.h"
 #include "render/viewport_window.h"
 #include "scene/builder.h"
+#include "scene/point_box.h"
 #include "ui/main_window.h"
 #include "ui/registry_menus.h"
 
@@ -432,6 +435,11 @@ void MainWindow::setupScene() {
     env.revision = ++reliefRevision_;
     builder_->setReliefEnv(env);
     services_.renderThread->setTextureSource(root, services_.jobs);
+    // the game's entity definitions: class boxes (picking, drawing), colours
+    entityDefs_ = std::make_shared<core::EntityDefinitions>(core::loadEntityDefinitions(root / profile.entityDefinitions));
+    if (!picker_) picker_ = std::make_unique<render::Picker>();
+    picker_->setBoxOf(scene::classBoxes(entityDefs_.get()));
+    refreshOverlays();
 }
 
 void MainWindow::submitScene(const doc::ChangeSet& changes) {

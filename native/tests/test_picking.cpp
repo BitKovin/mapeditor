@@ -186,3 +186,46 @@ TEST_CASE("picking: lvl2 answers a click in under 2 ms") {
     CHECK(hits > n / 2);
     CHECK(total / n < 2.0);
 }
+
+TEST_CASE("picking: a turned point entity is picked where its box really is, a decal by its projector bounds") {
+    const auto longBox = [](const std::string&) { return scene::Box{{-1, -0.1, -0.1}, {1, 0.1, 0.1}}; };   // 2 m along x, thin
+    core::Entity turned;
+    turned.id = "e1";
+    turned.classname = "info_x";
+    turned.angles = {0, 90, 0};
+    {
+        Built b(versionOf({}, {turned}));
+        b.picker.setBoxOf(longBox);
+        const auto side = b.picker.pick(ray(5, 0, 0.8, -1, 0, 0));   // z = 0.8 is inside the turned box (+-1 in z)
+        REQUIRE(side);
+        CHECK(side->t == doctest::Approx(4.9));
+        CHECK(side->pointEntity);
+        const auto along = b.picker.pick(ray(0, 0, 5, 0, 0, -1));
+        REQUIRE(along);
+        CHECK(along->t == doctest::Approx(4));
+        CHECK(along->normal.z > 0.99);   // faces the viewer, in world space
+        CHECK_FALSE(b.picker.pick(ray(5, 0, 1.5, -1, 0, 0)));
+    }
+    {
+        core::Entity plain = turned;
+        plain.angles = {0, 0, 0};
+        Built b(versionOf({}, {plain}));
+        b.picker.setBoxOf(longBox);
+        CHECK_FALSE(b.picker.pick(ray(5, 0, 0.8, -1, 0, 0)));   // unturned: z = 0.8 is outside +-0.1
+        const auto hit = b.picker.pick(ray(5, 0, 0, -1, 0, 0));
+        REQUIRE(hit);
+        CHECK(hit->t == doctest::Approx(4));
+    }
+    {
+        core::Entity decal;
+        decal.id = "d";
+        decal.classname = "decal";
+        decal.keyvalues = {{"width", "2"}, {"height", "1"}, {"depth", "0.5"}};
+        Built b(versionOf({}, {decal}));
+        const auto hit = b.picker.pick(ray(0, 5, 0.4, 0, -1, 0));
+        REQUIRE(hit);
+        CHECK(hit->t == doctest::Approx(4.75));
+        CHECK_FALSE(b.picker.pick(ray(0, 5, 0.7, 0, -1, 0)));
+        CHECK_FALSE(b.picker.pick(ray(1.5, 5, 0, 0, -1, 0)));
+    }
+}

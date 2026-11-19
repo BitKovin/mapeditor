@@ -54,9 +54,13 @@ class SceneBuilder;
 namespace core::texplan {
 class TexEnvironment;
 } // namespace core::texplan
+namespace core {
+struct EntityDefinitions;
+} // namespace core
 namespace native::render {
 class Picker;
 class RenderThread;
+struct TextItem;
 class ViewportWindow;
 } // namespace native::render
 
@@ -84,6 +88,7 @@ struct ViewportPanel {
     ads::CDockWidget* dock = nullptr;
     QWidget* container = nullptr;          // hosts the viewport's native window
     render::ViewportWindow* window = nullptr;   // owned by container
+    bool hasSizeLabels = false;                 // the render thread holds size labels for this viewport
 };
 
 class MainWindow : public QMainWindow {
@@ -197,6 +202,11 @@ public:
     void pickInput(render::ViewportWindow* viewport, const actions::InputEvent& event, PickOp op);
     // The outline lines of the selection are recomputed (the selection or the snapshot changed).
     void refreshOutline();
+    // The entity boxes / arrows / gizmos and the size labels of every viewport (the snapshot, the selection or a viewport's view changed).
+    void refreshOverlays();
+    // The size labels of the selection in a viewport (what refreshSizeLabels sends to the render thread; empty = none).
+    std::vector<render::TextItem> sizeLabelsFor(size_t panelIndex);
+    void refreshSizeLabels(size_t panelIndex);
 
 signals:
     // The current document changed (opened, saved under a new path, replaced): panels refresh their title and contents.
@@ -287,6 +297,8 @@ private:
         bool dragging = false;
     } pickDrag_;
     std::shared_ptr<core::texplan::TexEnvironment> texEnv_;
+    double glyphScale_ = 0;                                  // the pixel ratio the glyph atlas was made for
+    std::shared_ptr<core::EntityDefinitions> entityDefs_;   // the game profile's entity definitions (class boxes, colours, keys)
     uint64_t reliefRevision_ = 0;
     QTimer prefabTimer_;
     uint64_t expandSerial_ = 0;

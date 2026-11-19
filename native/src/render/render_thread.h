@@ -26,6 +26,8 @@
 #include "base/jobs.h"
 #include "gpu/device.h"
 #include "render/gpu_scene.h"
+#include "render/entity_overlay.h"
+#include "render/glyph_atlas.h"
 #include "render/line_vertex.h"
 #include "render/view_state.h"
 
@@ -70,6 +72,12 @@ public:
     void setSelectionLines(std::shared_ptr<const std::vector<LineVertex>> lines);
     // The rubber band of a box select in a viewport, in pixels of the viewport (x0, y0, x1, y1); `active` false hides it.
     void setRubberBand(ViewportId id, bool active, float x0 = 0, float y0 = 0, float x1 = 0, float y1 = 0);
+    // What the viewports draw for entities (boxes, arrows, gizmos, class names); null = nothing.
+    void setEntityOverlay(std::shared_ptr<const EntityOverlay> overlay);
+    // The glyph atlas of the overlay texts (made on the UI thread for the window's pixel ratio); texts are not drawn without one.
+    void setGlyphAtlas(std::shared_ptr<const GlyphAtlas> atlas);
+    // The size labels of the selection in a viewport (world anchors; the UI thread works out the placement from the camera).
+    void setSizeLabels(ViewportId id, std::shared_ptr<const std::vector<TextItem>> labels);
     // The skybox ("env/<name> cube") drawn behind the scene in perspective views; "" = none.
     void setSkyTexture(const std::string& name);
     // What the scene holds on the GPU and how the textures stand (refreshed every loop iteration).
@@ -113,6 +121,11 @@ private:
     uint32_t skyIndex_ = 0;
     std::string skyName_;                 // guarded by mutex_
     std::shared_ptr<const std::vector<LineVertex>> selectionLines_;   // guarded by mutex_
+    std::shared_ptr<const EntityOverlay> entityOverlay_;              // guarded by mutex_
+    std::shared_ptr<const GlyphAtlas> glyphAtlas_;                    // guarded by mutex_
+    const GlyphAtlas* atlasSeen_ = nullptr;                           // render thread: the atlas whose image is in the table
+    uint32_t atlasIndex_ = 0;
+    uint32_t atlasSerial_ = 0;
     bool workPending_ = false;            // guarded by mutex_: a snapshot or a decoded texture is waiting
     SceneInfo info_;                      // guarded by mutex_
 

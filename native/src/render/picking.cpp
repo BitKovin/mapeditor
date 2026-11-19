@@ -12,7 +12,6 @@ namespace native::render {
 
 namespace {
 
-constexpr double kPointBoxHalf = 0.25;   // the default class box: 16 Quake units on a side, centred on the origin
 constexpr uint32_t kNoFace = 0xFFFFFFFFu;
 
 double rayTriangle(const Ray& r, const Vec3& a, const Vec3& b, const Vec3& c) {
@@ -72,6 +71,11 @@ Ray rayThrough(const Mat4& viewProj, double ndcX, double ndcY) {
     return {a, normalize(b - a)};
 }
 
+void Picker::setBoxOf(scene::BoxOf boxOf) {
+    boxOf_ = boxOf ? std::move(boxOf) : scene::classBoxes(nullptr);
+    if (snap_) setSnapshot(snap_);
+}
+
 void Picker::setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
     snap_ = std::move(snapshot);
     items_.clear();
@@ -94,9 +98,13 @@ void Picker::setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
             if (!e->brushes.empty() || e->typed.classname == "worldspawn") continue;
             Item it;
             it.pointEntity = e->typed.id;
-            const core::Vec3& o = e->typed.origin;
-            it.mn[0] = o.x - kPointBoxHalf; it.mn[1] = o.y - kPointBoxHalf; it.mn[2] = o.z - kPointBoxHalf;
-            it.mx[0] = o.x + kPointBoxHalf; it.mx[1] = o.y + kPointBoxHalf; it.mx[2] = o.z + kPointBoxHalf;
+            const scene::OrientedBox ob = scene::pointBox(e->typed, boxOf_);
+            const scene::Box b = scene::boundsOfBox(ob);
+            for (int i = 0; i < 3; ++i) {
+                it.mn[i] = b.min[static_cast<size_t>(i)];
+                it.mx[i] = b.max[static_cast<size_t>(i)];
+            }
+            it.oriented = ob;
             items_.push_back(std::move(it));
         }
     }
@@ -153,9 +161,30 @@ void Picker::hitItem(const Item& item, const Ray& ray, const PickOptions& opts, 
         return h;
     };
     if (!item.pointEntity.empty()) {
-        const double t = rayBox(ray, item.mn, item.mx, best ? best->t : 1e300);
-        if (t < 0 || (best && t >= best->t)) return;
-        PickHit h = consider(t, {0, 1, 0});
+        // the ray in the box's own frame, where the box is axis aligned
+        const scene::OrientedBox& ob = *item.oriented;
+        const scene::V3 lo = scene::toLocal(ob, {ray.origin[0], ray.origin[1], ray.origin[2]});
+        const scene::V3 ld = scene::unrotate(ob.rot, {ray.dir[0], ray.dir[1], ray.dir[2]});
+        double t0 = 0, t1 = best ? best->t : 1e300;
+        int axis = -1;
+        bool miss = false;
+        for (int i = 0; i < 3 && !miss; ++i) {
+            const size_t k = static_cast<size_t>(i);
+            if (std::fabs(ld[k]) < 1e-12) {
+                if (lo[k] < ob.min[k] || lo[k] > ob.max[k]) miss = true;
+                continue;
+            }
+            double a = (ob.min[k] - lo[k]) / ld[k], b = (ob.max[k] - lo[k]) / ld[k];
+            if (a > b) std::swap(a, b);
+            if (a > t0) { t0 = a; axis = i; }
+            t1 = std::min(t1, b);
+            if (t0 > t1) miss = true;
+        }
+        if (miss || (best && t0 >= best->t)) return;
+        scene::V3 ln{0, 0, 0};
+        if (axis >= 0) ln[static_cast<size_t>(axis)] = ld[static_cast<size_t>(axis)] > 0 ? -1 : 1;
+        const scene::V3 wn = scene::apply3(ob.rot, ln);
+        PickHit h = consider(t0, {wn[0], wn[1], wn[2]});
         h.entityId = item.pointEntity;
         h.pointEntity = true;
         best = h;

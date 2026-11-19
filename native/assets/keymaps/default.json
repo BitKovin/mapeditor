@@ -13,6 +13,9 @@
     { "action": "select.pick", "context": "area:viewport", "input": "Ctrl+LMB drag", "params": { "op": "toggle" } },
     { "action": "select.pick", "context": "area:viewport", "input": "Shift+LMB drag", "params": { "op": "face" } },
 
+    { "action": "grid.smaller", "context": "area:viewport", "input": "[" },
+    { "action": "grid.larger",  "context": "area:viewport", "input": "]" },
+
     { "action": "camera.look",  "context": "view:fly",      "input": "RMB drag" },
     { "action": "camera.orbit", "context": "view:orbit",    "input": "RMB drag" },
     { "action": "camera.pan2d", "context": "view:ortho",    "input": "RMB drag" },

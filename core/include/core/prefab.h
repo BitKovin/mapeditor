@@ -1,5 +1,6 @@
 #pragma once
 #include "core/document.h"
+#include <map>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -22,6 +23,9 @@ struct ResolvedEntity {
     Entity entity;                          // already transformed into root space
     std::vector<std::string> instancePath;  // e.g. {"root"} or {"root","door_01","hinge_01"}
     Guid sourceEntityId;                    // this entity's guid inside its own file
+    // entity.refs with the instance overrides applied; refScopes[key] = how many leading ids of instancePath (without "root") the paths of that key are
+    // relative to: a ref written in the prefab file is relative to the entity's own instance, one overridden in instance j to j's parent scope.
+    std::map<std::string, size_t> refScopes;
 };
 
 struct ResolveOptions {

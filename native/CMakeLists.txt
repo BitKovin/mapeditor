@@ -118,7 +118,7 @@ native_module(base   SOURCES src/base/module_info.cpp src/base/hash.cpp src/base
                      DEPENDS vendored Threads::Threads)
 native_module(doc    SOURCES src/doc/module_info.cpp src/doc/document.cpp src/doc/document.h src/doc/io.cpp src/doc/io.h src/doc/json_write.cpp src/doc/json_write.h src/doc/changeset.cpp src/doc/changeset.h src/doc/commands.cpp src/doc/commands.h src/doc/edit.cpp src/doc/edit.h src/doc/selection.cpp src/doc/selection.h src/doc/prefabs.cpp src/doc/prefabs.h
                      DEPENDS native_base core_lib)
-native_module(scene  SOURCES src/scene/module_info.cpp src/scene/builder.cpp src/scene/relief.cpp src/scene/relief.h src/scene/render_mesh.cpp src/scene/render_mesh.h src/scene/builder.h src/scene/cache.h src/scene/snapshot.h DEPENDS native_doc)
+native_module(scene  SOURCES src/scene/module_info.cpp src/scene/builder.cpp src/scene/relief.cpp src/scene/relief.h src/scene/render_mesh.cpp src/scene/render_mesh.h src/scene/point_box.cpp src/scene/point_box.h src/scene/arrows.cpp src/scene/arrows.h src/scene/size_labels.cpp src/scene/size_labels.h src/scene/light_gizmo.cpp src/scene/light_gizmo.h src/scene/builder.h src/scene/cache.h src/scene/snapshot.h DEPENDS native_doc)
 # volk (loader) and VMA (allocator) are third-party code: compiled without the project's warnings-as-errors.
 add_library(native_vk STATIC third_party/volk/volk.c src/gpu/vma_impl.cpp)
 target_include_directories(native_vk SYSTEM PUBLIC third_party/volk third_party/vma)
@@ -128,6 +128,7 @@ native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/
 native_module(light  SOURCES src/light/module_info.cpp  DEPENDS native_scene native_gpu)
 native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp src/render/picking.cpp src/render/picking.h src/render/selection_outline.cpp src/render/selection_outline.h src/render/line_vertex.h
                      src/render/viewport_window.cpp src/render/viewport_window.h
+                     src/render/entity_overlay.cpp src/render/entity_overlay.h src/render/glyph_atlas.cpp src/render/glyph_atlas.h
                      src/render/camera.cpp src/render/camera_rig.cpp src/render/viewport_settings.cpp
                      DEPENDS native_scene native_gpu Qt6::Gui)
 add_dependencies(native_render native_shaders)
@@ -139,7 +140,7 @@ native_module(actions SOURCES src/app/actions/input.cpp src/app/actions/registry
 native_module(tools  SOURCES src/tools/module_info.cpp  DEPENDS native_render native_light)
 native_module(ui     SOURCES src/ui/module_info.cpp src/ui/main_window.cpp src/ui/main_window_document.cpp src/ui/main_window.h src/ui/stats_panel.cpp src/ui/stats_panel.h
                      src/ui/input_adapter.cpp src/ui/input_adapter.h src/ui/app_actions.cpp src/ui/app_actions.h
-                     src/ui/registry_menus.cpp src/ui/registry_menus.h
+                     src/ui/registry_menus.cpp src/ui/registry_menus.h src/ui/glyph_atlas_qt.cpp src/ui/glyph_atlas_qt.h
                      DEPENDS native_tools native_actions Qt6::Widgets ads::qtadvanceddocking)
 
 # ---- the application ----------------------------------------------------------------------------------------------------
@@ -153,7 +154,7 @@ add_custom_command(TARGET mapeditor_native POST_BUILD
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_scene_relief.cpp tests/test_picking.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_scene_relief.cpp tests/test_picking.cpp tests/test_scene_overlays.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src)
 target_compile_definitions(native_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
                            NATIVE_CORE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/assets")

@@ -236,8 +236,15 @@ std::string normalizeAssetPath(const std::string& path) {
 std::vector<ResolvedEntity> resolvePrefabs(const Document& root, const DocumentLoader& loader,
                                             const ResolveOptions& opts, const std::string& rootPath) {
     std::vector<ResolvedEntity> out;
-    for (auto& n : walkAll(root, loader, opts.maxDepth, rootPath))
-        out.push_back(ResolvedEntity{std::move(n.entity), pathWithRoot(n.chainIds), n.sourceId});
+    for (auto& n : walkAll(root, loader, opts.maxDepth, rootPath)) {
+        std::map<std::string, size_t> scopes;
+        n.entity.refs.clear();
+        for (const RefSlot& r : n.refs) {
+            n.entity.refs[r.key] = RefTargets(r.paths);
+            scopes[r.key] = r.scopeLen;
+        }
+        out.push_back(ResolvedEntity{std::move(n.entity), pathWithRoot(n.chainIds), n.sourceId, std::move(scopes)});
+    }
     return out;
 }
 

@@ -115,6 +115,22 @@ clears, Ctrl toggles, Shift selects the face under the cursor, a drag of more th
 screen lines: no depth, identity matrix). The picker follows the builder's listener through a queued call on the UI thread; the render thread gets the lines
 through `setSelectionLines` and `setRubberBand`.
 
+**As built (T3.6).** Overlays are lists of coloured vertices (`LineVertex`) or text quads (`LabelVertex`, 32 B) the render thread puts into the upload ring each frame and
+`mesh_pass` draws after the scene: `FrameOverlays` = selection outline (depth tested, biased), entity lines (boxes, arrows, gizmos; depth tested), translucent box
+fills (triangles, no depth write), class-name labels (depth tested at the anchor), size labels (over everything), rubber band (clip space). Pure code lives in
+`scene/` and is converted from the Shell: `point_box` (class box from the entity definitions, `angles` turn it, decal projector volume, `drawsBox`), `arrows`
+(direction and link arrows, `refs` / `refScopes` from the prefab resolver - one small Core addition), `light_gizmo` (point / spot / sun / area shapes),
+`size_labels` (box labels per axis without repeating a number, face width / height, overlap filter); `render/entity_overlay` builds the world-space lists for the
+whole level once per snapshot / selection change (shared by all viewports); the size labels are per viewport (`MainWindow::sizeLabelsFor`, projected with the view,
+metres per pixel from the unprojection, the view axis of an orthographic view skipped). Text: `ui/glyph_atlas_qt` draws printable ASCII with QPainter (12 px
+semi-bold sans-serif at the window's device pixel ratio, R = glyph, G = glyph with outline) into an RGBA8 image that `TextureTable::addImage` takes like any other
+texture; `label.vert` places the glyph cell by `anchor` + pixel offset, `label.frag` draws white text with the dark outline. The ortho grid uses the Shell's
+`orthoGrid.ts` rule (minor lines at least 8 px apart, 100 steps each side must cover the window); `[` / `]` and `grid.set` change the grid size (actions). The
+entity definitions of the game profile (`entities.ent`) are loaded by the main window and also give the picker its boxes (point entities are now hit by their real,
+turned box). Deviations: the overlay options (origins, directions, links, gizmos) are the OR of the viewports' settings and are re-read on a snapshot / selection
+change only (no per-viewport lists yet, no settings UI yet); icons and `misc_model` boxes are not drawn (T5); a visual check was made on demo.map.json plus a map
+with a light, a spot light and an info entity in all four views (labels, boxes, spot cone, ortho grid), not side by side with the Shell.
+
 ## 7. Frame timing
 
 - Target: the display rate with up to 4 viewports on lvl2 (09_TESTING_AND_PERF.md §3).

@@ -311,11 +311,11 @@ TEST_CASE("camera rig: view state, adaptive grid, pose JSON") {
     ViewState v = rig.viewState(800, 600);
     CHECK(v.gridPlane == 0);
     CHECK(v.showGrid);
-    // 16 m view height over 600 px = 0.027 m/px: minor lines at least 14 px apart -> 0.5 doubled to 0.5 (0.5 m = 18.8 px).
+    // 16 m view height over 600 px = 0.027 m/px: orthographic minor lines at least 8 px apart -> 0.5 stays (0.5 m = 18.8 px).
     CHECK(v.gridSpacing == doctest::Approx(0.5));
-    rig.ortho(OrthoAxis::Top).halfHeight = 100;      // 0.33 m/px -> needs >= 4.7 m: 0.5 -> 8
+    rig.ortho(OrthoAxis::Top).halfHeight = 100;      // 0.33 m/px -> needs >= 2.7 m: 0.5 -> 4
     v = rig.viewState(800, 600);
-    CHECK(v.gridSpacing == doctest::Approx(8.0));
+    CHECK(v.gridSpacing == doctest::Approx(4.0));
     rig.setMode(CameraMode::Front);
     CHECK(rig.viewState(800, 600).gridPlane == 1);
     rig.setMode(CameraMode::Side);

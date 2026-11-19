@@ -40,3 +40,8 @@ Turns document versions into scene snapshots (T3.2). Spec: `native_rewrite/04_SC
 
 ## Picking (T3.5)
 `render/picking` reads the snapshot (objects' surfaces, bounds, raw / render meshes and the document) and never changes it; see 05_RENDERER.md §6 "As built (T3.5)".
+
+## Overlay logic (T3.6)
+Pure, snapshot-independent helpers converted from the Shell: `point_box` (box of a point entity from the definitions, turned by `angles`, decal projector volume),
+`arrows` (direction and link arrows), `light_gizmo` (light shapes) and `size_labels` (selection size labels). `render/entity_overlay` turns them into line / fill /
+label lists; see 05_RENDERER.md §6 "As built (T3.6)".

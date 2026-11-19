@@ -31,11 +31,16 @@
 #include "doc/commands.h"
 #include "doc/prefabs.h"
 #include "doc/selection.h"
+#include "core/entdef.h"
+#include "render/entity_overlay.h"
 #include "render/picking.h"
 #include "render/render_thread.h"
 #include "render/selection_outline.h"
 #include "render/viewport_window.h"
 #include "scene/builder.h"
+#include "scene/point_box.h"
+#include "scene/size_labels.h"
+#include "ui/glyph_atlas_qt.h"
 #include "ui/input_adapter.h"
 #include "ui/registry_menus.h"
 #include "ui/stats_panel.h"
@@ -224,6 +229,7 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
         panels_.push_back({dock, container, window});
         const size_t index = panels_.size() - 1;
         window->setChangedCallback([this, index] {
+            refreshSizeLabels(index);
             updateDockTitle(index);
             scheduleSave();
         });
@@ -395,6 +401,105 @@ void MainWindow::refreshOutline() {
     std::vector<render::LineVertex> lines;
     if (picker_ && picker_->snapshot()) lines = render::selectionOutline(*picker_->snapshot(), selection_->items());
     services_.renderThread->setSelectionLines(lines.empty() ? nullptr : std::make_shared<const std::vector<render::LineVertex>>(std::move(lines)));
+    refreshOverlays();
+}
+
+// ---- entity overlays and size labels (T3.6) ----------------------------------------------------------------------------------------
+
+void MainWindow::refreshOverlays() {
+    if (!services_.renderThread || !picker_ || !picker_->snapshot()) return;
+    if (glyphScale_ != devicePixelRatio()) {   // the overlay text is drawn 1:1 in device pixels: remake the atlas for this screen
+        glyphScale_ = devicePixelRatio();
+        services_.renderThread->setGlyphAtlas(makeGlyphAtlas(glyphScale_));
+    }
+    render::EntityOverlayOptions opt;
+    opt.origins = opt.directions = opt.links = opt.lightGizmos = false;
+    for (const ViewportPanel& p : panels_) {   // a viewport that shows something asks for it in every viewport (one shared list)
+        const render::ViewportSettings& s = p.window->rig().settings();
+        opt.origins = opt.origins || s.showOrigins;
+        opt.directions = opt.directions || s.showDirections;
+        opt.links = opt.links || s.showLinks;
+        opt.lightGizmos = opt.lightGizmos || s.showLightGizmos;
+    }
+    services_.renderThread->setEntityOverlay(
+        std::make_shared<const render::EntityOverlay>(render::buildEntityOverlay(*picker_->snapshot(), selection_->items(), entityDefs_.get(), opt)));
+    for (size_t i = 0; i < panels_.size(); ++i) refreshSizeLabels(i);
+}
+
+std::vector<render::TextItem> MainWindow::sizeLabelsFor(size_t index) {
+    std::vector<render::TextItem> items;
+    if (index >= panels_.size()) return items;
+    render::ViewportWindow* vp = panels_[index].window;
+    if (!vp) return items;
+    const render::ViewportSettings& st = vp->rig().settings();
+    const double dpr = vp->devicePixelRatio();
+    const double W = vp->size().width() * dpr, H = vp->size().height() * dpr;
+    if (st.showSizes && document_ && selection_ && !selection_->items().empty() && W >= 1 && H >= 1) {
+        const render::ViewState view = vp->currentView();
+        const render::Mat4 inv = render::mat4Invert(view.viewProj);
+        const auto project = [&](const scene::V3& p) -> std::optional<scene::ScreenPoint> {
+            const render::Mat4& m = view.viewProj;
+            const double w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+            if (w <= 1e-9) return std::nullopt;
+            const double x = (m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12]) / w;
+            const double y = (m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13]) / w;
+            return scene::ScreenPoint{(x * 0.5 + 0.5) * W, (y * 0.5 + 0.5) * H};
+        };
+        const auto mpp = [&](const scene::V3& p) -> double {
+            const render::Vec3 n = render::mat4Transform(view.viewProj, {p[0], p[1], p[2]});
+            const render::Vec3 a = render::mat4Transform(inv, n), b = render::mat4Transform(inv, {n.x + 2.0 / W, n.y, n.z});
+            return std::max(1e-6, render::length(b - a));
+        };
+        std::vector<scene::SizeLabel> labels;
+        const std::vector<doc::SelRef>& sel = selection_->items();
+        if (sel.size() == 1 && sel[0].isFace() && sel[0].instancePath.empty()) {
+            const int bi = document_->findBrush(sel[0].entityId, sel[0].brushId);
+            const int ei = document_->findEntity(sel[0].entityId);
+            if (bi >= 0 && ei >= 0) {
+                const core::Brush& b = document_->entities[static_cast<size_t>(ei)]->brushes[static_cast<size_t>(bi)]->brush;
+                for (const core::BrushFace& f : b.faces)
+                    if (f.id == *sel[0].faceId) labels = scene::withoutOverlaps(scene::faceSizeLabels(b, f, mpp), project);
+            }
+        } else {
+            scene::V3 mn{1e300, 1e300, 1e300}, mx{-1e300, -1e300, -1e300};
+            const auto add = [&](const core::Brush& b) {
+                core::Vec3 a, c;
+                if (!b.bounds(a, c)) return;
+                mn = {std::min(mn[0], a.x), std::min(mn[1], a.y), std::min(mn[2], a.z)};
+                mx = {std::max(mx[0], c.x), std::max(mx[1], c.y), std::max(mx[2], c.z)};
+            };
+            for (const doc::SelRef& r : sel) {
+                if (!r.instancePath.empty() || r.entityId.empty()) continue;
+                const int ei = document_->findEntity(r.entityId);
+                if (ei < 0) continue;
+                const auto& node = *document_->entities[static_cast<size_t>(ei)];
+                if (r.brushId.empty()) {
+                    for (const auto& b : node.brushes) add(b->brush);
+                } else {
+                    const int bi = document_->findBrush(r.entityId, r.brushId);
+                    if (bi >= 0) add(node.brushes[static_cast<size_t>(bi)]->brush);
+                }
+            }
+            if (mn[0] <= mx[0]) {
+                int skip = -1;
+                if (!view.perspective) skip = view.gridPlane == 0 ? 1 : (view.gridPlane == 1 ? 2 : 0);
+                labels = scene::boxSizeLabels(mn, mx, project, mpp, skip);
+            }
+        }
+        for (const scene::SizeLabel& l : labels) items.push_back({l.text, l.at, 0xFFFFFFFFu});
+    }
+    return items;
+}
+
+void MainWindow::refreshSizeLabels(size_t index) {
+    if (index >= panels_.size() || !services_.renderThread) return;
+    render::ViewportWindow* vp = panels_[index].window;
+    if (!vp || vp->viewportId() == 0) return;
+    ViewportPanel& panel = panels_[index];
+    std::vector<render::TextItem> items = sizeLabelsFor(index);
+    if (items.empty() && !panel.hasSizeLabels) return;
+    panel.hasSizeLabels = !items.empty();
+    services_.renderThread->setSizeLabels(vp->viewportId(), items.empty() ? nullptr : std::make_shared<const std::vector<render::TextItem>>(std::move(items)));
 }
 
 namespace {

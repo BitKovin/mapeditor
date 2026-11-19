@@ -293,6 +293,29 @@ uint32_t TextureTable::indexOf(const std::string& name) {
     return index;
 }
 
+uint32_t TextureTable::addImage(const std::string& name, int width, int height, std::vector<uint8_t> rgba) {
+    if (name.empty() || !valid() || width <= 0 || height <= 0 || rgba.size() != static_cast<size_t>(width) * height * 4) return 0;
+    const std::string key = "mem:" + name;
+    const auto it = byName_.find(key);
+    if (it != byName_.end()) return it->second;
+    if (entries_.size() >= kMax) return 0;
+    const uint32_t index = static_cast<uint32_t>(entries_.size());
+    Entry e;
+    e.name = key;
+    e.state = Entry::State::Loading;
+    entries_.push_back(std::move(e));
+    byName_.emplace(key, index);
+    Decoded d;
+    d.index = index;
+    d.width = width;
+    d.height = height;
+    d.mips.push_back(std::move(rgba));
+    d.ok = true;
+    std::lock_guard<std::mutex> lock(mutex_);
+    decoded_.push_back(std::move(d));
+    return index;
+}
+
 uint32_t TextureTable::skyIndex(const std::string& name) {
     if (name.empty() || !valid()) return 0;
     const std::string key = "sky:" + name;
