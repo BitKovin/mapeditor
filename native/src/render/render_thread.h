@@ -7,24 +7,32 @@
 // Spec: 05_RENDERER.md §3, 01_ARCHITECTURE.md §2 and §5, 08_MILESTONES.md T1.3.
 #pragma once
 
+#include "scene/snapshot.h"   // first: core headers use `near` as a name, which windows.h (via volk) defines as a macro
+
 #include <volk.h>
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <filesystem>
 #include <future>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
+#include "base/jobs.h"
 #include "gpu/device.h"
+#include "render/gpu_scene.h"
 #include "render/view_state.h"
 
 namespace native::render {
 
 class ScenePass;
+class MeshPass;
+class TextureTable;
 
 using ViewportId = uint32_t;
 
@@ -53,6 +61,20 @@ public:
     // The camera view the next frames use (view-projection, grid); marks the viewport dirty.
     void setView(ViewportId id, const ViewState& view);
 
+    // The scene the viewports draw (published by the scene builder; any thread). Marks every viewport dirty when the render thread has taken it.
+    void setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);
+    // Where textures are read from and which pool decodes them.
+    void setTextureSource(const std::filesystem::path& assetsRoot, base::JobPool* pool);
+    // The skybox ("env/<name> cube") drawn behind the scene in perspective views; "" = none.
+    void setSkyTexture(const std::string& name);
+    // What the scene holds on the GPU and how the textures stand (refreshed every loop iteration).
+    struct SceneInfo {
+        SceneStats scene;
+        uint32_t texturesAssigned = 0, texturesLoaded = 0, texturesFailed = 0, texturesPending = 0;
+        uint32_t visibleObjects = 0;   // of the last frame drawn
+    };
+    SceneInfo sceneInfo() const;
+
     // Renders the next frame of this viewport and returns its pixels. Blocks the caller (not the render thread's other
     // viewports) up to timeoutMs; returns an empty image on timeout or when the viewport has no surface area.
     CapturedImage capture(ViewportId id, int timeoutMs = 4000);
@@ -74,7 +96,19 @@ private:
     VkSemaphore renderTimeline_ = VK_NULL_HANDLE;
     std::atomic<uint64_t> nextTimelineValue_{0};
     std::atomic<uint64_t> totalFrames_{0};
+    std::unique_ptr<gpu::UploadRing> ring_;
+    std::unique_ptr<TextureTable> textures_;
+    std::unique_ptr<GpuScene> scene_;
     std::unique_ptr<ScenePass> pass_;     // render thread only
+    std::unique_ptr<MeshPass> mesh_;      // render thread only
+    VkCommandPool uploadPool_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkCommandBuffer uploadCmd_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    uint64_t ringValue_[2] = {0, 0};      // timeline value that frees each ring slice
+    uint64_t iteration_ = 0;
+    uint32_t skyIndex_ = 0;
+    std::string skyName_;                 // guarded by mutex_
+    bool workPending_ = false;            // guarded by mutex_: a snapshot or a decoded texture is waiting
+    SceneInfo info_;                      // guarded by mutex_
 
     mutable std::mutex mutex_;
     std::condition_variable wake_;        // new work for the render thread

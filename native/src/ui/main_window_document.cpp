@@ -16,6 +16,10 @@
 #include <filesystem>
 #include <set>
 
+#include <core/profile.h>
+#include <core/textures.h>
+#include <core/texplan.h>
+
 #include "base/jobs.h"
 #include "base/log.h"
 #include "doc/commands.h"
@@ -23,6 +27,9 @@
 #include "doc/changeset.h"
 #include "doc/io.h"
 #include "doc/prefabs.h"
+#include "render/render_thread.h"
+#include "render/viewport_window.h"
+#include "scene/builder.h"
 #include "ui/main_window.h"
 #include "ui/registry_menus.h"
 
@@ -61,6 +68,7 @@ void MainWindow::setAssetsRoot(const std::string& folder) {
         prefabLib_->setAssetsRoot(assetsRoot_);
         updatePrefabs();
     }
+    setupScene();
 }
 
 MainWindow::ResolvedPath MainWindow::resolveAssetPath(const std::string& path) const {
@@ -397,6 +405,78 @@ void MainWindow::saveAsWithDialog() {
                                                       QString::fromStdString(assetsRoot_ + "/" + startRel),
                                                       QStringLiteral("Maps (*.map.json);;All files (*)"));
     if (!file.isEmpty()) saveDocumentAs(file.toStdString());
+}
+
+
+// ---- the scene (T3.4) ----------------------------------------------------------------------------------------------------------
+
+void MainWindow::setupScene() {
+    if (!services_.renderThread || !services_.jobs) return;
+    if (!builder_) {
+        builder_ = std::make_unique<scene::SceneBuilder>(*services_.jobs);
+        render::RenderThread* rt = services_.renderThread;
+        builder_->setListener([rt](const std::shared_ptr<const scene::SceneSnapshot>& snapshot) { rt->setSnapshot(snapshot); });
+    }
+    if (assetsRoot_.empty()) return;
+    const fs::path root(assetsRoot_);
+    const core::GameProfile profile = core::loadProfile(root);
+    texEnv_ = std::make_shared<core::texplan::TexEnvironment>(root, profile);
+    scene::ReliefEnv env;
+    const auto e = texEnv_;
+    env.info = [e](const std::string& p) { return e->info(p); };
+    env.groups = [e](const std::string& n) { return e->group(n); };
+    env.revision = ++reliefRevision_;
+    builder_->setReliefEnv(env);
+    services_.renderThread->setTextureSource(root, services_.jobs);
+}
+
+void MainWindow::submitScene(const doc::ChangeSet& changes) {
+    if (!builder_ || !document_) return;
+    builder_->submit(document_, changes, expansion_);
+}
+
+// The level's sky as the Shell picks it (model/sky.ts levelSkyTexture): `_sky_texture`, else with Auto sky on the first skybox of the assets.
+void MainWindow::updateSky() {
+    if (!services_.renderThread) return;
+    std::string sky;
+    if (document_) {
+        for (const auto& e : document_->entities) {
+            if (e->typed.classname != "worldspawn") continue;
+            const auto& kv = e->typed.keyvalues;
+            const auto t = kv.find("_sky_texture");
+            if (t != kv.end() && !t->second.empty()) {
+                sky = t->second;
+            } else {
+                const auto a = kv.find("_sky_auto");
+                if (a != kv.end() && (a->second == "box" || a->second == "areas") && !assetsRoot_.empty()) {
+                    const auto boxes = core::listSkyboxes(fs::path(assetsRoot_));
+                    if (!boxes.empty()) sky = boxes.front();
+                }
+            }
+            break;
+        }
+    }
+    services_.renderThread->setSkyTexture(sky);
+}
+
+bool MainWindow::sceneReady() const {
+    if (!builder_ || !services_.renderThread || !builder_->idle() || !builder_->snapshot()) return false;
+    const render::RenderThread::SceneInfo info = services_.renderThread->sceneInfo();
+    return info.scene.queued == 0 && info.texturesPending == 0 && info.scene.objects > 0;
+}
+
+bool MainWindow::frameScene() {
+    const auto snap = builder_ ? builder_->snapshot() : nullptr;
+    if (!snap) return false;
+    doc::Box box;
+    for (const auto& [key, p] : snap->objects)
+        if (p.additive && p.bounds.valid()) box.add(p.bounds);
+    if (!box.valid()) return false;
+    for (const ViewportPanel& panel : panels_) {
+        panel.window->rig().frame({box.mn.x, box.mn.y, box.mn.z}, {box.mx.x, box.mx.y, box.mx.z});
+        panel.window->viewChanged();
+    }
+    return true;
 }
 
 } // namespace native::ui

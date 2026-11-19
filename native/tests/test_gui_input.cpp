@@ -116,7 +116,7 @@ TEST_CASE("layout and camera menu entries act on the window and the active viewp
         CHECK(window.viewports()[0].window->rig().mode() == render::CameraMode::Fly);
     }
     CHECK(app.device->validationErrors() == 0);
-    CHECK(app.device->allocationStats().allocationCount == 0);
+    CHECK(app.device->allocationStats().allocationCount == app.baseAllocations);
 }
 
 TEST_CASE("keys reach the router: Ctrl+Q exits, the user keymap rebinds it") {
@@ -287,5 +287,5 @@ TEST_CASE("Shift boosts the flight; releasing the look button ends the flight" *
         sendKey(persp, QEvent::KeyRelease, Qt::Key_W);
     }
     CHECK(app.device->validationErrors() == 0);
-    CHECK(app.device->allocationStats().allocationCount == 0);
+    CHECK(app.device->allocationStats().allocationCount == app.baseAllocations);
 }

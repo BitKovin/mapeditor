@@ -47,6 +47,12 @@ struct ChangeSet;
 struct Expansion;
 struct LoadResult;
 } // namespace native::doc
+namespace native::scene {
+class SceneBuilder;
+} // namespace native::scene
+namespace core::texplan {
+class TexEnvironment;
+} // namespace core::texplan
 namespace native::render {
 class RenderThread;
 class ViewportWindow;
@@ -171,6 +177,12 @@ public:
     // Writes the layout to the QSettings of the services (also done when the window closes and shortly after every change).
     void saveLayout();
 
+    // ---- scene (T3.4) ----
+    // The builder has nothing to do, the render thread holds every object and every requested texture is loaded (screenshots, tests).
+    bool sceneReady() const;
+    // Points every viewport's camera at the whole scene (the solid brushes of the latest snapshot); false while there is none.
+    bool frameScene();
+
 signals:
     // The current document changed (opened, saved under a new path, replaced): panels refresh their title and contents.
     void documentChanged();
@@ -222,6 +234,10 @@ private:
     void onHistoryChanged();
     void updatePrefabs();
     void pollPrefabs();
+    // The scene (T3.4): the builder that turns document versions into snapshots for the render thread, its texture environment, the sky.
+    void setupScene();
+    void submitScene(const doc::ChangeSet& changes);
+    void updateSky();
     // Like runJob, but invisible to busy(): housekeeping that must not disable the file actions.
     void runBackground(std::function<void()> work, std::function<void()> done);
 
@@ -247,6 +263,9 @@ private:
     std::shared_ptr<doc::PrefabLibrary> prefabLib_;        // shared with the jobs that use it: they may outlive the window
     std::shared_ptr<doc::PrefabResolver> prefabResolver_;
     std::shared_ptr<const doc::Expansion> expansion_;
+    std::unique_ptr<scene::SceneBuilder> builder_;
+    std::shared_ptr<core::texplan::TexEnvironment> texEnv_;
+    uint64_t reliefRevision_ = 0;
     QTimer prefabTimer_;
     uint64_t expandSerial_ = 0;
     bool prefabPolling_ = false;

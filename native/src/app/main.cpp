@@ -11,6 +11,7 @@
 #include <QStringList>
 #include <QTimer>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -96,8 +97,9 @@ int main(int argc, char** argv) {
 
     int shotResult = 0;
     if (!parsed.options.screenshotPath.empty()) {
-        // Visual-check mode: wait for the first paint, save the window, quit.
-        QTimer::singleShot(600, &qtApp, [&] {
+        // Visual-check mode: wait until the scene is complete (map built, geometry and textures on the GPU; 20 s at most), frame it, save the
+        // window, quit.
+        auto shoot = [&] {
             QImage img = window.grab().toImage();
             // QWidget::grab() does not include native child windows: paste every viewport's own frame over its container.
             for (const native::ui::ViewportPanel& panel : window.viewports()) {
@@ -111,7 +113,24 @@ int main(int argc, char** argv) {
             }
             if (img.isNull() || !img.save(QString::fromStdString(parsed.options.screenshotPath))) shotResult = 4;
             QApplication::quit();
+        };
+        auto* poll = new QTimer(&qtApp);
+        auto* waited = new int(0);
+        auto* framed = new bool(false);
+        QObject::connect(poll, &QTimer::timeout, &qtApp, [&, poll, waited, framed, shoot] {
+            *waited += 100;
+            const bool expectScene = !parsed.options.map.empty();
+            if (*waited < 600) return;
+            if (expectScene && !window.sceneReady() && *waited < 20000) return;
+            if (expectScene && !*framed) {
+                *framed = window.frameScene();
+                *waited = std::max(*waited, 19000) - 400;   // a few more frames with the camera in place
+                return;
+            }
+            poll->stop();
+            shoot();
         });
+        poll->start(100);
     }
     const int rc = qtApp.exec();
     native::base::traceStop();

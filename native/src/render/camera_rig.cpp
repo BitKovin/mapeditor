@@ -127,6 +127,11 @@ ViewState CameraRig::viewState(double widthPx, double heightPx) {
     s.viewProj = cam.viewProj(aspect);
     s.showGrid = settings_.showGrid;
     s.showAxes = settings_.showOrigins;
+    const Vec3 eyePos = cam.eye();
+    s.eye[0] = eyePos.x;
+    s.eye[1] = eyePos.y;
+    s.eye[2] = eyePos.z;
+    s.perspective = !isOrthoMode(settings_.cameraMode);
     const Vec3 t = cam.target();
     double mpp;
     switch (settings_.cameraMode) {

@@ -48,6 +48,10 @@ function(native_module name)
   target_include_directories(native_${name} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_link_libraries(native_${name} PUBLIC ${M_DEPENDS})
   native_warnings(native_${name})
+  if(MSVC)
+    # windows.h first, its `near` / `far` macros removed: the Core uses `near` as a member name and Vulkan / Qt headers pull windows.h in at any point
+    target_compile_options(native_${name} PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/src/base/win_clean.h")
+  endif()
 endfunction()
 
 # ---- shaders ------------------------------------------------------------------------------------------------------------
@@ -114,7 +118,7 @@ native_module(base   SOURCES src/base/module_info.cpp src/base/hash.cpp src/base
                      DEPENDS vendored Threads::Threads)
 native_module(doc    SOURCES src/doc/module_info.cpp src/doc/document.cpp src/doc/document.h src/doc/io.cpp src/doc/io.h src/doc/json_write.cpp src/doc/json_write.h src/doc/changeset.cpp src/doc/changeset.h src/doc/commands.cpp src/doc/commands.h src/doc/edit.cpp src/doc/edit.h src/doc/selection.cpp src/doc/selection.h src/doc/prefabs.cpp src/doc/prefabs.h
                      DEPENDS native_base core_lib)
-native_module(scene  SOURCES src/scene/module_info.cpp src/scene/builder.cpp src/scene/relief.cpp src/scene/relief.h src/scene/builder.h src/scene/cache.h src/scene/snapshot.h DEPENDS native_doc)
+native_module(scene  SOURCES src/scene/module_info.cpp src/scene/builder.cpp src/scene/relief.cpp src/scene/relief.h src/scene/render_mesh.cpp src/scene/render_mesh.h src/scene/builder.h src/scene/cache.h src/scene/snapshot.h DEPENDS native_doc)
 # volk (loader) and VMA (allocator) are third-party code: compiled without the project's warnings-as-errors.
 add_library(native_vk STATIC third_party/volk/volk.c src/gpu/vma_impl.cpp)
 target_include_directories(native_vk SYSTEM PUBLIC third_party/volk third_party/vma)
@@ -122,7 +126,7 @@ target_compile_definitions(native_vk PUBLIC VK_NO_PROTOTYPES VK_USE_PLATFORM_WIN
 target_link_libraries(native_vk PUBLIC vendored)   # the Core's copy of the Vulkan headers (one copy, T0.2)
 native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/swapchain.cpp src/gpu/upload_ring.cpp src/gpu/arena.cpp DEPENDS native_base native_vk)
 native_module(light  SOURCES src/light/module_info.cpp  DEPENDS native_scene native_gpu)
-native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp
+native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp
                      src/render/viewport_window.cpp src/render/viewport_window.h
                      src/render/camera.cpp src/render/camera_rig.cpp src/render/viewport_settings.cpp
                      DEPENDS native_scene native_gpu Qt6::Gui)

@@ -8,6 +8,7 @@
 
 #include "base/hash.h"
 #include "scene/relief.h"
+#include "scene/render_mesh.h"
 
 namespace native::scene {
 
@@ -19,6 +20,7 @@ struct SceneBuilder::BrushInfo {
     bool cutter = false;       // a subtractive brush that carves
     uint64_t hash = 0;         // content: BrushNode::contentHash, or a hash of the typed brush for prefab brushes
     std::string classname;     // of the owning entity (the carve scope looks at it)
+    const core::Brush* brush = nullptr;   // the authored brush (a node of the version / the prefab expansion the build holds)
 };
 
 struct SceneBuilder::Build {
@@ -39,7 +41,7 @@ struct SceneBuilder::Build {
     std::vector<ObjectKey> reliefKeys;
     std::vector<std::pair<ObjectKey, const BrushInfo*>> solids;    // every solid object: the neighbour search of the relief jobs
     struct ReliefDone {
-        std::shared_ptr<const ReliefList> list;
+        std::shared_ptr<const ObjectGeometry> geometry;
         uint64_t hash = 0;
     };
     std::unordered_map<ObjectKey, ReliefDone, ObjectKey::Hash> reliefDone;
@@ -249,6 +251,7 @@ void SceneBuilder::startBuildLocked(Pending p, std::vector<std::function<void()>
         info.cutter = brush.op == core::BrushOp::Subtract && !editorOnly;
         info.hash = hash;
         info.classname = classname;
+        info.brush = &brush;
         index->emplace(std::move(key), std::move(info));
     };
     for (const auto& en : p.version->entities)
@@ -322,7 +325,7 @@ void SceneBuilder::startBuildLocked(Pending p, std::vector<std::function<void()>
     build->reliefAll = p.reliefAll;
     build->baseAtStart = base_;
     if (build->env) {
-        // the authored brushes the relief of a piece looks its face up in
+        // the authored brushes the texture layout of a piece looks its face up in
         for (const auto& en : p.version->entities)
             for (const auto& bn : en->brushes) build->parents.emplace(std::string() + '\x1f' + bn->brush.id, &bn->brush);
         if (p.prefabs)
@@ -344,7 +347,7 @@ void SceneBuilder::startBuildLocked(Pending p, std::vector<std::function<void()>
 // Every surface of the build is known: the relief wave (objects whose own surfaces or neighbours' changed), or the end of the build.
 void SceneBuilder::afterSurfacesLocked(const std::shared_ptr<Build>& build, std::vector<std::function<void()>>& afterUnlock) {
     build->phase = 2;
-    if (build->env) {
+    {
         const Index& index = *build->index;
         build->solids.reserve(index.size());
         for (const auto& [key, info] : index)
@@ -383,7 +386,7 @@ void SceneBuilder::afterSurfacesLocked(const std::shared_ptr<Build>& build, std:
 
 void SceneBuilder::runReliefJob(const std::shared_ptr<Build>& build, size_t index) {
     const ObjectKey& key = build->reliefKeys[index];
-    std::shared_ptr<const ReliefList> list;
+    std::shared_ptr<const ObjectGeometry> list;
     uint64_t hash = 0;
     const bool abandoned = generation_.load() != build->generation;
     if (!abandoned) {
@@ -401,10 +404,10 @@ void SceneBuilder::runReliefJob(const std::shared_ptr<Build>& build, size_t inde
                 if (p && p->surfaces && !p->surfaces->empty()) near.emplace_back(&k, p);
             }
             std::sort(near.begin(), near.end(), [](const auto& a, const auto& b) { return *a.first < *b.first; });
-            hash = mix(mix(own ? own->inputsHash : 0, build->env.revision), ownSurfaces.empty() ? 0 : 1);
+            hash = mix(mix(own ? own->inputsHash : 0, build->env ? build->env.revision : ~uint64_t(0)), ownSurfaces.empty() ? 0 : 1);
             for (const auto& [k, p] : near) hash = mix(mix(hash, ObjectKey::Hash()(*k)), p->inputsHash);
             if (ownSurfaces.empty()) {
-                list = std::make_shared<const ReliefList>();
+                list = std::make_shared<const ObjectGeometry>(ObjectGeometry{std::make_shared<const ReliefList>(), std::make_shared<const RenderMesh>()});
             } else if (auto hit = reliefCache_.get(key, hash)) {
                 list = std::move(hit);
                 ++reliefHits_;
@@ -424,19 +427,19 @@ void SceneBuilder::runReliefJob(const std::shared_ptr<Build>& build, size_t inde
                         }
                     return r;
                 };
-                auto built = buildRelief(ownSurfaces, around, parent, build->env);
-                reliefCache_.put(key, hash, built, reliefBytes(*built));
+                auto built = std::make_shared<const ObjectGeometry>(buildGeometry(ownSurfaces, around, parent, build->env));
+                reliefCache_.put(key, hash, built, reliefBytes(*built->relief) + built->mesh->bytes());
                 list = std::move(built);
                 ++reliefComputed_;
             }
         } catch (...) {
-            list = std::make_shared<const ReliefList>();   // a face the Core cannot lay out: drawn flat
+            list = std::make_shared<const ObjectGeometry>(ObjectGeometry{std::make_shared<const ReliefList>(), std::make_shared<const RenderMesh>()});   // a face the Core cannot lay out: nothing
         }
     }
     reliefJobFinished(build, index, std::move(list), hash, abandoned);
 }
 
-void SceneBuilder::reliefJobFinished(const std::shared_ptr<Build>& build, size_t index, std::shared_ptr<const ReliefList> relief, uint64_t hash, bool abandoned) {
+void SceneBuilder::reliefJobFinished(const std::shared_ptr<Build>& build, size_t index, std::shared_ptr<const ObjectGeometry> geometry, uint64_t hash, bool abandoned) {
     std::vector<std::function<void()>> after;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -444,7 +447,7 @@ void SceneBuilder::reliefJobFinished(const std::shared_ptr<Build>& build, size_t
             ++abandoned_;
         } else {
             ++reliefJobs_;
-            build->reliefDone[build->reliefKeys[index]] = Build::ReliefDone{std::move(relief), hash};
+            build->reliefDone[build->reliefKeys[index]] = Build::ReliefDone{std::move(geometry), hash};
             ++build->reliefFinished;
         }
         --outstanding_;
@@ -466,6 +469,7 @@ void SceneBuilder::produce(const Build& build, const ObjectKey& key, ObjectProdu
     if (!info.additive) {
         out.surfaces = noSurfaces();
         out.inputsHash = info.hash;
+        if (info.brush) out.render = buildRawMesh(*info.brush, true);   // translucent volume: drawn as authored
         return;
     }
     // inputs hash: the brush, its entity's class, and every subtractive brush that can carve it (sorted: the order they appear in does not matter)
@@ -481,6 +485,7 @@ void SceneBuilder::produce(const Build& build, const ObjectKey& key, ObjectProdu
     std::sort(cutters.begin(), cutters.end());
     for (uint64_t c : cutters) h = mix(h, c);
     out.inputsHash = h;
+    if (info.brush) out.raw = buildRawMesh(*info.brush, false);
 
     if (auto hit = cache_.get(key, h)) {
         out.surfaces = std::move(hit);
@@ -594,8 +599,9 @@ void SceneBuilder::publishLocked(const std::shared_ptr<Build>& build, bool compl
         }
         if (d != build->done.end()) {
             ObjectProducts p = d->second;
-            if (r == build->reliefDone.end() && old) {   // new surfaces whose relief is not rebuilt yet: the previous relief
+            if (r == build->reliefDone.end() && old && p.additive) {   // new surfaces whose geometry is not rebuilt yet: the previous one
                 p.relief = old->relief;
+                p.render = old->render;
                 p.reliefHash = old->reliefHash;
             }
             snap->objects.emplace(key, std::move(p));
@@ -605,7 +611,8 @@ void SceneBuilder::publishLocked(const std::shared_ptr<Build>& build, bool compl
         if (r != build->reliefDone.end()) {
             const auto o = snap->objects.find(key);
             if (o != snap->objects.end()) {
-                o->second.relief = r->second.list;
+                o->second.relief = build->env ? r->second.geometry->relief : nullptr;
+                o->second.render = r->second.geometry->mesh;
                 o->second.reliefHash = r->second.hash;
             }
         }

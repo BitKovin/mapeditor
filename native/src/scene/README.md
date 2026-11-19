@@ -28,3 +28,12 @@ Turns document versions into scene snapshots (T3.2). Spec: `native_rewrite/04_SC
   surface hash + the touching objects' (key, surface hash) + the environment revision; `DerivedCache` (separate instance, a quarter of the budget).
 - `setReliefEnv(env)`: no environment = `ObjectProducts::relief` stays null (also null for subtractors / editor volumes); an empty list = looked at, no relief.
   Per-object triangle budget `kObjectReliefBudget` (100 000).
+
+## Render meshes (T3.4)
+
+- `render_mesh.h/.cpp` — `RenderVertex` (40 bytes: position, octahedral normal, albedo uv, lightmap uv/page, flags, texture), `RenderMesh` (vertices, indices,
+  texture names per slot, kind Solid / Volume) and `buildRawMesh(brush, volume)` (the authored brush as triangles).
+- `buildGeometry` (relief.h) returns the relief and the render mesh together: faces without a repetition plan or relief are fan triangles with the face's
+  own uv map; the others come from `texturePolygon`. Sky textures set `kFlagSky`.
+- `ObjectProducts::render` = the object's mesh (null until its geometry job finished), `raw` = the authored brush, the stand-in the renderer draws until
+  then; subtractive brushes and editor volumes carry a Volume mesh in `render`.

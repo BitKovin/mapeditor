@@ -8,16 +8,20 @@
 #include "base/log.h"
 #include "base/trace.h"
 #include "gpu/swapchain.h"
+#include "render/mesh_pass.h"
 #include "render/scene_pass.h"
+#include "render/texture_table.h"
 
 namespace native::render {
 
 namespace {
 
 constexpr int kFramesInFlight = 2;
+constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
 
 void imageBarrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 srcStage,
-                  VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
+                  VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
+                  VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     b.srcStageMask = srcStage;
     b.srcAccessMask = srcAccess;
@@ -28,7 +32,7 @@ void imageBarrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImag
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = image;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    b.subresourceRange = {aspect, 0, 1, 0, 1};
     VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dep.imageMemoryBarrierCount = 1;
     dep.pImageMemoryBarriers = &b;
@@ -60,6 +64,9 @@ struct RenderThread::Viewport {
     Frame frame[kFramesInFlight];
     uint32_t frameCounter = 0;
     uint32_t swapW = 0, swapH = 0;        // size the swapchain was created for (0 = must be recreated)
+    VkImage depth = VK_NULL_HANDLE;
+    VmaAllocation depthAlloc = nullptr;
+    VkImageView depthView = VK_NULL_HANDLE;
     bool gpuReady = false;
 };
 
@@ -70,6 +77,29 @@ RenderThread::RenderThread(gpu::Device& device) : device_(device) {
     VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     sci.pNext = &tci;
     vkCreateSemaphore(device_.device(), &sci, nullptr, &renderTimeline_);
+    // the scene's GPU side is made here, before the render thread runs (it submits one-time commands)
+    ring_ = std::make_unique<gpu::UploadRing>(device_);
+    textures_ = std::make_unique<TextureTable>(device_);
+    scene_ = std::make_unique<GpuScene>(device_, *textures_);
+    textures_->setGpuIdleWait([this] {
+        VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+        const uint64_t value = nextTimelineValue_.load();
+        wi.semaphoreCount = 1;
+        wi.pSemaphores = &renderTimeline_;
+        wi.pValues = &value;
+        vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+    });
+    for (int i = 0; i < 2; ++i) {
+        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        pci.queueFamilyIndex = device_.graphicsFamily();
+        vkCreateCommandPool(device_.device(), &pci, nullptr, &uploadPool_[i]);
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool = uploadPool_[i];
+        ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = 1;
+        vkAllocateCommandBuffers(device_.device(), &ai, &uploadCmd_[i]);
+    }
     thread_ = std::thread([this] { loop(); });
 }
 
@@ -81,7 +111,48 @@ RenderThread::~RenderThread() {
     wake_.notify_all();
     if (thread_.joinable()) thread_.join();
     vkQueueWaitIdle(device_.graphicsQueue());
+    mesh_.reset();
+    pass_.reset();
+    scene_.reset();
+    textures_.reset();
+    ring_.reset();
+    for (VkCommandPool p : uploadPool_)
+        if (p) vkDestroyCommandPool(device_.device(), p, nullptr);
     vkDestroySemaphore(device_.device(), renderTimeline_, nullptr);
+}
+
+void RenderThread::setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
+    scene_->setSnapshot(std::move(snapshot));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        workPending_ = true;
+    }
+    wake_.notify_all();
+}
+
+void RenderThread::setTextureSource(const std::filesystem::path& assetsRoot, base::JobPool* pool) {
+    textures_->setSource(assetsRoot, pool, [this] {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            workPending_ = true;
+        }
+        wake_.notify_all();
+    });
+}
+
+void RenderThread::setSkyTexture(const std::string& name) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (skyName_ == name) return;
+        skyName_ = name;
+        workPending_ = true;
+    }
+    wake_.notify_all();
+}
+
+RenderThread::SceneInfo RenderThread::sceneInfo() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return info_;
 }
 
 ViewportId RenderThread::addViewport(VkSurfaceKHR surface, uint32_t width, uint32_t height) {
@@ -215,6 +286,11 @@ void RenderThread::releaseViewport(Viewport& v) {
             f = Frame{};
         }
     }
+    if (v.depthView) vkDestroyImageView(device_.device(), v.depthView, nullptr);
+    if (v.depth) vmaDestroyImage(device_.allocator(), v.depth, v.depthAlloc);
+    v.depthView = VK_NULL_HANDLE;
+    v.depth = VK_NULL_HANDLE;
+    v.depthAlloc = nullptr;
     v.swapchain.reset();
     v.gpuReady = false;
 }
@@ -230,22 +306,27 @@ void RenderThread::loop() {
             std::shared_ptr<std::promise<CapturedImage>> capture;
         };
         std::vector<Work> work;
+        bool doUpload = false;
+        std::string skyName;
         std::vector<std::shared_ptr<Viewport>> toRelease;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             wake_.wait(lock, [&] {
-                if (stop_) return true;
+                if (stop_ || workPending_) return true;
                 for (auto& kv : viewports_)
                     if (kv.second->removing || kv.second->dirty || kv.second->capture) return true;
                 return false;
             });
+            doUpload = workPending_;
+            workPending_ = false;
+            skyName = skyName_;
             if (stop_) {
                 for (auto& kv : viewports_) toRelease.push_back(kv.second);
             } else {
                 for (auto& kv : viewports_) {
                     Viewport& v = *kv.second;
                     if (v.removing) { toRelease.push_back(kv.second); continue; }
-                    if (!v.dirty && !v.capture) continue;
+                    if (!v.dirty && !v.capture && !doUpload) continue;
                     work.push_back({kv.second, v.width, v.height, {v.clear[0], v.clear[1], v.clear[2]}, v.view, std::move(v.capture)});
                     v.capture.reset();
                     v.dirty = false;
@@ -261,6 +342,54 @@ void RenderThread::loop() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stop_) break;
+        }
+
+        // the iteration's upload ring slice and upload commands (scene geometry, textures), then every viewport's frame
+        uint64_t lastValue = 0;
+        const uint32_t slot = static_cast<uint32_t>(iteration_++ % 2);
+        const bool active = !work.empty() || doUpload;
+        if (active) {
+            if (ringValue_[slot] > 0) {
+                VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+                wi.semaphoreCount = 1;
+                wi.pSemaphores = &renderTimeline_;
+                wi.pValues = &ringValue_[slot];
+                vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+            }
+            while (!ring_->beginFrame(completedFrames())) {
+                VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+                const uint64_t value = nextTimelineValue_.load();
+                wi.semaphoreCount = 1;
+                wi.pSemaphores = &renderTimeline_;
+                wi.pValues = &value;
+                vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+            }
+            vkResetCommandPool(device_.device(), uploadPool_[slot], 0);
+            VkCommandBufferBeginInfo ubi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            ubi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(uploadCmd_[slot], &ubi);
+            skyIndex_ = skyName.empty() ? 0 : textures_->skyIndex(skyName);
+            bool more = scene_->sync(uploadCmd_[slot], *ring_, completedFrames(), nextTimelineValue_.load());
+            more = textures_->upload(uploadCmd_[slot], *ring_) || more;
+            vkEndCommandBuffer(uploadCmd_[slot]);
+            const uint64_t value = ++nextTimelineValue_;
+            VkSemaphoreSubmitInfo sig{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+            sig.semaphore = renderTimeline_;
+            sig.value = value;
+            sig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+            cbi.commandBuffer = uploadCmd_[slot];
+            VkSubmitInfo2 usi{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+            usi.commandBufferInfoCount = 1;
+            usi.pCommandBufferInfos = &cbi;
+            usi.signalSemaphoreInfoCount = 1;
+            usi.pSignalSemaphoreInfos = &sig;
+            vkQueueSubmit2(device_.graphicsQueue(), 1, &usi, VK_NULL_HANDLE);
+            lastValue = value;
+            if (more) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                workPending_ = true;   // the slice was full: the rest next iteration
+            }
         }
 
         for (Work& w : work) {
@@ -312,13 +441,37 @@ void RenderThread::loop() {
             att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             att.clearValue.color = {{w.clear[0], w.clear[1], w.clear[2], 1.0f}};
+            imageBarrier(f.cmd, v.depth, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, 0,
+                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+            VkRenderingAttachmentInfo datt{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            datt.imageView = v.depthView;
+            datt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            datt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            datt.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            datt.clearValue.depthStencil = {1.0f, 0};
+            DrawLists lists;
+            scene_->buildDraws(w.view.viewProj, *ring_, lists);
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                info_.visibleObjects = lists.visible;
+            }
             VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
             ri.renderArea = {{0, 0}, extent};
             ri.layerCount = 1;
             ri.colorAttachmentCount = 1;
             ri.pColorAttachments = &att;
+            ri.pDepthAttachment = &datt;
             vkCmdBeginRendering(f.cmd, &ri);
-            if (pass_) pass_->record(f.cmd, extent, w.view);
+            {
+                const VkViewport viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
+                const VkRect2D scissor{{0, 0}, extent};
+                vkCmdSetViewport(f.cmd, 0, 1, &viewport);
+                vkCmdSetScissor(f.cmd, 0, 1, &scissor);
+            }
+            if (mesh_) mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true);
+            if (pass_) pass_->record(f.cmd, extent, w.view, !scene_->hasObjects());
             vkCmdEndRendering(f.cmd);
 
             VmaAllocation stagingAlloc = nullptr;
@@ -385,6 +538,7 @@ void RenderThread::loop() {
             si.pSignalSemaphoreInfos = signalInfos;
             vkQueueSubmit2(device_.graphicsQueue(), 1, &si, VK_NULL_HANDLE);
             f.timelineValue = signalValue;
+            lastValue = signalValue;
 
             const VkResult pres = sc.present(device_.graphicsQueue(), imageIndex);
             if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR || pres == VK_ERROR_SURFACE_LOST_KHR) {
@@ -418,6 +572,16 @@ void RenderThread::loop() {
             std::lock_guard<std::mutex> lock(mutex_);
             ++v.frames;
             totalFrames_.fetch_add(1);
+        }
+        if (active) {
+            ring_->endFrame(lastValue);
+            ringValue_[slot] = lastValue;
+            std::lock_guard<std::mutex> lock(mutex_);
+            info_.scene = scene_->stats();
+            info_.texturesAssigned = textures_->assigned();
+            info_.texturesLoaded = textures_->loaded();
+            info_.texturesFailed = textures_->failed();
+            info_.texturesPending = textures_->pending();
         }
     }
     // Leaving the loop: make sure nobody waits for a capture that will never come.
@@ -471,8 +635,39 @@ bool RenderThread::ensureSwapchain(Viewport& v) {
         std::lock_guard<std::mutex> lock(mutex_);
         ++v.recreations;
     }
-    if (!pass_ || pass_->format() != v.swapchain->format()) pass_ = std::make_unique<ScenePass>(device_, v.swapchain->format());
-    return pass_->valid();
+    if (v.depthView) vkDestroyImageView(device_.device(), v.depthView, nullptr);
+    if (v.depth) vmaDestroyImage(device_.allocator(), v.depth, v.depthAlloc);
+    v.depthView = VK_NULL_HANDLE;
+    v.depth = VK_NULL_HANDLE;
+    {
+        const VkExtent2D e = v.swapchain->extent();
+        VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = kDepthFormat;
+        ici.extent = {e.width, e.height, 1};
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        if (vmaCreateImage(device_.allocator(), &ici, &aci, &v.depth, &v.depthAlloc, nullptr) != VK_SUCCESS) return false;
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = v.depth;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = kDepthFormat;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        if (vkCreateImageView(device_.device(), &vci, nullptr, &v.depthView) != VK_SUCCESS) return false;
+    }
+    if (!pass_ || pass_->format() != v.swapchain->format()) {
+        mesh_.reset();
+        pass_ = std::make_unique<ScenePass>(device_, v.swapchain->format(), kDepthFormat);
+        mesh_ = std::make_unique<MeshPass>(device_, v.swapchain->format(), kDepthFormat, textures_->layout());
+    }
+    return pass_->valid() && mesh_->valid();
 }
 
 } // namespace native::render

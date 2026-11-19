@@ -11,6 +11,10 @@
 
 #include <volk.h>
 
+// windows.h (pulled in by volk) defines `near` / `far`; the Core uses `near` as a member name.
+#undef near
+#undef far
+
 #include <cstdint>
 #include <memory>
 #include <string>

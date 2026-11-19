@@ -30,7 +30,9 @@
 #include "doc/commands.h"
 #include "doc/prefabs.h"
 #include "doc/selection.h"
+#include "render/render_thread.h"
 #include "render/viewport_window.h"
+#include "scene/builder.h"
 #include "ui/input_adapter.h"
 #include "ui/registry_menus.h"
 #include "ui/stats_panel.h"
@@ -145,9 +147,27 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         emit documentChanged();
         emit documentEdited(changes);
         updatePrefabs();
+        submitScene(changes);
+        updateSky();
     });
     completedTimer_.setInterval(25);
     QObject::connect(&completedTimer_, &QTimer::timeout, this, [this] { drainCompleted(); });
+    QObject::connect(this, &MainWindow::prefabExpansionChanged, this, [this] {
+        // the expansion of the instances arrived (or changed on disk): the objects of those instances are rebuilt
+        if (!document_ || document_->instances.empty()) return;
+        doc::ChangeSet cs;
+        cs.fromVersion = cs.toVersion = document_->version;
+        for (const auto& n : document_->instances) {
+            doc::ChangedEntity ce;
+            ce.instance = n->typed.id;
+            ce.kinds = doc::Prefab;
+            ce.before.add(n->typed.origin);
+            ce.after.add(n->typed.origin);
+            cs.entities.push_back(std::move(ce));
+        }
+        submitScene(cs);
+    });
+    setupScene();
     updateTitle();
 
     registerAppActions(registry_);
@@ -163,6 +183,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
 }
 
 MainWindow::~MainWindow() {
+    builder_.reset();   // waits for its jobs; its listener points at the render thread
     if (QCoreApplication::instance()) QCoreApplication::instance()->removeEventFilter(this);
     saveTimer_.stop();
     // The dock manager (a child) deletes the docks, the containers and so the viewport windows, which release their swapchains.

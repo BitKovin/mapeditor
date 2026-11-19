@@ -4,12 +4,19 @@
 // by the scene builder by swapping a shared pointer; readers keep the one they started their frame with. Products of objects that were
 // not rebuilt are shared with the previous snapshot.
 // Products: the carved surface pieces (core::LightSurface) of a brush and its bounds (T3.2), the relief meshes of its faces (T3.3); the render
-// mesh joins them in T3.4 (`render` stays null until then: the renderer draws the raw brush).
+// mesh joins them in T3.4 (`render` is null until its geometry job finished: the renderer draws `raw`, the authored brush).
 // Thread: immutable once published, readable from any thread.
 // Spec: 04_SCENE_AND_DERIVED.md §5, 08_MILESTONES.md T3.2.
 #pragma once
 
+// windows.h (pulled in by volk.h) defines `near` / `far` as macros; the Core uses `near` as a member name.
+#pragma push_macro("near")
+#pragma push_macro("far")
+#undef near
+#undef far
 #include <core/derived.h>
+#pragma pop_macro("far")
+#pragma pop_macro("near")
 
 #include <cstdint>
 #include <functional>
@@ -56,7 +63,8 @@ struct ObjectProducts {
     // partial snapshot can hold new surfaces with the previous relief until the relief of the object is rebuilt.
     std::shared_ptr<const ReliefList> relief;
     uint64_t reliefHash = 0;
-    std::shared_ptr<const RenderMesh> render;   // null = not built: draw the raw brush
+    std::shared_ptr<const RenderMesh> render;   // null = not built yet: draw `raw`
+    std::shared_ptr<const RenderMesh> raw;      // the authored brush as triangles (solid brushes: the stand-in until `render` exists)
     doc::Box bounds;                            // the brush's vertices (world space)
     uint64_t inputsHash = 0;                    // what the surfaces were made from (cache key)
     bool additive = false;                      // a solid brush (has surfaces); false for subtractive / editor-only

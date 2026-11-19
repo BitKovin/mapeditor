@@ -17,6 +17,7 @@
 #include "doc/io.h"
 #include "scene/builder.h"
 #include "scene/relief.h"
+#include "scene/render_mesh.h"
 
 using namespace native;
 using scene::ObjectKey;
@@ -261,16 +262,20 @@ TEST_CASE("relief: setting or changing the environment rebuilds the relief of ev
     const auto v0 = versionOf({box("a", {0, 0, 0}, {2, 2, 2}), box("c", {10, 0, 0}, {12, 2, 2})});
     b.submit(v0, doc::allChanged(0, v0->version));
     REQUIRE(b.waitIdle());
-    CHECK_FALSE(b.snapshot()->objects.at(key("a")).relief);
-    CHECK(b.stats().reliefComputed == 0);
+    CHECK_FALSE(b.snapshot()->objects.at(key("a")).relief);   // no environment: no relief
+    CHECK(b.snapshot()->objects.at(key("a")).render);         // but the object has its triangles
+    const uint64_t built0 = b.stats().reliefComputed;
+    CHECK(built0 == 2);
 
     Env env;
     b.setReliefEnv(env.env);
     REQUIRE(b.waitIdle());
     CHECK(b.snapshot()->objects.at(key("a")).relief->size() == 6);
-    CHECK(b.stats().reliefComputed == 2);
+    CHECK(b.stats().reliefComputed == built0 + 2);
     CHECK(reliefMeshes(*b.snapshot()) == 12);
     CHECK(b.stats().computed == 2);   // the surfaces were not recomputed
+    // the triangles follow the relief now
+    CHECK(b.snapshot()->objects.at(key("a")).render->indices.size() > 36);
 
     // the texture lost its relief (revision 2): everything is rebuilt, now flat
     Env flat(false, 2);
@@ -278,6 +283,7 @@ TEST_CASE("relief: setting or changing the environment rebuilds the relief of ev
     REQUIRE(b.waitIdle());
     CHECK(reliefMeshes(*b.snapshot()) == 0);
     CHECK(b.snapshot()->objects.at(key("a")).relief);   // an empty list, not null: the object was looked at
+    CHECK(b.snapshot()->objects.at(key("a")).render->indices.size() == 36);
 
     // the same revision again: nothing happens
     const uint64_t jobs = b.stats().reliefJobs;
@@ -331,4 +337,80 @@ TEST_CASE("relief: lvl2 with a recess on every texture builds without trouble on
     base::logInfo("scene: lvl2 relief build (every texture a recess) " + std::to_string(ms) + " ms, " + std::to_string(tris) + " triangles");
     CHECK(snap->complete);
     CHECK(reliefMeshes(*snap) > 1000);
+}
+
+TEST_CASE("render mesh: the raw brush, the plain pieces, and the sky flag") {
+    // octahedral normals round-trip
+    for (const core::Vec3 v : {core::Vec3{1, 0, 0}, {0, -1, 0}, {0, 0, 1}, {-0.577, 0.577, -0.577}, {0.2, -0.9, 0.3}}) {
+        const core::Vec3 n = v.normalized();
+        float out[3];
+        scene::octDecode(scene::octEncode(static_cast<float>(n.x), static_cast<float>(n.y), static_cast<float>(n.z)), out);
+        CHECK(out[0] == doctest::Approx(n.x).epsilon(0.002));
+        CHECK(out[1] == doctest::Approx(n.y).epsilon(0.002));
+        CHECK(out[2] == doctest::Approx(n.z).epsilon(0.002));
+    }
+    CHECK(scene::isSkyTexture("env/mountaincube"));
+    CHECK(scene::isSkyTexture("sky/clouds"));
+    CHECK_FALSE(scene::isSkyTexture("wall/brick"));
+
+    const core::Brush b = box("a", {0, 0, 0}, {2, 3, 4}, core::BrushOp::Add, "wall/brick");
+    const auto raw = scene::buildRawMesh(b, false);
+    CHECK(raw->kind == scene::RenderMesh::Kind::Solid);
+    CHECK(raw->indices.size() == 36);   // 6 faces, 2 triangles
+    CHECK(raw->textures == std::vector<std::string>{"wall/brick"});
+    for (size_t i = 0; i + 2 < raw->indices.size(); i += 3) {   // wound counter-clockwise seen from outside: the normal of the triangle is the stored one
+        const auto& a = raw->vertices[raw->indices[i]];
+        const auto& bb = raw->vertices[raw->indices[i + 1]];
+        const auto& c = raw->vertices[raw->indices[i + 2]];
+        const core::Vec3 e1{bb.pos[0] - a.pos[0], bb.pos[1] - a.pos[1], bb.pos[2] - a.pos[2]}, e2{c.pos[0] - a.pos[0], c.pos[1] - a.pos[1], c.pos[2] - a.pos[2]};
+        float n[3];
+        scene::octDecode(a.normal, n);
+        CHECK(e1.cross(e2).normalized().dot({n[0], n[1], n[2]}) > 0.99);
+        CHECK(a.flags == 0);
+    }
+    const auto volume = scene::buildRawMesh(b, true);
+    CHECK(volume->kind == scene::RenderMesh::Kind::Volume);
+    CHECK((volume->vertices[0].flags & scene::kFlagVolume) != 0);
+    const auto sky = scene::buildRawMesh(box("s", {0, 0, 0}, {1, 1, 1}, core::BrushOp::Add, "env/skycube"), false);
+    CHECK((sky->vertices[0].flags & scene::kFlagSky) != 0);
+
+    // the object's pieces without an environment: the same count, albedo uvs of the pieces
+    const core::Document d = docOf({b});
+    const auto surfaces = surfacesOf(d, "a");
+    const auto geo = scene::buildGeometry(surfaces, {}, parentsOf(d), scene::ReliefEnv{});
+    CHECK(geo.mesh->indices.size() == 36);
+    CHECK(geo.relief->empty());
+    const auto& v0 = geo.mesh->vertices[0];
+    const core::Vec3 p0{v0.pos[0], v0.pos[1], v0.pos[2]};
+    bool found = false;
+    for (const auto& s : surfaces) {
+        const core::Vec2 uv = core::albedoUvAt(s, p0);
+        if (std::fabs(uv.u - v0.uv[0]) < 1e-4 && std::fabs(uv.v - v0.uv[1]) < 1e-4) found = true;
+    }
+    CHECK(found);
+
+    // with a relief texture the face is replaced by the displaced triangles
+    const Env env;
+    const core::Document r = docOf({box("a", {0, 0, 0}, {2, 2, 2})});
+    const auto relGeo = scene::buildGeometry(surfacesOf(r, "a"), {}, parentsOf(r), env.env);
+    CHECK(relGeo.mesh->indices.size() > 36 * 4);
+    CHECK(relGeo.relief->size() == 6);
+}
+
+TEST_CASE("render mesh: the builder gives every object its triangles; a subtractive brush is a translucent volume") {
+    base::JobPool pool(4);
+    scene::SceneBuilder b(pool);
+    const auto v0 = versionOf({box("wall", {0, 0, 0}, {4, 4, 1}), box("hole", {1, 1, -1}, {2, 2, 2}, core::BrushOp::Subtract)});
+    b.submit(v0, doc::allChanged(0, v0->version));
+    REQUIRE(b.waitIdle());
+    const auto snap = b.snapshot();
+    REQUIRE(snap);
+    const auto& wall = snap->objects.at(key("wall"));
+    const auto& hole = snap->objects.at(key("hole"));
+    REQUIRE(wall.render);
+    CHECK(wall.render->kind == scene::RenderMesh::Kind::Solid);
+    CHECK(wall.render->indices.size() > 36);   // the hole cuts into the wall: more pieces than 6 faces
+    REQUIRE(hole.render);
+    CHECK(hole.render->kind == scene::RenderMesh::Kind::Volume);
+    CHECK(hole.render->indices.size() == 36);
 }

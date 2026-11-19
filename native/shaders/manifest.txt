@@ -4,3 +4,6 @@
 viewport_grid_vert|viewport_grid.vert|vulkan1.3|
 viewport_box_vert|viewport_box.vert|vulkan1.3|
 viewport_scene_frag|viewport_scene.frag|vulkan1.3|
+mesh_vert|mesh.vert|vulkan1.3|
+sky_bg_vert|sky_bg.vert|vulkan1.3|
+mesh_frag|mesh.frag|vulkan1.3|

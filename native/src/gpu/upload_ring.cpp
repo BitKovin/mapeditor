@@ -13,7 +13,7 @@ UploadRing::UploadRing(Device& device, const UploadRingOptions& options) : devic
     if (slice_ == 0) return;
     VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bci.size = slice_ * frames_;
-    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;   // indirect: the frame's draw commands are written straight into the slice
     VmaAllocationCreateInfo aci{};
     aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
     aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;

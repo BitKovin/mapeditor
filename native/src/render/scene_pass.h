@@ -14,7 +14,7 @@ namespace native::render {
 
 class ScenePass {
 public:
-    ScenePass(const gpu::Device& device, VkFormat colorFormat);
+    ScenePass(const gpu::Device& device, VkFormat colorFormat, VkFormat depthFormat);
     ~ScenePass();
     ScenePass(const ScenePass&) = delete;
     ScenePass& operator=(const ScenePass&) = delete;
@@ -22,7 +22,8 @@ public:
     bool valid() const { return gridPipeline_ != VK_NULL_HANDLE && boxPipeline_ != VK_NULL_HANDLE; }
     VkFormat format() const { return format_; }
     // Inside vkCmdBeginRendering: sets viewport / scissor and draws.
-    void record(VkCommandBuffer cmd, VkExtent2D extent, const ViewState& view) const;
+    // `drawBox`: the 1 m test box (only while there is no scene). Grid and axes are depth tested against the scene.
+    void record(VkCommandBuffer cmd, VkExtent2D extent, const ViewState& view, bool drawBox) const;
 
 private:
     const gpu::Device& device_;

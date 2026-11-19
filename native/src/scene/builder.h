@@ -78,7 +78,7 @@ public:
     void refreshRelief();
 
     DerivedCache<ObjectKey, std::vector<core::LightSurface>, ObjectKey::Hash>& cache() { return cache_; }
-    DerivedCache<ObjectKey, ReliefList, ObjectKey::Hash>& reliefCache() { return reliefCache_; }
+    DerivedCache<ObjectKey, ObjectGeometry, ObjectKey::Hash>& reliefCache() { return reliefCache_; }
 
 private:
     struct BrushInfo;
@@ -101,12 +101,12 @@ private:
     void finishLocked(std::vector<std::function<void()>>& afterUnlock);
     void produce(const Build& build, const ObjectKey& key, ObjectProducts& out);
     void jobFinished(const std::shared_ptr<Build>& build, size_t index, ObjectProducts products, bool abandoned);
-    void reliefJobFinished(const std::shared_ptr<Build>& build, size_t index, std::shared_ptr<const ReliefList> relief, uint64_t hash, bool abandoned);
+    void reliefJobFinished(const std::shared_ptr<Build>& build, size_t index, std::shared_ptr<const ObjectGeometry> geometry, uint64_t hash, bool abandoned);
     void publishLocked(const std::shared_ptr<Build>& build, bool complete, std::vector<std::function<void()>>& afterUnlock);
 
     base::JobPool& pool_;
     DerivedCache<ObjectKey, std::vector<core::LightSurface>, ObjectKey::Hash> cache_;
-    DerivedCache<ObjectKey, ReliefList, ObjectKey::Hash> reliefCache_;
+    DerivedCache<ObjectKey, ObjectGeometry, ObjectKey::Hash> reliefCache_;
     ReliefEnv env_;
 
     mutable std::mutex mutex_;

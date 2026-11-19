@@ -1,0 +1,200 @@
+// render/mesh_pass -- see mesh_pass.h.
+#include "render/mesh_pass.h"
+
+#include <cstddef>
+#include <cstring>
+
+#include "base/log.h"
+#include "native_shaders/mesh_frag.spv.h"
+#include "native_shaders/mesh_vert.spv.h"
+#include "native_shaders/sky_bg_vert.spv.h"
+#include "scene/render_mesh.h"
+
+namespace native::render {
+
+namespace {
+
+struct PushConstants {
+    float viewProj[16];
+    float eye[4];
+    float misc[4];   // x = pass (0 opaque, 1 translucent, 2 volume, 3 sky background), y = sky texture index
+};
+static_assert(sizeof(PushConstants) == 96);
+
+VkShaderModule makeModule(VkDevice dev, const uint32_t* words, size_t sizeBytes) {
+    VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    ci.codeSize = sizeBytes;
+    ci.pCode = words;
+    VkShaderModule m = VK_NULL_HANDLE;
+    vkCreateShaderModule(dev, &ci, nullptr, &m);
+    return m;
+}
+
+struct PipelineSpec {
+    bool vertexInput = true;
+    bool blend = false;
+    bool depthWrite = true;
+    VkCompareOp depthOp = VK_COMPARE_OP_LESS;
+};
+
+VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat colorFormat, VkFormat depthFormat, VkShaderModule vs, VkShaderModule fs,
+                        const PipelineSpec& spec) {
+    VkPipelineShaderStageCreateInfo stages[2]{{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "main";
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    stages[1].pName = "main";
+
+    VkVertexInputBindingDescription binding{0, sizeof(scene::RenderVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attrs[5] = {
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(scene::RenderVertex, pos))},
+        {1, 0, VK_FORMAT_R32_UINT, static_cast<uint32_t>(offsetof(scene::RenderVertex, normal))},
+        {2, 0, VK_FORMAT_R32G32_SFLOAT, static_cast<uint32_t>(offsetof(scene::RenderVertex, uv))},
+        {3, 0, VK_FORMAT_R32_UINT, static_cast<uint32_t>(offsetof(scene::RenderVertex, page))},   // page (low 16) and flags (high 16) as one word
+        {4, 0, VK_FORMAT_R32_UINT, static_cast<uint32_t>(offsetof(scene::RenderVertex, texture))},
+    };
+    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    if (spec.vertexInput) {
+        vi.vertexBindingDescriptionCount = 1;
+        vi.pVertexBindingDescriptions = &binding;
+        vi.vertexAttributeDescriptionCount = 5;
+        vi.pVertexAttributeDescriptions = attrs;
+    }
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vp.viewportCount = 1;
+    vp.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;   // faces are seen from both sides (the backface culling setting comes later)
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    ds.depthTestEnable = VK_TRUE;
+    ds.depthWriteEnable = spec.depthWrite ? VK_TRUE : VK_FALSE;
+    ds.depthCompareOp = spec.depthOp;
+    VkPipelineColorBlendAttachmentState att{};
+    att.blendEnable = spec.blend ? VK_TRUE : VK_FALSE;
+    att.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    att.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    att.colorBlendOp = VK_BLEND_OP_ADD;
+    att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    att.alphaBlendOp = VK_BLEND_OP_ADD;
+    att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    cb.attachmentCount = 1;
+    cb.pAttachments = &att;
+    const VkDynamicState dynStates[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates = dynStates;
+    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &colorFormat;
+    rendering.depthAttachmentFormat = depthFormat;
+
+    VkGraphicsPipelineCreateInfo pi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pi.pNext = &rendering;
+    pi.stageCount = 2;
+    pi.pStages = stages;
+    pi.pVertexInputState = &vi;
+    pi.pInputAssemblyState = &ia;
+    pi.pViewportState = &vp;
+    pi.pRasterizationState = &rs;
+    pi.pMultisampleState = &ms;
+    pi.pDepthStencilState = &ds;
+    pi.pColorBlendState = &cb;
+    pi.pDynamicState = &dyn;
+    pi.layout = layout;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeline) != VK_SUCCESS) {
+        base::logError("MeshPass: pipeline creation failed");
+        return VK_NULL_HANDLE;
+    }
+    return pipeline;
+}
+
+} // namespace
+
+MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat depthFormat, VkDescriptorSetLayout textureLayout)
+    : device_(device), colorFormat_(colorFormat), depthFormat_(depthFormat) {
+    const VkDevice dev = device_.device();
+    VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants)};
+    VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    lci.setLayoutCount = 1;
+    lci.pSetLayouts = &textureLayout;
+    lci.pushConstantRangeCount = 1;
+    lci.pPushConstantRanges = &range;
+    vkCreatePipelineLayout(dev, &lci, nullptr, &layout_);
+
+    VkShaderModule vs = makeModule(dev, native::shaders::k_mesh_vert_spv, sizeof(native::shaders::k_mesh_vert_spv));
+    VkShaderModule bg = makeModule(dev, native::shaders::k_sky_bg_vert_spv, sizeof(native::shaders::k_sky_bg_vert_spv));
+    VkShaderModule fs = makeModule(dev, native::shaders::k_mesh_frag_spv, sizeof(native::shaders::k_mesh_frag_spv));
+    PipelineSpec opaque;
+    opaque_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, vs, fs, opaque);
+    PipelineSpec blended;
+    blended.blend = true;
+    blended.depthWrite = false;
+    translucent_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, vs, fs, blended);
+    volume_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, vs, fs, blended);
+    PipelineSpec sky;
+    sky.vertexInput = false;
+    sky.depthWrite = false;
+    sky.depthOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    skyBg_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, bg, fs, sky);
+    vkDestroyShaderModule(dev, vs, nullptr);
+    vkDestroyShaderModule(dev, bg, nullptr);
+    vkDestroyShaderModule(dev, fs, nullptr);
+}
+
+MeshPass::~MeshPass() {
+    const VkDevice dev = device_.device();
+    for (VkPipeline p : {opaque_, translucent_, volume_, skyBg_})
+        if (p) vkDestroyPipeline(dev, p, nullptr);
+    if (layout_) vkDestroyPipelineLayout(dev, layout_, nullptr);
+}
+
+void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene& scene, const DrawLists& lists, VkDescriptorSet textures,
+                      uint32_t skyTexture, bool showVolumes) const {
+    if (!valid()) return;
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &textures, 0, nullptr);
+    PushConstants pc{};
+    for (int i = 0; i < 16; ++i) pc.viewProj[i] = static_cast<float>(view.viewProj[i]);
+    for (int i = 0; i < 3; ++i) pc.eye[i] = static_cast<float>(view.eye[i]);
+    const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    if (skyTexture != 0 && view.perspective) {
+        const Mat4 inv = mat4Invert(view.viewProj);
+        PushConstants bgc = pc;
+        for (int i = 0; i < 16; ++i) bgc.viewProj[i] = static_cast<float>(inv[i]);
+        bgc.misc[0] = 3;
+        bgc.misc[1] = static_cast<float>(skyTexture);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBg_);
+        vkCmdPushConstants(cmd, layout_, stages, 0, sizeof(bgc), &bgc);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+    }
+    if (lists.solid.count == 0 && lists.volume.count == 0) return;
+    const VkDeviceSize zero = 0;
+    const VkBuffer vb = scene.vertexBuffer();
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &zero);
+    vkCmdBindIndexBuffer(cmd, scene.indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+    const auto draw = [&](VkPipeline pipeline, float pass, const DrawList& list) {
+        if (list.count == 0) return;
+        PushConstants p = pc;
+        p.misc[0] = pass;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        vkCmdPushConstants(cmd, layout_, stages, 0, sizeof(p), &p);
+        vkCmdDrawIndexedIndirect(cmd, list.buffer, list.offset, list.count, sizeof(VkDrawIndexedIndirectCommand));
+    };
+    draw(opaque_, 0, lists.solid);
+    draw(translucent_, 1, lists.translucent);
+    if (showVolumes) draw(volume_, 2, lists.volume);
+}
+
+} // namespace native::render

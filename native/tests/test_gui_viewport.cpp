@@ -105,7 +105,7 @@ TEST_CASE("a viewport in a dock shows the scene, resizes, floats and re-docks" *
         CHECK(window.viewport()->capture().ok());
     }
     CHECK(app.device->validationErrors() == 0);
-    CHECK(app.device->allocationStats().allocationCount == 0);
+    CHECK(app.device->allocationStats().allocationCount == app.baseAllocations);
 }
 
 TEST_CASE("layout presets 1, 2 and 4 build the right viewports and keep cameras across a switch" * doctest::test_suite("gpu")) {
@@ -170,7 +170,7 @@ TEST_CASE("layout presets 1, 2 and 4 build the right viewports and keep cameras 
         CHECK(window.viewport()->capture().ok());
     }
     CHECK(app.device->validationErrors() == 0);
-    CHECK(app.device->allocationStats().allocationCount == 0);
+    CHECK(app.device->allocationStats().allocationCount == app.baseAllocations);
 }
 
 TEST_CASE("mouse and keys move the cameras as in the Shell" * doctest::test_suite("gpu")) {
@@ -268,7 +268,7 @@ TEST_CASE("mouse and keys move the cameras as in the Shell" * doctest::test_suit
         CHECK(oc.center.z != c1.z);
     }
     CHECK(app.device->validationErrors() == 0);
-    CHECK(app.device->allocationStats().allocationCount == 0);
+    CHECK(app.device->allocationStats().allocationCount == app.baseAllocations);
 }
 
 TEST_CASE("the layout survives a restart" * doctest::test_suite("gpu")) {
@@ -332,5 +332,5 @@ TEST_CASE("the layout survives a restart" * doctest::test_suite("gpu")) {
         CHECK(boxAtCentreOfTopView(img));
     }
     CHECK(app.device->validationErrors() == 0);
-    CHECK(app.device->allocationStats().allocationCount == 0);
+    CHECK(app.device->allocationStats().allocationCount == app.baseAllocations);
 }

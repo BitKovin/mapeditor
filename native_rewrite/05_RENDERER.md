@@ -65,6 +65,15 @@ work but add a second, newer path; not worth it until profiling says descriptor 
   lightmap page (uint16), texture index (uint16), face flags (uint16). Lightmap UVs refer to the live layout
   (06_LIGHTING.md §3); when a chart moves the bake thread publishes new UVs for its triangles as a small patch buffer.
 
+**As built (T3.4).** `gpu_scene` keeps one 1 GiB vertex and one 512 MiB index arena; an object's mesh is uploaded when its pointer in the snapshot changes
+(nearest to the origin first, at most three quarters of a ring slice per frame), its vertex block starts at a multiple of 40 bytes so draws address it by
+`vertexOffset`, old ranges are freed once the timeline passed the last submit that may read them. Culling is on the CPU (frustum planes against object boxes,
+two thousand boxes on lvl2) and writes three `VkDrawIndexedIndirectCommand` lists into the frame's ring slice (solid, translucent, volume); the compute pass
+of this section is for scenes where that loop shows up in the frame time. Textures: `texture_table` (4096 `sampler2D` elements, update after bind, a meta
+buffer with the transparency mode); an element shows the placeholder until the decoded image is uploaded, which waits for the GPU to be idle. Skyboxes take
+six consecutive elements (or one for a panorama) and the fragment shader does the cube lookup itself. The window system: viewports have a D32 depth image;
+the render thread makes one upload command buffer per loop iteration (scene sync, textures) before the viewports' frames.
+
 ## 5. Render modes and overlays
 
 Behaviour is defined by DESIGN §6.2 and the Shell code it names; the native renderer reproduces it:

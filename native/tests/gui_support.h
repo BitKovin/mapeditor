@@ -56,6 +56,8 @@ struct App {
     QVulkanInstance qvk;
     std::unique_ptr<render::RenderThread> rt;
     bool ok = false;
+    // VMA allocations the render thread itself holds (upload ring, scene arenas, texture table): what is left when every viewport is gone.
+    decltype(gpu::AllocationStats::allocationCount) baseAllocations = 0;
     App() {
         gpu::DeviceOptions o;
         o.validation = true;
@@ -68,6 +70,7 @@ struct App {
         qvk.setExtensions(ext);
         if (!qvk.create()) { MESSAGE("QVulkanInstance::create failed: GUI GPU test skipped"); return; }
         rt = std::make_unique<render::RenderThread>(*device);
+        baseAllocations = device->allocationStats().allocationCount;
         ok = true;
     }
     ui::Services services() {

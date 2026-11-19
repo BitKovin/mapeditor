@@ -40,6 +40,18 @@ using ReliefList = std::vector<std::shared_ptr<const core::ReliefMesh>>;
 // Triangles one object may spend on relief (the Shell's send budget is 400 000 for the whole level); beyond it the remaining faces stay flat.
 inline constexpr long long kObjectReliefBudget = 100000;
 
+struct RenderMesh;
+
+// What is made for one object from its carved pieces in one pass: the relief meshes and the triangles a viewport draws (the face as authored where
+// the texture lays out plainly, `texturePolygon`'s triangles where it has a repetition plan or a relief). Without an environment the pieces are
+// drawn with their own projection and no relief is made. Never null members.
+struct ObjectGeometry {
+    std::shared_ptr<const ReliefList> relief;
+    std::shared_ptr<const RenderMesh> mesh;
+};
+ObjectGeometry buildGeometry(const std::vector<core::LightSurface>& own, const std::vector<const std::vector<core::LightSurface>*>& around,
+                             const ParentFaceFn& parent, const ReliefEnv& env, long long budget = kObjectReliefBudget);
+
 // The relief meshes of `own`, sorted by key; empty when no piece's face shows a relief. Never null.
 std::shared_ptr<const ReliefList> buildRelief(const std::vector<core::LightSurface>& own, const std::vector<const std::vector<core::LightSurface>*>& around,
                                               const ParentFaceFn& parent, const ReliefEnv& env, long long budget = kObjectReliefBudget);

@@ -14,6 +14,8 @@ struct ViewState {
     double gridCenterA = 0, gridCenterB = 0;   // in-plane coordinates the grid is centred on
     bool showGrid = true;
     bool showAxes = true;
+    double eye[3] = {0, 0, 0};       // camera position (sky faces are drawn by view direction)
+    bool perspective = true;         // false: an orthographic view (no sky background)
 };
 
 } // namespace native::render

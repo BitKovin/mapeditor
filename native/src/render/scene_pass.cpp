@@ -32,8 +32,8 @@ VkShaderModule makeModule(VkDevice dev, const uint32_t* words, size_t sizeBytes)
     return m;
 }
 
-VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat format, VkShaderModule vs, VkShaderModule fs,
-                        VkPrimitiveTopology topology, VkCullModeFlags cull) {
+VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat format, VkFormat depthFormat, VkShaderModule vs, VkShaderModule fs,
+                        VkPrimitiveTopology topology, VkCullModeFlags cull, bool depthWrite) {
     VkPipelineShaderStageCreateInfo stages[2]{{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
                                               {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -55,6 +55,10 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat format, 
     rs.lineWidth = 1.0f;
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    ds.depthTestEnable = VK_TRUE;
+    ds.depthWriteEnable = depthWrite ? VK_TRUE : VK_FALSE;
+    ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     VkPipelineColorBlendAttachmentState blendAtt{};
     blendAtt.blendEnable = VK_TRUE;
     blendAtt.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -74,6 +78,7 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat format, 
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachmentFormats = &format;
+    rendering.depthAttachmentFormat = depthFormat;
 
     VkGraphicsPipelineCreateInfo pi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     pi.pNext = &rendering;
@@ -84,6 +89,7 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat format, 
     pi.pViewportState = &vp;
     pi.pRasterizationState = &rs;
     pi.pMultisampleState = &ms;
+    pi.pDepthStencilState = &ds;
     pi.pColorBlendState = &cb;
     pi.pDynamicState = &dyn;
     pi.layout = layout;
@@ -97,7 +103,7 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat format, 
 
 } // namespace
 
-ScenePass::ScenePass(const gpu::Device& device, VkFormat colorFormat) : device_(device), format_(colorFormat) {
+ScenePass::ScenePass(const gpu::Device& device, VkFormat colorFormat, VkFormat depthFormat) : device_(device), format_(colorFormat) {
     const VkDevice dev = device_.device();
     VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants)};
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -108,8 +114,8 @@ ScenePass::ScenePass(const gpu::Device& device, VkFormat colorFormat) : device_(
     VkShaderModule gridVs = makeModule(dev, native::shaders::k_viewport_grid_vert_spv, sizeof(native::shaders::k_viewport_grid_vert_spv));
     VkShaderModule boxVs = makeModule(dev, native::shaders::k_viewport_box_vert_spv, sizeof(native::shaders::k_viewport_box_vert_spv));
     VkShaderModule fs = makeModule(dev, native::shaders::k_viewport_scene_frag_spv, sizeof(native::shaders::k_viewport_scene_frag_spv));
-    gridPipeline_ = makePipeline(dev, layout_, format_, gridVs, fs, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_CULL_MODE_NONE);
-    boxPipeline_ = makePipeline(dev, layout_, format_, boxVs, fs, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_CULL_MODE_BACK_BIT);
+    gridPipeline_ = makePipeline(dev, layout_, format_, depthFormat, gridVs, fs, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_CULL_MODE_NONE, false);
+    boxPipeline_ = makePipeline(dev, layout_, format_, depthFormat, boxVs, fs, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_CULL_MODE_BACK_BIT, true);
     vkDestroyShaderModule(dev, gridVs, nullptr);
     vkDestroyShaderModule(dev, boxVs, nullptr);
     vkDestroyShaderModule(dev, fs, nullptr);
@@ -121,7 +127,7 @@ ScenePass::~ScenePass() {
     if (layout_) vkDestroyPipelineLayout(device_.device(), layout_, nullptr);
 }
 
-void ScenePass::record(VkCommandBuffer cmd, VkExtent2D extent, const ViewState& view) const {
+void ScenePass::record(VkCommandBuffer cmd, VkExtent2D extent, const ViewState& view, bool drawBox) const {
     if (!valid()) return;
     const VkViewport viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
     const VkRect2D scissor{{0, 0}, extent};
@@ -141,9 +147,11 @@ void ScenePass::record(VkCommandBuffer cmd, VkExtent2D extent, const ViewState& 
         vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
         vkCmdDraw(cmd, kGridVertices, 1, 0, 0);
     }
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, boxPipeline_);
-    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
-    vkCmdDraw(cmd, 36, 1, 0, 0);
+    if (drawBox) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, boxPipeline_);
+        vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+        vkCmdDraw(cmd, 36, 1, 0, 0);
+    }
     if (view.showAxes) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gridPipeline_);
         pc.misc[0] = 1;
