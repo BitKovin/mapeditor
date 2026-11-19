@@ -14,12 +14,15 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <set>
 
 #include "base/jobs.h"
 #include "base/log.h"
 #include "doc/commands.h"
 #include "doc/document.h"
+#include "doc/changeset.h"
 #include "doc/io.h"
+#include "doc/prefabs.h"
 #include "ui/main_window.h"
 #include "ui/registry_menus.h"
 
@@ -54,6 +57,10 @@ void MainWindow::reportError(const QString& message) {
 void MainWindow::setAssetsRoot(const std::string& folder) {
     assetsRoot_ = folder.empty() ? folder : generic(fs::path(folder).lexically_normal());
     if (services_.settings) services_.settings->setValue("assets/root", QString::fromStdString(assetsRoot_));
+    if (prefabLib_) {
+        prefabLib_->setAssetsRoot(assetsRoot_);
+        updatePrefabs();
+    }
 }
 
 MainWindow::ResolvedPath MainWindow::resolveAssetPath(const std::string& path) const {
@@ -105,28 +112,48 @@ void MainWindow::runJob(std::function<void()> work, std::function<void()> done) 
         [work = std::move(work), done = std::move(done), completed]() mutable {
             work();
             std::lock_guard<std::mutex> lock(completed->mutex);
-            completed->queue.push_back(std::move(done));
+            completed->queue.emplace_back(true, std::move(done));
         },
         /*priority*/ 5);
+    completedTimer_.start();
+}
+
+void MainWindow::runBackground(std::function<void()> work, std::function<void()> done) {
+    if (!services_.jobs) {
+        work();
+        done();
+        return;
+    }
+    ++backgroundJobs_;
+    std::shared_ptr<Completed> completed = completed_;
+    services_.jobs->submit(
+        [work = std::move(work), done = std::move(done), completed]() mutable {
+            work();
+            std::lock_guard<std::mutex> lock(completed->mutex);
+            completed->queue.emplace_back(false, std::move(done));
+        },
+        /*priority*/ 3);
     completedTimer_.start();
 }
 
 void MainWindow::drainCompleted() {
     for (;;) {
         std::function<void()> next;
+        bool counts = true;
         {
             std::lock_guard<std::mutex> lock(completed_->mutex);
             if (completed_->queue.empty()) break;
-            next = std::move(completed_->queue.front());
+            counts = completed_->queue.front().first;
+            next = std::move(completed_->queue.front().second);
             completed_->queue.pop_front();
         }
-        --pendingJobs_;
+        if (counts) --pendingJobs_;
+        else --backgroundJobs_;
         next();
     }
-    if (pendingJobs_ <= 0) {
-        pendingJobs_ = 0;
-        completedTimer_.stop();
-    }
+    if (pendingJobs_ <= 0) pendingJobs_ = 0;
+    if (backgroundJobs_ <= 0) backgroundJobs_ = 0;
+    if (pendingJobs_ == 0 && backgroundJobs_ == 0) completedTimer_.stop();
 }
 
 // ---- document ------------------------------------------------------------------------------------------------------------------
@@ -250,6 +277,95 @@ void MainWindow::saveTo(const std::string& relative, const std::string& absolute
                emit documentChanged();
                statusBar()->showMessage(QStringLiteral("Saved %1").arg(QString::fromStdString(relative)), 6000);
            });
+}
+
+// ---- prefabs -------------------------------------------------------------------------------------------------------------------
+
+void MainWindow::updatePrefabs() {
+    if (!document_) {
+        ++expandSerial_;
+        if (expansion_) {
+            expansion_.reset();
+            emit prefabExpansionChanged();
+        }
+        return;
+    }
+    if (document_->instances.empty() && (!expansion_ || expansion_->instances.empty())) {
+        if (!expansion_ || expansion_->documentVersion != document_->version) {
+            auto empty = std::make_shared<doc::Expansion>();
+            empty->documentVersion = document_->version;
+            expansion_ = empty;
+            emit prefabExpansionChanged();
+        }
+        return;
+    }
+    const uint64_t serial = ++expandSerial_;
+    const auto version = document_;
+    const auto resolver = prefabResolver_;
+    const auto library = prefabLib_;
+    auto result = std::make_shared<std::shared_ptr<const doc::Expansion>>();
+    runBackground([version, resolver, library, result] { *result = resolver->expand(*version); },
+                  [this, serial, result] {
+                      if (serial != expandSerial_) return;   // a newer document version asked again
+                      expansion_ = *result;
+                      emit prefabExpansionChanged();
+                      // Problems go to the log, not the status bar: they would hide the "Loaded ..." message of the open that caused them.
+                      for (const std::string& problem : expansion_->problems()) base::logWarning("prefab " + problem);
+                  });
+}
+
+void MainWindow::pollPrefabs() {
+    if (!document_ || prefabPolling_ || prefabLib_->empty()) return;
+    prefabPolling_ = true;
+    const auto version = document_;
+    const auto resolver = prefabResolver_;
+    const auto library = prefabLib_;
+    struct Found {
+        std::vector<std::string> changed;
+        std::shared_ptr<const doc::Expansion> expansion;
+    };
+    auto found = std::make_shared<Found>();
+    runBackground(
+        [version, resolver, library, found] {
+            found->changed = library->refresh();
+            if (!found->changed.empty()) found->expansion = resolver->expand(*version);
+        },
+        [this, version, found] {
+            prefabPolling_ = false;
+            if (found->changed.empty()) return;
+            if (document_ != version) {   // the document moved on meanwhile: its own expansion picks the reloaded files up
+                updatePrefabs();
+                return;
+            }
+            // Instances that read a changed file, before and after (a file can start or stop being needed when an include changed).
+            std::set<std::string> ids;
+            if (expansion_)
+                for (const std::string& id : expansion_->instancesUsing(found->changed)) ids.insert(id);
+            for (const std::string& id : found->expansion->instancesUsing(found->changed)) ids.insert(id);
+            doc::ChangeSet cs;
+            cs.fromVersion = cs.toVersion = version->version;
+            for (const std::string& id : ids) {
+                doc::ChangedEntity ce;
+                ce.instance = id;
+                ce.kinds = doc::Prefab;
+                for (const auto& n : version->instances)
+                    if (n->typed.id == id) {
+                        ce.before.add(n->typed.origin);
+                        ce.after.add(n->typed.origin);
+                    }
+                cs.entities.push_back(std::move(ce));
+            }
+            expansion_ = found->expansion;
+            emit prefabExpansionChanged();
+            emit prefabsChanged(cs);
+            const std::vector<std::string> problems = expansion_->problems();
+            statusBar()->showMessage(
+                problems.empty() ? QStringLiteral("Prefab %1 changed on disk: %2 instance(s) updated")
+                                       .arg(QString::fromStdString(found->changed.front()))
+                                       .arg(static_cast<int>(ids.size()))
+                                 : QString::fromStdString("Prefabs: " + problems.front()),
+                8000);
+        });
 }
 
 // ---- dialogs -------------------------------------------------------------------------------------------------------------------

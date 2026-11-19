@@ -28,6 +28,7 @@
 
 #include "base/log.h"
 #include "doc/commands.h"
+#include "doc/prefabs.h"
 #include "doc/selection.h"
 #include "render/viewport_window.h"
 #include "ui/input_adapter.h"
@@ -126,6 +127,11 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         if (assetsRoot_.empty()) assetsRoot_ = st->value("assets/root").toString().toStdString();
         for (const QString& r : st->value("files/recent").toStringList()) recent_.push_back(r.toStdString());
     }
+    prefabLib_ = std::make_shared<doc::PrefabLibrary>(assetsRoot_);
+    prefabResolver_ = std::make_shared<doc::PrefabResolver>(*prefabLib_);
+    prefabTimer_.setInterval(300);
+    QObject::connect(&prefabTimer_, &QTimer::timeout, this, [this] { pollPrefabs(); });
+    prefabTimer_.start();
     selection_ = std::make_unique<doc::Selection>();
     selection_->setListener([this] { emit selectionChanged(); });
     history_ = std::make_unique<doc::History>();
@@ -138,6 +144,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         if (menus()) menus()->refresh();
         emit documentChanged();
         emit documentEdited(changes);
+        updatePrefabs();
     });
     completedTimer_.setInterval(25);
     QObject::connect(&completedTimer_, &QTimer::timeout, this, [this] { drainCompleted(); });

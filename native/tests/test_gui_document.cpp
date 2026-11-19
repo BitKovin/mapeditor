@@ -13,10 +13,12 @@
 #include <sstream>
 
 #include "base/jobs.h"
+#include "doc/changeset.h"
 #include "doc/commands.h"
 #include "doc/document.h"
 #include "doc/edit.h"
 #include "doc/io.h"
+#include "doc/prefabs.h"
 #include "doc/selection.h"
 #include "gui_support.h"
 #include "ui/registry_menus.h"
@@ -376,4 +378,69 @@ TEST_CASE("the main window's selection follows edits, undo and new documents, an
     CHECK_FALSE(window.selection().empty());
     window.openDocument("maps/engine_test.map.json");
     CHECK(window.selection().empty());                 // a new document clears the selection
+}
+
+TEST_CASE("prefab instances are expanded off the UI thread, and editing a prefab file on disk updates the open map within a second") {
+    Assets assets;
+    fs::create_directories(assets.root / "prefabs");
+    for (const char* name : {"door_frame.map.json", "hinge.map.json"})
+        fs::copy_file(fs::path(NATIVE_CORE_ASSETS_DIR) / "prefabs" / name, assets.root / "prefabs" / name);
+    base::JobPool jobs(2);
+    ui::Services sv = docServices(assets, &jobs);
+    ui::MainWindow window(sv);
+    Errors errors;
+    errors.attach(window);
+    window.show();
+    window.openDocument("maps/demo.map.json");
+    REQUIRE(waitUntil([&] { return window.document() != nullptr; }, 10000));
+
+    // an instance of the door frame (which includes the hinge twice)
+    core::PrefabInstance p;
+    p.id = "pi_test_door";
+    p.file = "prefabs/door_frame.map.json";
+    doc::VersionEditor ed(window.document());
+    REQUIRE(ed.addInstance(p));
+    REQUIRE(window.commitEdit("Add door", ed.finish()));
+    // the demo map has an instance of its own; ours is the one with our id
+    const auto ourEntities = [&]() -> std::vector<core::ResolvedEntity> {
+        std::vector<core::ResolvedEntity> out;
+        if (!window.prefabExpansion()) return out;
+        for (const auto& i : window.prefabExpansion()->instances)
+            if (i->instanceId == "pi_test_door") out.assign(i->entities->begin(), i->entities->end());
+        return out;
+    };
+    REQUIRE(waitUntil([&] { return ourEntities().size() == 3; }, 10000));   // the frame itself and its two hinges
+    CHECK(window.prefabExpansion()->problems().empty());
+    CHECK_FALSE(window.busy());   // housekeeping jobs never disable the file actions
+
+    // edit the hinge file on disk
+    int prefabSignals = 0;
+    doc::ChangeSet heard;
+    QObject::connect(&window, &ui::MainWindow::prefabsChanged, [&](const doc::ChangeSet& cs) {
+        ++prefabSignals;
+        heard = cs;
+    });
+    nlohmann::json hinge = nlohmann::json::parse(slurp(assets.root / "prefabs" / "hinge.map.json"));
+    hinge["entities"][0]["keyvalues"]["edited_on_disk"] = "yes";
+    {
+        std::ofstream out(assets.root / "prefabs" / "hinge.map.json", std::ios::binary | std::ios::trunc);
+        out << hinge.dump(2) << "\n";
+    }
+    QElapsedTimer clock;
+    clock.start();
+    REQUIRE(waitUntil([&] { return prefabSignals > 0; }, 1000));
+    INFO("took " << clock.elapsed() << " ms");
+    CHECK(clock.elapsed() < 1000);
+    CHECK(window.document()->version == heard.toVersion);       // the document itself did not change
+    bool ours = false;
+    for (const auto& ce : heard.entities) {
+        CHECK(ce.kinds == doc::Prefab);
+        if (ce.instance == "pi_test_door") ours = true;
+    }
+    CHECK(ours);
+    int hinges = 0;
+    for (const auto& r : ourEntities())
+        if (r.entity.keyvalues.count("edited_on_disk")) ++hinges;
+    CHECK(hinges == 2);                                          // both hinge instances inside the door frame
+    CHECK(errors.list.empty());
 }

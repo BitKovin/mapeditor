@@ -40,8 +40,11 @@ namespace native::base { class JobPool; }
 namespace native::doc {
 class DocumentVersion;
 class History;
+class PrefabLibrary;
+class PrefabResolver;
 class Selection;
 struct ChangeSet;
+struct Expansion;
 struct LoadResult;
 } // namespace native::doc
 namespace native::render {
@@ -135,6 +138,12 @@ public:
     // What is selected and the edit mode. Follows the document: an edit, undo or redo keeps what still exists, a new document clears it.
     doc::Selection& selection() { return *selection_; }
 
+    // ---- prefabs (T2.6) ----
+    // The prefab instances of the current document, expanded (null while there is no document; empty without instances). Files are loaded
+    // and instances resolved on the job pool, so this lags a document change by a moment; prefabExpansionChanged says when it is new.
+    std::shared_ptr<const doc::Expansion> prefabExpansion() const { return expansion_; }
+    doc::PrefabLibrary& prefabLibrary() { return *prefabLib_; }
+
     // ---- edits and undo (T2.4) ----
     // The undo history of the document (reset whenever a document is opened or saved under another path).
     doc::History& history() { return *history_; }
@@ -169,6 +178,10 @@ signals:
     void documentEdited(const native::doc::ChangeSet& changes);
     // The selection, the edit mode or the mesh selection changed.
     void selectionChanged();
+    // The expansion of the prefab instances was recomputed (the document changed or a prefab file did).
+    void prefabExpansionChanged();
+    // A prefab FILE changed on disk (found by the poll every 300 ms): the instances that read it, as `Prefab` changes of the current version.
+    void prefabsChanged(const native::doc::ChangeSet& changes);
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -207,6 +220,10 @@ private:
     void scheduleSave();
     void updateDockTitle(size_t index);
     void onHistoryChanged();
+    void updatePrefabs();
+    void pollPrefabs();
+    // Like runJob, but invisible to busy(): housekeeping that must not disable the file actions.
+    void runBackground(std::function<void()> work, std::function<void()> done);
 
     Services services_;
     ads::CDockManager* dockManager_ = nullptr;
@@ -227,6 +244,13 @@ private:
     std::shared_ptr<const doc::DocumentVersion> document_;
     std::unique_ptr<doc::History> history_;
     std::unique_ptr<doc::Selection> selection_;
+    std::shared_ptr<doc::PrefabLibrary> prefabLib_;        // shared with the jobs that use it: they may outlive the window
+    std::shared_ptr<doc::PrefabResolver> prefabResolver_;
+    std::shared_ptr<const doc::Expansion> expansion_;
+    QTimer prefabTimer_;
+    uint64_t expandSerial_ = 0;
+    bool prefabPolling_ = false;
+    int backgroundJobs_ = 0;
     uint64_t savedVersion_ = 0;
     std::string assetsRoot_;
     std::vector<std::string> recent_;
@@ -236,7 +260,7 @@ private:
     // Results of finished jobs, handed to the UI thread by a timer that runs only while jobs are pending.
     struct Completed {
         std::mutex mutex;
-        std::deque<std::function<void()>> queue;
+        std::deque<std::pair<bool, std::function<void()>>> queue;   // (counts as busy, done)
     };
     std::shared_ptr<Completed> completed_ = std::make_shared<Completed>();
     QTimer completedTimer_;

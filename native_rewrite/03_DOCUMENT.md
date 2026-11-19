@@ -144,6 +144,8 @@ O(changed objects), plus O(entities) pointer compares. Boxes are world-space (af
   (`shell/tests/expand.test.ts`) are the behavioural spec.
 - Overrides, references, effective instance names: `core::effectiveInstanceNames`, DESIGN §18.1.
 
+*As built (T2.6):* `doc/prefabs.h`: `PrefabLibrary` (parsed prefab files by normalized path, version number per load, stat check = `refresh()`) and `PrefabResolver` (per instance: a one-instance `core::Document` through `core::resolvePrefabs`, cached by the `InstanceNode` pointer + the document path + the versions of every file the instance read; failures become `problems` of that instance only). Qt-free; the main window runs both on the job pool (`runBackground`, which does not count as `busy()`), keeps `prefabExpansion()` and emits `prefabExpansionChanged` / `prefabsChanged(ChangeSet)`. Files are found changed by polling their time and size every 300 ms (not `QFileSystemWatcher`: a stat of a few files is cheap, and the watcher misses atomic replace-by-rename on Windows). A problem inside a nested include fails the whole instance that contains it. Problems go to the log.
+
 ## 8. Selection (`doc/selection.h`)
 
 Not part of the document (not saved, not undone — same as the Shell). Elements:

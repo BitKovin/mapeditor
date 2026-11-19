@@ -112,7 +112,7 @@ add_custom_target(native_shaders DEPENDS ${_native_shader_headers})
 find_package(Threads REQUIRED)
 native_module(base   SOURCES src/base/module_info.cpp src/base/hash.cpp src/base/jobs.cpp src/base/log.cpp src/base/trace.cpp
                      DEPENDS vendored Threads::Threads)
-native_module(doc    SOURCES src/doc/module_info.cpp src/doc/document.cpp src/doc/document.h src/doc/io.cpp src/doc/io.h src/doc/json_write.cpp src/doc/json_write.h src/doc/changeset.cpp src/doc/changeset.h src/doc/commands.cpp src/doc/commands.h src/doc/edit.cpp src/doc/edit.h src/doc/selection.cpp src/doc/selection.h
+native_module(doc    SOURCES src/doc/module_info.cpp src/doc/document.cpp src/doc/document.h src/doc/io.cpp src/doc/io.h src/doc/json_write.cpp src/doc/json_write.h src/doc/changeset.cpp src/doc/changeset.h src/doc/commands.cpp src/doc/commands.h src/doc/edit.cpp src/doc/edit.h src/doc/selection.cpp src/doc/selection.h src/doc/prefabs.cpp src/doc/prefabs.h
                      DEPENDS native_base core_lib)
 native_module(scene  SOURCES src/scene/module_info.cpp  DEPENDS native_doc)
 # volk (loader) and VMA (allocator) are third-party code: compiled without the project's warnings-as-errors.
@@ -149,7 +149,7 @@ add_custom_command(TARGET mapeditor_native POST_BUILD
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src)
 target_compile_definitions(native_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
                            NATIVE_CORE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/assets")
