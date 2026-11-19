@@ -86,6 +86,11 @@ struct Document {
 // std::exception) on anything malformed. The input is untrusted.
 Document documentFromJson(const nlohmann::json& j);
 Brush brushFromJson(const nlohmann::json& j);  // exposed so shared test vectors can use it
+// One node of the document on its own, with the same strictness and defaults as documentFromJson (which calls them): the
+// native editor parses the nodes of a map separately (in parallel, and again after an edit). entityFromJson also reads the
+// entity's "brushes"; a caller that keeps brushes elsewhere passes the entity JSON without that key.
+Entity entityFromJson(const nlohmann::json& j);
+PrefabInstance instanceFromJson(const nlohmann::json& j);
 
 // Names of the instances of one document, same order: the explicit `name`, or a derived
 // `<basename>`, `<basename>2`, ... that avoids every explicit name and every name already given out.

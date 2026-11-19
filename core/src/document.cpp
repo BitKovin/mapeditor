@@ -90,6 +90,8 @@ std::unordered_map<std::string, RefTargets> refMap(const json& j, const std::str
     return out;
 }
 
+}  // namespace
+
 Entity entityFromJson(const json& j) {
     Entity e;
     e.id = str(j.at("id"), "entity id");
@@ -103,6 +105,8 @@ Entity entityFromJson(const json& j) {
     }
     return e;
 }
+
+namespace {
 
 EntityOverride overrideFromJson(const json& j) {
     if (!j.is_object()) throw std::runtime_error("prefab override must be an object");
@@ -128,7 +132,9 @@ EntityOverride overrideFromJson(const json& j) {
     return o;
 }
 
-PrefabInstance prefabInstanceFromJson(const json& j) {
+}  // namespace
+
+PrefabInstance instanceFromJson(const json& j) {
     PrefabInstance p;
     p.id = str(j.at("id"), "prefab instance id");
     p.file = str(j.at("file"), "prefab instance file");
@@ -142,8 +148,6 @@ PrefabInstance prefabInstanceFromJson(const json& j) {
     }
     return p;
 }
-
-}  // namespace
 
 Brush brushFromJson(const json& j) {
     Brush b;
@@ -197,7 +201,7 @@ Document documentFromJson(const json& j) {
         for (const auto& ej : j["entities"]) doc.entities.push_back(entityFromJson(ej));
     }
     if (j.contains("prefabInstances")) {
-        for (const auto& pj : j["prefabInstances"]) doc.prefabInstances.push_back(prefabInstanceFromJson(pj));
+        for (const auto& pj : j["prefabInstances"]) doc.prefabInstances.push_back(instanceFromJson(pj));
     }
     return doc;
 }

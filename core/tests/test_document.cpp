@@ -271,3 +271,46 @@ TEST_CASE("effectiveInstanceNames derives unique default names in document order
     CHECK(names[3] == "door_prefab3");
     CHECK_FALSE(validateDocument(d).has_value());
 }
+
+TEST_CASE("documentFromJson: entities and instances parse one node at a time with the same result") {
+    Brush wall = Brush::makeBox("w1", {0, 0, 0}, {2, 2, 2}, "dev/wall");
+    json ent = entityJson("e_door", "func_door", {wall}, {1, 2, 3});
+    ent["keyvalues"] = {{"speed", "2.5"}};
+    ent["refs"] = {{"target", "e_btn"}};
+    json inst = instanceJson("pi", "prefabs/door.map.json", {4, 5, 6});
+    inst["name"] = "front";
+    inst["scale"] = {2, 2, 2};
+    inst["overrides"] = {{"e_door", {{"keyvalues", {{"speed", "9"}}}, {"deleted", false}}}};
+    const Document whole = documentFromJson(docJson({ent}, {inst}));
+
+    const Entity e = entityFromJson(ent);
+    CHECK(e.id == whole.entities[0].id);
+    CHECK(e.classname == "func_door");
+    CHECK(e.origin.z == doctest::Approx(3));
+    CHECK(e.keyvalues.at("speed") == "2.5");
+    CHECK(e.refs.at("target") == "e_btn");
+    REQUIRE(e.brushes.size() == 1);
+    CHECK(e.brushes[0].id == "w1");
+    CHECK(e.brushes[0].faces.size() == whole.entities[0].brushes[0].faces.size());
+
+    // Without the "brushes" key (what the native document keeps in an entity node's raw) the entity has none.
+    json noBrushes = ent;
+    noBrushes.erase("brushes");
+    CHECK(entityFromJson(noBrushes).brushes.empty());
+
+    const PrefabInstance p = instanceFromJson(inst);
+    CHECK(p.id == "pi");
+    CHECK(p.file == "prefabs/door.map.json");
+    CHECK(p.name == "front");
+    REQUIRE(p.scale.has_value());
+    CHECK(p.scale->y == doctest::Approx(2));
+    CHECK(p.origin.x == doctest::Approx(4));
+    CHECK(p.overrides.at("e_door").keyvalues.at("speed") == "9");
+    CHECK(p.overrides.size() == whole.prefabInstances[0].overrides.size());
+
+    // Same strictness as the whole-document reader.
+    CHECK_THROWS_AS(entityFromJson(json::object()), std::exception);
+    CHECK_THROWS_AS(entityFromJson(json{{"id", 3}}), std::runtime_error);
+    CHECK_THROWS_AS(instanceFromJson(json{{"id", "x"}}), std::exception);
+    CHECK_THROWS_AS(instanceFromJson(json{{"id", "x"}, {"file", "f"}, {"overrides", 3}}), std::runtime_error);
+}
