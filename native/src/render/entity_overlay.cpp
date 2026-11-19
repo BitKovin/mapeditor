@@ -70,6 +70,7 @@ EntityOverlay buildEntityOverlay(const scene::SceneSnapshot& snap, const std::ve
 
     for (const scene::Placed& p : items) {
         const core::Entity& e = *p.entity;
+        if (opt.hidden && !opt.hidden->empty() && opt.hidden->count(p.ids.empty() ? scene::ObjectKey{"", e.id, ""} : scene::ObjectKey{p.ids.front(), "", ""})) continue;
         if (e.isBrushEntity()) {
             if (opt.origins && p.ids.empty() && e.classname != "worldspawn" && e.showsCustomOriginGizmo()) {
                 const uint32_t c = packColor(0.3f, 0.9f, 0.95f);

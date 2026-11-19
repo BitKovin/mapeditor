@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 project(mapeditor_native CXX C)
 
 # Native editor: one process, Qt 6 UI, Vulkan, the Core linked in as a library (native_rewrite/01_ARCHITECTURE.md).
-# Module libraries follow the dependency rule of 01 §4:  base <- doc <- scene <- light, render <- tools <- ui <- app
+# Module libraries follow the dependency rule of 01 Р’В§4:  base <- doc <- scene <- light, render <- tools <- ui <- app
 # (gpu depends only on base). The linker therefore rejects an upward include that sneaks in.
 
 set(CMAKE_CXX_STANDARD 20)
@@ -17,7 +17,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_AUTOMOC ON)
 
 # ---- Qt ---------------------------------------------------------------------------------------------------------------
-# QT_DIR = the folder holding lib/cmake/Qt6 (02_BUILD_AND_TOOLING.md §1). build_native.bat finds it when the variable is unset.
+# QT_DIR = the folder holding lib/cmake/Qt6 (02_BUILD_AND_TOOLING.md Р’В§1). build_native.bat finds it when the variable is unset.
 if(DEFINED ENV{QT_DIR})
   list(PREPEND CMAKE_PREFIX_PATH "$ENV{QT_DIR}")
 endif()
@@ -137,9 +137,9 @@ target_include_directories(native_render PRIVATE "${NATIVE_SHADER_GEN_DIR}")
 # the Qt adapter and menus (ui) and the tools all use it. 10_UI_AND_INPUT.md.
 native_module(actions SOURCES src/app/actions/input.cpp src/app/actions/registry.cpp src/app/actions/contexts.cpp
                       src/app/actions/keymap.cpp src/app/actions/router.cpp DEPENDS native_base)
-native_module(tools  SOURCES src/tools/module_info.cpp src/tools/gizmo.cpp src/tools/gizmo.h src/tools/modal.cpp src/tools/modal.h src/tools/transform.cpp src/tools/transform.h src/tools/gizmo_overlay.cpp src/tools/gizmo_overlay.h src/tools/box_tool.cpp src/tools/box_tool.h src/tools/shapes.cpp src/tools/shapes.h
+native_module(tools  SOURCES src/tools/module_info.cpp src/tools/gizmo.cpp src/tools/gizmo.h src/tools/modal.cpp src/tools/modal.h src/tools/transform.cpp src/tools/transform.h src/tools/gizmo_overlay.cpp src/tools/gizmo_overlay.h src/tools/box_tool.cpp src/tools/box_tool.h src/tools/shapes.cpp src/tools/shapes.h src/tools/edit_ops.cpp src/tools/edit_ops.h src/tools/visibility.cpp src/tools/visibility.h src/tools/edit_ops.cpp src/tools/edit_ops.h src/tools/visibility.cpp src/tools/visibility.h
                      DEPENDS native_render native_light)
-native_module(ui     SOURCES src/ui/module_info.cpp src/ui/main_window.cpp src/ui/main_window_document.cpp src/ui/main_window_transform.cpp src/ui/main_window_box.cpp src/ui/transform_session.h src/ui/box_drawing.h src/ui/view_helpers.h src/ui/main_window.h src/ui/stats_panel.cpp src/ui/stats_panel.h
+native_module(ui     SOURCES src/ui/module_info.cpp src/ui/main_window.cpp src/ui/main_window_document.cpp src/ui/main_window_transform.cpp src/ui/main_window_box.cpp src/ui/main_window_edit.cpp src/ui/main_window_edit.cpp src/ui/transform_session.h src/ui/box_drawing.h src/ui/view_helpers.h src/ui/main_window.h src/ui/stats_panel.cpp src/ui/stats_panel.h
                      src/ui/input_adapter.cpp src/ui/input_adapter.h src/ui/app_actions.cpp src/ui/app_actions.h
                      src/ui/registry_menus.cpp src/ui/registry_menus.h src/ui/glyph_atlas_qt.cpp src/ui/glyph_atlas_qt.h
                      DEPENDS native_tools native_actions Qt6::Widgets ads::qtadvanceddocking)
@@ -155,7 +155,7 @@ add_custom_command(TARGET mapeditor_native POST_BUILD
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_scene_relief.cpp tests/test_picking.cpp tests/test_scene_overlays.cpp tests/test_tools_transform.cpp tests/test_tools_modal.cpp tests/test_tools_gizmo.cpp tests/test_tools_box.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_scene_relief.cpp tests/test_picking.cpp tests/test_scene_overlays.cpp tests/test_tools_transform.cpp tests/test_tools_modal.cpp tests/test_tools_gizmo.cpp tests/test_tools_box.cpp tests/test_tools_clipboard.cpp tests/test_tools_visibility.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src)
 target_compile_definitions(native_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
                            NATIVE_CORE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/assets")
@@ -163,7 +163,7 @@ target_link_libraries(native_tests PRIVATE native_ui Qt6::Widgets Qt6::Test)
 native_warnings(native_tests)
 
 # Tests that need real windows and the GPU (Qt "windows" platform): viewports in docks, re-docking, resizing.
-add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp tests/test_gui_document.cpp tests/test_gui_select.cpp tests/test_gui_transform.cpp tests/test_gui_box.cpp)
+add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp tests/test_gui_document.cpp tests/test_gui_select.cpp tests/test_gui_transform.cpp tests/test_gui_box.cpp tests/test_gui_edit.cpp)
 target_include_directories(native_gui_tests PRIVATE src)
 target_compile_definitions(native_gui_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
                            NATIVE_CORE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/assets")

@@ -13,6 +13,17 @@
     { "action": "select.pick", "context": "tool:select", "input": "Ctrl+LMB drag", "params": { "op": "toggle" } },
     { "action": "select.pick", "context": "tool:select", "input": "Shift+LMB drag", "params": { "op": "face" } },
 
+    { "action": "edit.delete",    "context": "area:viewport", "input": "Delete" },
+    { "action": "edit.delete",    "context": "area:viewport", "input": "Backspace" },
+    { "action": "edit.duplicate", "context": "area:viewport", "input": "Ctrl+D" },
+    { "action": "edit.copy",      "context": "area:viewport", "input": "Ctrl+C" },
+    { "action": "edit.cut",       "context": "area:viewport", "input": "Ctrl+X" },
+    { "action": "edit.paste",     "context": "area:viewport", "input": "Ctrl+V" },
+    { "action": "edit.group",     "context": "area:viewport", "input": "Ctrl+G" },
+    { "action": "edit.ungroup",   "context": "area:viewport", "input": "Ctrl+Shift+G" },
+    { "action": "edit.hide",      "context": "area:viewport", "input": "H" },
+    { "action": "edit.unhide_all", "context": "area:viewport", "input": "Alt+H" },
+
     { "action": "grid.smaller", "context": "area:viewport", "input": "[" },
     { "action": "grid.larger",  "context": "area:viewport", "input": "]" },
 

@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "doc/selection.h"
@@ -25,6 +26,9 @@ namespace native::render {
 
 struct PickOptions {
     bool includeSubtractive = true;   // false: subtractive brush shapes are hidden and catch no clicks
+    // Hidden objects (tools/visibility): not picked. Brushes by their key, a point entity by {"", entityId, ""}. Null = nothing hidden.
+    const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>* hidden = nullptr;
+    bool isHidden(const scene::ObjectKey& k) const { return hidden && !hidden->empty() && hidden->count(k) > 0; }
 };
 
 struct PickHit {

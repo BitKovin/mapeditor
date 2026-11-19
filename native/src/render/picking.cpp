@@ -161,6 +161,7 @@ void Picker::hitItem(const Item& item, const Ray& ray, const PickOptions& opts, 
         return h;
     };
     if (!item.pointEntity.empty()) {
+        if (opts.isHidden({"", item.pointEntity, ""})) return;
         // the ray in the box's own frame, where the box is axis aligned
         const scene::OrientedBox& ob = *item.oriented;
         const scene::V3 lo = scene::toLocal(ob, {ray.origin[0], ray.origin[1], ray.origin[2]});
@@ -191,6 +192,7 @@ void Picker::hitItem(const Item& item, const Ray& ray, const PickOptions& opts, 
         return;
     }
     if (item.subtractive && !opts.includeSubtractive) return;
+    if (opts.isHidden(item.key)) return;
     const scene::ObjectProducts& p = *item.products;
     const doc::DocumentVersion* doc = snap_->doc.get();
 
@@ -207,6 +209,7 @@ void Picker::hitItem(const Item& item, const Ray& ray, const PickOptions& opts, 
     if (p.surfaces && !p.surfaces->empty()) {
         for (const core::LightSurface& s : *p.surfaces) {
             if (s.verts.size() < 3) continue;
+            if (opts.hidden && s.brushInstance.empty() && s.instance.empty() && opts.isHidden({"", ownerOf(s), s.brushId})) continue;   // a cut wall of a hidden subtractor
             const Vec3 a = toV(s.verts[0]);
             for (size_t k = 1; k + 1 < s.verts.size(); ++k) {
                 const double t = rayTriangle(ray, a, toV(s.verts[k]), toV(s.verts[k + 1]));
@@ -312,6 +315,7 @@ std::vector<doc::SelRef> Picker::boxSelect(const Mat4& m, double x0, double y0, 
     std::vector<const Item*> inside;
     for (const Item& it : items_) {
         if (it.subtractive && !opts.includeSubtractive) continue;
+        if (opts.isHidden(it.pointEntity.empty() ? it.key : scene::ObjectKey{"", it.pointEntity, ""})) continue;
         bool all = true;
         for (const auto& p : planes) {
             // the corner that is most outside this plane must still be inside

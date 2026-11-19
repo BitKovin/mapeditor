@@ -18,6 +18,7 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <unordered_set>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -66,6 +67,8 @@ public:
 
     // The scene the viewports draw (published by the scene builder; any thread). Marks every viewport dirty when the render thread has taken it.
     void setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);
+    // The objects of the snapshot that are not drawn (Hide); null = none.
+    void setHiddenObjects(std::shared_ptr<const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>> hidden);
     // Where textures are read from and which pool decodes them.
     void setTextureSource(const std::filesystem::path& assetsRoot, base::JobPool* pool);
     // The selection outline drawn in every viewport (world space line list, two vertices a line; empty = none).

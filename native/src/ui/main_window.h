@@ -17,6 +17,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
+#include <unordered_set>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -26,9 +28,12 @@
 #include "app/actions/registry.h"
 #include "app/actions/router.h"
 #include "render/math3d.h"
+#include "scene/snapshot.h"
+#include "tools/edit_ops.h"
 #include "tools/gizmo.h"
 #include "tools/modal.h"
 #include "tools/shapes.h"
+#include "tools/visibility.h"
 #include "ui/app_actions.h"
 
 class QSettings;
@@ -70,7 +75,7 @@ class ViewportWindow;
 } // namespace native::render
 
 namespace native::doc { struct SelRef; }
-namespace native::render { struct LineVertex; enum class GizmoMode; }
+namespace native::render { struct LineVertex; enum class GizmoMode; struct PickOptions; }
 
 namespace native::ui {
 
@@ -258,7 +263,28 @@ public:
     // The lines of the drawing in progress for a viewport (the rectangle, then the shape); empty when it is drawn elsewhere.
     std::vector<render::LineVertex> boxPreviewLines(size_t panelIndex) const;
 
+    // ---- delete, duplicate, group, clipboard, hide (T4.3) ----
+    // Each is one undo step on the selection (prefab-internal and face selections are left alone); false when refused or nothing to do (the status bar says why).
+    bool deleteSelected();
+    bool duplicateSelected();   // the copies are selected
+    bool groupSelected();       // brushes -> a new func_group
+    bool ungroupSelected();     // the brushes of func_group entities (or any selected brushes) -> worldspawn
+    // The OS clipboard holds the selection as the Shell's clipboard JSON (level-editor/clipboard), so both editors paste each other's copies.
+    bool copySelected();
+    bool cutSelected();
+    bool pasteClipboard(const core::Vec3& offset = {0, 0, 0});   // the pasted items are selected
+    // What is hidden: a view setting (not saved with the map, not undone). Hidden objects are not drawn, not picked and not selected.
+    const tools::HideState& hideState() const { return hide_; }
+    bool hideSelected();
+    void unhideAll();
+    void setHideRules(const std::vector<tools::HideRule>& rules);
+    void setHiddenKeys(const std::set<std::string>& keys);
+    // The objects of the latest snapshot that are hidden now (what the render thread skips and the picker ignores).
+    std::shared_ptr<const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>> hiddenObjects() const { return hiddenSet_; }
+
 signals:
+    // The hide keys or rules changed.
+    void hiddenChanged();
     // The tool, the shape or its parameters changed.
     void toolChanged();
     // The current document changed (opened, saved under a new path, replaced): panels refresh their title and contents.
@@ -339,6 +365,9 @@ private:
     void boxMove(QPointF p);
     void updateBoxPreview();
     void statusBox();
+    void refreshHidden();
+    render::PickOptions pickOptions() const;
+    bool applyEdit(const tools::EditResult& result, bool selectResult = true);
     // Like runJob, but invisible to busy(): housekeeping that must not disable the file actions.
     void runBackground(std::function<void()> work, std::function<void()> done);
 
@@ -378,6 +407,8 @@ private:
     tools::ShapeParams shapeParams_;
     std::string activeTexture_ = "dev/grey";
     std::string originSel_;
+    tools::HideState hide_;
+    std::shared_ptr<const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>> hiddenSet_;
     struct GizmoHover {
         size_t panel = 0;
         int axis = -1;

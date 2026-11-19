@@ -25,13 +25,15 @@ public:
     // Every call returns false and records error() when the edit is invalid (unknown id, duplicate id, invalid brush); the first error
     // stays, later calls still work on the rest. finish() then refuses to publish.
     bool replaceBrush(const std::string& entityId, const core::Brush& brush);   // the brush with brush.id
-    bool addBrush(const std::string& entityId, const core::Brush& brush);       // appended to the entity
+    // `rawBase` (the JSON of the node this one is copied from) keeps the keys the editor does not model; the typed value wins where both have a key.
+    bool addBrush(const std::string& entityId, const core::Brush& brush, const Json& rawBase = Json());       // appended to the entity
     bool removeBrush(const std::string& entityId, const std::string& brushId);
     bool replaceEntity(const core::Entity& entity);                             // its own keys; entity.brushes is ignored
-    bool addEntity(const core::Entity& entity);                                 // appended; entity.brushes (if any) become its brush nodes
+    // appended; entity.brushes (if any) become its brush nodes (`brushRaws[i]` = the base JSON of brush i, when given)
+    bool addEntity(const core::Entity& entity, const Json& rawBase = Json(), const std::vector<Json>& brushRaws = {});
     bool removeEntity(const std::string& entityId);
     bool replaceInstance(const core::PrefabInstance& instance);
-    bool addInstance(const core::PrefabInstance& instance);
+    bool addInstance(const core::PrefabInstance& instance, const Json& rawBase = Json());
     bool removeInstance(const std::string& instanceId);
 
     bool ok() const { return error_.empty(); }

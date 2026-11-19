@@ -10,6 +10,7 @@
 
 #include <array>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "core/entdef.h"
@@ -34,6 +35,8 @@ struct EntityOverlay {
 
 struct EntityOverlayOptions {
     bool boxes = true, directions = true, links = true, lightGizmos = true, origins = true;
+    // Hidden objects (tools/visibility markers: {"", entityId, ""} an entity, {instanceId, "", ""} a prefab instance): not drawn. Null = none.
+    const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>* hidden = nullptr;
 };
 
 constexpr float kEntityFillAlpha = 0.35f;   // GHOST_ALPHA * 0.7 of the Shell

@@ -372,6 +372,137 @@ void boxActions(actions::Registry& r) {
     }
 }
 
+
+// Delete, duplicate, copy / cut / paste, group, hide (T4.3): edits of the selection, each one undo step. Duplicate and paste go on into a grab so the copies can be placed.
+void editActions(actions::Registry& r) {
+    const auto windowOf = [](const ActionEnv& env) { auto* u = env.as<UiEnv>(); return u ? u->window : nullptr; };
+    const auto hasSelection = [windowOf](const ActionEnv& env, const json&) {
+        auto* w = windowOf(env);
+        return w && w->document() && !w->selection().empty();
+    };
+    const auto hasDocument = [windowOf](const ActionEnv& env, const json&) {
+        auto* w = windowOf(env);
+        return w && w->document();
+    };
+    // grab after the copies exist: in the viewport under the pointer, else the active one
+    const auto thenGrab = [windowOf](ActionEnv& env) {
+        auto* w = windowOf(env);
+        if (!w) return;
+        render::ViewportWindow* vp = viewportOf(env) ? viewportOf(env) : w->activeViewport();
+        if (vp) w->startTransform(vp, tools::ModalKind::Grab);
+    };
+    struct Def {
+        const char* id;
+        const char* label;
+        const char* description;
+        const char* menu;
+        bool separator;
+        int op;
+    };
+    const Def defs[] = {
+        {"edit.delete", "Delete", "Deletes the selected brushes, entities and prefab instances.", "&Edit", true, 0},
+        {"edit.duplicate", "Duplicate", "Copies the selection and moves the copies with the pointer.", "&Edit", false, 1},
+        {"edit.copy", "Copy", "Copies the selection to the clipboard (the Shell can paste it).", "&Edit", true, 2},
+        {"edit.cut", "Cut", "Copies the selection to the clipboard and deletes it.", "&Edit", false, 3},
+        {"edit.group", "Group", "Moves the selected brushes into a new func_group entity.", "&Edit", true, 5},
+        {"edit.ungroup", "Ungroup", "Moves the selected brushes (those of selected groups) back into the world.", "&Edit", false, 6},
+        {"edit.hide", "Hide", "Hides the selection (a view setting: not saved, not undone).", "&Edit", true, 7},
+    };
+    for (const Def& df : defs) {
+        ActionDef d;
+        d.id = df.id;
+        d.label = df.label;
+        d.category = "Edit";
+        d.description = df.description;
+        d.menu = df.menu;
+        d.menuSeparatorBefore = df.separator;
+        d.contexts = {"area:viewport"};
+        d.enabled = hasSelection;
+        const int op = df.op;
+        d.run = [windowOf, thenGrab, op](ActionEnv& env, const Invocation&) {
+            auto* w = windowOf(env);
+            if (!w) return;
+            switch (op) {
+                case 0: w->deleteSelected(); break;
+                case 1: if (w->duplicateSelected()) thenGrab(env); break;
+                case 2: w->copySelected(); break;
+                case 3: w->cutSelected(); break;
+                case 5: w->groupSelected(); break;
+                case 6: w->ungroupSelected(); break;
+                case 7: w->hideSelected(); break;
+                default: break;
+            }
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "edit.paste";
+        d.label = "Paste";
+        d.category = "Edit";
+        d.description = "Pastes what was copied (also from the Shell) and moves the new items with the pointer.";
+        d.menu = "&Edit";
+        d.contexts = {"area:viewport"};
+        d.enabled = hasDocument;
+        d.run = [windowOf, thenGrab](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) if (w->pasteClipboard()) thenGrab(env);
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "edit.unhide_all";
+        d.label = "Unhide all";
+        d.category = "Edit";
+        d.description = "Shows everything that was hidden with Hide or the Outliner eye.";
+        d.menu = "&Edit";
+        d.contexts = {"area:viewport"};
+        d.enabled = [windowOf](const ActionEnv& env, const json&) {
+            auto* w = windowOf(env);
+            return w && !w->hideState().keys.empty();
+        };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->unhideAll(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "view.hide_rule";
+        d.label = "Hide class";
+        d.category = "View";
+        d.description = "Hides every entity whose class matches the pattern (trigger_* = every class starting with trigger_).";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&View/&Hide";
+        d.params = json{{"pattern", "trigger_*"}};
+        d.variants = {{"&Triggers (trigger_*)", {{"pattern", "trigger_*"}}}, {"&Playable area (editor_playable_area)", {{"pattern", "editor_playable_area"}}}};
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
+        const auto enabledOf = [](const tools::HideState& h, const std::string& pattern) {
+            const std::string p = tools::normalizePattern(pattern);
+            for (const tools::HideRule& rule : h.rules)
+                if (tools::normalizePattern(rule.pattern) == p) return rule.enabled;
+            return false;
+        };
+        d.checked = [windowOf, enabledOf](const ActionEnv& env, const json& p) {
+            auto* w = windowOf(env);
+            return w && enabledOf(w->hideState(), p.value("pattern", std::string()));
+        };
+        d.run = [windowOf, enabledOf](ActionEnv& env, const Invocation& inv) {
+            auto* w = windowOf(env);
+            if (!w) return;
+            const std::string pattern = inv.params.value("pattern", std::string());
+            std::vector<tools::HideRule> rules = w->hideState().rules;
+            if (enabledOf(w->hideState(), pattern)) {
+                const std::string n = tools::normalizePattern(pattern);
+                for (tools::HideRule& rule : rules)
+                    if (tools::normalizePattern(rule.pattern) == n) rule.enabled = false;
+            } else {
+                rules = tools::addRule(rules, pattern);
+            }
+            w->setHideRules(rules);
+        };
+        add(r, std::move(d));
+    }
+}
+
 } // namespace
 
 std::vector<std::string> viewportContexts(const render::ViewportWindow& viewport) {
@@ -566,6 +697,7 @@ void registerAppActions(actions::Registry& r) {
     selectAction(r);
     transformActions(r);
     boxActions(r);
+    editActions(r);
     gridActions(r);
     {
         ActionDef d;

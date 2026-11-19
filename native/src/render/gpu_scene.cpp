@@ -64,6 +64,12 @@ void GpuScene::setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot)
     pending_ = std::move(snapshot);
 }
 
+void GpuScene::setHidden(std::shared_ptr<const HiddenObjects> hidden) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pendingHidden_ = std::move(hidden);
+    hiddenPending_ = true;
+}
+
 SceneStats GpuScene::stats() const {
     SceneStats s;
     s.objects = static_cast<uint32_t>(objects_.size());
@@ -160,6 +166,12 @@ bool GpuScene::sync(VkCommandBuffer cmd, gpu::UploadRing& ring, uint64_t complet
         std::lock_guard<std::mutex> lock(mutex_);
         next = std::move(pending_);
         pending_.reset();
+        if (hiddenPending_) {
+            hidden_ = std::move(pendingHidden_);
+            pendingHidden_.reset();
+            hiddenPending_ = false;
+            drawsDirty_ = true;
+        }
     }
     if (next) {
         current_ = next;
@@ -244,6 +256,7 @@ void GpuScene::rebuildDraws() {
     for (const auto& [key, o] : objects_) {
         if (o.raw) ++rawObjects_;
         if (o.indexCount == 0 || !o.bounds.valid()) continue;
+        if (hidden_ && hidden_->count(key)) continue;
         Draw d{};
         d.cmd.indexCount = o.indexCount;
         d.cmd.instanceCount = 1;

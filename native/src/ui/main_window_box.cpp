@@ -72,7 +72,7 @@ void MainWindow::boxInput(render::ViewportWindow* vp, const actions::InputEvent&
         const render::ViewState view = vp->currentView();
         const render::Ray ray = rayAt(view, vp->size(), p);
         std::optional<render::PickHit> hit;
-        if (picker_) hit = picker_->pick(ray);
+        if (picker_) hit = picker_->pick(ray, pickOptions());
         const tools::DrawPlane plane = hit ? tools::planeThrough(hit->point, hit->normal) : tools::fallbackPlane(ray);
         // the start point lies on the world grid (measured along the surface), never where the click landed
         const render::Vec3 p0 = tools::snapToPlane(hit ? hit->point : tools::rayPlane(ray, plane).value_or(plane.origin), plane, render::snapStep(vp->rig().settings()));

@@ -88,7 +88,7 @@ bool VersionEditor::replaceBrush(const std::string& entityId, const core::Brush&
     return true;
 }
 
-bool VersionEditor::addBrush(const std::string& entityId, const core::Brush& brush) {
+bool VersionEditor::addBrush(const std::string& entityId, const core::Brush& brush, const Json& rawBase) {
     if (!working_) return false;
     auto e = entityIndex_.find(entityId);
     if (e == entityIndex_.end()) return fail("no entity " + entityId);
@@ -96,7 +96,7 @@ bool VersionEditor::addBrush(const std::string& entityId, const core::Brush& bru
     if (bi.count(brush.id)) return fail("entity " + entityId + " already has a brush " + brush.id);
     if (!checkBrush(brush, working_->entities[e->second]->typed.classname)) return false;
     EntityNode& node = mutableEntity(e->second);
-    node.brushes.push_back(makeBrushNode(brush, Json()));
+    node.brushes.push_back(makeBrushNode(brush, rawBase));
     node.hasBrushesKey = true;
     bi.emplace(brush.id, node.brushes.size() - 1);
     changed_ = true;
@@ -132,16 +132,17 @@ bool VersionEditor::replaceEntity(const core::Entity& entity) {
     return true;
 }
 
-bool VersionEditor::addEntity(const core::Entity& entity) {
+bool VersionEditor::addEntity(const core::Entity& entity, const Json& rawBase, const std::vector<Json>& brushRaws) {
     if (!working_) return false;
     if (entity.id.empty()) return fail("an entity needs an id");
     if (entityIndex_.count(entity.id)) return fail("entity " + entity.id + " already exists");
     auto node = std::make_shared<EntityNode>();
-    node->raw = writeEntity(entity, Json());
+    node->raw = writeEntity(entity, rawBase);
     node->typed = core::entityFromJson(node->raw);
-    for (const core::Brush& b : entity.brushes) {
+    for (size_t i = 0; i < entity.brushes.size(); ++i) {
+        const core::Brush& b = entity.brushes[i];
         if (!checkBrush(b, entity.classname)) return false;
-        node->brushes.push_back(makeBrushNode(b, Json()));
+        node->brushes.push_back(makeBrushNode(b, i < brushRaws.size() ? brushRaws[i] : Json()));
     }
     node->hasBrushesKey = !node->brushes.empty();
     working_->entities.push_back(node);
@@ -175,12 +176,12 @@ bool VersionEditor::replaceInstance(const core::PrefabInstance& instance) {
     return true;
 }
 
-bool VersionEditor::addInstance(const core::PrefabInstance& instance) {
+bool VersionEditor::addInstance(const core::PrefabInstance& instance, const Json& rawBase) {
     if (!working_) return false;
     if (instance.id.empty()) return fail("a prefab instance needs an id");
     if (instanceIndex_.count(instance.id)) return fail("prefab instance " + instance.id + " already exists");
     auto node = std::make_shared<InstanceNode>();
-    node->raw = writeInstance(instance, Json());
+    node->raw = writeInstance(instance, rawBase);
     node->typed = core::instanceFromJson(node->raw);
     working_->instances.push_back(std::move(node));
     working_->hasInstancesKey = true;

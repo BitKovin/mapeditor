@@ -138,6 +138,10 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     if (st) {
         if (assetsRoot_.empty()) assetsRoot_ = st->value("assets/root").toString().toStdString();
         for (const QString& r : st->value("files/recent").toStringList()) recent_.push_back(r.toStdString());
+        {   // the hide-by-class rules are a view setting that stays between runs (the hidden keys do not: they belong to one map)
+            const std::string text = st->value("view/hideRules").toString().toStdString();
+            if (!text.empty()) hide_.rules = tools::restoreHideRules(nlohmann::json::parse(text, nullptr, false));
+        }
     }
     prefabLib_ = std::make_shared<doc::PrefabLibrary>(assetsRoot_);
     prefabResolver_ = std::make_shared<doc::PrefabResolver>(*prefabLib_);
@@ -407,6 +411,7 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
 void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
     if (!picker_) picker_ = std::make_unique<render::Picker>();
     picker_->setSnapshot(std::move(snapshot));
+    refreshHidden();   // also refreshes the outline when it prunes the selection; otherwise:
     refreshOutline();
 }
 
@@ -428,6 +433,7 @@ void MainWindow::refreshOverlays() {
     }
     render::EntityOverlayOptions opt;
     opt.origins = opt.directions = opt.links = opt.lightGizmos = false;
+    opt.hidden = hiddenSet_.get();
     for (const ViewportPanel& p : panels_) {   // a viewport that shows something asks for it in every viewport (one shared list)
         const render::ViewportSettings& s = p.window->rig().settings();
         opt.origins = opt.origins || s.showOrigins;
@@ -527,7 +533,7 @@ void MainWindow::pickAt(render::ViewportWindow* vp, QPointF p, PickOp op) {
     if (size.width() < 1 || size.height() < 1) return;
     const render::ViewState view = vp->currentView();
     const render::Ray ray = render::rayThrough(view.viewProj, p.x() / size.width() * 2.0 - 1.0, p.y() / size.height() * 2.0 - 1.0);
-    const std::optional<render::PickHit> hit = picker_->pick(ray);
+    const std::optional<render::PickHit> hit = picker_->pick(ray, pickOptions());
     switch (op) {
         case PickOp::Replace:
             if (hit) selection_->select(objectRef(*document_, hit->toSelRef(false)));
@@ -550,7 +556,7 @@ void MainWindow::boxSelectIn(render::ViewportWindow* vp, QPointF a, QPointF b, P
     const render::ViewState view = vp->currentView();
     const auto nx = [&](double x) { return x / size.width() * 2.0 - 1.0; };
     const auto ny = [&](double y) { return y / size.height() * 2.0 - 1.0; };
-    std::vector<doc::SelRef> list = picker_->boxSelect(view.viewProj, nx(a.x()), ny(a.y()), nx(b.x()), ny(b.y()));
+    std::vector<doc::SelRef> list = picker_->boxSelect(view.viewProj, nx(a.x()), ny(a.y()), nx(b.x()), ny(b.y()), pickOptions());
     if (op != PickOp::Replace) {
         // Ctrl / Shift add to what is selected
         std::vector<doc::SelRef> all = selection_->items();

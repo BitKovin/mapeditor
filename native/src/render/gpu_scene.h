@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "gpu/arena.h"
@@ -55,6 +56,8 @@ struct SceneStats {
     uint64_t uploads = 0;
 };
 
+using HiddenObjects = std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>;
+
 class GpuScene {
 public:
     GpuScene(gpu::Device& device, TextureTable& textures);
@@ -65,6 +68,8 @@ public:
     bool valid() const { return vertices_.valid() && indices_.valid(); }
 
     void setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);
+    // The objects that are not drawn (Hide); null = none. Takes effect at the next sync.
+    void setHidden(std::shared_ptr<const HiddenObjects> hidden);
 
     // Render thread: takes the pending snapshot and uploads what changed. `completed` = timeline value the GPU reached, `submitted` = the last
     // value submitted so far (ranges freed now may be read until then). True when work remains (the slice was full): call again next frame.
@@ -109,6 +114,9 @@ private:
 
     std::mutex mutex_;
     std::shared_ptr<const scene::SceneSnapshot> pending_;
+    std::shared_ptr<const HiddenObjects> pendingHidden_;
+    bool hiddenPending_ = false;
+    std::shared_ptr<const HiddenObjects> hidden_;
 
     std::shared_ptr<const scene::SceneSnapshot> current_;
     std::unordered_map<scene::ObjectKey, Object, scene::ObjectKey::Hash> objects_;

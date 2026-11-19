@@ -125,6 +125,16 @@ RenderThread::~RenderThread() {
     vkDestroySemaphore(device_.device(), renderTimeline_, nullptr);
 }
 
+void RenderThread::setHiddenObjects(std::shared_ptr<const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>> hidden) {
+    scene_->setHidden(std::move(hidden));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        workPending_ = true;
+        for (auto& kv : viewports_) kv.second->dirty = true;
+    }
+    wake_.notify_all();
+}
+
 void RenderThread::setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
     scene_->setSnapshot(std::move(snapshot));
     {
