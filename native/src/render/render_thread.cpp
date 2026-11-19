@@ -8,7 +8,7 @@
 #include "base/log.h"
 #include "base/trace.h"
 #include "gpu/swapchain.h"
-#include "render/triangle_pass.h"
+#include "render/scene_pass.h"
 
 namespace native::render {
 
@@ -52,6 +52,7 @@ struct RenderThread::Viewport {
     bool dirty = true;
     bool removing = false, removed = false;
     float clear[3] = {0.105f, 0.105f, 0.115f};
+    ViewState view;
     std::shared_ptr<std::promise<CapturedImage>> capture;     // pending capture request
     uint64_t frames = 0, recreations = 0;
     // Render thread only.
@@ -143,6 +144,17 @@ void RenderThread::markAllDirty() {
     wake_.notify_all();
 }
 
+void RenderThread::setView(ViewportId id, const ViewState& view) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = viewports_.find(id);
+        if (it == viewports_.end()) return;
+        it->second->view = view;
+        it->second->dirty = true;
+    }
+    wake_.notify_all();
+}
+
 void RenderThread::setClearColor(ViewportId id, float r, float g, float b) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -214,6 +226,7 @@ void RenderThread::loop() {
             std::shared_ptr<Viewport> v;
             uint32_t w, h;
             float clear[3];
+            ViewState view;
             std::shared_ptr<std::promise<CapturedImage>> capture;
         };
         std::vector<Work> work;
@@ -233,7 +246,7 @@ void RenderThread::loop() {
                     Viewport& v = *kv.second;
                     if (v.removing) { toRelease.push_back(kv.second); continue; }
                     if (!v.dirty && !v.capture) continue;
-                    work.push_back({kv.second, v.width, v.height, {v.clear[0], v.clear[1], v.clear[2]}, std::move(v.capture)});
+                    work.push_back({kv.second, v.width, v.height, {v.clear[0], v.clear[1], v.clear[2]}, v.view, std::move(v.capture)});
                     v.capture.reset();
                     v.dirty = false;
                 }
@@ -305,7 +318,7 @@ void RenderThread::loop() {
             ri.colorAttachmentCount = 1;
             ri.pColorAttachments = &att;
             vkCmdBeginRendering(f.cmd, &ri);
-            if (pass_) pass_->record(f.cmd, extent);
+            if (pass_) pass_->record(f.cmd, extent, w.view);
             vkCmdEndRendering(f.cmd);
 
             VmaAllocation stagingAlloc = nullptr;
@@ -458,7 +471,7 @@ bool RenderThread::ensureSwapchain(Viewport& v) {
         std::lock_guard<std::mutex> lock(mutex_);
         ++v.recreations;
     }
-    if (!pass_ || pass_->format() != v.swapchain->format()) pass_ = std::make_unique<TrianglePass>(device_, v.swapchain->format());
+    if (!pass_ || pass_->format() != v.swapchain->format()) pass_ = std::make_unique<ScenePass>(device_, v.swapchain->format());
     return pass_->valid();
 }
 

@@ -1,5 +1,6 @@
 # Shaders of the native editor. One per line:  name | source file | glslang --target-env | preprocessor defines (comma separated)
 # Compiled with glslangValidator at build time, validated with spirv-val, embedded as native::shaders::k_<name>_spv
 # (include "native_shaders/<name>.spv.h"). No SPIR-V is checked in: the Vulkan SDK is a prerequisite (02_BUILD_AND_TOOLING.md).
-viewport_triangle_vert|viewport_triangle.vert|vulkan1.3|
-viewport_triangle_frag|viewport_triangle.frag|vulkan1.3|
+viewport_grid_vert|viewport_grid.vert|vulkan1.3|
+viewport_box_vert|viewport_box.vert|vulkan1.3|
+viewport_scene_frag|viewport_scene.frag|vulkan1.3|

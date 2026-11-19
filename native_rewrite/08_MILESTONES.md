@@ -437,7 +437,7 @@ Each needs a measurement before and after in the commit message.
 | T1.1 | yes (20 tests: priority order, cancellation, throwing jobs, xxHash64 vectors, canonical JSON hash, log, trace JSON validity) | `native: T1.1` |
 | T1.2 | yes (every 05 §2 row on except graphics HIGH priority, which the driver does not list for this family; 0 validation errors; 3 create/destroy cycles leave 0 VMA allocations; Stats panel checked in a screenshot) | `native: T1.2` |
 | T1.3 | yes (11 `[gpu]` cases incl. pixel checks of clear colour + triangle, idle = 0 frames, dirty = exactly 1 frame, resize, 2 viewports, re-add on one window; Qt `native_gui_tests`: dock shows triangle, window resize, 3x float / re-dock, hide / show; 0 validation errors; app screenshot checked) | `native: T1.3` |
-| T1.4 | | |
+| T1.4 | yes (headless: 10 camera / settings / rig cases - fly, orbit, ortho maths ported from camera.ts, ray through a picked point, JSON round trips, Shell input rules; `[gpu]`: grid, axes and box land where the maths says in perspective and top views; `native_gui_tests`: ADS docks, float / re-dock, presets 1 / 2 / 4 keep cameras, real mouse / key / wheel events drive the cameras, layout and cameras survive a restart; 0 validation errors; screenshots of 1 / 2 / 4 viewports checked; the test triangle is replaced by a grid + axes + 1 m box scene) | `native: T1.4` |
 | T1.5 | | |
 | T1.6 | | |
 | T2.1 | | |

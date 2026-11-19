@@ -20,10 +20,11 @@
 #include <vector>
 
 #include "gpu/device.h"
+#include "render/view_state.h"
 
 namespace native::render {
 
-class TrianglePass;
+class ScenePass;
 
 using ViewportId = uint32_t;
 
@@ -49,6 +50,8 @@ public:
     void markDirty(ViewportId id);
     void markAllDirty();
     void setClearColor(ViewportId id, float r, float g, float b);
+    // The camera view the next frames use (view-projection, grid); marks the viewport dirty.
+    void setView(ViewportId id, const ViewState& view);
 
     // Renders the next frame of this viewport and returns its pixels. Blocks the caller (not the render thread's other
     // viewports) up to timeoutMs; returns an empty image on timeout or when the viewport has no surface area.
@@ -71,7 +74,7 @@ private:
     VkSemaphore renderTimeline_ = VK_NULL_HANDLE;
     std::atomic<uint64_t> nextTimelineValue_{0};
     std::atomic<uint64_t> totalFrames_{0};
-    std::unique_ptr<TrianglePass> pass_;     // render thread only
+    std::unique_ptr<ScenePass> pass_;     // render thread only
 
     mutable std::mutex mutex_;
     std::condition_variable wake_;        // new work for the render thread

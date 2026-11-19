@@ -65,10 +65,15 @@ path, so there is exactly one copy.
 ```
 mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
                      [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]
+                     [--layout <1|2|4>]
 ```
 - `--validation` enables `VK_LAYER_KHRONOS_validation` and counts its messages (tests and debugging).
 - `--screenshot <png>` (development aid, T0.4): after the first paint the main window is saved as a PNG and the program exits
-  with code 0. Used for the visual checks of every UI / viewport task (look at the PNG).
+  with code 0. Used for the visual checks of every UI / viewport task (look at the PNG). It neither reads nor writes the saved
+  layout, so a visual check is always the default layout (or the one named by `--layout`).
+- `--layout <1|2|4>` (T1.4) starts with that many viewports (perspective, top, front, side) instead of the saved layout. The
+  layout (preset, dock arrangement, window geometry, every viewport's settings and camera poses) is kept in
+  `%APPDATA%/MapEditor/MapEditorNative.ini` and restored at the next start.
 - `--automation-port` opens the local JSON socket (08_MILESTONES.md M9). Default: off.
 
 ## 7. Running tests

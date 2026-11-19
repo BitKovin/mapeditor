@@ -4,6 +4,7 @@
 // Spec: 01_ARCHITECTURE.md §2, 02_BUILD_AND_TOOLING.md §6.
 #include <QApplication>
 #include <QPainter>
+#include <QSettings>
 #include <QVulkanInstance>
 #include <QImage>
 #include <QMessageBox>
@@ -23,6 +24,8 @@
 #include "ui/main_window.h"
 
 int main(int argc, char** argv) {
+    QApplication::setOrganizationName(QStringLiteral("MapEditor"));
+    QApplication::setApplicationName(QStringLiteral("MapEditorNative"));
     QApplication qtApp(argc, argv);
 
     std::vector<std::string> args;
@@ -67,10 +70,16 @@ int main(int argc, char** argv) {
 
     // Declared after the render thread and the Qt instance: destroyed first, so every viewport releases its swapchain while
     // both still exist.
+    // The layout (preset, docks, geometry, cameras) lives in an ini file in the user's profile. A --screenshot run uses none, so a
+    // visual check is never influenced by (or changes) the person's layout.
+    const bool screenshotRun = !parsed.options.screenshotPath.empty();
+    QSettings layoutSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("MapEditor"), QStringLiteral("MapEditorNative"));
     native::ui::Services services;
     services.device = device.get();
     services.renderThread = &renderThread;
     services.vulkanInstance = &vulkanInstance;
+    services.settings = screenshotRun ? nullptr : &layoutSettings;
+    services.forceViewports = parsed.options.layoutViewports;
     native::ui::MainWindow window(services);
     window.setStatsRows(device->caps().rows());
     window.show();
@@ -78,18 +87,17 @@ int main(int argc, char** argv) {
     int shotResult = 0;
     if (!parsed.options.screenshotPath.empty()) {
         // Visual-check mode: wait for the first paint, save the window, quit.
-        QTimer::singleShot(300, &qtApp, [&] {
+        QTimer::singleShot(600, &qtApp, [&] {
             QImage img = window.grab().toImage();
-            // QWidget::grab() does not include native child windows: paste the viewport's own frame over its container.
-            if (window.viewport() && window.viewportContainer()) {
-                const native::render::CapturedImage frame = window.viewport()->capture();
-                if (frame.ok()) {
-                    const QImage vp(frame.rgba.data(), static_cast<int>(frame.width), static_cast<int>(frame.height),
-                                    static_cast<qsizetype>(frame.width) * 4, QImage::Format_RGBA8888);
-                    QPainter p(&img);
-                    const QPoint topLeft = window.viewportContainer()->mapTo(&window, QPoint(0, 0));
-                    p.drawImage(QRect(topLeft, window.viewportContainer()->size()), vp);
-                }
+            // QWidget::grab() does not include native child windows: paste every viewport's own frame over its container.
+            for (const native::ui::ViewportPanel& panel : window.viewports()) {
+                const native::render::CapturedImage frame = panel.window->capture();
+                if (!frame.ok()) continue;
+                const QImage vp(frame.rgba.data(), static_cast<int>(frame.width), static_cast<int>(frame.height),
+                                static_cast<qsizetype>(frame.width) * 4, QImage::Format_RGBA8888);
+                QPainter p(&img);
+                const QPoint topLeft = panel.container->mapTo(&window, QPoint(0, 0));
+                p.drawImage(QRect(topLeft, panel.container->size()), vp);
             }
             if (img.isNull() || !img.save(QString::fromStdString(parsed.options.screenshotPath))) shotResult = 4;
             QApplication::quit();

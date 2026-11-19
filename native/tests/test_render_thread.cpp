@@ -1,6 +1,6 @@
 // T1.3: render thread, swapchain, redraw-on-dirty policy, resize, capture. Uses a plain Win32 window as the surface so the
 // tests need no Qt platform plugin; the Qt side (ViewportWindow in a dock) is covered by native_gui_tests.
-// Pixels are checked: the clear colour and the test triangle really arrive on screen.
+// Pixels are checked: the clear colour, the grid and the test box really arrive on screen through the viewport's view.
 #include <doctest.h>
 
 #include <chrono>
@@ -17,6 +17,7 @@
 #include <windows.h>
 
 #include "gpu/device.h"
+#include "render/camera_rig.h"
 #include "render/render_thread.h"
 
 using namespace native;
@@ -93,7 +94,14 @@ void sleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)
 
 } // namespace
 
-TEST_CASE("a viewport shows the clear colour and the test triangle" * doctest::test_suite("gpu")) {
+// The view the tests look through: a fly camera 6 m in front of the 1 m test box, almost level.
+render::ViewState frontView(uint32_t w, uint32_t h) {
+    render::CameraRig rig;
+    rig.fly().lookAt({0, 1.5, 6}, {0, 0.8, 0});
+    return rig.viewState(w, h);
+}
+
+TEST_CASE("a viewport shows the clear colour, the grid and the box through its view" * doctest::test_suite("gpu")) {
     GpuFixture gpuFx;
     if (!gpuFx.device) return;
     {
@@ -102,23 +110,69 @@ TEST_CASE("a viewport shows the clear colour and the test triangle" * doctest::t
         {
             render::RenderThread rt(*gpuFx.device);
             const auto id = rt.addViewport(surface, 320, 240);
+            rt.setView(id, frontView(320, 240));
             const auto img = rt.capture(id);
             REQUIRE(img.ok());
             CHECK(img.width == 320);
             CHECK(img.height == 240);
-            // Corner: the clear colour (0.105, 0.105, 0.115) in 8 bit.
+            // Corner: the clear colour (0.105, 0.105, 0.115) in 8 bit (sky above the horizon).
             CHECK(closeTo(pixel(img, 4, 4), {27, 27, 29}, 3));
-            // Centroid of the triangle: the average of its three vertex colours.
-            CHECK(closeTo(pixel(img, 160, 144), {128, 136, 119}, 14));
-            // Outside the triangle, left of its lower-left corner.
-            CHECK(closeTo(pixel(img, 20, 230), {27, 27, 29}, 3));
-            // A pixel near each corner is dominated by that vertex's colour.
-            const Rgb top = pixel(img, 160, 100);       // near (0, -0.6): red
-            CHECK(top.r > top.g + 40);
-            const Rgb bottomRight = pixel(img, 250, 186);  // near (0.6, 0.6): green
-            CHECK(bottomRight.g > bottomRight.r + 40);
-            const Rgb bottomLeft = pixel(img, 70, 186);    // near (-0.6, 0.6): blue
-            CHECK(bottomLeft.b > bottomLeft.r + 40);
+            // Centre: the box's +Z face, lit: (0.423, 0.423, 0.558). The inside of the far face would be darker (77, 77, 100):
+            // that would mean back-face culling is the wrong way round.
+            CHECK(closeTo(pixel(img, 160, 120), {108, 108, 142}, 8));
+            // Below the horizon the grid draws on the ground: some pixel in the lower part is a grid grey, not clear.
+            bool grid = false;
+            for (uint32_t y = 200; y < 240 && !grid; ++y)
+                for (uint32_t x = 0; x < 320; ++x)
+                    if (pixel(img, x, y).r > 60) { grid = true; break; }
+            CHECK(grid);
+            rt.removeViewport(id);
+        }
+        vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);
+    }
+    CHECK(gpuFx.device->validationErrors() == 0);
+}
+
+TEST_CASE("an orthographic top view puts the grid, the axes and the box where the maths says" * doctest::test_suite("gpu")) {
+    GpuFixture gpuFx;
+    if (!gpuFx.device) return;
+    {
+        TestWindow window(320, 240);
+        VkSurfaceKHR surface = gpuFx.makeSurface(window.hwnd());
+        {
+            render::RenderThread rt(*gpuFx.device);
+            const auto id = rt.addViewport(surface, 320, 240);
+            render::ViewportSettings st;
+            st.cameraMode = render::CameraMode::Top;
+            render::CameraRig rig(st);                       // 16 m view height over 240 px = 15 px per metre
+            rt.setView(id, rig.viewState(320, 240));
+            const auto img = rt.capture(id);
+            REQUIRE(img.ok());
+            // The box seen from above: its +Y face (0.496, 0.716, 0.496), 7.5 px around the centre.
+            CHECK(closeTo(pixel(img, 156, 114), {126, 183, 126}, 8));
+            // Grid spacing doubled to 1 m (0.5 m would be 7.5 px). The X axis (red) runs along row 120, 3 m right of centre.
+            bool red = false, blue = false, minor = false;
+            for (uint32_t y = 118; y <= 122; ++y) {
+                const Rgb p = pixel(img, 160 + 45, y);
+                if (p.r > p.g + 60 && p.r > p.b + 60) red = true;
+            }
+            for (uint32_t x = 158; x <= 162; ++x) {           // the Z axis (blue) runs down column 160; +Z is down in the top view
+                const Rgb p = pixel(img, x, 120 + 45);
+                if (p.b > p.r + 60 && p.b > p.g + 30) blue = true;
+            }
+            for (uint32_t x = 233; x <= 237; ++x)             // a minor line 5 m right of centre
+                if (pixel(img, x, 40).r > 60) minor = true;
+            CHECK(red);
+            CHECK(blue);
+            CHECK(minor);
+            CHECK(closeTo(pixel(img, 4, 4), {27, 27, 29}, 40));   // far corner: grid grey at most, never the box
+            // Moving the camera moves the picture: pan the view 4 m to the right, the box leaves the centre.
+            rig.ortho(render::OrthoAxis::Top).center = {4, 0, 0};
+            rt.setView(id, rig.viewState(320, 240));
+            const auto moved = rt.capture(id);
+            REQUIRE(moved.ok());
+            CHECK_FALSE(closeTo(pixel(moved, 156, 114), {126, 183, 126}, 30));
+            CHECK(closeTo(pixel(moved, 156 - 60, 114), {126, 183, 126}, 8));   // the box is now 4 m = 60 px to the left
             rt.removeViewport(id);
         }
         vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);
@@ -178,11 +232,12 @@ TEST_CASE("resizing recreates the swapchain and the frame has the new size" * do
 
             window.resizeClient(480, 360);
             rt.resizeViewport(id, 480, 360);
+            rt.setView(id, frontView(480, 360));
             img = rt.capture(id);
             REQUIRE(img.ok());
             CHECK(img.width == 480);
             CHECK(img.height == 360);
-            CHECK(closeTo(pixel(img, 240, 216), {128, 136, 119}, 14));   // the triangle scales with the viewport
+            CHECK(closeTo(pixel(img, 240, 180), {108, 108, 142}, 8));   // the box stays centred when the viewport is resized
             CHECK(rt.swapchainRecreations(id) > created);
 
             window.resizeClient(200, 150);

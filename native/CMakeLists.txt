@@ -24,6 +24,13 @@ endif()
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network Test)
 message(STATUS "Qt ${Qt6_VERSION} at ${Qt6_DIR}")
 
+# ---- Qt Advanced Docking System (docking, floating windows, saved layouts; LGPL, shared library) ----------------------------
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BUILD_STATIC OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/qtads EXCLUDE_FROM_ALL)
+# ADS puts its DLL under <build>/x64/bin; the exe needs it next to itself.
+set_target_properties(qtadvanceddocking-qt6 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
 # ---- the Core (same process, same memory) -------------------------------------------------------------------------------
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../core" "${CMAKE_BINARY_DIR}/core" EXCLUDE_FROM_ALL)
 
@@ -114,14 +121,15 @@ target_compile_definitions(native_vk PUBLIC VK_NO_PROTOTYPES VK_USE_PLATFORM_WIN
 target_link_libraries(native_vk PUBLIC vendored)   # the Core's copy of the Vulkan headers (one copy, T0.2)
 native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/swapchain.cpp DEPENDS native_base native_vk)
 native_module(light  SOURCES src/light/module_info.cpp  DEPENDS native_scene native_gpu)
-native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/triangle_pass.cpp
+native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp
                      src/render/viewport_window.cpp src/render/viewport_window.h
+                     src/render/camera.cpp src/render/camera_rig.cpp src/render/viewport_settings.cpp
                      DEPENDS native_scene native_gpu Qt6::Gui)
 add_dependencies(native_render native_shaders)
 target_include_directories(native_render PRIVATE "${NATIVE_SHADER_GEN_DIR}")
 native_module(tools  SOURCES src/tools/module_info.cpp  DEPENDS native_render native_light)
 native_module(ui     SOURCES src/ui/module_info.cpp src/ui/main_window.cpp src/ui/main_window.h src/ui/stats_panel.cpp src/ui/stats_panel.h
-                     DEPENDS native_tools Qt6::Widgets)
+                     DEPENDS native_tools Qt6::Widgets ads::qtadvanceddocking)
 
 # ---- the application ----------------------------------------------------------------------------------------------------
 add_executable(mapeditor_native WIN32 src/app/main.cpp src/app/app_options.cpp src/app/app_options.h)
@@ -130,7 +138,7 @@ native_warnings(mapeditor_native)
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src)
 target_link_libraries(native_tests PRIVATE native_ui Qt6::Widgets Qt6::Test)
 native_warnings(native_tests)

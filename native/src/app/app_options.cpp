@@ -39,6 +39,15 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
             }
             o.automationPort = static_cast<int>(port);
         }
+        else if (a == "--layout") {
+            std::string v;
+            if (!value(v)) return r;
+            if (v != "1" && v != "2" && v != "4") {
+                r.error = "invalid layout (use 1, 2 or 4): " + v;
+                return r;
+            }
+            o.layoutViewports = std::atoi(v.c_str());
+        }
         else if (a == "--no-lighting") o.noLighting = true;
         else if (a == "--validation") o.validation = true;
         else if (a == "--help" || a == "-h") o.help = true;
