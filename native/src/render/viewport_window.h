@@ -45,6 +45,8 @@ public:
     void viewChanged();
     // The view the next frame uses (matrices for picking). Positions of input events are in the logical pixels of size(): ndc = p / size * 2 - 1.
     ViewState currentView();
+    // The last pointer position over this window (logical pixels), also without a button down.
+    QPointF lastMousePos() const { return lastPos_; }
     // The box-select rectangle in logical window pixels; `on` false hides it.
     void setRubberBand(bool on, QPointF a = QPointF(), QPointF b = QPointF());
     void setCameraMode(CameraMode mode);

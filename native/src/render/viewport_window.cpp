@@ -172,7 +172,10 @@ void ViewportWindow::mousePressEvent(QMouseEvent* e) {
 
 void ViewportWindow::mouseMoveEvent(QMouseEvent* e) {
     if (e->buttons() == Qt::NoButton && lockedButtons_ == 0) {
+        // a plain move (no button): the hook sees it too (hover highlights, modal operators follow the pointer); no action holds it
+        const QPointF hover = e->position() - lastPos_;
         lastPos_ = e->position();
+        if (hook_ && hook_(e, hover)) e->accept();
         return;
     }
     QPointF delta;

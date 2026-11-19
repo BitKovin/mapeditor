@@ -16,6 +16,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -24,6 +25,9 @@
 #include "app/actions/keymap.h"
 #include "app/actions/registry.h"
 #include "app/actions/router.h"
+#include "render/math3d.h"
+#include "tools/gizmo.h"
+#include "tools/modal.h"
 #include "ui/app_actions.h"
 
 class QSettings;
@@ -64,8 +68,12 @@ struct TextItem;
 class ViewportWindow;
 } // namespace native::render
 
+namespace native::doc { struct SelRef; }
+namespace native::render { struct LineVertex; enum class GizmoMode; }
+
 namespace native::ui {
 
+struct TransformSession;
 class StatsPanel;
 class RegistryMenus;
 
@@ -89,6 +97,7 @@ struct ViewportPanel {
     QWidget* container = nullptr;          // hosts the viewport's native window
     render::ViewportWindow* window = nullptr;   // owned by container
     bool hasSizeLabels = false;                 // the render thread holds size labels for this viewport
+    bool hasGizmo = false;                      // ... and gizmo lines
 };
 
 class MainWindow : public QMainWindow {
@@ -208,6 +217,25 @@ public:
     std::vector<render::TextItem> sizeLabelsFor(size_t panelIndex);
     void refreshSizeLabels(size_t panelIndex);
 
+    // ---- transform tools (T4.1) ----
+    // G / R / S on the selection in `viewport` (the pointer then moves the selection; typed digits, X / Y / Z constrain; confirm / cancel end it): one undo step.
+    // False when nothing transformable is selected or one is running.
+    bool startTransform(render::ViewportWindow* viewport, tools::ModalKind kind);
+    bool transforming() const { return transform_ != nullptr; }
+    bool canStartTransform() const;
+    void confirmTransform() { endTransform(true); }
+    void cancelTransform() { endTransform(false); }
+    void toggleTransformAxis(int axis);
+    // The entity whose origin is selected (clicked square of a brush entity): the move gizmo then moves the origin alone. Empty = none.
+    std::string originSelected() const { return originSel_; }
+    void leaveOrigin();
+    // The gizmo of a viewport as lines (what the render thread draws); empty = none.
+    std::vector<render::LineVertex> gizmoLinesFor(size_t panelIndex);
+    void refreshGizmos();
+    void refreshGizmo(size_t panelIndex);
+    // Press on a gizmo handle / the origin square of `viewport` at `p` (what the left button does before the pick); false when nothing was hit.
+    bool beginGizmoDrag(render::ViewportWindow* viewport, QPointF p);
+
 signals:
     // The current document changed (opened, saved under a new path, replaced): panels refresh their title and contents.
     void documentChanged();
@@ -264,6 +292,25 @@ private:
     void submitScene(const doc::ChangeSet& changes);
     void updateSky();
     void onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);   // UI thread: the picker and the outline follow the builder
+    // transform tools (main_window_transform.cpp)
+    struct GizmoTarget {
+        bool valid = false;
+        render::Vec3 pivot;
+        double length = 1;
+        render::GizmoMode mode{};
+        std::string originEntity;
+    };
+    std::vector<doc::SelRef> transformSelection() const;
+    size_t panelIndexOf(const render::ViewportWindow* vp) const;
+    GizmoTarget gizmoTarget(render::ViewportWindow* vp);
+    tools::Axis gizmoAxisAt(render::ViewportWindow* vp, const GizmoTarget& g, QPointF p);
+    bool originHit(render::ViewportWindow* vp, QPointF p);
+    std::optional<render::Vec3> originHandle() const;
+    void updateTransform();
+    void showTransformStatus();
+    void endTransform(bool confirm);
+    bool transformKey(const QKeyEvent& e, bool press);
+    bool transformMouse(size_t panelIndex, const actions::InputEvent& e);
     // Like runJob, but invisible to busy(): housekeeping that must not disable the file actions.
     void runBackground(std::function<void()> work, std::function<void()> done);
 
@@ -296,6 +343,12 @@ private:
         QPointF start, current;
         bool dragging = false;
     } pickDrag_;
+    std::unique_ptr<TransformSession> transform_;
+    std::string originSel_;
+    struct GizmoHover {
+        size_t panel = 0;
+        int axis = -1;
+    } gizmoHover_;
     std::shared_ptr<core::texplan::TexEnvironment> texEnv_;
     double glyphScale_ = 0;                                  // the pixel ratio the glyph atlas was made for
     std::shared_ptr<core::EntityDefinitions> entityDefs_;   // the game profile's entity definitions (class boxes, colours, keys)

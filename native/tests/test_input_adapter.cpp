@@ -32,7 +32,7 @@ std::string readAsset(const char* relative) {
 
 // Contexts the application sets (see MainWindow::setContextsFor / viewportContexts): the only names a preset may use.
 const std::set<std::string> kKnownContexts = {"global",         "window:main",   "area:viewport",   "view:perspective", "view:fly",
-                                              "view:orbit",     "view:ortho",    "hold:camera.fly"};
+                                              "view:orbit",     "view:ortho",    "hold:camera.fly",  "modal:transform"};
 
 } // namespace
 

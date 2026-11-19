@@ -78,6 +78,8 @@ public:
     void setGlyphAtlas(std::shared_ptr<const GlyphAtlas> atlas);
     // The size labels of the selection in a viewport (world anchors; the UI thread works out the placement from the camera).
     void setSizeLabels(ViewportId id, std::shared_ptr<const std::vector<TextItem>> labels);
+    // The transform gizmo of a viewport (world space line list, two vertices a line, drawn over everything; null = none).
+    void setGizmoLines(ViewportId id, std::shared_ptr<const std::vector<LineVertex>> lines);
     // The skybox ("env/<name> cube") drawn behind the scene in perspective views; "" = none.
     void setSkyTexture(const std::string& name);
     // What the scene holds on the GPU and how the textures stand (refreshed every loop iteration).

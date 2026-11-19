@@ -30,6 +30,7 @@ struct FrameOverlays {
     LineList fills;         // translucent entity boxes: LineVertex triangles, depth tested without writing
     LineList labels;        // entity class names: LabelVertex triangles, depth tested at the anchor
     LineList sizeLabels;    // selection sizes: LabelVertex triangles, over everything
+    LineList gizmo;         // the transform gizmo: world lines over everything
     LineList screen;        // the rubber band: lines in clip space
     uint32_t atlasTexture = 0;   // the glyph atlas in the texture table
     float extent[2] = {1, 1};    // the viewport in pixels
@@ -42,7 +43,7 @@ public:
     MeshPass(const MeshPass&) = delete;
     MeshPass& operator=(const MeshPass&) = delete;
 
-    bool valid() const { return opaque_ != VK_NULL_HANDLE && translucent_ != VK_NULL_HANDLE && volume_ != VK_NULL_HANDLE && skyBg_ != VK_NULL_HANDLE && worldLines_ != VK_NULL_HANDLE && screenLines_ != VK_NULL_HANDLE && plainLines_ != VK_NULL_HANDLE && fills_ != VK_NULL_HANDLE && labels_ != VK_NULL_HANDLE && labelsOver_ != VK_NULL_HANDLE; }
+    bool valid() const { return opaque_ != VK_NULL_HANDLE && translucent_ != VK_NULL_HANDLE && volume_ != VK_NULL_HANDLE && skyBg_ != VK_NULL_HANDLE && worldLines_ != VK_NULL_HANDLE && screenLines_ != VK_NULL_HANDLE && plainLines_ != VK_NULL_HANDLE && fills_ != VK_NULL_HANDLE && topLines_ != VK_NULL_HANDLE && labels_ != VK_NULL_HANDLE && labelsOver_ != VK_NULL_HANDLE; }
     VkFormat colorFormat() const { return colorFormat_; }
     VkFormat depthFormat() const { return depthFormat_; }
 
@@ -55,7 +56,7 @@ private:
     VkFormat colorFormat_, depthFormat_;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkPipeline opaque_ = VK_NULL_HANDLE, translucent_ = VK_NULL_HANDLE, volume_ = VK_NULL_HANDLE, skyBg_ = VK_NULL_HANDLE;
-    VkPipeline worldLines_ = VK_NULL_HANDLE, screenLines_ = VK_NULL_HANDLE, plainLines_ = VK_NULL_HANDLE, fills_ = VK_NULL_HANDLE;
+    VkPipeline worldLines_ = VK_NULL_HANDLE, screenLines_ = VK_NULL_HANDLE, plainLines_ = VK_NULL_HANDLE, fills_ = VK_NULL_HANDLE, topLines_ = VK_NULL_HANDLE;
     VkPipeline labels_ = VK_NULL_HANDLE, labelsOver_ = VK_NULL_HANDLE;
 };
 

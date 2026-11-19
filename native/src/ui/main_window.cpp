@@ -44,6 +44,7 @@
 #include "ui/input_adapter.h"
 #include "ui/registry_menus.h"
 #include "ui/stats_panel.h"
+#include "ui/transform_session.h"
 
 namespace native::ui {
 
@@ -144,7 +145,10 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     prefabTimer_.start();
     selection_ = std::make_unique<doc::Selection>();
     selection_->setListener([this] { emit selectionChanged(); });
-    QObject::connect(this, &MainWindow::selectionChanged, this, [this] { refreshOutline(); });
+    QObject::connect(this, &MainWindow::selectionChanged, this, [this] {
+        if (!transform_ && !originSel_.empty()) originSel_.clear();   // the origin editing ends with any selection change
+        refreshOutline();
+    });
     history_ = std::make_unique<doc::History>();
     history_->setListener([this](const std::shared_ptr<const doc::DocumentVersion>& current, const doc::ChangeSet& changes, doc::ChangeCause cause) {
         document_ = current;
@@ -158,6 +162,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         updatePrefabs();
         submitScene(changes);
         updateSky();
+        if (!transform_) refreshGizmos();
     });
     completedTimer_.setInterval(25);
     QObject::connect(&completedTimer_, &QTimer::timeout, this, [this] { drainCompleted(); });
@@ -230,6 +235,7 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
         const size_t index = panels_.size() - 1;
         window->setChangedCallback([this, index] {
             refreshSizeLabels(index);
+            refreshGizmo(index);
             updateDockTitle(index);
             scheduleSave();
         });
@@ -348,7 +354,9 @@ render::ViewportWindow* MainWindow::viewportUnderCursor() const {
 
 void MainWindow::setContextsFor(render::ViewportWindow* vp) {
     std::vector<std::string> contexts = {"window:main"};
-    if (vp) {
+    if (transform_ && transform_->source == TransformSession::Source::Modal) {
+        contexts.push_back("modal:transform");   // a running modal operator owns the keys and the mouse buttons: no viewport context
+    } else if (vp) {
         const std::vector<std::string> v = viewportContexts(*vp);
         contexts.insert(contexts.end(), v.begin(), v.end());
     }
@@ -357,6 +365,7 @@ void MainWindow::setContextsFor(render::ViewportWindow* vp) {
 
 bool MainWindow::routeKey(const QKeyEvent& e, bool press) {
     // A hold in progress keeps the viewport it started in; otherwise the viewport under the pointer gives the contexts.
+    if (transformKey(e, press)) return true;
     render::ViewportWindow* vp = router_.holding() && holdViewport_ ? holdViewport_ : viewportUnderCursor();
     setContextsFor(vp);
     UiEnv ui{this, vp ? vp : activeViewport()};
@@ -378,6 +387,7 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
         case QEvent::MouseMove: ev = fromMouseEvent(*static_cast<QMouseEvent*>(e), delta); break;
         default: return false;
     }
+    if (transformMouse(index, ev)) return true;
     setContextsFor(vp);
     UiEnv ui{this, vp};
     actions::ActionEnv env{&ui};
@@ -424,6 +434,7 @@ void MainWindow::refreshOverlays() {
     services_.renderThread->setEntityOverlay(
         std::make_shared<const render::EntityOverlay>(render::buildEntityOverlay(*picker_->snapshot(), selection_->items(), entityDefs_.get(), opt)));
     for (size_t i = 0; i < panels_.size(); ++i) refreshSizeLabels(i);
+    refreshGizmos();
 }
 
 std::vector<render::TextItem> MainWindow::sizeLabelsFor(size_t index) {

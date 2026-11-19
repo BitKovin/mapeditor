@@ -181,6 +181,9 @@ MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat dep
     PipelineSpec plain = world;
     plain.depthBias = false;
     plainLines_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, ovs, ofs, plain);
+    PipelineSpec top = plain;
+    top.depthTest = false;
+    topLines_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, ovs, ofs, top);
     PipelineSpec fillSpec = plain;
     fillSpec.triangles = true;
     fills_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, ovs, ofs, fillSpec);
@@ -215,7 +218,7 @@ MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat dep
 
 MeshPass::~MeshPass() {
     const VkDevice dev = device_.device();
-    for (VkPipeline p : {opaque_, translucent_, volume_, skyBg_, worldLines_, screenLines_, plainLines_, fills_, labels_, labelsOver_})
+    for (VkPipeline p : {opaque_, translucent_, volume_, skyBg_, worldLines_, screenLines_, plainLines_, topLines_, fills_, labels_, labelsOver_})
         if (p) vkDestroyPipeline(dev, p, nullptr);
     if (layout_) vkDestroyPipelineLayout(dev, layout_, nullptr);
 }
@@ -271,6 +274,7 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
         lines(worldLines_, ov.selection, view.viewProj);
         text(labels_, ov.labels);
         text(labelsOver_, ov.sizeLabels);
+        lines(topLines_, ov.gizmo, view.viewProj);
         lines(screenLines_, ov.screen, mat4Identity());
     };
     if (lists.solid.count == 0 && lists.volume.count == 0) {

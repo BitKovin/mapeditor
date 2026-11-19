@@ -131,6 +131,12 @@ turned box). Deviations: the overlay options (origins, directions, links, gizmos
 change only (no per-viewport lists yet, no settings UI yet); icons and `misc_model` boxes are not drawn (T5); a visual check was made on demo.map.json plus a map
 with a light, a spot light and an info entity in all four views (labels, boxes, spot cone, ortho grid), not side by side with the Shell.
 
+**As built (T4.1).** The gizmo is a list of `LineVertex` (`tools/gizmo_overlay`: move = axis shaft + pyramid head, rotate = three rings of 48 segments, scale = shaft +
+cube; x red, y green, z blue, the hovered / dragged handle yellow; the origin square of a brush entity amber, white while selected) that the main window builds per
+viewport (constant apparent size: `gizmoLength(distance)`) and gives to `RenderThread::setGizmoLines`; `mesh_pass` draws it in the `topLines_` pipeline (no depth test,
+after the scene, before the screen-space lines) so handles are never hidden by the level. Plain mouse moves (no button) now reach the input hook (hover on handles, the
+modal operators follow the pointer).
+
 ## 7. Frame timing
 
 - Target: the display rate with up to 4 viewports on lvl2 (09_TESTING_AND_PERF.md §3).

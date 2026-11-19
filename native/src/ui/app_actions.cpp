@@ -163,6 +163,122 @@ void flyKeyAction(actions::Registry& r, const char* id, const char* label, rende
     add(r, std::move(d));
 }
 
+// The transform tools (T4.1): G / R / S start a modal operator in the viewport under the pointer; confirm, cancel and the axis keys act while it runs
+// (context modal:transform); the gizmo mode of the active viewport; Esc leaves the origin editing.
+void transformActions(actions::Registry& r) {
+    const auto windowOf = [](const ActionEnv& env) { auto* u = env.as<UiEnv>(); return u ? u->window : nullptr; };
+    struct Start {
+        const char* id;
+        const char* label;
+        const char* description;
+        tools::ModalKind kind;
+    };
+    const Start starts[] = {{"transform.grab", "Move (grab)", "Moves the selection with the pointer; X / Y / Z constrain, typed digits give an exact distance.", tools::ModalKind::Grab},
+                            {"transform.rotate", "Rotate", "Rotates the selection about its pivot; X / Y / Z pick the axis, typed digits give degrees.", tools::ModalKind::Rotate},
+                            {"transform.scale", "Scale", "Scales the selection about its pivot; X / Y / Z limit it to an axis, typed digits give the factor.", tools::ModalKind::Scale}};
+    for (const Start& st : starts) {
+        ActionDef d;
+        d.id = st.id;
+        d.label = st.label;
+        d.category = "Transform";
+        d.description = st.description;
+        d.menu = "&Edit/&Transform";
+        d.contexts = {"area:viewport"};
+        const tools::ModalKind kind = st.kind;
+        d.enabled = [windowOf](const ActionEnv& env, const json&) {
+            auto* w = windowOf(env);
+            return w && viewportOf(env) && w->canStartTransform();
+        };
+        d.run = [windowOf, kind](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) w->startTransform(viewportOf(env), kind);
+        };
+        add(r, std::move(d));
+    }
+    const auto running = [windowOf](const ActionEnv& env, const json&) {
+        auto* w = windowOf(env);
+        return w && w->transforming();
+    };
+    {
+        ActionDef d;
+        d.id = "transform.confirm";
+        d.label = "Confirm transform";
+        d.category = "Transform";
+        d.kind = ActionKind::Modal;
+        d.contexts = {"modal:transform"};
+        d.enabled = running;
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->confirmTransform(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "transform.cancel";
+        d.label = "Cancel transform";
+        d.category = "Transform";
+        d.kind = ActionKind::Modal;
+        d.contexts = {"modal:transform"};
+        d.enabled = running;
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->cancelTransform(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "transform.axis";
+        d.label = "Constrain to axis";
+        d.category = "Transform";
+        d.description = "Limits the running transform to the world axis in the binding's parameter (0 = X, 1 = Y, 2 = Z); again lifts the limit.";
+        d.kind = ActionKind::Modal;
+        d.contexts = {"modal:transform"};
+        d.params = json{{"axis", 0}};
+        d.enabled = running;
+        d.run = [windowOf](ActionEnv& env, const Invocation& inv) {
+            if (auto* w = windowOf(env)) w->toggleTransformAxis(inv.params.value("axis", 0));
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "gizmo.mode";
+        d.label = "Gizmo";
+        d.category = "Transform";
+        d.description = "The transform gizmo of the active viewport: move arrows, rotation rings or scale handles.";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&View/&Gizmo (active viewport)";
+        d.params = json{{"mode", "move"}};
+        d.variants = {{"&Move", {{"mode", "move"}}}, {"&Rotate", {{"mode", "rotate"}}}, {"&Scale", {{"mode", "scale"}}}};
+        d.enabled = haveViewport;
+        const auto modeOf = [](const json& p) {
+            const std::string m = p.value("mode", std::string("move"));
+            return m == "rotate" ? render::GizmoMode::Rotate : (m == "scale" ? render::GizmoMode::Scale : render::GizmoMode::Move);
+        };
+        d.checked = [modeOf](const ActionEnv& env, const json& p) {
+            const auto* vp = viewportOf(env);
+            return vp && vp->rig().settings().gizmo == modeOf(p);
+        };
+        d.run = [modeOf](ActionEnv& env, const Invocation& inv) {
+            auto* vp = viewportOf(env);
+            if (!vp) return;
+            render::ViewportSettings s = vp->rig().settings();
+            s.gizmo = modeOf(inv.params);
+            vp->rig().applySettings(s);
+            vp->viewChanged();
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "transform.leave_origin";
+        d.label = "Leave origin editing";
+        d.category = "Transform";
+        d.contexts = {"area:viewport"};
+        d.enabled = [windowOf](const ActionEnv& env, const json&) {
+            auto* w = windowOf(env);
+            return w && !w->originSelected().empty();
+        };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->leaveOrigin(); };
+        add(r, std::move(d));
+    }
+}
+
 } // namespace
 
 std::vector<std::string> viewportContexts(const render::ViewportWindow& viewport) {
@@ -355,6 +471,7 @@ void registerAppActions(actions::Registry& r) {
     dragAction(r, "camera.pan2d", "Pan (orthographic view)", "view:ortho", false);
     dragAction(r, "camera.pan", "Pan", "area:viewport", true);
     selectAction(r);
+    transformActions(r);
     gridActions(r);
     {
         ActionDef d;

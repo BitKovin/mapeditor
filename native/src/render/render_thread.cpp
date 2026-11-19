@@ -60,6 +60,7 @@ struct RenderThread::Viewport {
     bool band = false;
     float bandRect[4] = {0, 0, 0, 0};
     std::shared_ptr<const std::vector<TextItem>> sizeLabels;
+    std::shared_ptr<const std::vector<LineVertex>> gizmo;
     std::shared_ptr<std::promise<CapturedImage>> capture;     // pending capture request
     uint64_t frames = 0, recreations = 0;
     // Render thread only.
@@ -268,6 +269,17 @@ void RenderThread::setSizeLabels(ViewportId id, std::shared_ptr<const std::vecto
     wake_.notify_all();
 }
 
+void RenderThread::setGizmoLines(ViewportId id, std::shared_ptr<const std::vector<LineVertex>> lines) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = viewports_.find(id);
+        if (it == viewports_.end()) return;
+        it->second->gizmo = std::move(lines);
+        it->second->dirty = true;
+    }
+    wake_.notify_all();
+}
+
 void RenderThread::setRubberBand(ViewportId id, bool active, float x0, float y0, float x1, float y1) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -363,6 +375,7 @@ void RenderThread::loop() {
             bool band = false;
             float bandRect[4] = {0, 0, 0, 0};
             std::shared_ptr<const std::vector<TextItem>> sizeLabels;
+            std::shared_ptr<const std::vector<LineVertex>> gizmo;
         };
         std::vector<Work> work;
         bool doUpload = false;
@@ -391,7 +404,7 @@ void RenderThread::loop() {
                     if (v.removing) { toRelease.push_back(kv.second); continue; }
                     if (!v.dirty && !v.capture && !doUpload) continue;
                     work.push_back({kv.second, v.width, v.height, {v.clear[0], v.clear[1], v.clear[2]}, v.view, std::move(v.capture), selectionLines_, v.band,
-                                    {v.bandRect[0], v.bandRect[1], v.bandRect[2], v.bandRect[3]}, v.sizeLabels});
+                                    {v.bandRect[0], v.bandRect[1], v.bandRect[2], v.bandRect[3]}, v.sizeLabels, v.gizmo});
                     v.capture.reset();
                     v.dirty = false;
                 }
@@ -565,6 +578,7 @@ void RenderThread::loop() {
             FrameOverlays ov;
             ov.selection = selLines;
             ov.screen = bandLines;
+            if (w.gizmo && !w.gizmo->empty()) ov.gizmo = uploadLines(w.gizmo->data(), w.gizmo->size() & ~size_t(1));
             if (overlay) {
                 ov.entityLines = uploadLines(overlay->lines.data(), overlay->lines.size() & ~size_t(1));
                 ov.fills = uploadLines(overlay->fills.data(), overlay->fills.size() / 3 * 3);
