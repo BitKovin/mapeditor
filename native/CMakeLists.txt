@@ -49,11 +49,16 @@ native_module(base   SOURCES src/base/module_info.cpp src/base/hash.cpp src/base
                      DEPENDS vendored Threads::Threads)
 native_module(doc    SOURCES src/doc/module_info.cpp    DEPENDS native_base core_lib)
 native_module(scene  SOURCES src/scene/module_info.cpp  DEPENDS native_doc)
-native_module(gpu    SOURCES src/gpu/module_info.cpp    DEPENDS native_base)
+# volk (loader) and VMA (allocator) are third-party code: compiled without the project's warnings-as-errors.
+add_library(native_vk STATIC third_party/volk/volk.c src/gpu/vma_impl.cpp)
+target_include_directories(native_vk SYSTEM PUBLIC third_party/volk third_party/vma)
+target_compile_definitions(native_vk PUBLIC VK_NO_PROTOTYPES VK_USE_PLATFORM_WIN32_KHR)
+target_link_libraries(native_vk PUBLIC vendored)   # the Core's copy of the Vulkan headers (one copy, T0.2)
+native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp DEPENDS native_base native_vk)
 native_module(light  SOURCES src/light/module_info.cpp  DEPENDS native_scene native_gpu)
 native_module(render SOURCES src/render/module_info.cpp DEPENDS native_scene native_gpu)
 native_module(tools  SOURCES src/tools/module_info.cpp  DEPENDS native_render native_light)
-native_module(ui     SOURCES src/ui/module_info.cpp src/ui/main_window.cpp src/ui/main_window.h
+native_module(ui     SOURCES src/ui/module_info.cpp src/ui/main_window.cpp src/ui/main_window.h src/ui/stats_panel.cpp src/ui/stats_panel.h
                      DEPENDS native_tools Qt6::Widgets)
 
 # ---- the application ----------------------------------------------------------------------------------------------------
@@ -63,7 +68,7 @@ native_warnings(mapeditor_native)
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src)
 target_link_libraries(native_tests PRIVATE native_ui Qt6::Widgets Qt6::Test)
 native_warnings(native_tests)

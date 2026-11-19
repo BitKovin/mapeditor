@@ -8,12 +8,14 @@
 #include <QStringList>
 #include <QTimer>
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "app/app_options.h"
 #include "base/log.h"
 #include "base/trace.h"
+#include "gpu/device.h"
 #include "ui/main_window.h"
 
 int main(int argc, char** argv) {
@@ -36,7 +38,19 @@ int main(int argc, char** argv) {
         native::base::logWarning("cannot write the trace file " + parsed.options.traceFile);
     native::base::traceSetThreadName("ui");
 
+    // One Vulkan device for the whole process; failing here is fatal (01_ARCHITECTURE.md §6).
+    native::gpu::DeviceOptions deviceOptions;
+    deviceOptions.validation = parsed.options.validation;
+    std::string deviceError;
+    std::unique_ptr<native::gpu::Device> device = native::gpu::Device::create(deviceOptions, &deviceError);
+    if (!device) {
+        QMessageBox::critical(nullptr, QStringLiteral("Map Editor (native)"),
+                              QStringLiteral("No usable Vulkan device:\n\n") + QString::fromStdString(deviceError));
+        return 3;
+    }
+
     native::ui::MainWindow window;
+    window.setStatsRows(device->caps().rows());
     window.show();
 
     int shotResult = 0;
@@ -44,7 +58,7 @@ int main(int argc, char** argv) {
         // Visual-check mode: wait for the first paint, save the window, quit.
         QTimer::singleShot(300, &qtApp, [&] {
             const QImage img = window.grab().toImage();
-            if (img.isNull() || !img.save(QString::fromStdString(parsed.options.screenshotPath))) shotResult = 3;
+            if (img.isNull() || !img.save(QString::fromStdString(parsed.options.screenshotPath))) shotResult = 4;
             QApplication::quit();
         });
     }

@@ -21,7 +21,7 @@ tooltip saying why).
 | `VK_EXT_ray_tracing_invocation_reorder` | optional | SER in the gather ray-gen shader | no reorder call (same results) |
 | `VK_EXT_opacity_micromap` | optional | cutout textures in the acceleration structure | alpha test in an any-hit / candidate loop (as the Core's shaders do today) |
 | `VK_KHR_ray_tracing_position_fetch` | optional | hit triangle positions from the AS | read vertices through buffer device address |
-| `VK_KHR_global_priority` | optional | high-priority graphics queue | normal priority |
+| `VK_KHR_global_priority` | optional | high-priority graphics queue (the driver's per-family list from `vkGetPhysicalDeviceQueueFamilyProperties2` decides: requesting a priority it does not list crashed NVIDIA 610.88; on the dev machine HIGH is not listed for graphics, MEDIUM is for compute) | normal priority |
 | `VK_EXT_host_image_copy` | optional | texture upload, lightmap read-back for "save preview" | staging buffer copies |
 | `VK_KHR_external_memory_win32` | optional | sharing lightmap buffers with OIDN's CUDA device | copy through host memory |
 | `VK_EXT_shader_atomic_float` | optional | float atomics in sample accumulation | integer fixed-point atomics |
