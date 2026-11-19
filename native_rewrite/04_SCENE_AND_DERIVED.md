@@ -107,3 +107,11 @@ of their frame / step.
   brush data for the builder.
 - **Models** (`misc_model`, `core/include/core/obj_model.h`; `.glb` previews in `shell/src/model/gltf.ts`): `.obj` models
   are surfaces for lighting (Core already reads them); `.glb` are preview-only. Both are per-entity products.
+
+## As built (T3.2)
+
+`native/src/scene/` (see its README). Differences from the sketch above: `ObjectKey` = (instance string, entity id, brush id) so prefab brushes
+are objects too; products are the carved `LightSurface` pieces, bounds and inputs hash (render meshes from T3.4, relief T3.3, lighting later);
+the snapshot is swapped under a mutex (`shared_ptr` copy), not `std::atomic<shared_ptr>`; `complete=false` marks a partial publish. The affected set
+is computed against the last *complete* snapshot, so superseded builds never lose a change. Jobs use no priority by distance yet (one level).
+Decal and relief-neighbour dependencies join the affected set when those products exist.
