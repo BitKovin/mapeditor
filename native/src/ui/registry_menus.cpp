@@ -40,6 +40,12 @@ void RegistryMenus::build() {
         if (def.menu.empty()) continue;
         QMenu* menu = menuFor(def.menu);
         if (def.menuSeparatorBefore) menu->addSeparator();
+        if (def.dynamicVariants) {
+            // The path is a submenu refilled whenever it is about to open.
+            const std::string id = def.id;
+            QObject::connect(menu, &QMenu::aboutToShow, this, [this, menu, id] { fillDynamic(menu, id); });
+            continue;
+        }
         std::vector<actions::MenuVariant> variants = def.variants;
         if (variants.empty()) variants.push_back({def.menuLabel.empty() ? def.label : def.menuLabel, def.params});
         for (const actions::MenuVariant& v : variants) {
@@ -62,6 +68,28 @@ void RegistryMenus::build() {
         }
     }
     refresh();
+}
+
+void RegistryMenus::fillDynamic(QMenu* menu, const std::string& id) {
+    const actions::ActionDef* def = registry_.find(id);
+    if (!def || !def->dynamicVariants) return;
+    UiEnv ui = env_();
+    actions::ActionEnv env;
+    env.app = &ui;
+    menu->clear();
+    const std::vector<actions::MenuVariant> variants = def->dynamicVariants(env);
+    for (const actions::MenuVariant& v : variants) {
+        QAction* a = menu->addAction(QString::fromStdString(v.label));
+        const nlohmann::json params = v.params;
+        QObject::connect(a, &QAction::triggered, this, [this, id, params] {
+            UiEnv u = env_();
+            actions::ActionEnv e;
+            e.app = &u;
+            registry_.run(id, e, params);
+            refresh();
+        });
+    }
+    if (variants.empty()) menu->addAction(QStringLiteral("(none)"))->setEnabled(false);
 }
 
 void RegistryMenus::refresh() {

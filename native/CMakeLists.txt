@@ -112,7 +112,8 @@ add_custom_target(native_shaders DEPENDS ${_native_shader_headers})
 find_package(Threads REQUIRED)
 native_module(base   SOURCES src/base/module_info.cpp src/base/hash.cpp src/base/jobs.cpp src/base/log.cpp src/base/trace.cpp
                      DEPENDS vendored Threads::Threads)
-native_module(doc    SOURCES src/doc/module_info.cpp    DEPENDS native_base core_lib)
+native_module(doc    SOURCES src/doc/module_info.cpp src/doc/document.cpp src/doc/document.h src/doc/io.cpp src/doc/io.h
+                     DEPENDS native_base core_lib)
 native_module(scene  SOURCES src/scene/module_info.cpp  DEPENDS native_doc)
 # volk (loader) and VMA (allocator) are third-party code: compiled without the project's warnings-as-errors.
 add_library(native_vk STATIC third_party/volk/volk.c src/gpu/vma_impl.cpp)
@@ -132,7 +133,7 @@ target_include_directories(native_render PRIVATE "${NATIVE_SHADER_GEN_DIR}")
 native_module(actions SOURCES src/app/actions/input.cpp src/app/actions/registry.cpp src/app/actions/contexts.cpp
                       src/app/actions/keymap.cpp src/app/actions/router.cpp DEPENDS native_base)
 native_module(tools  SOURCES src/tools/module_info.cpp  DEPENDS native_render native_light)
-native_module(ui     SOURCES src/ui/module_info.cpp src/ui/main_window.cpp src/ui/main_window.h src/ui/stats_panel.cpp src/ui/stats_panel.h
+native_module(ui     SOURCES src/ui/module_info.cpp src/ui/main_window.cpp src/ui/main_window_document.cpp src/ui/main_window.h src/ui/stats_panel.cpp src/ui/stats_panel.h
                      src/ui/input_adapter.cpp src/ui/input_adapter.h src/ui/app_actions.cpp src/ui/app_actions.h
                      src/ui/registry_menus.cpp src/ui/registry_menus.h
                      DEPENDS native_tools native_actions Qt6::Widgets ads::qtadvanceddocking)
@@ -148,16 +149,18 @@ add_custom_command(TARGET mapeditor_native POST_BUILD
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src)
-target_compile_definitions(native_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_compile_definitions(native_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
+                           NATIVE_CORE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/assets")
 target_link_libraries(native_tests PRIVATE native_ui Qt6::Widgets Qt6::Test)
 native_warnings(native_tests)
 
 # Tests that need real windows and the GPU (Qt "windows" platform): viewports in docks, re-docking, resizing.
-add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp)
+add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp tests/test_gui_document.cpp)
 target_include_directories(native_gui_tests PRIVATE src)
-target_compile_definitions(native_gui_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets")
+target_compile_definitions(native_gui_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
+                           NATIVE_CORE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/assets")
 target_link_libraries(native_gui_tests PRIVATE native_ui Qt6::Widgets)
 native_warnings(native_gui_tests)
 

@@ -430,7 +430,7 @@ Each needs a measurement before and after in the commit message.
 
 | Task | Done | Commit |
 |---|---|---|
-| T0.1 | yes (Qt 6.11.1 at `D:\Qt.11.1\msvc2022_64`, found by `build_native.bat` when `QT_DIR` is unset) | with T0.2 |
+| T0.1 | yes (Qt 6.11.1 at `D:\Qt\6.11.1\msvc2022_64`, found by `build_native.bat` when `QT_DIR` is unset) | with T0.2 |
 | T0.2 | yes (demo_lit / demo / engine_test `--no-bake` exports byte-identical; 40 `*gpu*,*vis*,*raytrace*` cases pass) | `native: T0.2` |
 | T0.3 | yes (Qt ADS 5.1.1, VMA 3.5.0, volk 1.4.363) | `native: T0.3` |
 | T0.4 | yes (clean build, 6 tests, `--screenshot` of the empty window exits 0) | `native: T0.4` |
@@ -441,7 +441,7 @@ Each needs a measurement before and after in the commit message.
 | T1.5 | yes (`[gpu]`: ring slices / alignment / exhaustion / retire by timeline value; arena alloc / free / alignment / full / reuse; 10 000 random allocate-free-upload operations on a 1.5 MB arena that fills up 149 times, whole arena read back and every live block compared 11 times, ring slices reused while batches are in flight; 0 validation errors, 0 leaked VMA allocations) | `native: T1.5` |
 | T1.6 | yes (headless: 12 action cases - chord grammar round trips, context resolution most specific first, disabled specific falls back to general, user diff adds / removes / replaces, `Ctrl+Q` with a Cyrillic layout via scan code, sequences time out after 1 s, double tap, holds with hold contexts, text-field rule, mouse and wheel chords, conflicts; adapter cases for Qt key / mouse / wheel events, scan table, text widgets; the shipped `default` preset names real actions in known contexts with no conflicts; `native_gui_tests`: menus built from the registry with the keymap's keys and enabled / checked state, layout and camera entries act, Ctrl+Q exits, user keymap rebinds / is saved and read back / a broken one is reported, a focused text field gets letters while Ctrl chords reach the router, Shift boost and look-release end flight; the cameras are driven only through the router) | `native: T1.6` |
 | T2.1 | yes (`core::entityFromJson` and `core::instanceFromJson` exposed next to `brushFromJson`; `documentFromJson` calls them, no behaviour change; new core test: one-node parse equals the whole-document parse, entity without `brushes`, strictness; `core_tests -tc="*document*,*prefab*,*override*,*carve*,*refs*"` 63 cases pass) | `native: T2.1` |
-| T2.2 | | |
+| T2.2 | yes (headless: tiny document keeps unknown keys at document / entity / brush / face level and round-trips exactly, empty `brushes` arrays remembered, lookup tables, version sharing, malformed / invalid input reported, atomic save leaves no temp file; every shipped map and prefab loads, saves as the same data in the Core format and is idempotent; **lvl2 (24 MB, 142 entities, 2 082 brushes) is byte-identical after load + save and loads in 0.56 s** (read 0.15, parse 0.32, nodes 0.07, validate 0.02), serialises in 0.25 s; `native_gui_tests`: Open on the job pool and inline, errors for paths outside the assets folder / missing / broken files leave the document alone, Save, Save As (nodes shared, new path, title), Ctrl+S, recent list + submenu, assets folder and recent files persisted; `--assets` / `--map` open a map at start-up; screenshot checked) | `native: T2.2` |
 | T2.3 | | |
 | T2.4 | | |
 | T2.5 | | |

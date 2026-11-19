@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "app/app_options.h"
+#include "base/jobs.h"
 #include "base/log.h"
 #include "base/trace.h"
 #include "gpu/device.h"
@@ -74,7 +75,10 @@ int main(int argc, char** argv) {
     // visual check is never influenced by (or changes) the person's layout.
     const bool screenshotRun = !parsed.options.screenshotPath.empty();
     QSettings layoutSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("MapEditor"), QStringLiteral("MapEditorNative"));
+    native::base::JobPool jobs;   // loads, saves and (later) all CPU work; outlives the window
     native::ui::Services services;
+    services.jobs = &jobs;
+    services.assetsRoot = parsed.options.assetsRoot;
     services.device = device.get();
     services.renderThread = &renderThread;
     services.vulkanInstance = &vulkanInstance;
@@ -88,6 +92,7 @@ int main(int argc, char** argv) {
     native::ui::MainWindow window(services);
     window.setStatsRows(device->caps().rows());
     window.show();
+    if (!parsed.options.map.empty()) window.openDocument(parsed.options.map);
 
     int shotResult = 0;
     if (!parsed.options.screenshotPath.empty()) {

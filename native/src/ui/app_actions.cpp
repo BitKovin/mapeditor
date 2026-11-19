@@ -102,12 +102,86 @@ std::vector<std::string> viewportContexts(const render::ViewportWindow& viewport
 
 void registerAppActions(actions::Registry& r) {
     // ---- file / edit ----
+    const auto windowOf = [](const ActionEnv& env) { auto* u = env.as<UiEnv>(); return u ? u->window : nullptr; };
+    {
+        ActionDef d;
+        d.id = "file.open";
+        d.label = "Open...";
+        d.category = "File";
+        d.description = "Opens a map from the assets folder.";
+        d.menu = "&File";
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { auto* w = windowOf(env); return w && !w->busy(); };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->openWithDialog(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "file.open_recent";
+        d.label = "Open recent";
+        d.category = "File";
+        d.description = "Opens one of the maps opened or saved last.";
+        d.menu = "&File/Open &Recent";
+        d.params = {{"path", ""}};
+        d.enabled = [windowOf](const ActionEnv& env, const json& p) {
+            auto* w = windowOf(env);
+            return w && !w->busy() && !p.value("path", std::string()).empty();
+        };
+        d.dynamicVariants = [windowOf](const ActionEnv& env) {
+            std::vector<actions::MenuVariant> v;
+            if (auto* w = windowOf(env)) {
+                int n = 1;
+                for (const std::string& path : w->recentFiles()) {
+                    const size_t slash = path.find_last_of("/\\");
+                    const std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+                    v.push_back({"&" + std::to_string(n++) + "  " + name, {{"path", path}}});
+                }
+            }
+            return v;
+        };
+        d.run = [windowOf](ActionEnv& env, const Invocation& inv) {
+            if (auto* w = windowOf(env)) w->openDocument(inv.params.value("path", std::string()));
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "file.save";
+        d.label = "Save";
+        d.category = "File";
+        d.menu = "&File";
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { auto* w = windowOf(env); return w && w->document() && !w->busy(); };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->saveDocument(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "file.save_as";
+        d.label = "Save As...";
+        d.category = "File";
+        d.menu = "&File";
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { auto* w = windowOf(env); return w && w->document() && !w->busy(); };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->saveAsWithDialog(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "file.set_assets_root";
+        d.label = "Assets folder...";
+        d.category = "File";
+        d.description = "Chooses the folder maps are opened from and saved to.";
+        d.menu = "&File";
+        d.menuSeparatorBefore = true;
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { auto* w = windowOf(env); return w && !w->busy(); };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->chooseAssetsRootWithDialog(); };
+        add(r, std::move(d));
+    }
     {
         ActionDef d;
         d.id = "file.exit";
         d.label = "Exit";
         d.category = "File";
         d.menu = "&File";
+        d.menuSeparatorBefore = true;
         d.run = [](ActionEnv& env, const Invocation&) {
             if (auto* u = env.as<UiEnv>(); u && u->window) u->window->close();
         };

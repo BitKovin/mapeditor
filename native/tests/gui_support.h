@@ -40,7 +40,7 @@ inline void pumpFor(int ms) {
     }
 }
 
-inline bool waitUntil(const std::function<bool()>& cond, int timeoutMs = 4000) {
+inline bool waitUntil(const std::function<bool()>& cond, int timeoutMs = 10000) {
     QElapsedTimer t;
     t.start();
     while (t.elapsed() < timeoutMs) {

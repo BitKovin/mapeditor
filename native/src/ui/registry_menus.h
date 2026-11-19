@@ -45,6 +45,7 @@ private:
         std::string label;
     };
     QMenu* menuFor(const std::string& path);
+    void fillDynamic(QMenu* menu, const std::string& actionId);
 
     QMenuBar* bar_;
     actions::Registry& registry_;

@@ -118,6 +118,16 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     } else {
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, statsDock_);   // widget-only tests
     }
+    // Documents: the assets root (--assets, else the saved one), the recent list, the job results timer.
+    assetsRoot_ = services_.assetsRoot;
+    if (st) {
+        if (assetsRoot_.empty()) assetsRoot_ = st->value("assets/root").toString().toStdString();
+        for (const QString& r : st->value("files/recent").toStringList()) recent_.push_back(r.toStdString());
+    }
+    completedTimer_.setInterval(25);
+    QObject::connect(&completedTimer_, &QTimer::timeout, this, [this] { drainCompleted(); });
+    updateTitle();
+
     registerAppActions(registry_);
     loadKeymap();
     menus_ = new RegistryMenus(menuBar(), registry_, keymap_, [this] { return currentUiEnv(); }, this);

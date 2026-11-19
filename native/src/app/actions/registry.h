@@ -58,6 +58,8 @@ struct ActionDef {
     std::string menuLabel;           // entry text when the menu shows it (defaults to label)
     std::vector<MenuVariant> variants;   // one menu entry per variant (own label and parameters) instead of a single entry
     bool menuSeparatorBefore = false;    // a separator is drawn above this entry
+    // The menu path is a submenu whose entries are made each time it opens (recent files): label + params of each entry.
+    std::function<std::vector<MenuVariant>(const ActionEnv&)> dynamicVariants;
     std::string holdContext;         // Hold: context that is active while the hold runs ("hold:camera.fly")
     nlohmann::json params;           // default parameters (a binding / menu entry may override them)
     std::function<bool(const ActionEnv&, const nlohmann::json&)> enabled;   // null = always

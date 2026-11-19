@@ -10,8 +10,13 @@
 
 #include <QMainWindow>
 #include <QPointF>
+#include <QString>
 #include <QTimer>
 
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,6 +36,11 @@ class CDockManager;
 class CDockWidget;
 } // namespace ads
 namespace native::gpu { class Device; }
+namespace native::base { class JobPool; }
+namespace native::doc {
+class DocumentVersion;
+struct LoadResult;
+} // namespace native::doc
 namespace native::render {
 class RenderThread;
 class ViewportWindow;
@@ -50,6 +60,8 @@ struct Services {
     int forceViewports = 0;            // 1, 2 or 4: ignore the saved preset (the saved dock arrangement is not used either)
     std::string keymapPresetPath;      // the preset JSON (assets/keymaps/default.json); empty = no bindings
     std::string userKeymapPath;        // the user's changes against the preset (%APPDATA%/mapeditor_native/keymaps/<name>.json); may not exist
+    base::JobPool* jobs = nullptr;     // loads and saves run here (not on the UI thread); null = synchronously (tests)
+    std::string assetsRoot;            // --assets; empty = the saved setting ("assets/root" in `settings`)
 };
 
 enum class LayoutPreset { One = 1, Two = 2, Four = 4 };
@@ -61,6 +73,7 @@ struct ViewportPanel {
 };
 
 class MainWindow : public QMainWindow {
+    Q_OBJECT
 public:
     explicit MainWindow(const Services& services = {}, QWidget* parent = nullptr);
     ~MainWindow() override;
@@ -92,12 +105,46 @@ public:
     bool saveUserKeymap() const;
     std::string keymapError() const { return keymapError_; }
 
+    // ---- the document (T2.2) ----
+    // The current document version (null until one is opened). Versions are immutable: keep the pointer as long as needed.
+    std::shared_ptr<const doc::DocumentVersion> document() const { return document_; }
+    // The document was changed since it was opened / saved.
+    bool isDirty() const;
+    // The folder maps are opened from and saved to (paths in documents are relative to it). Persisted in the settings.
+    std::string assetsRoot() const { return assetsRoot_; }
+    void setAssetsRoot(const std::string& folder);
+    // Opens a map: a path relative to the assets root, or an absolute path inside it. Loads on the job pool (the window stays
+    // responsive, the status bar says "Loading ...") or synchronously without one; replaces the document when done. Errors go to
+    // the error handler and leave the current document alone.
+    void openDocument(const std::string& path);
+    // Saves to the document's path; a document without one is saved with saveDocumentAs through a dialog.
+    void saveDocument();
+    // Saves under another path (relative to the assets root, or absolute inside it); the document takes the new path.
+    void saveDocumentAs(const std::string& path);
+    // The dialogs behind the File menu: QFileDialog restricted to the assets root.
+    void openWithDialog();
+    void saveAsWithDialog();
+    void chooseAssetsRootWithDialog();
+    // Makes `version` the current document (after a load, and for undo / redo / edits from T2.4 on). `saved` marks it as the saved
+    // state (a load or a save), otherwise it counts as modified when it differs from the saved one.
+    void setDocument(std::shared_ptr<const doc::DocumentVersion> version, bool saved);
+    // A load or a save is running (the file actions are disabled meanwhile).
+    bool busy() const { return pendingJobs_ > 0; }
+    // Absolute paths of the maps opened or saved last, newest first (at most 10).
+    std::vector<std::string> recentFiles() const { return recent_; }
+    // Where problems are shown; the default is a message box. Tests install a recorder.
+    void setErrorHandler(std::function<void(const QString&)> handler) { errorHandler_ = std::move(handler); }
+
     LayoutPreset layoutPreset() const { return preset_; }
     // Rebuilds the viewport docks; existing viewports keep their settings and cameras, new ones get the defaults.
     void setLayoutPreset(LayoutPreset preset);
 
     // Writes the layout to the QSettings of the services (also done when the window closes and shortly after every change).
     void saveLayout();
+
+signals:
+    // The current document changed (opened, saved under a new path, replaced): panels refresh their title and contents.
+    void documentChanged();
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -118,6 +165,21 @@ private:
     bool routeKey(const QKeyEvent& e, bool press);
     bool routeViewportEvent(size_t index, QEvent* e, QPointF delta);
     void cancelInput();
+    // documents
+    struct ResolvedPath {
+        std::string relative;        // assets-relative, forward slashes
+        std::string absolute;
+        std::string error;           // empty when the path is inside the assets root
+    };
+    ResolvedPath resolveAssetPath(const std::string& path) const;
+    void reportError(const QString& message);
+    void updateTitle();
+    void addRecent(const std::string& absolutePath);
+    // Runs `work` on the job pool and then `done` on the UI thread (both inline without a pool).
+    void runJob(std::function<void()> work, std::function<void()> done);
+    void drainCompleted();
+    void finishOpen(uint64_t serial, const std::string& relative, const doc::LoadResult& result);
+    void saveTo(const std::string& relative, const std::string& absolute);
     void scheduleSave();
     void updateDockTitle(size_t index);
 
@@ -136,6 +198,21 @@ private:
     RegistryMenus* menus_ = nullptr;
     render::ViewportWindow* holdViewport_ = nullptr;   // the viewport a running hold (a drag, flight keys) belongs to
     std::string keymapError_;
+
+    std::shared_ptr<const doc::DocumentVersion> document_;
+    uint64_t savedVersion_ = 0;
+    std::string assetsRoot_;
+    std::vector<std::string> recent_;
+    int pendingJobs_ = 0;
+    uint64_t openSerial_ = 0;
+    std::function<void(const QString&)> errorHandler_;
+    // Results of finished jobs, handed to the UI thread by a timer that runs only while jobs are pending.
+    struct Completed {
+        std::mutex mutex;
+        std::deque<std::function<void()>> queue;
+    };
+    std::shared_ptr<Completed> completed_ = std::make_shared<Completed>();
+    QTimer completedTimer_;
 };
 
 } // namespace native::ui

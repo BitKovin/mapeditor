@@ -76,14 +76,15 @@ mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--
   `%APPDATA%/MapEditor/MapEditorNative.ini` and restored at the next start. Keys: the shipped preset is copied next to the exe
   (`<exe dir>/keymaps/default.json`, from `native/assets/keymaps/`); the user's changes are read from
   `%APPDATA%/mapeditor_native/keymaps/default.json` (not used by `--screenshot`).
+- `--assets <folder>` sets the assets root (maps and prefabs are opened from and saved to it; otherwise the saved setting `assets/root`
+  is used) and `--map <assets-relative path>` opens that map at start-up (T2.2).
 - `--automation-port` opens the local JSON socket (08_MILESTONES.md M9). Default: off.
 
 ## 7. Running tests
 
 - Native: `native\build\native_tests.exe -tc="*<case>*"`. GPU cases are tagged `[gpu]` and skip themselves (with a message)
   when no ray-tracing device is found.
-- `nativeuild
-ative_gui_tests.exe` (T1.3): tests that need real windows and the GPU (viewport in a dock, re-docking, resizing; Qt's
+- `native\build\native_gui_tests.exe` (T1.3): tests that need real windows and the GPU (viewport in a dock, re-docking, resizing; Qt's
   normal platform). They flash windows on the desktop; run them on the development machine. `native_tests` stays headless (offscreen
   Qt platform; the render-thread tests use a plain Win32 window).
 - Visual checks: `mapeditor_native.exe --screenshot <png>` (viewport frames are pasted into the window image), then look at the PNG.

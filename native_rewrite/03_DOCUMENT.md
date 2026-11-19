@@ -55,6 +55,8 @@ Rules:
   `core/src/document.cpp` (the reader) for every field.
 - Reading uses the Core: `core::brushFromJson`, `core::documentFromJson` pieces (split per node, see T2.1).
 
+*As built (T2.2):* namespace `native::doc` (not `nat`). `FaceNode` is not a separate node: faces live in the brush's `raw` and in the typed `core::Brush`. `EntityNode` also has `hasBrushesKey` (a file with `"brushes": []` is written back with it) and `DocumentVersion` has `hasEntitiesKey` / `hasInstancesKey` (a file without `prefabInstances` gets none). The lookup tables are built on the first lookup of a version, so an edit changes its copy of a version *before* anything looks things up in it and then publishes it. `DocumentVersion` is copyable (an edit starts from a copy; the copy gets its own tables).
+
 ## 3. Load and save (`doc/io.cpp`)
 
 - **Load:** read file on the IO thread → `nlohmann::json::parse` → per entity in parallel (`core::parallelFor`): typed parse
@@ -63,9 +65,14 @@ Rules:
   On a validation error: dialog with the message, nothing replaced.
 - **Save:** assemble the JSON tree from the nodes' `raw` (entities get their `brushes` array back) → dump(2) + "\n" → temp
   file → rename. On the IO thread; the UI only snapshots the version pointer.
+- **Save details:** the temp file is removed when a save fails; the final rename is retried for about half a second because a virus scanner or the indexer can hold the old file open for a moment on Windows.
 - **Round-trip test (T2.2):** for every map in `core/assets/maps/*.map.json`, `core/assets/prefabs/*.map.json` and lvl2:
   load → save to a temp file → bytes equal to the original file. (If an original file was not written by this editor and
   differs only by formatting, re-save it once with the current Core first and compare against that.)
+  *Result:* lvl2 and one of the six shipped files are byte-identical to the editor's format. The other shipped maps / prefabs were
+  written by generator scripts (their own key order and indentation), so the test compares them with their canonical form
+  (`dump(2) + "\n"` of the parsed original), checks the saved JSON is the same data as the original and that load + save is idempotent.
+  The repository assets are not rewritten.
 
 ## 4. Validation on edit
 
