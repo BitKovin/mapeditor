@@ -56,6 +56,8 @@ struct ActionDef {
     std::vector<std::string> contexts;   // where it is available (10 §3); empty = everywhere
     std::string menu;                // "View/Layout" menu path the entry is generated into; empty = not in a menu
     std::string menuLabel;           // entry text when the menu shows it (defaults to label)
+    // The entry text computed each time the menu is refreshed ("Undo Move"); an empty result keeps the label.
+    std::function<std::string(const ActionEnv&)> dynamicLabel;
     std::vector<MenuVariant> variants;   // one menu entry per variant (own label and parameters) instead of a single entry
     bool menuSeparatorBefore = false;    // a separator is drawn above this entry
     // The menu path is a submenu whose entries are made each time it opens (recent files): label + params of each entry.

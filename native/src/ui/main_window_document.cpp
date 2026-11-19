@@ -17,6 +17,7 @@
 
 #include "base/jobs.h"
 #include "base/log.h"
+#include "doc/commands.h"
 #include "doc/document.h"
 #include "doc/io.h"
 #include "ui/main_window.h"
@@ -131,11 +132,28 @@ void MainWindow::drainCompleted() {
 // ---- document ------------------------------------------------------------------------------------------------------------------
 
 void MainWindow::setDocument(std::shared_ptr<const doc::DocumentVersion> version, bool saved) {
-    document_ = std::move(version);
-    if (saved && document_) savedVersion_ = document_->version;
-    updateTitle();
-    if (menus()) menus()->refresh();
-    emit documentChanged();
+    if (saved && version) savedVersion_ = version->version;
+    history_->reset(std::move(version));   // the listener makes it current, updates the title and menus and tells the panels
+}
+
+bool MainWindow::commitEdit(const std::string& label, std::shared_ptr<const doc::DocumentVersion> after) {
+    return history_->commit({label, document_, std::move(after)});
+}
+
+bool MainWindow::canUndo() const { return history_->canUndo(); }
+bool MainWindow::canRedo() const { return history_->canRedo(); }
+
+std::string MainWindow::undoText() const { return history_->canUndo() ? "Undo " + history_->undoLabel() : "Undo"; }
+std::string MainWindow::redoText() const { return history_->canRedo() ? "Redo " + history_->redoLabel() : "Redo"; }
+
+void MainWindow::undo() {
+    const std::string label = history_->undoLabel();
+    if (history_->undo()) statusBar()->showMessage(QStringLiteral("Undo %1").arg(QString::fromStdString(label)), 4000);
+}
+
+void MainWindow::redo() {
+    const std::string label = history_->redoLabel();
+    if (history_->redo()) statusBar()->showMessage(QStringLiteral("Redo %1").arg(QString::fromStdString(label)), 4000);
 }
 
 void MainWindow::openDocument(const std::string& path) {
@@ -222,8 +240,8 @@ void MainWindow::saveTo(const std::string& relative, const std::string& absolute
                    renamed->path = relative;
                    renamed->version = doc::nextVersionNumber();
                    const bool wasSnapshot = document_ == snapshot;
-                   document_ = renamed;
                    if (wasSnapshot) savedVersion_ = renamed->version;
+                   history_->reset(renamed);   // versions carry their path: the undo steps of the old path end here
                } else if (document_ == snapshot) {
                    savedVersion_ = snapshot->version;
                }

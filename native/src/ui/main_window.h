@@ -39,6 +39,8 @@ namespace native::gpu { class Device; }
 namespace native::base { class JobPool; }
 namespace native::doc {
 class DocumentVersion;
+class History;
+struct ChangeSet;
 struct LoadResult;
 } // namespace native::doc
 namespace native::render {
@@ -128,6 +130,19 @@ public:
     // Makes `version` the current document (after a load, and for undo / redo / edits from T2.4 on). `saved` marks it as the saved
     // state (a load or a save), otherwise it counts as modified when it differs from the saved one.
     void setDocument(std::shared_ptr<const doc::DocumentVersion> version, bool saved);
+    // ---- edits and undo (T2.4) ----
+    // The undo history of the document (reset whenever a document is opened or saved under another path).
+    doc::History& history() { return *history_; }
+    // Makes `after` (built from document() with a doc::VersionEditor) the current version as one undo step named `label`. False when it
+    // was not built from the current version or changed nothing. Listeners hear documentEdited with the change set.
+    bool commitEdit(const std::string& label, std::shared_ptr<const doc::DocumentVersion> after);
+    bool canUndo() const;
+    bool canRedo() const;
+    // "Undo Move" / "Redo Clip" for the Edit menu; "Undo" / "Redo" when there is nothing to undo / redo.
+    std::string undoText() const;
+    std::string redoText() const;
+    void undo();
+    void redo();
     // A load or a save is running (the file actions are disabled meanwhile).
     bool busy() const { return pendingJobs_ > 0; }
     // Absolute paths of the maps opened or saved last, newest first (at most 10).
@@ -145,6 +160,8 @@ public:
 signals:
     // The current document changed (opened, saved under a new path, replaced): panels refresh their title and contents.
     void documentChanged();
+    // The current version changed (an edit, undo, redo, or a new document: `all`): what differs from the previous one.
+    void documentEdited(const native::doc::ChangeSet& changes);
 
 protected:
     void closeEvent(QCloseEvent* e) override;
@@ -182,6 +199,7 @@ private:
     void saveTo(const std::string& relative, const std::string& absolute);
     void scheduleSave();
     void updateDockTitle(size_t index);
+    void onHistoryChanged();
 
     Services services_;
     ads::CDockManager* dockManager_ = nullptr;
@@ -200,6 +218,7 @@ private:
     std::string keymapError_;
 
     std::shared_ptr<const doc::DocumentVersion> document_;
+    std::unique_ptr<doc::History> history_;
     uint64_t savedVersion_ = 0;
     std::string assetsRoot_;
     std::vector<std::string> recent_;

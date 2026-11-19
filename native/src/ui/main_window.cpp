@@ -27,6 +27,7 @@
 #include <algorithm>
 
 #include "base/log.h"
+#include "doc/commands.h"
 #include "render/viewport_window.h"
 #include "ui/input_adapter.h"
 #include "ui/registry_menus.h"
@@ -124,6 +125,14 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         if (assetsRoot_.empty()) assetsRoot_ = st->value("assets/root").toString().toStdString();
         for (const QString& r : st->value("files/recent").toStringList()) recent_.push_back(r.toStdString());
     }
+    history_ = std::make_unique<doc::History>();
+    history_->setListener([this](const std::shared_ptr<const doc::DocumentVersion>& current, const doc::ChangeSet& changes, doc::ChangeCause) {
+        document_ = current;
+        updateTitle();
+        if (menus()) menus()->refresh();
+        emit documentChanged();
+        emit documentEdited(changes);
+    });
     completedTimer_.setInterval(25);
     QObject::connect(&completedTimer_, &QTimer::timeout, this, [this] { drainCompleted(); });
     updateTitle();

@@ -103,7 +103,12 @@ void RegistryMenus::refresh() {
         if (e.qaction->isCheckable()) e.qaction->setChecked(registry_.isChecked(*def, env, e.params));
         // The binding is shown right-aligned after a tab; it is only text (no Qt shortcut is registered).
         const std::string keys = keymap_.displayText(e.actionId, def->variants.empty() ? nlohmann::json(nullptr) : e.params);
-        e.qaction->setText(QString::fromStdString(e.label) + (keys.empty() ? QString() : QStringLiteral("\t") + QString::fromStdString(keys)));
+        std::string label = e.label;
+        if (def->dynamicLabel && def->variants.empty()) {
+            std::string dynamic = def->dynamicLabel(env);
+            if (!dynamic.empty()) label = std::move(dynamic);
+        }
+        e.qaction->setText(QString::fromStdString(label) + (keys.empty() ? QString() : QStringLiteral("\t") + QString::fromStdString(keys)));
     }
 }
 

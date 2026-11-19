@@ -104,6 +104,8 @@ Undo and redo are version switches; because nodes are shared, keeping both versi
 ChangeSet for an undo is computed by diffing the two versions (§6), so derived data and lighting update exactly as for a
 forward edit.
 
+*As built (T2.4):* `doc/edit.h` `VersionEditor` is the one way to make an edited version (replace / add / remove brush, entity, instance; validation of §4 happens there; every new node is parsed back from its written JSON so typed == what loading the JSON gives); it is not in the task list text but tools and commands need it. `History::commit` refuses a command whose `before` is not the current version. Undo / redo are refused while an interaction runs. Save As to a new path resets the history (a version carries its path). `MainWindow` owns the `History` (`commitEdit`, `undo`, `redo`, signal `documentEdited(ChangeSet)`); `ActionDef::dynamicLabel` gives the menu entry text "Undo Move".
+
 ## 6. Change sets (`doc/changeset.h`)
 
 ```cpp
@@ -129,6 +131,8 @@ ChangeSet diff(const DocumentVersion& a, const DocumentVersion& b);   // pointer
 
 `diff` compares node pointers (unchanged = same pointer) and only descends into replaced nodes; it must cost
 O(changed objects), plus O(entities) pointer compares. Boxes are world-space (after entity origin and instance transform).
+
+*As built (T2.4):* boxes are `doc::Box` (not `core::Aabb`, whose header drags in the live bake). An entity box is its origin (a point); a brush box is its vertex bounds; instances are reported as `ChangedEntity{instance = id, entityId = ""}` with `Prefab` (file or overrides changed, added, removed) or `Transform`. Brush kinds: `Geometry` = vertices / faces' loops and ids / op / carve / smooth; `Surface` = texture, uvs, look hash, projection, lightmap scale; an added or removed brush is `Geometry | Surface`. A changed `rootRaw` (level settings) sets `all`. Changes of keys the editor does not model (raw only) are not reported.
 
 ## 7. Prefab instances
 

@@ -13,7 +13,9 @@
 #include <sstream>
 
 #include "base/jobs.h"
+#include "doc/commands.h"
 #include "doc/document.h"
+#include "doc/edit.h"
 #include "doc/io.h"
 #include "gui_support.h"
 #include "ui/registry_menus.h"
@@ -264,4 +266,79 @@ TEST_CASE("the assets folder and the recent files are remembered") {
         window.openDocument("maps/engine_test.map.json");   // the saved root is in use
         CHECK(window.document() != nullptr);
     }
+}
+
+TEST_CASE("Edit > Undo / Redo name the step, switch versions and follow the dirty flag") {
+    Assets assets;
+    ui::Services sv = docServices(assets, nullptr);
+    ui::MainWindow window(sv);
+    Errors errors;
+    errors.attach(window);
+    window.show();
+    QAction* undo = window.menus()->entry("edit.undo");
+    QAction* redo = window.menus()->entry("edit.redo");
+    REQUIRE(undo);
+    REQUIRE(redo);
+    window.menus()->refresh();
+    CHECK_FALSE(undo->isEnabled());                    // no document yet
+
+    window.openDocument("maps/demo.map.json");
+    const auto opened = window.document();
+    REQUIRE(opened);
+    CHECK_FALSE(window.isDirty());
+    window.menus()->refresh();
+    CHECK_FALSE(undo->isEnabled());
+    CHECK(undo->text().startsWith("Undo"));
+
+    // an edit: move the first brush of the first entity that has one
+    size_t e = 0;
+    while (opened->entities[e]->brushes.empty()) ++e;
+    core::Brush b = opened->entities[e]->brushes[0]->brush;
+    b.translate({1, 0, 0});
+    doc::VersionEditor ed(opened);
+    REQUIRE(ed.replaceBrush(opened->entities[e]->typed.id, b));
+    const auto edited = ed.finish();
+    REQUIRE(edited);
+
+    std::vector<doc::ChangeSet> heard;
+    QObject::connect(&window, &ui::MainWindow::documentEdited, [&](const doc::ChangeSet& cs) { heard.push_back(cs); });
+    REQUIRE(window.commitEdit("Move", edited));
+    CHECK(window.document() == edited);
+    CHECK(window.isDirty());
+    CHECK(titleOf(window).contains(QStringLiteral("*")));
+    REQUIRE(heard.size() == 1);
+    CHECK(heard[0].brushes.size() == 1);
+    window.menus()->refresh();
+    CHECK(undo->isEnabled());
+    CHECK(undo->text().startsWith("Undo Move"));
+    CHECK_FALSE(redo->isEnabled());
+
+    undo->trigger();
+    CHECK(window.document() == opened);                // the very same version
+    CHECK_FALSE(window.isDirty());                     // back at the saved state
+    window.menus()->refresh();
+    CHECK(redo->text().startsWith("Redo Move"));
+    CHECK(redo->isEnabled());
+    CHECK_FALSE(undo->isEnabled());
+    REQUIRE(heard.size() == 2);
+    CHECK(heard[1].brushes.size() == 1);
+
+    redo->trigger();
+    CHECK(window.document() == edited);
+    CHECK(window.isDirty());
+
+    // a stale edit (built from the old version) is refused
+    CHECK_FALSE(window.commitEdit("Stale", edited));
+    // saving marks the edited version as saved; undo after that makes it dirty again
+    window.saveDocument();
+    CHECK_FALSE(window.isDirty());
+    undo->trigger();
+    CHECK(window.isDirty());
+    CHECK(errors.list.empty());
+
+    // opening another document clears the history
+    window.openDocument("maps/engine_test.map.json");
+    window.menus()->refresh();
+    CHECK_FALSE(undo->isEnabled());
+    CHECK_FALSE(redo->isEnabled());
 }

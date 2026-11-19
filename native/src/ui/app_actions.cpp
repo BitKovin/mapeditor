@@ -187,15 +187,25 @@ void registerAppActions(actions::Registry& r) {
         };
         add(r, std::move(d));
     }
-    // Undo and redo exist from the start so the keys and the menu are in place; they are disabled until a document exists (M2).
-    for (const char* which : {"undo", "redo"}) {
+    // Undo and redo (T2.4): the menu text names the step ("Undo Move").
+    for (const bool undo : {true, false}) {
         ActionDef d;
-        d.id = std::string("edit.") + which;
-        d.label = which[0] == 'u' ? "Undo" : "Redo";
+        d.id = undo ? "edit.undo" : "edit.redo";
+        d.label = undo ? "Undo" : "Redo";
         d.category = "Edit";
+        d.description = undo ? "Reverts the last edit." : "Repeats the last undone edit.";
         d.menu = "&Edit";
-        d.enabled = [](const ActionEnv&, const json&) { return false; };
-        d.run = [](ActionEnv&, const Invocation&) {};
+        d.dynamicLabel = [windowOf, undo](const ActionEnv& env) {
+            auto* w = windowOf(env);
+            return w ? (undo ? w->undoText() : w->redoText()) : std::string();
+        };
+        d.enabled = [windowOf, undo](const ActionEnv& env, const json&) {
+            auto* w = windowOf(env);
+            return w && (undo ? w->canUndo() : w->canRedo());
+        };
+        d.run = [windowOf, undo](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) undo ? w->undo() : w->redo();
+        };
         add(r, std::move(d));
     }
 
