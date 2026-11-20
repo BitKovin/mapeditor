@@ -144,6 +144,18 @@ void Keymap::clearUser() {
     dirty_ = true;
 }
 
+bool Keymap::resetUserAction(const std::string& action) {
+    const size_t before = userBind_.size() + userUnbind_.size();
+    const auto hidesPreset = [&](const Binding& u) {
+        return std::any_of(preset_.begin(), preset_.end(), [&](const Binding& p) { return p.action == action && p.context == u.context && p.input == u.input; });
+    };
+    userBind_.erase(std::remove_if(userBind_.begin(), userBind_.end(), [&](const Binding& u) { return u.action == action || hidesPreset(u); }), userBind_.end());
+    userUnbind_.erase(std::remove_if(userUnbind_.begin(), userUnbind_.end(), [&](const Binding& u) { return u.action == action; }), userUnbind_.end());
+    const bool changed = userBind_.size() + userUnbind_.size() != before;
+    if (changed) dirty_ = true;
+    return changed;
+}
+
 void Keymap::rebuild() const {
     effective_.clear();
     for (const Binding& p : preset_) {

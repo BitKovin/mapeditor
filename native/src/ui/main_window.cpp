@@ -198,6 +198,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     updateTitle();
 
     registerAppActions(registry_);
+    initKeymapFiles();
     loadKeymap();
     menus_ = new RegistryMenus(menuBar(), registry_, keymap_, [this] { return currentUiEnv(); }, this);
     menus_->build();
@@ -362,14 +363,16 @@ void MainWindow::loadKeymap() {
             keymapError_ = services_.keymapPresetPath + ": " + keymapError_;
         }
     }
-    if (keymapError_.empty() && readFile(services_.userKeymapPath, text) && !keymap_.loadUser(text, &keymapError_))
-        keymapError_ = services_.userKeymapPath + ": " + keymapError_;
+    const std::string userPath = activeKeymapPath();
+    if (keymapError_.empty() && readFile(userPath, text) && !keymap_.loadUser(text, &keymapError_))
+        keymapError_ = userPath + ": " + keymapError_;
     if (!keymapError_.empty()) base::logError("keymap: " + keymapError_);
 }
 
 bool MainWindow::saveUserKeymap() const {
-    if (services_.userKeymapPath.empty()) return false;
-    const QFileInfo info(QString::fromStdString(services_.userKeymapPath));
+    const std::string userPath = activeKeymapPath();
+    if (userPath.empty()) return false;
+    const QFileInfo info(QString::fromStdString(userPath));
     QDir().mkpath(info.absolutePath());
     QSaveFile f(info.absoluteFilePath());
     if (!f.open(QIODevice::WriteOnly)) return false;

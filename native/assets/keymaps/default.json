@@ -48,6 +48,18 @@
     { "action": "transform.axis",    "context": "modal:transform", "input": "Y", "params": { "axis": 1 } },
     { "action": "transform.axis",    "context": "modal:transform", "input": "Z", "params": { "axis": 2 } },
 
+    { "action": "camera.mode", "context": "area:viewport", "input": "Numpad 0", "params": { "mode": "fly" } },
+    { "action": "camera.mode", "context": "area:viewport", "input": "Numpad 5", "params": { "mode": "orbit" } },
+    { "action": "camera.mode", "context": "area:viewport", "input": "Numpad 7", "params": { "mode": "top" } },
+    { "action": "camera.mode", "context": "area:viewport", "input": "Numpad 1", "params": { "mode": "front" } },
+    { "action": "camera.mode", "context": "area:viewport", "input": "Numpad 3", "params": { "mode": "side" } },
+    { "action": "gizmo.mode",  "context": "area:viewport", "input": "W",       "params": { "mode": "move" } },
+    { "action": "gizmo.mode",  "context": "area:viewport", "input": "E",       "params": { "mode": "rotate" } },
+    { "action": "gizmo.mode",  "context": "area:viewport", "input": "Shift+W", "params": { "mode": "scale" } },
+    { "action": "view.layout", "context": "global",        "input": "Ctrl+1",  "params": { "count": 1 } },
+    { "action": "view.layout", "context": "global",        "input": "Ctrl+2",  "params": { "count": 2 } },
+    { "action": "view.layout", "context": "global",        "input": "Ctrl+4",  "params": { "count": 4 } },
+
     { "action": "camera.look",  "context": "view:fly",      "input": "RMB drag" },
     { "action": "camera.orbit", "context": "view:orbit",    "input": "RMB drag" },
     { "action": "camera.pan2d", "context": "view:ortho",    "input": "RMB drag" },

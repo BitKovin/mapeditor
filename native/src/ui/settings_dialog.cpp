@@ -24,6 +24,7 @@
 #include <core/entdef.h>
 
 #include "render/viewport_window.h"
+#include "ui/keymap_page.h"
 #include "ui/main_window.h"
 
 namespace native::ui {
@@ -70,7 +71,7 @@ QString cleanFolder(const QString& s) { return QDir::cleanPath(s.trimmed()); }
 SettingsDialog::SettingsDialog(MainWindow& window, QWidget* parent) : QDialog(parent ? parent : &window), win_(window) {
     setObjectName(QStringLiteral("settingsDialog"));
     setWindowTitle(QStringLiteral("Settings"));
-    resize(720, 520);
+    resize(900, 640);
 
     pages_ = new QListWidget(this);
     pages_->setObjectName(QStringLiteral("settings:pages"));
@@ -86,6 +87,9 @@ SettingsDialog::SettingsDialog(MainWindow& window, QWidget* parent) : QDialog(pa
         (this->*build)(page);
         stack_->addWidget(page);
     }
+    pages_->addItem(QStringLiteral("Keymap"));
+    keymap_ = new KeymapPage(win_, stack_);
+    stack_->addWidget(keymap_);
     QObject::connect(pages_, &QListWidget::currentRowChanged, stack_, &QStackedWidget::setCurrentIndex);
 
     error_ = new QLabel(this);

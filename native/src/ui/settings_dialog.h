@@ -1,5 +1,5 @@
 // ui/settings_dialog -- Settings: General (the game folder), Game profile (game_profile.json of that folder) and Editor (what new viewports start with, the
-// recent maps). Pages for keys and the like come with their features (T4.6 Keymap, ...). OK / Apply write everything that changed:
+// recent maps). The Keymap page (T4.6, the binding editor) applies its changes at once; further pages come with their features. OK / Apply write everything that changed:
 //   Editor     -> MainWindow::setEditorPrefs (the QSettings)
 //   Profile    -> game_profile.json through core::writeProfileFile, then MainWindow::reloadProfile
 //   General    -> MainWindow::setAssetsRoot (profile, entity definitions, textures, prefabs and the panels follow)
@@ -25,15 +25,18 @@ class QStackedWidget;
 
 namespace native::ui {
 
+class KeymapPage;
 class MainWindow;
 
 class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
-    enum Page { General = 0, GameProfile = 1, Editor = 2 };
+    enum Page { General = 0, GameProfile = 1, Editor = 2, Keymap = 3 };
 
     explicit SettingsDialog(MainWindow& window, QWidget* parent = nullptr);
 
+    // The binding editor page (its changes apply at once; Apply and OK do not touch it).
+    KeymapPage* keymapPage() const { return keymap_; }
     void showPage(int page);
     int page() const;
     // Whether anything differs from what is stored.
@@ -85,6 +88,8 @@ private:
     QDoubleSpinBox* fly_ = nullptr;
     QLabel* recentInfo_ = nullptr;
     QPushButton* clearRecent_ = nullptr;
+    // Keymap
+    KeymapPage* keymap_ = nullptr;
 };
 
 } // namespace native::ui

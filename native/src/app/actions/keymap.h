@@ -51,6 +51,13 @@ public:
     bool unbindUser(const Binding& b);
     void clearUser();
     bool userEmpty() const { return userBind_.empty() && userUnbind_.empty(); }
+    // Drops every user change that concerns the action: its added bindings, the removal of its preset bindings, and the user bindings that took a chord of
+    // one of its preset bindings over (so the action has exactly what the preset gives it). True when something changed.
+    bool resetUserAction(const std::string& action);
+    // The layers as they are (the binding editor shows where a binding comes from).
+    const std::vector<Binding>& presetBindings() const { return preset_; }
+    const std::vector<Binding>& userBindings() const { return userBind_; }
+    const std::vector<Binding>& userRemoved() const { return userUnbind_; }
 
     // Preset minus removals plus additions, in a stable order (preset order, then additions).
     const std::vector<Binding>& effective() const;

@@ -339,6 +339,22 @@ public:
     void setConfirmHandler(std::function<bool(const QString& title, const QString& text)> handler) { confirmHandler_ = std::move(handler); }
     bool confirm(const QString& title, const QString& text);
 
+    // ---- keymaps (T4.6) ----
+    // The user keymaps live in one folder (the one of Services::userKeymapPath), one file per name; one is active. Without that path there are no files:
+    // changes still apply, they are just not kept.
+    bool hasKeymapFiles() const { return !keymapDir_.empty(); }
+    const std::string& keymapName() const { return keymapName_; }
+    // The name that has a file, plus the active one; sorted.
+    std::vector<std::string> keymapNames() const;
+    // Each returns "" or why it failed. Switching saves the current layer first; the new one applies at once (menus and hints follow).
+    std::string switchKeymap(const std::string& name);
+    std::string newKeymap(const std::string& name);       // empty layer, becomes the active one
+    std::string deleteKeymap(const std::string& name);    // deleting the active one falls back to "default"
+    std::string importKeymap(const std::string& file, const std::string& name);   // validated, stored under `name`, becomes the active one
+    std::string exportKeymap(const std::string& file) const;
+    // After the user layer was edited (the binding editor): saves it, refreshes the menus and tells the listeners.
+    void keymapEdited();
+
 signals:
     // The game folder was changed.
     void assetsRootChanged();
@@ -346,6 +362,8 @@ signals:
     void editorPrefsChanged();
     // A viewport changed (its settings or camera) or another one became the active one.
     void viewportsChanged();
+    // The effective keymap changed (an edit in the binding editor, another user keymap, an import).
+    void keymapChanged();
     // The entity definitions or the prefab folder changed (a new assets root).
     void entityDefinitionsChanged();
     // The hide keys or rules changed.
@@ -448,6 +466,9 @@ private:
     PlacePanel* place_ = nullptr;
     std::string prefabRoot_ = "prefabs";
     std::string profileError_;
+    std::string keymapDir_, keymapName_ = "default";
+    void initKeymapFiles();
+    std::string activeKeymapPath() const;
     tools::EditorPrefs prefs_;
     StatusFields* statusFields_ = nullptr;
     std::function<bool(const QString&, const QString&)> confirmHandler_;

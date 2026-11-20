@@ -291,7 +291,7 @@ TEST_CASE("status bar fields and the Settings dialog in a window" * doctest::tes
             window.grab().save(QString::fromLocal8Bit(dirName) + "/status.png");
             ui::SettingsDialog dialog(window);
             dialog.show();
-            for (int i = 0; i < 3; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 dialog.showPage(i);
                 pumpFor(50);
                 dialog.grab().save(QString::fromLocal8Bit(dirName) + QString("/settings%1.png").arg(i));
