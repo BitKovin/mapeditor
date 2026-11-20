@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include "core/lighting_classes.h"
+#include "core/lighting_inputs.h"
 #include "core/lightmap_uv.h"
 #include "core/lights.h"
 #include "core/prefab.h"
@@ -171,11 +172,8 @@ private:
     // changes, so editing a prefab on disk is picked up on the next access.
     std::unordered_map<std::string, CachedPrefab> prefabCache_;
 
-    // The sky light's tables of the last skybox used, kept while its files are unchanged (sky.h).
-    std::shared_ptr<const SkyRadiance> skyTable(const std::string& texture, std::string& warning);
-    std::mutex skyMutex_;
-    std::string skyKey_, skyWarning_;
-    std::shared_ptr<const SkyRadiance> sky_;
+    // The sky light's tables of the last skybox used, kept while its files are unchanged (lighting_inputs.h).
+    SkyTableCache skyCache_;
 };
 
 }  // namespace core

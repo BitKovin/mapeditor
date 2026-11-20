@@ -1,4 +1,5 @@
 ﻿// rBSP export (REQUIREMENTS В§25, DESIGN В§12): EXR lightmaps, convex collision pieces, the compiler.
+#include "core/lighting_inputs.h"
 #include "core/bsp_compile.h"
 #include "core/raytrace.h"
 #include "core/playable.h"
@@ -1290,6 +1291,25 @@ TEST_CASE("bsp sky: the lighting never sees sky faces; the sky light takes the l
     CHECK(lights.lights[0].sky->at({1, 0.3, 0}).x > 0.9);
     CHECK(lights.lights[0].sky->at({-1, 0.3, 0}).x < 0.01);
     CHECK(scene.lightScene().lights[0].sky == lights.lights[0].sky);  // cached while the files do not change
+
+    {   // the same inputs without a Scene (T5.1): the native editor's scene builder calls the free functions on the document it owns
+        const Document doc = documentFromJson(scene.documentSyncJson()["doc"]);
+        const std::vector<ResolvedEntity> noPrefabs;
+        const GameProfile profile = scene.profile();
+        const LightingSource source{doc, noPrefabs, profile, dir.path, nullptr};
+        CHECK(lightSurfacesOf(source, true).size() == all);
+        CHECK(lightSurfacesOf(source).size() == all - 6);
+        SkyTableCache skyCache;
+        const LightScene free = lightSceneOf(source, skyCache);
+        REQUIRE(free.lights.size() == 1);
+        REQUIRE(free.lights[0].sky);
+        CHECK(free.lights[0].sky->texture == "env/east_cube");
+        CHECK(free.lights[0].sky->at({1, 0.3, 0}).x == lights.lights[0].sky->at({1, 0.3, 0}).x);
+        CHECK(lightSceneOf(source, skyCache).lights[0].sky == free.lights[0].sky);   // the cache is the caller's
+        const auto cache = SolidSet::makeCache();
+        CHECK(lightSolidsOf(source, cache.get())->volumeCount() == scene.lightSolids()->volumeCount());
+        CHECK(lightSolidsOf(source)->volumeCount() == scene.lightSolids()->volumeCount());
+    }
 
     BspExportRequest req;
     req.assetsRoot = dir.path;

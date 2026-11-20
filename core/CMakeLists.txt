@@ -122,7 +122,7 @@ set_target_properties(meshoptimizer PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # core_lib: pure logic (no sockets), so it is unit-testable.
 add_library(core_lib STATIC
     src/brush.cpp src/entity_class.cpp src/document.cpp src/prefab.cpp
-    src/scene.cpp src/router.cpp src/origin.cpp src/profile.cpp src/textures.cpp src/sky.cpp src/texgroups.cpp
+    src/scene.cpp src/lighting_inputs.cpp src/router.cpp src/origin.cpp src/profile.cpp src/textures.cpp src/sky.cpp src/texgroups.cpp
     src/entdef.cpp src/settings.cpp src/native_dialog.cpp src/csg.cpp src/decal.cpp src/obj_model.cpp src/derived.cpp src/playable.cpp src/playable_visibility.cpp src/lightmap_pack.cpp src/lightmap_fit.cpp src/jpeg.cpp
     src/lighting_classes.cpp src/lightmap_uv.cpp src/lights.cpp src/lightbake.cpp src/parallel.cpp src/gpu_bake.cpp src/raytrace.cpp src/live_bake.cpp src/lighting_service.cpp src/relief_geometry.cpp
     src/albedo.cpp src/lightvol.cpp src/light_styles.cpp src/light_style_analysis.cpp src/denoise.cpp
