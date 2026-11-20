@@ -33,6 +33,7 @@
 #include "tools/edit_ops.h"
 #include "tools/gizmo.h"
 #include "tools/modal.h"
+#include "tools/prefs.h"
 #include "tools/shapes.h"
 #include "tools/visibility.h"
 #include "ui/app_actions.h"
@@ -89,6 +90,7 @@ class RegistryMenus;
 class OutlinerPanel;
 class DetailsPanel;
 class PlacePanel;
+class StatusFields;
 
 // What the window needs from the application (owned by main(); the window never outlives them). All null in widget-only tests.
 struct Services {
@@ -317,7 +319,33 @@ public:
     bool placeEntity(const std::string& classname, const std::vector<std::pair<std::string, std::string>>& keyvalues = {});
     bool placePrefab(const std::string& file);
 
+    // ---- status bar and settings (T4.5) ----
+    // The permanent fields of the status bar (tool, grid, selection, map, game folder).
+    StatusFields* statusFields() const { return statusFields_; }
+    QSettings* settings() const { return services_.settings; }
+    // What a NEW viewport starts with (Settings > Editor); kept in the settings. Open viewports keep theirs.
+    const tools::EditorPrefs& editorPrefs() const { return prefs_; }
+    void setEditorPrefs(const tools::EditorPrefs& prefs);
+    // Reads game_profile.json and the entity definitions again (after the profile was edited, or its files changed): the scene's texture and relief
+    // environment, the picker's class boxes, the Place panel. A malformed profile is reported and the previous one stays.
+    void reloadProfile() { setupScene(); }
+    // Why the last profile load failed ("" = it loaded).
+    const std::string& profileError() const { return profileError_; }
+    // Empties File > Open Recent.
+    void clearRecentFiles();
+    // The Settings dialog (modal), on a page (0 General, 1 Game profile, 2 Editor, later pages after those).
+    void openSettings(int page = 0);
+    // Asked before the game folder is switched while the map has unsaved changes; the default is a message box. Tests install an answer.
+    void setConfirmHandler(std::function<bool(const QString& title, const QString& text)> handler) { confirmHandler_ = std::move(handler); }
+    bool confirm(const QString& title, const QString& text);
+
 signals:
+    // The game folder was changed.
+    void assetsRootChanged();
+    // The editor preferences were changed.
+    void editorPrefsChanged();
+    // A viewport changed (its settings or camera) or another one became the active one.
+    void viewportsChanged();
     // The entity definitions or the prefab folder changed (a new assets root).
     void entityDefinitionsChanged();
     // The hide keys or rules changed.
@@ -419,6 +447,10 @@ private:
     DetailsPanel* details_ = nullptr;
     PlacePanel* place_ = nullptr;
     std::string prefabRoot_ = "prefabs";
+    std::string profileError_;
+    tools::EditorPrefs prefs_;
+    StatusFields* statusFields_ = nullptr;
+    std::function<bool(const QString&, const QString&)> confirmHandler_;
     std::vector<ViewportPanel> panels_;
     LayoutPreset preset_ = LayoutPreset::One;
     int active_ = 0;

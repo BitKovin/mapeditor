@@ -17,6 +17,9 @@ drawing. Depends on `native_render` (rays, camera maths, line vertices) and `nat
 | `ref_targets` | what a reference can point at (path, label, group, resolved name) and the reference keys of a class (port of `model/refs.ts`) |
 | `outliner` | the Outliner rows as data: search, fold, eye states, selection lighting, the row to scroll to (port of the model part of `OutlinerPanel`) |
 | `details` | the Details form as rows, each with the edit it makes (`DetailsEdit` / `EditValue`), and `applyDetailsEdit` (port of the model part of `InspectorPanel`) |
+| `prefs` | the editor preferences (what a new viewport starts with): JSON with clamping, applied to / read from `ViewportSettings` |
+| `profile_form` | the Game profile page of Settings as data: load, validate, the changed keys, save through `core::writeProfileFile` (unknown keys kept) |
+| `status_text` | the texts of the status bar fields: grid + snap, selection, map, game folder |
 | `shapes` | box, cylinder, wedge, arch, stairs and sphere filling the drawn box, quarter turns, smooth edges, edge preview (port of `model/shapes.ts`) |
 
 **As built (T4.1).** `ui/main_window_transform.cpp` runs the operators: a `TransformSession` keeps the document `base` the operation began on; every pointer move
@@ -46,3 +49,5 @@ change, keeps its scroll position, and scrolls to the primary selection only whe
 row only says how to get it back. Place adds an entity or prefab where the camera looks: the first thing under the middle of the active view (resting on that surface by the
 class box), else the ground at height 0, else the camera's target. Not done: drag from Place into a viewport, thumbnails, Decals tab, parametric shape record and its Details
 section, terrain rows, pipette, asset picker button.
+
+**As built (T4.5).** Settings is one dialog (`ui/settings_dialog`) over three Qt-free models. Apply runs the pages in a fixed order: editor prefs (kept as JSON in the QSettings key `prefs/editor`; open viewports keep their own settings, only new ones start from them), the game profile (`saveProfileForm` writes only the keys that changed, to the folder the form was read from, then `MainWindow::reloadProfile()`), and last the game folder (`setAssetsRoot`: profile, entity definitions, texture source, picker boxes, prefab library and the Place panel follow through `entityDefinitionsChanged`; `assetsRootChanged` tells the status bar). A malformed `game_profile.json` is no longer an exception out of `setupScene`: it is reported, `profileError()` says why, and Settings > Game profile offers the defaults to replace it. The status bar keeps the transient message line on the left and adds permanent fields on the right (`ui/status_bar`, `StatusFields`); every signal that can change one only starts a zero-delay timer, so a burst of changes rebuilds the labels once. Not done: Run game and Lighting pages, UV lock / auto func_detail prefs, folder pickers on the profile fields, the Keymap page (T4.6).

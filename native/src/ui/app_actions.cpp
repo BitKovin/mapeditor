@@ -592,6 +592,20 @@ void registerAppActions(actions::Registry& r) {
     }
     {
         ActionDef d;
+        d.id = "file.settings";
+        d.label = "Settings...";
+        d.category = "File";
+        d.description = "The game folder, the game profile and the editor preferences.";
+        d.menu = "&File";
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
+        d.run = [windowOf](ActionEnv& env, const Invocation& inv) {
+            if (auto* w = windowOf(env)) w->openSettings(inv.params.value("page", 0));
+        };
+        d.params = {{"page", 0}};
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
         d.id = "file.exit";
         d.label = "Exit";
         d.category = "File";

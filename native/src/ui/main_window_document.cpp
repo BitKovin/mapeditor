@@ -72,6 +72,7 @@ void MainWindow::setAssetsRoot(const std::string& folder) {
         updatePrefabs();
     }
     setupScene();
+    emit assetsRootChanged();
 }
 
 MainWindow::ResolvedPath MainWindow::resolveAssetPath(const std::string& path) const {
@@ -426,7 +427,17 @@ void MainWindow::setupScene() {
     }
     if (assetsRoot_.empty()) return;
     const fs::path root(assetsRoot_);
-    const core::GameProfile profile = core::loadProfile(root);
+    core::GameProfile profile;
+    try {
+        profile = core::loadProfile(root);
+        profileError_.clear();
+    } catch (const std::exception& e) {
+        // a broken game_profile.json is loud, and the previous profile stays in use (it is fixed in Settings > Game profile or by hand)
+        profileError_ = e.what();
+        reportError(QStringLiteral("game_profile.json: ") + QString::fromUtf8(e.what()));
+        emit entityDefinitionsChanged();
+        return;
+    }
     texEnv_ = std::make_shared<core::texplan::TexEnvironment>(root, profile);
     scene::ReliefEnv env;
     const auto e = texEnv_;

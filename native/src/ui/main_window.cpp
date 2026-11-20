@@ -45,6 +45,7 @@
 #include "ui/registry_menus.h"
 #include "ui/box_drawing.h"
 #include "ui/stats_panel.h"
+#include "ui/status_bar.h"
 #include "ui/transform_session.h"
 
 namespace native::ui {
@@ -105,6 +106,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
 
     const bool haveViewports = services_.renderThread && services_.vulkanInstance;
     QSettings* st = services_.settings;
+    if (st) prefs_ = tools::prefsFromJson(st->value("prefs/editor").toString().toStdString());
     if (st && services_.forceViewports == 0) {
         const QByteArray geom = st->value(kGeometry).toByteArray();
         if (!geom.isEmpty()) restoreGeometry(geom);
@@ -191,6 +193,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         }
         submitScene(cs);
     });
+    statusFields_ = new StatusFields(*this);
     setupScene();
     updateTitle();
 
@@ -236,7 +239,7 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
     preset_ = preset;
     const int n = viewportCount(preset);
     for (int i = 0; i < n; ++i) {
-        render::ViewportSettings settings = render::defaultViewportSettings();
+        render::ViewportSettings settings = tools::applyPrefs(prefs_, render::defaultViewportSettings());
         settings.cameraMode = defaultModeFor(i);
         const bool have = static_cast<size_t>(i) < saved.size();
         if (have && !saved[static_cast<size_t>(i)].settingsJson.empty())
@@ -257,8 +260,12 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
             refreshGizmo(index);
             updateDockTitle(index);
             scheduleSave();
+            emit viewportsChanged();
         });
-        window->setActivatedCallback([this, index] { active_ = static_cast<int>(index); });
+        window->setActivatedCallback([this, index] {
+            active_ = static_cast<int>(index);
+            emit viewportsChanged();
+        });
         window->setInputHook([this, index](QEvent* e, QPointF delta) { return routeViewportEvent(index, e, delta); });
         window->setCancelCallback([this] { cancelInput(); });
         window->setVerifyButtons(services_.verifyButtons);

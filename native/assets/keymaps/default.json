@@ -4,6 +4,7 @@
     { "action": "file.open",    "context": "global", "input": "Ctrl+O" },
     { "action": "file.save",    "context": "global", "input": "Ctrl+S" },
     { "action": "file.save_as", "context": "global", "input": "Ctrl+Shift+S" },
+    { "action": "file.settings", "context": "global", "input": "Ctrl+," },
     { "action": "file.exit",    "context": "global", "input": "Ctrl+Q" },
     { "action": "edit.undo",   "context": "global", "input": "Ctrl+Z" },
     { "action": "edit.redo",   "context": "global", "input": "Ctrl+Shift+Z" },
