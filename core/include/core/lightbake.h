@@ -72,14 +72,27 @@ public:
     struct Stats { size_t surfaces = 0, reused = 0; double generateSeconds = 0, assembleSeconds = 0; };  // of the last build()
     const Stats& stats() const { return stats_; }
     void clear();
+    // The samples of one chart, from the surface pieces that fall in it (pieces of other charts are ignored): the same samples build() gives that chart,
+    // in the order a serial walk over these pieces would claim them (pass 0 over the pieces, then pass 1). Entries stay cached, other charts' entries
+    // are not evicted (clear() when done).
+    TexelSamples buildChart(const LightmapLayout& layout, int chart, const std::vector<LightSurface>& pieces, const SolidSet* solids = nullptr,
+                            size_t* hidden = nullptr);
 
 private:
+    TexelSamples buildImpl(const LightmapLayout& layout, int onlyChart, const std::vector<LightSurface>& surfaces, const SolidSet* solids, size_t* hidden);
     struct Entry;
     static void generate(const LightSurface& s, const LightmapFace& f, int atlas, Entry& out);
     std::unordered_map<uint64_t, std::unique_ptr<Entry>> entries_;
     uint64_t generation_ = 0;
     Stats stats_;
 };
+
+// One chart's samples (06 section 4): what buildTexelSamples() gives for that chart's texels, worked out from the surface pieces of the chart alone.
+// Charts never share a texel, so "the first claim wins" only matters inside a chart and the samples of all charts together are the whole level's
+// samples (the order differs: per chart instead of pass 0 over every piece first). `piecesOfChart` may hold other charts' pieces, they are skipped.
+// buildGiSamples() of the result is the chart's fine GI grid.
+TexelSamples buildChartSamples(const LightmapLayout& layout, int chart, const std::vector<LightSurface>& piecesOfChart, const SolidSet* solids = nullptr,
+                               size_t* hidden = nullptr);
 
 // ---- global illumination on a finer grid (DESIGN §6.5 "Denoising") --------------------------------------------------------
 // The bounce light is noisy (a few dozen rays per texel), so it is gathered on a `scale` x `scale` times finer grid (2 or 4: every texel is

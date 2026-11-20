@@ -274,6 +274,17 @@ TexelSampleCache::~TexelSampleCache() = default;
 void TexelSampleCache::clear() { entries_.clear(); stats_ = {}; }
 
 TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::vector<LightSurface>& surfaces, const SolidSet* solids, size_t* hiddenOut) {
+    return buildImpl(layout, -1, surfaces, solids, hiddenOut);
+}
+
+TexelSamples TexelSampleCache::buildChart(const LightmapLayout& layout, int chart, const std::vector<LightSurface>& pieces, const SolidSet* solids,
+                                          size_t* hiddenOut) {
+    return buildImpl(layout, chart, pieces, solids, hiddenOut);
+}
+
+// onlyChart >= 0: only the pieces of that chart take part (see buildChartSamples)
+TexelSamples TexelSampleCache::buildImpl(const LightmapLayout& layout, int onlyChart, const std::vector<LightSurface>& surfaces, const SolidSet* solids,
+                                         size_t* hiddenOut) {
     using Clock = std::chrono::steady_clock;
     const auto t0 = Clock::now();
     ++generation_;
@@ -293,7 +304,7 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
         const LightSurface& s = surfaces[i];
         if (s.verts.size() < 3) continue;
         const LightmapFace* f = layout.findForFragment(s.instance, s.entityId, s.brushInstance, s.brushId, s.faceId, s.verts);
-        if (!f || f->chart < 0) continue;
+        if (!f || f->chart < 0 || (onlyChart >= 0 && f->chart != onlyChart)) continue;
         const int page = layout.charts[static_cast<size_t>(f->chart)].page;
         std::vector<double> sig = signatureOf(s, *f, page, atlas);
         const uint64_t h = hashOf(sig);
@@ -330,8 +341,26 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
     //  b) where every winner lands in the output: a prefix sum over the pieces, in the serial order
     //  c) the winners' data (relief / smooth shading applied) written to those places, the pieces on all cores
     // (the serial walk spent 1+ s on a level of 12 million texels, most of it in the solid test of every candidate)
-    const size_t pageN = pageCount;
-    std::vector<std::vector<int8_t>> owner(pageN, std::vector<int8_t>(static_cast<size_t>(atlas) * atlas, 0));  // 0 free, 1 a sample, 2 buried in a solid
+    // A claim only depends on the earlier claims of its slot, and a slot is on one page; charts do not overlap, so a single chart is a group of its own.
+    // The groups are the pages, or the one chart (a grid just big enough for its candidates: the chart's pieces are all that is looked at)
+    const size_t pageN = onlyChart >= 0 ? 1 : pageCount;
+    struct Grid { int ox = 0, oy = 0, w = 0, h = 0; };
+    std::vector<Grid> grids(pageN, Grid{0, 0, atlas, atlas});
+    if (onlyChart >= 0) {
+        int x0 = atlas, y0 = atlas, x1 = -1, y1 = -1;
+        auto grow = [&](int x, int y) {
+            if (x < 0 || y < 0 || x >= atlas || y >= atlas) return;
+            x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x); y1 = std::max(y1, y);
+        };
+        for (const Use& u : uses) {
+            if (!u.entry) continue;
+            for (const TexelCandidate& c : u.entry->pass0) grow(c.x, c.y);
+            for (const TexelCandidate& c : u.entry->pass1) grow(c.x, c.y);
+            if (u.entry->hasTiny) grow(u.entry->tinyX, u.entry->tinyY);
+        }
+        grids[0] = x1 < 0 ? Grid{} : Grid{x0, y0, x1 - x0 + 1, y1 - y0 + 1};
+    }
+    std::vector<std::vector<int8_t>> owner(pageN);  // 0 free, 1 a sample, 2 buried in a solid
     std::vector<std::vector<size_t>> usesOfPage(pageN);
     std::vector<size_t> firstOf[2];  // per piece: index of its first candidate in won[pass]
     for (int pass = 0; pass < 2; ++pass) {
@@ -343,18 +372,21 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
     std::vector<uint32_t> wonCount[2] = {std::vector<uint32_t>(uses.size(), 0), std::vector<uint32_t>(uses.size(), 0)};
     std::vector<char> tinyWon(uses.size(), 0);
     for (size_t i = 0; i < uses.size(); ++i)
-        if (uses[i].entry && uses[i].page >= 0 && static_cast<size_t>(uses[i].page) < pageN) usesOfPage[static_cast<size_t>(uses[i].page)].push_back(i);
+        if (onlyChart >= 0) { if (uses[i].entry) usesOfPage[0].push_back(i); }
+        else if (uses[i].entry && uses[i].page >= 0 && static_cast<size_t>(uses[i].page) < pageN) usesOfPage[static_cast<size_t>(uses[i].page)].push_back(i);
     std::vector<size_t> hiddenOfPage(pageN, 0);
     parallelFor(pageN, 1, [&](size_t pageBegin, size_t pageEnd) {
         SolidSet::Probe probe;
         for (size_t pg = pageBegin; pg < pageEnd; ++pg) {
+            const Grid grid = grids[pg];
             std::vector<int8_t>& own = owner[pg];
+            own.assign(static_cast<size_t>(grid.w) * static_cast<size_t>(grid.h), 0);
             size_t hidden = 0;
             // Claims one slot; true when the candidate became a sample, `taken` when the slot already was one
             auto claim = [&](int x, int y, const Vec3& p, const Vec3& n, bool& taken) {
                 taken = false;
-                if (x < 0 || y < 0 || x >= atlas || y >= atlas) return false;
-                int8_t& o = own[static_cast<size_t>(y) * atlas + x];
+                if (x < grid.ox || y < grid.oy || x >= grid.ox + grid.w || y >= grid.oy + grid.h) return false;
+                int8_t& o = own[static_cast<size_t>(y - grid.oy) * static_cast<size_t>(grid.w) + static_cast<size_t>(x - grid.ox)];
                 if (o == 1) { taken = true; return false; }
                 if (o != 0) return false;  // known to be hidden
                 if (solids && solids->inside(p + n * 0.02, probe)) { o = 2; ++hidden; return false; }  // buried in a solid: invisible, counted once
@@ -431,7 +463,8 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
         }
     });
     if (hiddenOut) *hiddenOut = hiddenCount;
-    for (auto it = entries_.begin(); it != entries_.end();) it = it->second->used == generation_ ? std::next(it) : entries_.erase(it);
+    if (onlyChart < 0)  // a chart build leaves the other charts' entries alone
+        for (auto it = entries_.begin(); it != entries_.end();) it = it->second->used == generation_ ? std::next(it) : entries_.erase(it);
     const auto t2 = Clock::now();
     stats_.generateSeconds = std::chrono::duration<double>(t1 - t0).count();
     stats_.assembleSeconds = std::chrono::duration<double>(t2 - t1).count();
@@ -441,6 +474,11 @@ TexelSamples TexelSampleCache::build(const LightmapLayout& layout, const std::ve
 TexelSamples buildTexelSamples(const LightmapLayout& layout, const std::vector<LightSurface>& surfaces, const SolidSet* solids, size_t* hiddenOut) {
     TexelSampleCache cache;
     return cache.build(layout, surfaces, solids, hiddenOut);
+}
+
+TexelSamples buildChartSamples(const LightmapLayout& layout, int chart, const std::vector<LightSurface>& piecesOfChart, const SolidSet* solids, size_t* hiddenOut) {
+    TexelSampleCache cache;
+    return cache.buildChart(layout, chart, piecesOfChart, solids, hiddenOut);
 }
 
 // ---- CPU reference evaluator ----------------------------------------------------------------------------------------------
