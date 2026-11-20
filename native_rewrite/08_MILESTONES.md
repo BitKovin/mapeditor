@@ -152,7 +152,7 @@ Performance numbers refer to the development machine (RTX 4070 Ti, 1440p) and lv
 - **Do:** `scene/render_mesh.*`, `render/gpu_scene.*` (arenas, indirect draw, culling), bindless textures loaded through the
   Core's texture lookup, Unlit mode, sky faces, subtractive brushes translucent, raw-brush fallback while products are
   pending.
-- **Accept:** lvl2 opens to a first Unlit frame in < 10 s; 4 viewports at ≥ 60 fps while orbiting; screenshots of
+- **Accept:** lvl2 opens to a first Unlit frame in < 10 s; 4 viewports at ≥ 100 fps while orbiting (the user's frame rate target, 2026-11-20); screenshots of
   `core/assets/maps/demo.map.json` and `sky_test.map.json` side by side with the Shell's Unlit view look the same (save
   both shots in a scratch folder, show them to the user and ask them to confirm; do not commit screenshots).
 
@@ -174,7 +174,7 @@ Performance numbers refer to the development machine (RTX 4070 Ti, 1440p) and lv
 - **Do:** gizmo, G / R / S modal operators, typed values, axis constraints, grid snapping; each as Commands with
   interaction merging.
 - **Accept:** converted `transform.test.ts`, `modal.test.ts`, `originGizmo.test.ts`; dragging a brush on lvl2: the brush
-  follows the mouse every frame (frame time ≤ 16.7 ms while dragging, Unlit).
+  follows the mouse every frame (frame time ≤ 10 ms while dragging, Unlit).
 
 ### T4.2 Box tool and shapes
 - **Accept:** converted `tools.test.ts` (box parts), `batch33.test.ts` shape cases.
@@ -267,7 +267,7 @@ opens and looks the same.
   setting, "Show stale chunks" overlay.
   Also the benchmark mode `--bench <scenario>` of 09 §3 (scenarios `open`, `orbit`, `light_drag`, `sun_turn`; `brush_move` and
   `undo` are added in T8.3).
-- **Accept:** perf gate **G-light** (09 §3) for direct light; frame time stays ≤ 16.7 ms while baking with the mouse held
+- **Accept:** perf gate **G-light** (09 §3) for direct light; frame time stays ≤ 10 ms while baking with the mouse held
   down.
 
 ### T6.6 Light editing invalidation (direct)
@@ -276,6 +276,20 @@ opens and looks the same.
   `live_bake.h` without changing it; implement the light rows of 06 §7.
 - **Accept:** test: after moving a point light, every buffer value of samples outside old ∪ new influence is bit-identical
   to before; G-light passes on lvl2 for point, spot, rect and directional lights.
+
+### T6.7 NVIDIA Streamline bootstrap, Reflex, crash dumps
+- **Read:** 11_NVIDIA_TECH.md §1, §2.1, §3 (and 05 §device, 02 third_party).
+- **Do:** ask the user before downloading the Streamline SDK (name, source, size), then `third_party/streamline`, `slInit` before Vulkan, the device
+  through the interposer with the fallback to the system loader (`Caps::streamline`), Reflex + PCL markers on the render thread (or
+  `VK_NV_low_latency2` alone), Nsight Aftermath dumps behind `--gpu-crash-dumps`, Stats panel rows (Streamline / Reflex state, latency).
+- **Accept:** with SL the editor opens and `--bench open` is not slower; Reflex reports active; with `--no-streamline` and with the interposer DLL
+  missing the editor runs as before (tests for both); 0 validation errors; frame rate target 100 fps unchanged (G-frame).
+
+### T6.8 DLSS Super Resolution (Quality only) in perspective viewports
+- **Read:** 11_NVIDIA_TECH.md §2.2; the user's rule: Quality preset or better (DLAA), no lower preset, default Off.
+- **Do:** per-viewport Off / Quality setting, tagged colour / depth / motion vectors, jitter, reset rules, overlays after the upscaler, mip bias.
+- **Accept:** G-frame-4K (4 viewports at 4K, DLSS Quality, ≥ 100 fps on lvl2); no change at DLSS Off; screenshots Off / Quality at 1440p and
+  a dragged brush without ghosting (user confirms).
 
 ---
 
@@ -309,6 +323,11 @@ opens and looks the same.
 - **Do:** every row of 06 §7.
 - **Accept:** one test per row (synthetic scene): only the expected classes / regions change; S zeroed where required;
   no displayed texel goes to 0 during a re-bake (test samples the display between steps).
+
+### T7.7 Path-traced preview with DLSS Ray Reconstruction (only if the user agrees to the mode)
+- **Read:** 11_NVIDIA_TECH.md §2.3. **Ask the user first**: the mode is not in REQUIREMENTS.md.
+- **Do:** a viewport mode that ray-traces from the camera on the bake's TLAS and denoises with DLSS-RR (Quality or native only).
+- **Accept:** the mode shows a dragged brush correctly lit on the frame it moves; other viewports keep 100 fps; off by default.
 
 **M7 gate:** G-light including bounces (09 §3).
 

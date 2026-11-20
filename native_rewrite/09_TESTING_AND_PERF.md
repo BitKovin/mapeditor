@@ -32,8 +32,8 @@ visible chunks reached `maxPasses`, peak VRAM.
 | Gate | Scenario | Pass condition (lvl2, RTX 4070 Ti, 1440p, 1 Lit viewport + 3 Unlit) |
 |---|---|---|
 | G-open | open lvl2 | first Unlit frame < 10 s; first Lit frame with direct light on visible chunks < 20 s |
-| G-frame | orbit for 10 s, converged | ≥ 60 fps (p99 frame ≤ 20 ms) with 4 viewports |
-| **G-light** | drag a point light (radius 10 m) across a room for 3 s, then stop | every frame during the drag ≤ 20 ms; visible direct light updated within **2 frames** of each move; after stopping, visible chunks at `maxPasses` (bounces included, after M7) within **2 s** |
+| G-frame | orbit for 10 s, converged | ≥ 100 fps (p99 frame ≤ 12 ms) with 4 viewports (the user's target: 100 fps in the editor) |
+| **G-light** | drag a point light (radius 10 m) across a room for 3 s, then stop | every frame during the drag ≤ 10 ms; visible direct light updated within **2 frames** of each move; after stopping, visible chunks at `maxPasses` (bounces included, after M7) within **2 s** |
 | G-sun | change the directional light's angles by 10° | visible direct light updated ≤ 100 ms; visible converged ≤ 3 s |
 | **G-brush** | move one wall brush 1 m in Lit (one step) and drag it for 3 s | geometry follows the mouse every frame; its own and neighbours' visible direct light updated ≤ 100 ms after the last move; visible converged ≤ 2 s; nothing outside the invalidation region changed (06 §7) |
 | G-undo | undo the brush move | as G-brush; cache hits for the derived data (no CSG recompute, counted) |

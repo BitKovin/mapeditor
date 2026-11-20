@@ -231,7 +231,8 @@ deterministic function of (scene, pass count) for a fixed schedule — tests rel
 
 ## 12. Denoising
 
-- Preview: `atrous.comp` every compose (cheap, chunk-local).
+- Preview: `atrous.comp` every compose (cheap, chunk-local). DLSS Ray Reconstruction (11_NVIDIA_TECH.md) is a screen-space denoiser and does **not** denoise
+  lightmap texels; it is only for the optional path-traced preview view.
 - Converged pages (every chunk at `maxPasses`): OIDN `RTLightmap` filter on its GPU device (CUDA on NVIDIA, as
   `core/src/denoise.cpp` already chooses), fed from the GI grid exactly like `LiveBaker::beginDenoise` /
   `runDenoise` / `finishDenoise`. With `VK_KHR_external_memory_win32`, share the input / output buffers with OIDN

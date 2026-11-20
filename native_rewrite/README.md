@@ -25,6 +25,7 @@ estimator and layout rules as the export) refined live on the GPU into the very 
 | Migration | **Clean break.** The Shell is frozen (kept runnable, not deleted, not edited). The native editor is built up to parity. |
 | Priority | **Light edits and brush edits in Lit** must become instant first. |
 | **One program** | **One process, one address space, one GPU device.** No frontend / backend split, no IPC, no socket, no serialization between the UI and the engine: tools, renderer, bake and export all work on the same in-memory objects. The Core becomes a library linked into the app. Sending data between halves is what made the current editor slow. |
+| Frame rate | **100 fps** is the target for the editor (viewport frames, also while the bake runs and while dragging); the gates in 09 §3 use 10 ms frames (p99 12 ms). |
 | Visibility (PVS) | Stays baked at export (`core/src/bsp_vis.cpp`). Not part of this work. |
 | Platform | Windows 10/11, MSVC, Vulkan 1.3+ with ray query. Development GPU: RTX 4070 Ti, driver 610.88, Vulkan SDK 1.4.363 at `D:\VulkanSDK\1.4.363.0`. |
 
@@ -40,6 +41,7 @@ estimator and layout rules as the export) refined live on the GPU into the very 
 8. [08_MILESTONES.md](08_MILESTONES.md) — **the task list.** Work through it in order.
 9. [09_TESTING_AND_PERF.md](09_TESTING_AND_PERF.md) — test strategy, performance gates, parity checks.
 10. [10_UI_AND_INPUT.md](10_UI_AND_INPUT.md) — actions, rebindable keys, command palette, UI improvements.
+11. [11_NVIDIA_TECH.md](11_NVIDIA_TECH.md) — NVIDIA Streamline (DLSS Quality only, Ray Reconstruction, Reflex), Aftermath, other NVIDIA features; 100 fps target.
 
 Background that stays authoritative: `DESIGN.md` (behaviour of every feature), `REQUIREMENTS.md` (what the user asked for,
 with the user's words), `MCP_DESIGN.md` (AI level design). When this folder and DESIGN.md disagree about *behaviour*, DESIGN.md
