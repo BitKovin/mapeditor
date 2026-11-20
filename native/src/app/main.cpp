@@ -52,6 +52,12 @@ int main(int argc, char** argv) {
     // One Vulkan device for the whole process; failing here is fatal (01_ARCHITECTURE.md §6).
     native::gpu::DeviceOptions deviceOptions;
     deviceOptions.validation = parsed.options.validation;
+    deviceOptions.streamline = !parsed.options.noStreamline;   // NVIDIA Streamline (Reflex; DLSS later); falls back to the plain loader
+    deviceOptions.gpuCrashDumps = parsed.options.gpuCrashDumps;
+    if (!parsed.options.logFile.empty()) {
+        const size_t slash = parsed.options.logFile.find_last_of("/\\");
+        deviceOptions.crashDumpDir = slash == std::string::npos ? std::string(".") : parsed.options.logFile.substr(0, slash);   // next to the log
+    }
     std::string deviceError;
     std::unique_ptr<native::gpu::Device> device = native::gpu::Device::create(deviceOptions, &deviceError);
     if (!device) {

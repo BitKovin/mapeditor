@@ -66,9 +66,10 @@ private:
 
 struct GpuFixture {
     std::unique_ptr<gpu::Device> device;
-    GpuFixture() {
+    explicit GpuFixture(bool streamline = false) {
         gpu::DeviceOptions o;
         o.validation = true;
+        o.streamline = streamline;
         std::string err;
         device = gpu::Device::create(o, &err);
         if (!device) MESSAGE("no Vulkan device (" << err << "): GPU test skipped");
@@ -313,4 +314,33 @@ TEST_CASE("removing and re-adding a viewport on the same window works (re-dockin
     }
     CHECK(gpuFx.device->validationErrors() == 0);
     CHECK(gpuFx.device->allocationStats().allocationCount == 0);   // capture staging buffers were freed
+}
+
+// T6.7: the same frame through the Streamline interposer: surface, swapchain, present and the Reflex / PCL markers all go through SL.
+TEST_CASE("a viewport frame through Streamline: Reflex markers count the frames and validation stays clean" * doctest::test_suite("gpu")) {
+    GpuFixture gpuFx(true);
+    if (!gpuFx.device) return;
+    if (!gpuFx.device->caps().streamline) { MESSAGE("Streamline unavailable (" << gpuFx.device->caps().streamlineNote << "): skipped"); return; }
+    {
+        TestWindow window(320, 240);
+        VkSurfaceKHR surface = gpuFx.makeSurface(window.hwnd());
+        {
+            render::RenderThread rt(*gpuFx.device);
+            const auto id = rt.addViewport(surface, 320, 240);
+            rt.setView(id, frontView(320, 240));
+            const auto img = rt.capture(id);
+            REQUIRE(img.ok());
+            CHECK(closeTo(pixel(img, 4, 4), {27, 27, 29}, 3));
+            CHECK(closeTo(pixel(img, 160, 120), {108, 108, 142}, 8));
+            for (int i = 0; i < 40; ++i) {   // enough frames for a Reflex report (every 30th frame reads the state)
+                rt.markDirty(id);
+                sleepMs(8);
+            }
+            rt.removeViewport(id);
+        }
+        vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);
+    }
+    const gpu::StreamlineStatus st = gpuFx.device->streamline()->status();
+    CHECK(st.frames >= 20);
+    CHECK(gpuFx.device->validationErrors() == 0);
 }

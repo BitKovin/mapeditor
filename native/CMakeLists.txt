@@ -125,7 +125,28 @@ add_library(native_vk STATIC third_party/volk/volk.c src/gpu/vma_impl.cpp)
 target_include_directories(native_vk SYSTEM PUBLIC third_party/volk third_party/vma)
 target_compile_definitions(native_vk PUBLIC VK_NO_PROTOTYPES VK_USE_PLATFORM_WIN32_KHR)
 target_link_libraries(native_vk PUBLIC vendored)   # the Core's copy of the Vulkan headers (one copy, T0.2)
-native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/swapchain.cpp src/gpu/upload_ring.cpp src/gpu/arena.cpp DEPENDS native_base native_vk)
+native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/streamline.cpp src/gpu/swapchain.cpp src/gpu/upload_ring.cpp src/gpu/arena.cpp DEPENDS native_base native_vk)
+# NVIDIA Streamline (T6.7, 11_NVIDIA_TECH.md): optional. native/tools/fetch_streamline.ps1 unpacks the SDK into third_party/streamline
+# (git-ignored). Without it gpu/streamline.cpp is a stub and the editor runs as before; with it the headers are used (the DLL is loaded
+# at run time, never linked) and the interposer + plugins are copied next to the exe.
+set(NATIVE_STREAMLINE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline")
+if(EXISTS "${NATIVE_STREAMLINE_DIR}/include/sl.h")
+  message(STATUS "Streamline SDK found: ${NATIVE_STREAMLINE_DIR}")
+  target_compile_definitions(native_gpu PRIVATE NATIVE_HAS_STREAMLINE=1)
+  target_include_directories(native_gpu SYSTEM PRIVATE "${NATIVE_STREAMLINE_DIR}/include")
+  if(MSVC)
+    target_compile_options(native_gpu PRIVATE /external:W0)
+  endif()
+  set(_sl_files sl.interposer.dll sl.common.dll sl.reflex.dll sl.pcl.dll NvLowLatencyVk.dll)
+  set(_sl_copy)
+  foreach(_f IN LISTS _sl_files)
+    list(APPEND _sl_copy COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${NATIVE_STREAMLINE_DIR}/bin/x64/${_f}" "${CMAKE_BINARY_DIR}/${_f}")
+  endforeach()
+  add_custom_target(native_streamline_dlls ${_sl_copy} COMMENT "Streamline DLLs next to the exe" VERBATIM)
+  add_dependencies(native_gpu native_streamline_dlls)
+else()
+  message(STATUS "Streamline SDK not found (run native/tools/fetch_streamline.ps1 to enable Reflex and DLSS)")
+endif()
 native_module(light  SOURCES src/light/module_info.cpp src/light/page_allocator.cpp src/light/page_allocator.h src/light/layout.cpp src/light/layout.h src/light/page_images.cpp src/light/page_images.h src/light/samples.cpp src/light/samples.h src/light/accel.cpp src/light/accel.h
                      src/light/light_pack.cpp src/light/light_pack.h src/light/results.cpp src/light/results.h src/light/passes.cpp src/light/passes.h src/light/mailbox.cpp src/light/mailbox.h
                      src/light/lit_mesh.cpp src/light/lit_mesh.h src/light/light_link.cpp src/light/light_link.h src/light/lighting_service.cpp src/light/lighting_service.h

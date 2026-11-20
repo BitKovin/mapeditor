@@ -12,13 +12,18 @@ TEST_CASE("empty command line gives the defaults") {
     CHECK(r.options.automationPort == 0);
     CHECK_FALSE(r.options.noLighting);
     CHECK_FALSE(r.options.validation);
+    CHECK_FALSE(r.options.noStreamline);
+    CHECK_FALSE(r.options.gpuCrashDumps);
     CHECK(r.options.layoutViewports == 0);
 }
 
 TEST_CASE("all options are read") {
     const auto r = parseArgs({"--assets", "D:/a", "--map", "maps/x.map.json", "--automation-port", "8123", "--no-lighting",
-                              "--validation", "--log", "l.txt", "--trace", "t.json", "--screenshot", "s.png", "--layout", "4"});
+                              "--validation", "--log", "l.txt", "--trace", "t.json", "--screenshot", "s.png", "--layout", "4",
+                              "--no-streamline", "--gpu-crash-dumps"});
     REQUIRE(r.error.empty());
+    CHECK(r.options.noStreamline);
+    CHECK(r.options.gpuCrashDumps);
     CHECK(r.options.assetsRoot == "D:/a");
     CHECK(r.options.map == "maps/x.map.json");
     CHECK(r.options.automationPort == 8123);

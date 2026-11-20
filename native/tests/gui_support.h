@@ -61,6 +61,7 @@ struct App {
     App() {
         gpu::DeviceOptions o;
         o.validation = true;
+        o.streamline = true;   // as the program runs: the GUI tests also cover the Streamline interposer (T6.7)
         std::string err;
         device = gpu::Device::create(o, &err);
         if (!device) { MESSAGE("no Vulkan device (" << err << "): GUI GPU test skipped"); return; }

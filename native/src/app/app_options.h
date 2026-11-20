@@ -4,6 +4,9 @@
 //   mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
 //                        [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]
 //                        [--layout <1|2|4>] [--log-input] [--render-mode <unlit|lit|lightingOnly>]
+//                        [--no-streamline] [--gpu-crash-dumps]
+// --no-streamline creates the Vulkan device the normal way (no NVIDIA Streamline interposer: no Reflex, no DLSS), T6.7.
+// --gpu-crash-dumps enables the NV device diagnostics so a lost device writes gpu_crash_<time>.txt next to the log (T6.7).
 // --trace writes a Chrome trace-event file (chrome://tracing, Perfetto) of jobs / frames / bake steps.
 // --layout starts with 1, 2 or 4 viewports instead of the saved layout (T1.4).
 // --screenshot is a development aid (added with T0.4 for visual checks): after the window is shown and has painted once the
@@ -22,6 +25,8 @@ struct AppOptions {
     int automationPort = 0;       // --automation-port; 0 = off
     bool noLighting = false;      // --no-lighting
     bool validation = false;      // --validation
+    bool noStreamline = false;    // --no-streamline
+    bool gpuCrashDumps = false;   // --gpu-crash-dumps
     std::string logFile;          // --log
     std::string traceFile;        // --trace
     std::string screenshotPath;   // --screenshot

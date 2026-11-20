@@ -7,7 +7,8 @@ namespace native::app {
 
 const char* usageText() {
     return "mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]\n"
-           "                     [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]\n";
+           "                     [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]\n"
+           "                     [--no-streamline] [--gpu-crash-dumps]\n";
 }
 
 ParseResult parseArgs(const std::vector<std::string>& args) {
@@ -58,6 +59,8 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
         else if (a == "--log-input") o.logInput = true;
         else if (a == "--no-lighting") o.noLighting = true;
         else if (a == "--validation") o.validation = true;
+        else if (a == "--no-streamline") o.noStreamline = true;
+        else if (a == "--gpu-crash-dumps") o.gpuCrashDumps = true;
         else if (a == "--help" || a == "-h") o.help = true;
         else {
             r.error = "unknown option: " + a;

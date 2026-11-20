@@ -26,6 +26,10 @@ All go into `native/third_party/` as source, pinned to a release, with their LIC
 Qt itself is linked dynamically (`Qt6::Widgets`, `Qt6::Gui`, `Qt6::Core`, `Qt6::Network` for the automation socket) and
 deployed with `windeployqt`.
 
+**NVIDIA Streamline (T6.7)** is not in git (276 MB). After a fresh clone run `powershell -ExecutionPolicy Bypass -File native	oolsetch_streamline.ps1`
+(downloads the pinned release, checks its SHA-256, unpacks to `native/third_party/streamline`) and build again; CMake then compiles against its headers and
+copies the DLLs next to the exe. Without it everything builds and runs, only Reflex and DLSS are missing. `--no-streamline` turns it off at run time.
+
 ## 3. Vulkan headers
 
 The Core vendors Vulkan headers version 275 (`core/vendored/vulkan`). They predate `VK_EXT_ray_tracing_invocation_reorder`,

@@ -271,6 +271,16 @@ std::string MainWindow::lightingText() const {
 void MainWindow::refreshStats() {
     auto rows = deviceRows_;
     rows.emplace_back("Lighting", lightingText());
+    if (services_.device && services_.device->streamline()) {
+        const gpu::StreamlineStatus sl = services_.device->streamline()->status();
+        char buf[64];
+        if (sl.reflexActive && sl.latencyMs > 0) {
+            std::snprintf(buf, sizeof buf, "%.1f ms (sim start to GPU end)", sl.latencyMs);
+            rows.emplace_back("Reflex latency", buf);
+        } else if (!sl.note.empty()) {
+            rows.emplace_back("Reflex latency", sl.note);
+        }
+    }
     if (services_.renderThread) {
         const auto info = services_.renderThread->sceneInfo();
         rows.emplace_back("Lit objects", std::to_string(info.scene.litObjects) + " of " + std::to_string(info.scene.objects));

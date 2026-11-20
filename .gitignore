@@ -42,3 +42,7 @@ release/
 desktop/node_modules/
 desktop/out/
 native/build/
+
+# NVIDIA Streamline SDK (276 MB; fetched by native/tools/fetch_streamline.ps1, see native/third_party/README.md)
+native/third_party/streamline/
+native/third_party/streamline_dl/

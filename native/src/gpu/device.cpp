@@ -3,7 +3,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <fstream>
 #include <set>
 #include <string>
 
@@ -93,6 +97,8 @@ struct FeatureChain {
     VkPhysicalDevicePartitionedAccelerationStructureFeaturesNV partitioned{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV};
     VkPhysicalDeviceClusterAccelerationStructureFeaturesNV cluster{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV};
     VkPhysicalDeviceDescriptorHeapFeaturesEXT heap{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
+    VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnostics{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};
+    VkPhysicalDevicePresentIdFeaturesKHR presentId{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
 
     // Links the structs of the extensions in `present` (all of them for a query, the enabled ones for creation).
     void link(const std::set<std::string>& present, bool includeHeap) {
@@ -116,6 +122,8 @@ struct FeatureChain {
         add(partitioned, VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         add(cluster, VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         if (includeHeap) add(heap, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+        add(diagnostics, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+        add(presentId, VK_KHR_PRESENT_ID_EXTENSION_NAME);
         f2.pNext = head;
     }
 };
@@ -163,26 +171,52 @@ std::vector<std::pair<std::string, std::string>> DeviceCaps::rows() const {
         {"cluster acceleration structure (NV)", onOff(clusterAccelerationStructure)},
         {"descriptor heap", descriptorHeap ? "available, not used in v1" : "off"},
         {"dedicated compute queue", onOff(dedicatedComputeQueue)},
+        {"Streamline", streamline ? "on (interposer)" : streamlineNote.empty() ? "off" : "off: " + streamlineNote},
+        {"Reflex low latency", onOff(reflex)},
+        {"GPU crash dumps", diagnostics ? "on (--gpu-crash-dumps)" : "off"},
         {"Lit mode", lit() ? "available" : "unavailable (no ray query device)"},
     };
 }
 
 std::unique_ptr<Device> Device::create(const DeviceOptions& options, std::string* error) {
+    std::string note;
+    if (options.streamline) {
+        // First try: instance and device through the Streamline interposer. A missing DLL is not an error (init notes it and goes on
+        // with the system loader); a failure after the interposer took over is, so start again from scratch without it.
+        std::unique_ptr<Device> d(new Device());
+        std::string err;
+        if (d->init(options, true, &err)) return d;
+        note = "Vulkan start-up through Streamline failed (" + err + ")";
+        logWarning(note + "; using the system Vulkan loader");
+    }
     std::unique_ptr<Device> d(new Device());
     std::string err;
-    if (!d->init(options, &err)) {
+    if (!d->init(options, false, &err)) {
         if (error) *error = err;
         logError("Vulkan device: " + err);
         return nullptr;
     }
+    if (!note.empty()) d->caps_.streamlineNote = note;
     return d;
 }
 
-bool Device::init(const DeviceOptions& options, std::string* error) {
+bool Device::init(const DeviceOptions& options, bool useStreamline, std::string* error) {
     counts_ = std::make_unique<MessageCounts>();
+    crashDumpDir_ = options.crashDumpDir;
 
     // ---- loader and instance ----
-    if (volkInitialize() != VK_SUCCESS) {
+    // Streamline first: slInit must run before any Vulkan call, and volk then takes its entry points from the interposer.
+    if (useStreamline) {
+        std::string why;
+        streamline_ = Streamline::load(options.streamlineDir, &why);
+        if (!streamline_) {
+            caps_.streamlineNote = why;
+            logInfo("Streamline is not used: " + why);
+        }
+    }
+    if (streamline_) {
+        volkInitializeCustom(streamline_->instanceProcAddr());
+    } else if (volkInitialize() != VK_SUCCESS) {
         *error = "the Vulkan loader (vulkan-1.dll) was not found; install a current graphics driver";
         return false;
     }
@@ -215,7 +249,16 @@ bool Device::init(const DeviceOptions& options, std::string* error) {
             vkEnumerateInstanceExtensionProperties(kLayer, &ln, nullptr);
             std::vector<VkExtensionProperties> le(ln);
             vkEnumerateInstanceExtensionProperties(kLayer, &ln, le.data());
-            if (hasExt(le, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)) { instExts.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME); syncValidation = true; }
+            if (hasExt(le, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME)) {
+                if (streamline_) {
+                    // The interposer checks every requested instance extension against the loader's own list, which does not include
+                    // the ones a layer provides: ask the layer for synchronization validation through its environment variable instead.
+                    _putenv_s("VK_LAYER_ENABLES", "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT");
+                } else {
+                    instExts.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+                    syncValidation = true;
+                }
+            }
         } else {
             logWarning("--validation: VK_LAYER_KHRONOS_validation is not installed (install the Vulkan SDK); running without");
         }
@@ -365,6 +408,17 @@ bool Device::init(const DeviceOptions& options, std::string* error) {
     caps_.partitionedAccelerationStructure = caps_.accelerationStructure && enableIf(VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME, supported.partitioned.partitionedAccelerationStructure);
     caps_.clusterAccelerationStructure = caps_.accelerationStructure && enableIf(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME, supported.cluster.clusterAccelerationStructure);
     caps_.descriptorHeap = avail.count(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME) && supported.heap.descriptorHeap;   // reported, not enabled
+    caps_.diagnostics = options.gpuCrashDumps && avail.count(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME) &&
+                        avail.count(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME) && supported.diagnostics.diagnosticsConfig;
+    // Reflex (VK_NV_low_latency2, which Streamline adds itself) needs VK_KHR_present_id next to it; Streamline does not add that one.
+    const bool presentId = streamline_ && avail.count(VK_KHR_PRESENT_ID_EXTENSION_NAME) && supported.presentId.presentId;
+    if (presentId) enabled.insert(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+    if (caps_.diagnostics) {
+        enabled.insert(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+        enabled.insert(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+    } else if (options.gpuCrashDumps) {
+        logWarning("--gpu-crash-dumps: this device has no VK_NV_device_diagnostics_config / diagnostic checkpoints");
+    }
     const bool priorityExt = avail.count(VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME) > 0;
     if (avail.count(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) enabled.insert(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 
@@ -407,6 +461,7 @@ bool Device::init(const DeviceOptions& options, std::string* error) {
     on.f13.dynamicRendering = VK_TRUE;
     on.f13.synchronization2 = VK_TRUE;
     on.f13.maintenance4 = supported.f13.maintenance4;
+    on.f13.privateData = supported.f13.privateData;   // Streamline creates private data slots
     on.f13.shaderDemoteToHelperInvocation = supported.f13.shaderDemoteToHelperInvocation;
     on.accel.accelerationStructure = caps_.accelerationStructure;
     on.rayQuery.rayQuery = caps_.rayQuery;
@@ -418,6 +473,8 @@ bool Device::init(const DeviceOptions& options, std::string* error) {
     on.atomicFloat.shaderBufferFloat32AtomicAdd = caps_.shaderAtomicFloat;
     on.partitioned.partitionedAccelerationStructure = caps_.partitionedAccelerationStructure;
     on.cluster.clusterAccelerationStructure = caps_.clusterAccelerationStructure;
+    on.diagnostics.diagnosticsConfig = caps_.diagnostics;
+    on.presentId.presentId = presentId;
     on.link(enabled, false);
 
     // ---- create the device (global priority first, then without when the driver refuses it) ----
@@ -469,8 +526,11 @@ bool Device::init(const DeviceOptions& options, std::string* error) {
         }
         std::vector<const char*> exts = devExts;
         if (!withPriority && priorityExt) exts.pop_back();
+        VkDeviceDiagnosticsConfigCreateInfoNV diag{VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV};
+        diag.flags = VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV | VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV;
+        diag.pNext = &on.f2;
         VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-        dci.pNext = &on.f2;
+        dci.pNext = caps_.diagnostics ? static_cast<const void*>(&diag) : static_cast<const void*>(&on.f2);
         dci.queueCreateInfoCount = static_cast<uint32_t>(qci.size());
         dci.pQueueCreateInfos = qci.data();
         dci.enabledExtensionCount = static_cast<uint32_t>(exts.size());
@@ -501,6 +561,12 @@ bool Device::init(const DeviceOptions& options, std::string* error) {
     else if (secondOnSameFamily) vkGetDeviceQueue(device_, graphicsFamily_, 1, &computeQueue_);
     else computeQueue_ = graphicsQueue_;
     caps_.dedicatedComputeQueue = dedicated;
+
+    if (streamline_) {
+        streamline_->deviceCreated(instance_, physical_, device_);
+        caps_.streamline = true;
+        caps_.reflex = streamline_->status().reflexActive;
+    }
 
     // ---- caps text ----
     caps_.deviceName = best->props.deviceName;
@@ -533,9 +599,49 @@ bool Device::init(const DeviceOptions& options, std::string* error) {
 Device::~Device() {
     if (device_) vkDeviceWaitIdle(device_);
     if (allocator_) vmaDestroyAllocator(allocator_);
+    if (streamline_) streamline_->shutdown();   // SL wants to go while the device still exists
     if (device_) vkDestroyDevice(device_, nullptr);
     if (messenger_) vkDestroyDebugUtilsMessengerEXT(instance_, messenger_, nullptr);
     if (instance_) vkDestroyInstance(instance_, nullptr);
+}
+
+std::string Device::writeCrashDump(const std::string& where) {
+    if (!caps_.diagnostics || !device_) return {};
+    if (crashDumpWritten_.exchange(true)) return {};
+    char stamp[32];
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    localtime_s(&local, &now);
+    std::strftime(stamp, sizeof stamp, "%Y%m%d_%H%M%S", &local);
+    const std::string path = (crashDumpDir_.empty() ? std::string(".") : crashDumpDir_) + "/gpu_crash_" + stamp + ".txt";
+    std::ofstream out(path);
+    if (!out) return {};
+    out << "GPU crash report (VK_NV_device_diagnostic_checkpoints)\n";
+    out << "device: " << caps_.deviceName << ", driver " << caps_.driver << ", Vulkan " << caps_.apiVersion << "\n";
+    out << "where: " << where << "\n";
+    auto dumpQueue = [&](const char* name, VkQueue queue) {
+        uint32_t n = 0;
+        if (!vkGetQueueCheckpointDataNV) return;
+        vkGetQueueCheckpointDataNV(queue, &n, nullptr);
+        std::vector<VkCheckpointDataNV> data(n, VkCheckpointDataNV{VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV});
+        if (n) vkGetQueueCheckpointDataNV(queue, &n, data.data());
+        out << "queue " << name << ": " << n << " checkpoint(s)\n";
+        for (const VkCheckpointDataNV& c : data) {
+            char line[96];
+            std::snprintf(line, sizeof line, "  stage 0x%08x marker %p\n", static_cast<unsigned>(c.stage), c.pCheckpointMarker);
+            out << line;
+        }
+    };
+    dumpQueue("graphics", graphicsQueue_);
+    if (computeQueue_ != graphicsQueue_) dumpQueue("compute", computeQueue_);
+    return path;
+}
+
+void Device::noteResult(VkResult result, const char* where) {
+    if (result != VK_ERROR_DEVICE_LOST) return;
+    logError(std::string("VK_ERROR_DEVICE_LOST at ") + where);
+    const std::string path = writeCrashDump(where);
+    if (!path.empty()) logError("GPU crash report written to " + path);
 }
 
 uint64_t Device::validationErrors() const { return counts_ ? counts_->errors.load() : 0; }

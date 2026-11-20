@@ -3,6 +3,9 @@
 #include <doctest.h>
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include "base/log.h"
@@ -154,4 +157,110 @@ TEST_CASE("a device that must have ray tracing is refused cleanly when none exis
     auto d = Device::create(o, &err);
     if (d) CHECK(d->caps().lit());
     else CHECK_FALSE(err.empty());
+}
+
+// ---- T6.7: NVIDIA Streamline, Reflex, crash dumps ---------------------------------------------------------------------------
+
+TEST_CASE("Streamline: the device is made through the interposer and Reflex is on" * doctest::test_suite("gpu")) {
+    DeviceOptions o;
+    o.validation = true;
+    o.streamline = true;
+    std::string err;
+    auto d = Device::create(o, &err);
+    if (!d) { MESSAGE("no Vulkan device (" << err << "): GPU test skipped"); return; }
+    if (!d->caps().streamline) { MESSAGE("Streamline unavailable (" << d->caps().streamlineNote << "): skipped"); return; }
+    REQUIRE(d->streamline() != nullptr);
+    const StreamlineStatus st = d->streamline()->status();
+    CHECK(st.loaded);
+    CHECK(st.version == "2.14.16");
+    CHECK(st.pclSupported);
+    if (st.reflexSupported) {
+        CHECK(st.reflexActive);
+        CHECK(d->caps().reflex);
+    } else {
+        MESSAGE("this adapter has no Reflex: " << st.note);
+    }
+    CHECK(submitEmpty(*d, d->graphicsFamily(), d->graphicsQueue()));
+    CHECK(submitEmpty(*d, d->computeFamily(), d->computeQueue()));
+    // The markers are harmless without a swapchain and the frame counter moves.
+    for (int i = 0; i < 5; ++i) {
+        d->streamline()->beginFrame();
+        d->streamline()->sleep();
+        d->streamline()->marker(PclMarker::SimulationStart);
+        d->streamline()->marker(PclMarker::SimulationEnd);
+    }
+    CHECK(d->streamline()->status().frames == 5);
+    bool streamlineRow = false;
+    for (const auto& row : d->caps().rows())
+        if (row.first == "Streamline") streamlineRow = row.second == "on (interposer)";
+    CHECK(streamlineRow);
+    if (d->validationActive()) {
+        CHECK(d->validationErrors() == 0);
+    }
+}
+
+TEST_CASE("Streamline off (--no-streamline) leaves the plain Vulkan device" * doctest::test_suite("gpu")) {
+    DeviceOptions o;
+    o.streamline = false;
+    std::string err;
+    auto d = Device::create(o, &err);
+    if (!d) { MESSAGE("no Vulkan device (" << err << "): GPU test skipped"); return; }
+    CHECK_FALSE(d->caps().streamline);
+    CHECK_FALSE(d->caps().reflex);
+    CHECK(d->streamline() == nullptr);
+    CHECK(d->caps().streamlineNote.empty());
+    CHECK(submitEmpty(*d, d->graphicsFamily(), d->graphicsQueue()));
+}
+
+TEST_CASE("Streamline with the interposer missing runs as before and says why" * doctest::test_suite("gpu")) {
+    const std::filesystem::path empty = std::filesystem::temp_directory_path() / "native_test_no_streamline";
+    std::filesystem::create_directories(empty);
+    DeviceOptions o;
+    o.validation = true;
+    o.streamline = true;
+    o.streamlineDir = empty.string();
+    std::string err;
+    auto d = Device::create(o, &err);
+    if (!d) { MESSAGE("no Vulkan device (" << err << "): GPU test skipped"); return; }
+    CHECK_FALSE(d->caps().streamline);
+    CHECK(d->streamline() == nullptr);
+    CHECK_FALSE(d->caps().streamlineNote.empty());
+    CHECK(submitEmpty(*d, d->graphicsFamily(), d->graphicsQueue()));
+    if (d->validationActive()) CHECK(d->validationErrors() == 0);
+    std::filesystem::remove_all(empty);
+}
+
+TEST_CASE("GPU crash dumps: the report names the device and is written once" * doctest::test_suite("gpu")) {
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "native_test_crash_dump";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    DeviceOptions o;
+    o.gpuCrashDumps = true;
+    o.crashDumpDir = dir.string();
+    std::string err;
+    auto d = Device::create(o, &err);
+    if (!d) { MESSAGE("no Vulkan device (" << err << "): GPU test skipped"); return; }
+    if (!d->caps().diagnostics) { MESSAGE("no NV device diagnostics on this GPU: skipped"); return; }
+    CHECK(submitEmpty(*d, d->graphicsFamily(), d->graphicsQueue()));   // the device works with the diagnostics config on
+    d->noteResult(VK_SUCCESS, "nothing");                              // only a lost device writes
+    CHECK(std::filesystem::is_empty(dir));
+    const std::string path = d->writeCrashDump("test: simulated loss");
+    REQUIRE_FALSE(path.empty());
+    std::stringstream text;
+    {
+        std::ifstream in(path);
+        text << in.rdbuf();
+    }
+    CHECK(text.str().find(d->caps().deviceName) != std::string::npos);
+    CHECK(text.str().find("where: test: simulated loss") != std::string::npos);
+    CHECK(text.str().find("queue graphics") != std::string::npos);
+    CHECK(d->writeCrashDump("second").empty());   // once per process
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("GPU crash dumps are off unless asked for" * doctest::test_suite("gpu")) {
+    auto d = makeDevice();
+    if (!d) return;
+    CHECK_FALSE(d->caps().diagnostics);
+    CHECK(d->writeCrashDump("x").empty());
 }

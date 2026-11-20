@@ -624,7 +624,7 @@ void RenderThread::loop() {
                 sigs[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
                 usi.signalSemaphoreInfoCount = 2;
             }
-            vkQueueSubmit2(device_.graphicsQueue(), 1, &usi, VK_NULL_HANDLE);
+            device_.noteResult(vkQueueSubmit2(device_.graphicsQueue(), 1, &usi, VK_NULL_HANDLE), "upload submit");
             lastValue = value;
             if (more) {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -650,6 +650,13 @@ void RenderThread::loop() {
                 vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
             }
             gpu::Swapchain& sc = *v.swapchain;
+            // NVIDIA Reflex / PCL (T6.7): one frame token per viewport frame; the sleep is the pacing point before the frame's CPU work.
+            gpu::Streamline* sl = device_.streamline();
+            if (sl) {
+                sl->beginFrame();
+                sl->sleep();
+                sl->marker(gpu::PclMarker::SimulationStart);
+            }
             uint32_t imageIndex = 0;
             const VkResult acq = sc.acquire(f.acquire, &imageIndex);
             if (acq == VK_ERROR_OUT_OF_DATE_KHR || acq == VK_ERROR_SURFACE_LOST_KHR) {
@@ -665,6 +672,10 @@ void RenderThread::loop() {
                 continue;
             }
 
+            if (sl) {
+                sl->marker(gpu::PclMarker::SimulationEnd);
+                sl->marker(gpu::PclMarker::RenderSubmitStart);
+            }
             const VkExtent2D extent = sc.extent();
             const bool doCapture = w.capture != nullptr && sc.canCapture();
             vkResetCommandPool(device_.device(), f.pool, 0);
@@ -837,11 +848,16 @@ void RenderThread::loop() {
             si.pCommandBufferInfos = &cbInfo;
             si.signalSemaphoreInfoCount = 2;
             si.pSignalSemaphoreInfos = signalInfos;
-            vkQueueSubmit2(device_.graphicsQueue(), 1, &si, VK_NULL_HANDLE);
+            device_.noteResult(vkQueueSubmit2(device_.graphicsQueue(), 1, &si, VK_NULL_HANDLE), "viewport frame submit");
             f.timelineValue = signalValue;
             lastValue = signalValue;
-
+            if (sl) {
+                sl->marker(gpu::PclMarker::RenderSubmitEnd);
+                sl->marker(gpu::PclMarker::PresentStart);
+            }
             const VkResult pres = sc.present(device_.graphicsQueue(), imageIndex);
+            if (sl) sl->marker(gpu::PclMarker::PresentEnd);
+            device_.noteResult(pres, "present");
             if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR || pres == VK_ERROR_SURFACE_LOST_KHR) {
                 v.swapW = 0;
                 std::lock_guard<std::mutex> lock(mutex_);

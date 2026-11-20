@@ -10,6 +10,13 @@ non-NVIDIA GPU: the editor runs without it and nothing else changes).
 Names of Streamline constants and functions below are from memory of the public SDK (github.com/NVIDIA-RTX/Streamline, programming guides
 `ProgrammingGuide*.md`); **check each against the SDK headers when the task is done**, and write the corrected name here.
 
+> **As built (T6.7, SDK 2.14.16):** names checked against the headers: `slInit(Preferences)` with `renderAPI = RenderAPI::eVulkan`, features
+> `kFeatureReflex` / `kFeaturePCL`, `slIsFeatureSupported(feature, AdapterInfo{vkPhysicalDevice})`, `slGetFeatureFunction(feature, "slReflexSetOptions"...)`
+> (the header helpers call the import library, so `gpu/streamline.cpp` resolves them by name from the loaded DLL), `ReflexMode::eLowLatency`,
+> `PCLMarker::eSimulationStart ... ePresentEnd`, `slGetNewFrameToken`. Feature ids: DLSS 0, Reflex 3, PCL 4, DLSS-RR `kFeatureDLSS_RR` 1001.
+> The interposer's `vkCreateInstance` / `vkCreateDevice` proxies add the extensions the plugins ask for (not `VK_KHR_present_id`: the app adds it).
+> The Streamline zip has no Aftermath SDK. The signed production DLLs in `bin/x64` are used (the `development` folder has the unsigned ones).
+
 ## 1. What Streamline is, in this app
 
 Streamline (SL) is NVIDIA's open-source integration layer for DLSS Super Resolution (DLSS-SR), DLSS Ray Reconstruction (DLSS-RR, "DLSS-D" in

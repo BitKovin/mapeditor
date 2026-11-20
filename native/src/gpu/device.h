@@ -15,6 +15,7 @@
 #undef near
 #undef far
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -23,12 +24,23 @@
 
 #include <vk_mem_alloc.h>
 
+#include "gpu/streamline.h"
+
 namespace native::gpu {
 
 struct DeviceOptions {
     bool validation = false;        // --validation: VK_LAYER_KHRONOS_validation + debug messenger (errors are counted)
     bool requireRayTracing = false; // fail instead of falling back to a device without ray query (Lit would be off)
     int forceDeviceIndex = -1;      // >= 0: use the n-th physical device (for tests / multi-GPU machines)
+    // NVIDIA Streamline (T6.7): create the instance and device through sl.interposer.dll. Off here so tests and tools stay plain;
+    // the program turns it on unless --no-streamline. When the DLL is missing or Streamline refuses the device, the device is made
+    // the normal way and Caps::streamline stays false (Caps::streamlineNote says why).
+    bool streamline = false;
+    std::string streamlineDir;      // folder with sl.interposer.dll and the plugins; empty = the folder of the exe
+    // --gpu-crash-dumps: enable VK_NV_device_diagnostics_config / VK_NV_device_diagnostic_checkpoints so a device loss can be written
+    // out by Device::writeCrashDump (dev tool, off by default: automatic checkpoints cost a little GPU time).
+    bool gpuCrashDumps = false;
+    std::string crashDumpDir;       // where gpu_crash_*.txt goes; empty = the current folder
 };
 
 // Everything the rest of the program may ask about the device. Optional features are on only when the device exposes the
@@ -55,6 +67,11 @@ struct DeviceCaps {
     bool partitionedAccelerationStructure = false;  // VK_NV_partitioned_acceleration_structure (M12)
     bool clusterAccelerationStructure = false;      // VK_NV_cluster_acceleration_structure (M12)
     bool descriptorHeap = false;          // VK_EXT_descriptor_heap (not used in v1)
+
+    bool streamline = false;              // the device was created through the Streamline interposer
+    bool reflex = false;                  // Reflex low latency is on (needs streamline)
+    bool diagnostics = false;             // device diagnostics config + checkpoints are on (--gpu-crash-dumps)
+    std::string streamlineNote;           // why Streamline is off when it was asked for ("sl.interposer.dll not found ...")
 
     bool dedicatedComputeQueue = false;   // the compute queue is from a different family than graphics
     bool lit() const { return accelerationStructure && rayQuery; }
@@ -98,9 +115,18 @@ public:
 
     AllocationStats allocationStats() const;
 
+    // Null when Streamline is not in use. The render thread uses it for Reflex sleep and PCL markers.
+    Streamline* streamline() const { return streamline_.get(); }
+
+    // Writes gpu_crash_<time>.txt (device, where it happened, the last checkpoints of the graphics and compute queues) once per
+    // process; returns the path, or empty when dumps are off or one was already written. Safe from any thread.
+    std::string writeCrashDump(const std::string& where);
+    // Call with a failing VkResult from a queue operation: a VK_ERROR_DEVICE_LOST writes the dump (when enabled) and is logged.
+    void noteResult(VkResult result, const char* where);
+
 private:
     Device() = default;
-    bool init(const DeviceOptions& options, std::string* error);
+    bool init(const DeviceOptions& options, bool useStreamline, std::string* error);
 
     VkInstance instance_ = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
@@ -111,6 +137,9 @@ private:
     uint32_t graphicsFamily_ = 0, computeFamily_ = 0;
     DeviceCaps caps_;
     std::unique_ptr<MessageCounts> counts_;
+    std::unique_ptr<Streamline> streamline_;   // before the device: shut down first, destroyed after nothing uses it
+    std::string crashDumpDir_;
+    std::atomic<bool> crashDumpWritten_{false};
 };
 
 } // namespace native::gpu
