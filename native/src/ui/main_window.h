@@ -174,6 +174,8 @@ public:
     // Saves under another path (relative to the assets root, or absolute inside it); the document takes the new path.
     void saveDocumentAs(const std::string& path);
     // The dialogs behind the File menu: QFileDialog restricted to the assets root.
+    // File > New: an empty map (no entities) that has no path yet, so Save asks for one. Unsaved changes are confirmed first; false when declined.
+    bool newDocument();
     void openWithDialog();
     void saveAsWithDialog();
     void chooseAssetsRootWithDialog();

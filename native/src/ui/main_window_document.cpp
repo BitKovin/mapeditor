@@ -26,6 +26,7 @@
 #include "doc/commands.h"
 #include "doc/document.h"
 #include "doc/changeset.h"
+#include "core/document.h"
 #include "doc/io.h"
 #include "doc/prefabs.h"
 #include "render/picking.h"
@@ -386,6 +387,20 @@ void MainWindow::chooseAssetsRootWithDialog() {
     const QString start = assetsRoot_.empty() ? QDir::homePath() : QString::fromStdString(assetsRoot_);
     const QString dir = QFileDialog::getExistingDirectory(this, QStringLiteral("Assets folder"), start);
     if (!dir.isEmpty()) setAssetsRoot(dir.toStdString());
+}
+
+bool MainWindow::newDocument() {
+    if (busy()) return false;
+    if (isDirty() && !confirm(QStringLiteral("New map"), QStringLiteral("The map has unsaved changes. Discard them?"))) return false;
+    const std::string text = std::string("{\"entities\": [], \"prefabInstances\": [], \"schemaVersion\": \"") + core::kSchemaVersion + "\"}";
+    const doc::LoadResult r = doc::loadDocumentText(text);
+    if (!r.version) {
+        reportError(QString::fromStdString(r.error));
+        return false;
+    }
+    setDocument(r.version, true);   // nothing to lose yet; the missing path makes Save ask where to put it
+    statusBar()->showMessage(QStringLiteral("New map"), 3000);
+    return true;
 }
 
 void MainWindow::openWithDialog() {

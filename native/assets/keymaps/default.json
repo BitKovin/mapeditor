@@ -1,6 +1,7 @@
 {
   "name": "default",
   "bindings": [
+    { "action": "file.new",     "context": "global", "input": "Ctrl+N" },
     { "action": "file.open",    "context": "global", "input": "Ctrl+O" },
     { "action": "file.save",    "context": "global", "input": "Ctrl+S" },
     { "action": "file.save_as", "context": "global", "input": "Ctrl+Shift+S" },

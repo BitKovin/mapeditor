@@ -210,6 +210,8 @@ Performance numbers refer to the development machine (RTX 4070 Ti, 1440p) and lv
 **M4 gate:** block out a small level from scratch (boxes, a light, a player start), save, reopen in the old Shell: it
 opens and looks the same.
 
+*Gate check (2026-11-20):* `native_gui_tests` case "M4 gate" does it end to end in a real window: File > New (new action `file.new`, Ctrl+N: an empty map without a path, unsaved changes are confirmed first; needed because the editor had no way to start a map from nothing), three boxes drawn on the ground with the box tool (a floor and two walls, each rectangle + height), a `light_point` and an `info_player_start` placed through `placeEntity` (the Place panel's path), Save As, then the saved file is read by `core::documentFromJson` (the reader the Shell's Core uses) and passes `core::validateDocument` with the same 3 brushes, light and player start; a fresh native window opens it again to the same bytes (`serializeDocument`), clean state and the same scene object count. What this does not cover: the Shell's own UI is not driven (the Shell reads maps only through the Core, so the Core read is the contract); looking at the same file in the Shell remains a manual check for the user.
+
 ---
 
 ## M5 — Core refactors for live lighting

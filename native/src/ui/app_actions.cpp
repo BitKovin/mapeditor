@@ -572,6 +572,17 @@ void registerAppActions(actions::Registry& r) {
     const auto windowOf = [](const ActionEnv& env) { auto* u = env.as<UiEnv>(); return u ? u->window : nullptr; };
     {
         ActionDef d;
+        d.id = "file.new";
+        d.label = "New";
+        d.category = "File";
+        d.description = "Starts an empty map; Save then asks where to put it.";
+        d.menu = "&File";
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { auto* w = windowOf(env); return w && !w->busy(); };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->newDocument(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
         d.id = "file.open";
         d.label = "Open...";
         d.category = "File";
