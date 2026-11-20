@@ -171,6 +171,25 @@ std::string newInstanceName(const doc::DocumentVersion& d, const std::string& fi
     return cand;
 }
 
+std::vector<std::string> instanceDisplayNames(const doc::DocumentVersion& d) {
+    std::set<std::string> taken;
+    for (const auto& p : d.instances)
+        if (!p->typed.name.empty()) taken.insert(p->typed.name);
+    std::vector<std::string> out;
+    for (const auto& p : d.instances) {
+        if (!p->typed.name.empty()) {
+            out.push_back(p->typed.name);
+            continue;
+        }
+        const std::string base = prefabBaseName(p->typed.file);
+        std::string cand = base;
+        for (int n = 2; taken.count(cand); ++n) cand = base + std::to_string(n);
+        taken.insert(cand);
+        out.push_back(cand);
+    }
+    return out;
+}
+
 // ---- delete / duplicate / group -----------------------------------------------------------------------------------------------------
 
 EditResult deleteSelection(const Base& base, const std::vector<SelRef>& sels) {

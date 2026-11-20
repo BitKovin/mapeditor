@@ -439,7 +439,9 @@ void MainWindow::setupScene() {
     entityDefs_ = std::make_shared<core::EntityDefinitions>(core::loadEntityDefinitions(root / profile.entityDefinitions));
     if (!picker_) picker_ = std::make_unique<render::Picker>();
     picker_->setBoxOf(scene::classBoxes(entityDefs_.get()));
+    prefabRoot_ = profile.prefabRoot;
     refreshOverlays();
+    emit entityDefinitionsChanged();
 }
 
 void MainWindow::submitScene(const doc::ChangeSet& changes) {

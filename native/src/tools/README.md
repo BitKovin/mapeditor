@@ -12,6 +12,11 @@ drawing. Depends on `native_render` (rays, camera maths, line vertices) and `nat
 | `box_tool` | the maths of the box-draw tool: planes, grid snapping along a surface, rectangle and height (Shift: square / cube), `buildBrush`, preview lines, `newId` (port of `tools/boxTool.ts`) |
 | `edit_ops` | delete / duplicate / group / ungroup of a selection and the clipboard (build, serialize, parse, `pasteInto`) as pure `DocumentVersion` -> `EditResult` functions (ports of the parts of `state/actions.ts` and `state/clipboard.ts`) |
 | `visibility` | hide keys (`e:` / `b:` / `i:`), hide-by-class rules, `hiddenObjects` for the renderer and picker (port of `model/visibility.ts`) |
+| `properties` | the typed property editors of Details, Qt-free: field kind per .ent key type, colours (`parseColor1`, `colorToHex`, ...), `clampValue`, `parseVec3`, defaults (port of `ui/properties.ts`) |
+| `entity_edit` | the Details edits and placement as `DocumentVersion` -> `EditResult` functions: keyvalue / classname / origin / angles / scale / references, brush operation and carve, `addPointEntity`, `spawnInstance`, rename, instance transform, per-instance overrides (port of the matching parts of `state/actions.ts`) |
+| `ref_targets` | what a reference can point at (path, label, group, resolved name) and the reference keys of a class (port of `model/refs.ts`) |
+| `outliner` | the Outliner rows as data: search, fold, eye states, selection lighting, the row to scroll to (port of the model part of `OutlinerPanel`) |
+| `details` | the Details form as rows, each with the edit it makes (`DetailsEdit` / `EditValue`), and `applyDetailsEdit` (port of the model part of `InspectorPanel`) |
 | `shapes` | box, cylinder, wedge, arch, stairs and sphere filling the drawn box, quarter turns, smooth edges, edge preview (port of `model/shapes.ts`) |
 
 **As built (T4.1).** `ui/main_window_transform.cpp` runs the operators: a `TransformSession` keeps the document `base` the operation began on; every pointer move
@@ -31,4 +36,13 @@ the `shape` record for parametric regeneration, projection defaults of new faces
 (`QClipboard`), paste parses it (empty or foreign text is refused with a status message). Duplicate and Paste then start a grab in the viewport under the pointer (the active one from
 a menu). Hiding is a view setting: `hide_` (keys + rules) -> `refreshHidden()` computes `hiddenObjects(snapshot)` on every snapshot and hide change, hands it to the render thread
 (`RenderThread::setHiddenObjects`, skipped in `rebuildDraws`) and to the picker / overlay, and prunes the selection (no undo step). Markers in the set: `{"", entityId, ""}` an entity
-hidden as a whole (point entities), `{instanceId, "", ""}` a hidden prefab instance. Not done: the volume-class list and custom-rule entry (Outliner, T4.4).
+hidden as a whole (point entities), `{instanceId, "", ""}` a hidden prefab instance. Not done: the volume-class list and custom-rule entry (the Outliner of T4.4 has only Unhide all).
+
+**As built (T4.4).** The three panels are thin: `tools/outliner` and `tools/details` build rows, the widgets draw them and report the user's edits as a `DetailsEdit` (what the
+row edits: keyvalue, number into a vector axis, reference list, spawnflag bit, override of a prefab entity, ...) plus an `EditValue`; `MainWindow::editDetails` runs
+`applyDetailsEdit` and commits one undo step. A refused or unchanged edit rebuilds the form so the field shows the document again; while a field has the keyboard the form is
+not rebuilt (it catches up when the focus leaves). The Outliner rebuilds only when the document version, the selection revision, the hide state, the search or the folds
+change, keeps its scroll position, and scrolls to the primary selection only when that selection is a different thing than last time (`RevealTracker`). A click on a hidden
+row only says how to get it back. Place adds an entity or prefab where the camera looks: the first thing under the middle of the active view (resting on that surface by the
+class box), else the ground at height 0, else the camera's target. Not done: drag from Place into a viewport, thumbnails, Decals tab, parametric shape record and its Details
+section, terrain rows, pipette, asset picker button.

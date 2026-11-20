@@ -29,6 +29,7 @@
 #include "app/actions/router.h"
 #include "render/math3d.h"
 #include "scene/snapshot.h"
+#include "tools/details.h"
 #include "tools/edit_ops.h"
 #include "tools/gizmo.h"
 #include "tools/modal.h"
@@ -45,6 +46,7 @@ class QKeyEvent;
 namespace ads {
 class CDockManager;
 class CDockWidget;
+class CDockAreaWidget;
 } // namespace ads
 namespace native::gpu { class Device; }
 namespace native::base { class JobPool; }
@@ -84,6 +86,9 @@ struct BoxDrawing;
 struct TransformSession;
 class StatsPanel;
 class RegistryMenus;
+class OutlinerPanel;
+class DetailsPanel;
+class PlacePanel;
 
 // What the window needs from the application (owned by main(); the window never outlives them). All null in widget-only tests.
 struct Services {
@@ -290,7 +295,31 @@ public:
     // The objects of the latest snapshot that are hidden now (what the render thread skips and the picker ignores).
     std::shared_ptr<const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>> hiddenObjects() const { return hiddenSet_; }
 
+    // ---- the Place, Outliner and Details panels (T4.4) ----
+    ads::CDockWidget* placeDock() const { return placeDock_; }
+    ads::CDockWidget* outlinerDock() const { return outlinerDock_; }
+    ads::CDockWidget* detailsDock() const { return detailsDock_; }
+    OutlinerPanel* outliner() const { return outliner_; }
+    DetailsPanel* details() const { return details_; }
+    PlacePanel* place() const { return place_; }
+    // The game profile's entity definitions (null until an assets root with a profile is set) and its prefab folder (assets-relative).
+    const core::EntityDefinitions* entityDefinitions() const { return entityDefs_.get(); }
+    std::string prefabRoot() const { return prefabRoot_; }
+    // Hide / show what an Outliner row stands for (its key, see tools/visibility). A view setting, not an undo step.
+    void toggleHiddenKey(const std::string& key);
+    // An Outliner click: selects the thing (Toggle: Ctrl-click adds or removes it); a hidden one only says how to get it back. False when it was not selected.
+    bool selectFromOutliner(const doc::SelRef& ref, bool hidden, bool toggle);
+    // A Details edit (one undo step; refusals go to the status bar). The primary selection stays.
+    bool editDetails(const tools::DetailsEdit& edit, const tools::EditValue& value);
+    // Where a new entity of `classname` goes: resting on the surface in the middle of the active view (else on the ground, else at the camera's target).
+    render::Vec3 placementPoint(const std::string& classname) const;
+    // A click in the Place panel: adds a point entity / a prefab instance there and selects it.
+    bool placeEntity(const std::string& classname, const std::vector<std::pair<std::string, std::string>>& keyvalues = {});
+    bool placePrefab(const std::string& file);
+
 signals:
+    // The entity definitions or the prefab folder changed (a new assets root).
+    void entityDefinitionsChanged();
     // The hide keys or rules changed.
     void hiddenChanged();
     // The tool, the shape or its parameters changed.
@@ -374,6 +403,8 @@ private:
     void updateBoxPreview();
     void statusBox();
     void refreshHidden();
+    void createToolDocks();                          // main_window_panels.cpp
+    void layoutToolDocks(ads::CDockAreaWidget* statsArea);
     render::PickOptions pickOptions() const;
     bool applyEdit(const tools::EditResult& result, bool selectResult = true);
     // Like runJob, but invisible to busy(): housekeeping that must not disable the file actions.
@@ -383,6 +414,11 @@ private:
     ads::CDockManager* dockManager_ = nullptr;
     ads::CDockWidget* statsDock_ = nullptr;
     StatsPanel* stats_ = nullptr;
+    ads::CDockWidget *placeDock_ = nullptr, *outlinerDock_ = nullptr, *detailsDock_ = nullptr;
+    OutlinerPanel* outliner_ = nullptr;
+    DetailsPanel* details_ = nullptr;
+    PlacePanel* place_ = nullptr;
+    std::string prefabRoot_ = "prefabs";
     std::vector<ViewportPanel> panels_;
     LayoutPreset preset_ = LayoutPreset::One;
     int active_ = 0;

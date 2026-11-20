@@ -55,8 +55,9 @@ const char* const kPreset = "layout/preset";
 const char* const kViewports = "layout/viewports";
 const char* const kDockState = "layout/dockState";
 const char* const kGeometry = "window/geometry";
-constexpr int kStateVersion = 1;
-constexpr int kStatsWidth = 440;
+constexpr int kStateVersion = 2;   // 2: the Place, Outliner and Details docks
+constexpr int kStatsWidth = 400;
+constexpr int kPlaceWidth = 250;
 
 int viewportCount(LayoutPreset p) { return static_cast<int>(p); }
 
@@ -96,6 +97,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     statsDock_->setObjectName(QStringLiteral("statsDock"));
     stats_ = new StatsPanel(statsDock_);
     statsDock_->setWidget(stats_);
+    createToolDocks();
 
     saveTimer_.setSingleShot(true);
     saveTimer_.setInterval(600);
@@ -132,6 +134,9 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         }
     } else {
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, statsDock_);   // widget-only tests
+        dockManager_->addDockWidget(ads::CenterDockWidgetArea, placeDock_);
+        dockManager_->addDockWidget(ads::CenterDockWidgetArea, outlinerDock_);
+        dockManager_->addDockWidget(ads::CenterDockWidgetArea, detailsDock_);
     }
     // Documents: the assets root (--assets, else the saved one), the recent list, the job results timer.
     assetsRoot_ = services_.assetsRoot;
@@ -269,16 +274,19 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
             a3 = dockManager_->addDockWidget(ads::BottomDockWidgetArea, panels_[3].dock, a1);
         }
     }
+    dockManager_->addDockWidget(ads::LeftDockWidgetArea, placeDock_);
     ads::CDockAreaWidget* statsArea = dockManager_->addDockWidget(ads::RightDockWidgetArea, statsDock_);
-    // Equal viewport cells, the Stats dock at a fixed width on the right.
+    // Equal viewport cells; the Place dock on the left and the Outliner / Details / Stats column on the right at fixed widths.
     if (a2) dockManager_->setSplitterSizes(a0, {1000, 1000});
     if (a3) dockManager_->setSplitterSizes(a1, {1000, 1000});
     const int columns = n == 1 ? 1 : 2;
-    const int cell = std::max(200, (width() - kStatsWidth) / columns);
+    const int cell = std::max(200, (width() - kStatsWidth - kPlaceWidth) / columns);
     QList<int> root;
+    root << kPlaceWidth;
     for (int c = 0; c < columns; ++c) root << cell;
     root << kStatsWidth;
     dockManager_->setSplitterSizes(statsArea, root);
+    layoutToolDocks(statsArea);
     active_ = 0;
     building_ = false;
 }
@@ -308,6 +316,9 @@ void MainWindow::setLayoutPreset(LayoutPreset preset) {
     if (preset == preset_ && !panels_.empty()) return;
     const std::vector<SavedViewport> saved = captureViewports();
     dockManager_->removeDockWidget(statsDock_);
+    dockManager_->removeDockWidget(placeDock_);
+    dockManager_->removeDockWidget(outlinerDock_);
+    dockManager_->removeDockWidget(detailsDock_);
     destroyViewports();
     buildViewports(preset, saved);
     if (menus_) menus_->refresh();

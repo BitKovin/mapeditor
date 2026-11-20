@@ -50,5 +50,7 @@ EditResult pasteInto(const std::shared_ptr<const doc::DocumentVersion>& base, co
 
 // A prefab instance name for a new instance of `file`: the first free base, base2, base3... (prefabs/sub/door.map.json -> door).
 std::string newInstanceName(const doc::DocumentVersion& doc, const std::string& file);
+// The names the instances go by, parallel to DocumentVersion::instances: the explicit name, else the file's base name made unique (door, door2, ...).
+std::vector<std::string> instanceDisplayNames(const doc::DocumentVersion& doc);
 
 } // namespace native::tools

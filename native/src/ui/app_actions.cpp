@@ -669,6 +669,40 @@ void registerAppActions(actions::Registry& r) {
         };
         add(r, std::move(d));
     }
+    {   // the dock panels: closing one with its x leaves it reachable here
+        struct Panel {
+            const char* id;
+            const char* label;
+            ads::CDockWidget* (MainWindow::*dock)() const;
+        };
+        static const Panel panels[] = {{"view.place.toggle", "Place", &MainWindow::placeDock},
+                                       {"view.outliner.toggle", "Outliner", &MainWindow::outlinerDock},
+                                       {"view.details.toggle", "Details", &MainWindow::detailsDock}};
+        bool first = true;
+        for (const Panel& p : panels) {
+            ActionDef d;
+            d.id = p.id;
+            d.label = p.label;
+            d.category = "View";
+            d.kind = ActionKind::Toggle;
+            d.menu = "&View";
+            d.menuSeparatorBefore = first;
+            first = false;
+            const auto dockOf = [dock = p.dock](const ActionEnv& env) -> ads::CDockWidget* {
+                auto* u = env.as<UiEnv>();
+                return u && u->window ? (u->window->*dock)() : nullptr;
+            };
+            d.enabled = [dockOf](const ActionEnv& env, const json&) { return dockOf(env) != nullptr; };
+            d.checked = [dockOf](const ActionEnv& env, const json&) {
+                auto* w = dockOf(env);
+                return w && !w->isClosed();
+            };
+            d.run = [dockOf](ActionEnv& env, const Invocation&) {
+                if (auto* w = dockOf(env)) w->toggleView(w->isClosed());
+            };
+            add(r, std::move(d));
+        }
+    }
     {
         ActionDef d;
         d.id = "view.stats.toggle";
@@ -676,7 +710,6 @@ void registerAppActions(actions::Registry& r) {
         d.category = "View";
         d.kind = ActionKind::Toggle;
         d.menu = "&View";
-        d.menuSeparatorBefore = true;
         d.enabled = [](const ActionEnv& env, const json&) { auto* u = env.as<UiEnv>(); return u && u->window; };
         d.checked = [](const ActionEnv& env, const json&) {
             auto* u = env.as<UiEnv>();
