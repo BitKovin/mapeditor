@@ -85,6 +85,7 @@ int main(int argc, char** argv) {
     services.vulkanInstance = &vulkanInstance;
     services.settings = screenshotRun ? nullptr : &layoutSettings;
     services.forceViewports = parsed.options.layoutViewports;
+    services.watchInput = true;
     // Keys: the shipped preset next to the exe, the person's changes in %APPDATA%\mapeditor_native\keymaps (none in a screenshot run).
     services.keymapPresetPath = (QCoreApplication::applicationDirPath() + QStringLiteral("/keymaps/default.json")).toStdString();
     const QString appData = qEnvironmentVariable("APPDATA");

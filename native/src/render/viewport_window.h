@@ -68,6 +68,12 @@ public:
     void flyKey(FlyKey key, bool down);
     void setBoost(bool on) { rig_.setBoost(on); }
     void stopFlight();
+    // Forgets everything a running gesture left behind: the pointer lock and its hidden cursor, the fly keys and the boost. Used when input is
+    // cancelled (focus lost, a popup took the mouse) so nothing can stay "held" without the button or key being down.
+    void resetInput();
+    // Whether the system's button state (QMouseEvent::buttons) overrules a gesture that thinks a button is down (default). Tests that inject
+    // presses without a real button turn it off, since the real moves that follow would report no button.
+    void setVerifyButtons(bool on) { verifyButtons_ = on; }
 
     // Renders the next frame and returns it (device pixels); empty on failure. Blocks the UI thread: tests / screenshots.
     CapturedImage capture();
@@ -98,6 +104,7 @@ private:
     CameraRig rig_;
     std::function<void()> onChanged_, onActivated_, onCancel_;
     InputHook hook_;
+    bool verifyButtons_ = true;
     unsigned lockedButtons_ = 0;        // bit per mouse button (1 << button number) that locked the pointer
     bool cursorHidden_ = false;
     QPoint lockPos_;

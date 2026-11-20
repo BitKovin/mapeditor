@@ -173,3 +173,14 @@ fallback "cancel / close" (it may get *additional* meanings, but always cancels 
 | U15 | **Theme and scale**: dark / light theme, UI scale independent of Windows DPI, viewport font size. | [plan] |
 | U16 | **Pie menus** (radial quick menus bound to a hold key, user-editable contents) and a **Quick favourites** menu built from any actions. | [ask] |
 | U17 | **Macros**: record a sequence of actions and bind it. | [ask] |
+
+## As built: input that cannot get stuck (after T4.3)
+
+A hold (fly key, look / pan / select drag) must never outlive the key or button that started it. Layers, from the event path outwards:
+- **Router**: a hold's dependent holds end with it (the fly keys end with the look button); a key *release* is never filtered by the text-field rule; `Router::release(trigger)`
+  ends a hold whose release never arrived; a `MouseMove` that carries the system's button state (`InputEvent::buttons` / `buttonsKnown`) ends a mouse hold whose button is not down.
+- **ViewportWindow**: the pointer lock is dropped when a move reports its button up (`setVerifyButtons`), `resetInput()` clears lock, cursor, fly keys and boost.
+- **MainWindow**: key releases still reach the router while a menu or dialog is open (a key *press* for the popup cancels the holds); `cancelInput()` (application deactivated, viewports
+  rebuilt) also resets every viewport; a click in a viewport takes the keyboard from a text field; while something is held a 100 ms timer (`Services::watchInput`, on in the app) asks the
+  system (`ui/input_probe`: GetAsyncKeyState) whether each held key / button is still down and releases the ones that are not (`reconcileInput(probe)`, testable with a fake probe).
+Tests that inject events without real buttons set `Services::verifyButtons = false` (gui_support does), since the real moves that follow report no button.

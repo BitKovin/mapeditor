@@ -79,6 +79,7 @@ struct App {
         s.renderThread = rt.get();
         s.vulkanInstance = &qvk;
         s.keymapPresetPath = std::string(NATIVE_ASSETS_DIR) + "/keymaps/default.json";
+        s.verifyButtons = false;   // events are injected without real buttons; the real moves that follow must not end the gestures
         return s;
     }
 };

@@ -35,6 +35,7 @@
 #include "tools/shapes.h"
 #include "tools/visibility.h"
 #include "ui/app_actions.h"
+#include "ui/input_probe.h"
 
 class QSettings;
 class QVulkanInstance;
@@ -95,6 +96,8 @@ struct Services {
     std::string userKeymapPath;        // the user's changes against the preset (%APPDATA%/mapeditor_native/keymaps/<name>.json); may not exist
     base::JobPool* jobs = nullptr;     // loads and saves run here (not on the UI thread); null = synchronously (tests)
     std::string assetsRoot;            // --assets; empty = the saved setting ("assets/root" in `settings`)
+    bool verifyButtons = true;         // the system's button state overrules a drag that lost its release (tests that inject presses turn it off)
+    bool watchInput = false;           // while something is held, ask the system every 100 ms whether it still is (repairs releases that never arrived); the app turns it on
 };
 
 enum class LayoutPreset { One = 1, Two = 2, Four = 4 };
@@ -136,6 +139,11 @@ public:
     RegistryMenus* menus() const { return menus_; }
     // Layout actions need viewports (render services).
     bool canLayout() const { return services_.renderThread && services_.vulkanInstance; }
+    // Ends the holds whose key or button the probe says is up (`probe(trigger, known)`: trigger "btn:2" / "key:W"), and unlocks a viewport pointer whose
+    // button is up. The no-argument form asks the operating system (ui/input_probe). Called by a timer while something is held (Services::watchInput).
+    void reconcileInput(const InputProbe& probe);
+    void reconcileInput();
+    void setVerifyButtons(bool on);
     // Writes the user keymap layer to Services::userKeymapPath (created on demand); false without a path or on a write error.
     bool saveUserKeymap() const;
     std::string keymapError() const { return keymapError_; }
@@ -379,6 +387,7 @@ private:
     LayoutPreset preset_ = LayoutPreset::One;
     int active_ = 0;
     QTimer saveTimer_;
+    QTimer inputTimer_;
     bool building_ = false;
     actions::Registry registry_;
     actions::Keymap keymap_;

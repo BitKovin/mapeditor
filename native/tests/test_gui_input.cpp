@@ -289,3 +289,68 @@ TEST_CASE("Shift boosts the flight; releasing the look button ends the flight" *
     CHECK(app.device->validationErrors() == 0);
     CHECK(app.device->allocationStats().allocationCount == app.baseAllocations);
 }
+
+TEST_CASE("input that lost its release recovers: the camera never stays pinned or flying" * doctest::test_suite("gpu")) {
+    App app;
+    if (!app.ok) return;
+    {
+        ui::MainWindow window(app.services());
+        window.resize(900, 600);
+        window.show();
+        REQUIRE(waitUntil([&] { return allReady(window); }));
+        pumpFor(200);
+        render::ViewportWindow* persp = window.viewport();
+        const QPoint mid(persp->width() / 2, persp->height() / 2);
+        window.setVerifyButtons(true);   // this case is about the system's button state
+        const auto lookWithW = [&] {
+            sendMouse(persp, QEvent::MouseButtonPress, Qt::RightButton, Qt::RightButton, mid);
+            sendKey(persp, QEvent::KeyPress, Qt::Key_W);
+            REQUIRE(window.router().holding("camera.look"));
+            REQUIRE(window.router().holding("camera.fly.forward"));
+            REQUIRE(persp->rig().flying());
+            REQUIRE(persp->pointerGrabbed());
+        };
+
+        SUBCASE("the system says the key is up: the flight stops, the look drag goes on") {
+            lookWithW();
+            window.reconcileInput([](const std::string& trigger, bool& known) { known = true; return trigger != "key:W"; });
+            CHECK_FALSE(window.router().holding("camera.fly.forward"));
+            CHECK_FALSE(persp->rig().flying());
+            CHECK(window.router().holding("camera.look"));
+            CHECK(persp->pointerGrabbed());
+        }
+        SUBCASE("the system says the button is up: everything ends, the pointer is free") {
+            lookWithW();
+            window.reconcileInput([](const std::string& trigger, bool& known) { known = true; return trigger != "btn:2" && trigger != "btn:3"; });
+            CHECK_FALSE(window.router().holding());
+            CHECK_FALSE(persp->rig().flying());
+            CHECK_FALSE(persp->pointerGrabbed());
+        }
+        SUBCASE("a probe that does not know a trigger changes nothing") {
+            lookWithW();
+            window.reconcileInput([](const std::string&, bool& known) { known = false; return false; });
+            CHECK(window.router().holding("camera.look"));
+            CHECK(persp->rig().flying());
+        }
+        SUBCASE("a pointer move without the button ends the look drag (the release went to a popup)") {
+            lookWithW();
+            sendMouse(persp, QEvent::MouseMove, Qt::NoButton, Qt::NoButton, mid + QPoint(5, 5));
+            CHECK_FALSE(window.router().holding());
+            CHECK_FALSE(persp->rig().flying());
+            CHECK_FALSE(persp->pointerGrabbed());
+            // and the camera answers a new drag at once
+            sendMouse(persp, QEvent::MouseButtonPress, Qt::RightButton, Qt::RightButton, mid);
+            CHECK(window.router().holding("camera.look"));
+            sendMouse(persp, QEvent::MouseButtonRelease, Qt::RightButton, Qt::NoButton, mid);
+            CHECK_FALSE(window.router().holding());
+        }
+        SUBCASE("a key release with a text field in focus still ends the flight") {
+            lookWithW();
+            sendKey(persp, QEvent::KeyRelease, Qt::Key_W);
+            CHECK_FALSE(window.router().holding("camera.fly.forward"));
+            CHECK_FALSE(persp->rig().flying());
+        }
+    }
+    CHECK(app.device->validationErrors() == 0);
+    CHECK(app.device->allocationStats().allocationCount == app.baseAllocations);
+}

@@ -193,6 +193,15 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     loadKeymap();
     menus_ = new RegistryMenus(menuBar(), registry_, keymap_, [this] { return currentUiEnv(); }, this);
     menus_->build();
+    if (services_.watchInput) {
+        inputTimer_.setInterval(100);
+        QObject::connect(&inputTimer_, &QTimer::timeout, this, [this] {
+            bool pointerLocked = false;
+            for (const ViewportPanel& p : panels_) pointerLocked = pointerLocked || p.window->pointerGrabbed();
+            if (router_.holding() || pointerLocked) reconcileInput();
+        });
+        inputTimer_.start();
+    }
     if (QCoreApplication::instance()) {
         QCoreApplication::instance()->installEventFilter(this);
         QObject::connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
@@ -247,6 +256,7 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
         window->setActivatedCallback([this, index] { active_ = static_cast<int>(index); });
         window->setInputHook([this, index](QEvent* e, QPointF delta) { return routeViewportEvent(index, e, delta); });
         window->setCancelCallback([this] { cancelInput(); });
+        window->setVerifyButtons(services_.verifyButtons);
         updateDockTitle(index);
     }
     // 1 = one viewport; 2 = side by side; 4 = a 2 x 2 grid (perspective top-left, top, front, side).
@@ -394,6 +404,11 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
         case QEvent::MouseMove: ev = fromMouseEvent(*static_cast<QMouseEvent*>(e), delta); break;
         default: return false;
     }
+    if (ev.type == actions::InputEvent::Type::MousePress) {
+        // a click in the viewport takes the keyboard from a text field (a search box, a property) so the camera keys reach the router again
+        if (QWidget* f = QApplication::focusWidget(); f && isTextInput(f)) f->clearFocus();
+    }
+    if (!services_.verifyButtons) ev.buttonsKnown = false;
     if (boxMouse(index, ev)) return true;
     if (transformMouse(index, ev)) return true;
     setContextsFor(vp);
@@ -594,18 +609,54 @@ void MainWindow::pickInput(render::ViewportWindow* vp, const actions::InputEvent
 }
 
 void MainWindow::cancelInput() {
-    if (!router_.holding() && !router_.sequencePending()) return;
-    UiEnv ui{this, holdViewport_ ? holdViewport_ : activeViewport()};
-    actions::ActionEnv env{&ui};
-    router_.cancelAll(env, nowMs());
-    holdViewport_ = nullptr;
+    if (router_.holding() || router_.sequencePending()) {
+        UiEnv ui{this, holdViewport_ ? holdViewport_ : activeViewport()};
+        actions::ActionEnv env{&ui};
+        router_.cancelAll(env, nowMs());
+        holdViewport_ = nullptr;
+    }
+    // whatever the gestures left in the viewports (pointer lock, hidden cursor, fly keys) goes too, held or not
+    for (const ViewportPanel& p : panels_) p.window->resetInput();
+}
+
+void MainWindow::setVerifyButtons(bool on) {
+    services_.verifyButtons = on;
+    for (const ViewportPanel& p : panels_) p.window->setVerifyButtons(on);
+}
+
+void MainWindow::reconcileInput() { reconcileInput(hardwareTriggerDown); }
+
+void MainWindow::reconcileInput(const InputProbe& probe) {
+    if (router_.holding()) {
+        UiEnv ui{this, holdViewport_ ? holdViewport_ : activeViewport()};
+        actions::ActionEnv env{&ui};
+        for (const std::string& trigger : router_.heldTriggers()) {
+            bool known = false;
+            const bool down = probe(trigger, known);
+            if (known && !down) router_.release(trigger, env, nowMs());
+        }
+        if (!router_.holding()) holdViewport_ = nullptr;
+    }
+    for (const ViewportPanel& p : panels_) {   // a locked pointer needs its right or middle button
+        if (!p.window->pointerGrabbed()) continue;
+        bool knownRight = false, knownMiddle = false;
+        const bool right = probe(actions::Router::mouseTrigger(2), knownRight);
+        const bool middle = probe(actions::Router::mouseTrigger(3), knownMiddle);
+        if (knownRight && knownMiddle && !right && !middle) p.window->resetInput();
+    }
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
-    if ((e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) && watched->isWindowType() && !QApplication::activePopupWidget() &&
-        !QApplication::activeModalWidget()) {
-        // A window gets the event first and then hands it to its focus widget (which the filter sees again): only the window pass counts.
-        if (routeKey(*static_cast<QKeyEvent*>(e), e->type() == QEvent::KeyPress)) return true;
+    if ((e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) && watched->isWindowType()) {
+        const bool press = e->type() == QEvent::KeyPress;
+        if (!QApplication::activePopupWidget() && !QApplication::activeModalWidget()) {
+            // A window gets the event first and then hands it to its focus widget (which the filter sees again): only the window pass counts.
+            if (routeKey(*static_cast<QKeyEvent*>(e), press)) return true;
+        } else if (!press) {
+            routeKey(*static_cast<QKeyEvent*>(e), false);   // a menu or dialog is up: a release must still end a hold that began before it (never swallowed)
+        } else if (router_.holding()) {
+            cancelInput();                                    // a key for the popup while something is held: the viewport will not see the releases
+        }
     }
     return QMainWindow::eventFilter(watched, e);
 }

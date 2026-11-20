@@ -142,6 +142,12 @@ actions::InputEvent fromMouseEvent(const QMouseEvent& e, QPointF delta) {
     ev.dx = delta.x();
     ev.dy = delta.y();
     ev.timeMs = nowMs();
+    if (ev.type == actions::InputEvent::Type::MouseMove) {   // what the system says is down: the router ends holds whose button is not
+        const Qt::MouseButtons b = e.buttons();
+        for (const Qt::MouseButton q : {Qt::LeftButton, Qt::RightButton, Qt::MiddleButton, Qt::BackButton, Qt::ForwardButton})
+            if (b.testFlag(q)) ev.buttons = static_cast<uint8_t>(ev.buttons | (1u << (buttonFromQt(q) - 1)));
+        ev.buttonsKnown = true;
+    }
     return ev;
 }
 

@@ -145,6 +145,12 @@ void ViewportWindow::stopFlight() {
     flightTimer_.stop();
 }
 
+void ViewportWindow::resetInput() {
+    lockedButtons_ = 0;
+    releasePointer();
+    stopFlight();
+}
+
 void ViewportWindow::flyKey(FlyKey key, bool down) {
     rig_.setFlyKey(key, down);
     if (down) {
@@ -171,6 +177,15 @@ void ViewportWindow::mousePressEvent(QMouseEvent* e) {
 }
 
 void ViewportWindow::mouseMoveEvent(QMouseEvent* e) {
+    if (verifyButtons_ && lockedButtons_ != 0) {
+        // The system is the authority on which buttons are down: a lock whose button is up lost its release (a popup or another window took the mouse
+        // mid-drag). Drop it, or the pointer stays hidden and pinned and the camera never answers again.
+        const unsigned down = (e->buttons().testFlag(Qt::RightButton) ? 1u << 2 : 0u) | (e->buttons().testFlag(Qt::MiddleButton) ? 1u << 3 : 0u);
+        if ((lockedButtons_ & ~down) != 0) {
+            lockedButtons_ &= down;
+            if (lockedButtons_ == 0) releasePointer();
+        }
+    }
     if (e->buttons() == Qt::NoButton && lockedButtons_ == 0) {
         // a plain move (no button): the hook sees it too (hover highlights, modal operators follow the pointer); no action holds it
         const QPointF hover = e->position() - lastPos_;

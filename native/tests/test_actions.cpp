@@ -508,3 +508,92 @@ TEST_CASE("conflicts in a keymap are reported") {
     CHECK(km.displayText("a") == "X");
     CHECK(km.displayText("nope").empty());
 }
+
+// ---- input that must never get stuck ----------------------------------------------------------------------------------------------
+
+namespace {
+
+struct LookRig {
+    Log log;
+    Registry reg;
+    Keymap km;
+    LookRig() {
+        reg.add(def("camera.look", ActionKind::Hold, log, {"view:perspective"}, "hold:camera.fly"));
+        reg.add(def("camera.fly.forward", ActionKind::Hold, log, {"hold:camera.fly"}));
+        bind(km, "camera.look", "view:perspective", "RMB drag");
+        bind(km, "camera.fly.forward", "hold:camera.fly", "Hold phys:W", nullptr, true);
+    }
+};
+
+} // namespace
+
+TEST_CASE("holds: the fly keys end with the look button, so no direction stays pressed without it") {
+    LookRig rig;
+    Router r(rig.reg, rig.km);
+    ActionEnv env;
+    r.contexts().set({"window:main", "area:viewport", "view:perspective"});
+    r.handle(mouse(InputEvent::Type::MousePress, 2), env);
+    r.handle(key("W"), env);
+    REQUIRE(r.holding("camera.fly.forward"));
+    rig.log.phases.clear();
+    r.handle(mouse(InputEvent::Type::MouseRelease, 2), env);
+    CHECK_FALSE(r.holding());
+    CHECK(rig.log.phases == std::vector<std::string>{"camera.look:release", "camera.fly.forward:release"});   // the key was released too
+    // the (late) key release finds nothing to end and does not run anything twice
+    rig.log.phases.clear();
+    r.handle(keyUp("W"), env);
+    CHECK(rig.log.phases.empty());
+}
+
+TEST_CASE("holds: a key release always ends the hold, even when a text field has the keyboard") {
+    LookRig rig;
+    Router r(rig.reg, rig.km);
+    ActionEnv env;
+    r.contexts().set({"window:main", "area:viewport", "view:perspective"});
+    r.handle(mouse(InputEvent::Type::MousePress, 2), env);
+    r.handle(key("W"), env);
+    REQUIRE(r.holding("camera.fly.forward"));
+    InputEvent up = keyUp("W");
+    up.textFieldFocused = true;
+    CHECK(r.handle(up, env).handled);
+    CHECK_FALSE(r.holding("camera.fly.forward"));
+    CHECK(r.holding("camera.look"));
+}
+
+TEST_CASE("holds: release(trigger) ends a hold whose release never arrived; heldTriggers names them") {
+    LookRig rig;
+    Router r(rig.reg, rig.km);
+    ActionEnv env;
+    r.contexts().set({"window:main", "area:viewport", "view:perspective"});
+    r.handle(mouse(InputEvent::Type::MousePress, 2), env);
+    r.handle(key("W"), env);
+    CHECK(r.heldTriggers() == std::vector<std::string>{"btn:2", "key:W"});
+    CHECK(r.release("key:W", env));
+    CHECK_FALSE(r.holding("camera.fly.forward"));
+    CHECK_FALSE(r.release("key:W", env));
+    CHECK(r.release(Router::mouseTrigger(2), env));
+    CHECK_FALSE(r.holding());
+    CHECK_FALSE(r.contextActive("hold:camera.fly"));
+}
+
+TEST_CASE("holds: a pointer move that says the button is up ends the drag instead of continuing it") {
+    LookRig rig;
+    Router r(rig.reg, rig.km);
+    ActionEnv env;
+    r.contexts().set({"window:main", "area:viewport", "view:perspective"});
+    r.handle(mouse(InputEvent::Type::MousePress, 2), env);
+    InputEvent m = move(5, 5);
+    m.buttonsKnown = true;
+    m.buttons = 1u << 1;   // the right button is down: the drag goes on
+    r.handle(m, env);
+    CHECK(r.holding("camera.look"));
+    rig.log.phases.clear();
+    m.buttons = 0;         // the system says no button is down: the release was lost
+    CHECK(r.handle(m, env).handled);
+    CHECK_FALSE(r.holding());
+    CHECK(rig.log.phases == std::vector<std::string>{"camera.look:release"});
+    // moves that carry no button information never end anything
+    r.handle(mouse(InputEvent::Type::MousePress, 2), env);
+    r.handle(move(1, 1), env);
+    CHECK(r.holding("camera.look"));
+}

@@ -2,6 +2,7 @@
 #include "app/actions/router.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace native::actions {
 
@@ -74,6 +75,32 @@ void Router::endHold(size_t index, ActionEnv& env, const InputEvent& e) {
     inv.event = rel;
     inv.params = h.params;
     h.def->run(env, inv);
+    // The holds that only exist inside this hold's context (the fly keys inside the look drag) end with it: nothing may stay "held" without its owner.
+    if (!h.context.empty()) {
+        for (size_t i = holds_.size(); i-- > 0;) {
+            const auto& cs = holds_[i].def->contexts;
+            if (std::find(cs.begin(), cs.end(), h.context) != cs.end()) endHold(i, env, e);
+        }
+    }
+}
+
+std::vector<std::string> Router::heldTriggers() const {
+    std::vector<std::string> out;
+    for (const Hold& h : holds_) out.push_back(h.trigger);
+    return out;
+}
+
+bool Router::release(const std::string& trigger, ActionEnv& env, int64_t timeMs) {
+    bool any = false;
+    InputEvent e;
+    e.type = trigger.rfind("btn:", 0) == 0 ? InputEvent::Type::MouseRelease : InputEvent::Type::KeyRelease;
+    e.timeMs = timeMs;
+    for (size_t i = holds_.size(); i-- > 0;) {
+        if (i >= holds_.size() || holds_[i].trigger != trigger) continue;
+        endHold(i, env, e);
+        any = true;
+    }
+    return any;
 }
 
 void Router::cancelAll(ActionEnv& env, int64_t timeMs) {
@@ -103,17 +130,34 @@ Router::Result Router::handle(const InputEvent& e, ActionEnv& env) {
     Result result;
     const bool keyEvent = e.type == InputEvent::Type::KeyPress || e.type == InputEvent::Type::KeyRelease;
     // A focused text field gets every key without Ctrl / Alt / Meta (typing); chords with those still reach the router.
-    if (keyEvent && e.textFieldFocused && (e.mods & (kCtrl | kAlt | kMeta)) == 0) return result;
+    // A key RELEASE always counts: it may end a hold that began before the field got the keyboard.
+    if (e.type != InputEvent::Type::KeyRelease && keyEvent && e.textFieldFocused && (e.mods & (kCtrl | kAlt | kMeta)) == 0) return result;
 
     if (e.type == InputEvent::Type::MouseMove) {
-        for (const Hold& h : holds_) {
-            if (h.trigger.rfind("btn:", 0) != 0) continue;
+        if (e.buttonsKnown) {   // a mouse hold whose button the system no longer reports as down lost its release: end it now
+            for (size_t i = holds_.size(); i-- > 0;) {
+                if (i >= holds_.size() || holds_[i].trigger.rfind("btn:", 0) != 0) continue;
+                const int button = std::atoi(holds_[i].trigger.c_str() + 4);
+                if (button >= 1 && button <= 8 && (e.buttons & (1u << (button - 1))) == 0) {
+                    InputEvent rel = e;
+                    rel.type = InputEvent::Type::MouseRelease;
+                    rel.button = button;
+                    result.action = holds_[i].def->id;
+                    result.handled = true;
+                    endHold(i, env, rel);
+                }
+            }
+        }
+        // iterate by index: a hold's action may end holds
+        for (size_t i = 0; i < holds_.size(); ++i) {
+            if (holds_[i].trigger.rfind("btn:", 0) != 0) continue;
             Invocation inv;
             inv.event = e;
-            inv.params = h.params;
-            h.def->run(env, inv);
+            inv.params = holds_[i].params;
+            const ActionDef* def = holds_[i].def;
+            def->run(env, inv);
             result.handled = true;
-            result.action = h.def->id;
+            result.action = def->id;
         }
         return result;
     }

@@ -61,6 +61,10 @@ struct InputEvent {
     int64_t timeMs = 0;        // monotonic milliseconds (sequences time out after 1000, double taps after 300)
     bool autoRepeat = false;
     bool textFieldFocused = false;   // a text field has the keyboard: printable keys belong to it
+    // Mouse events: the buttons the system says are down right now (bit n-1 = button n). With `buttonsKnown` the router ends a mouse hold whose
+    // button is not in it any more (the release was lost: a popup took the mouse, focus moved away); events without it say nothing about buttons.
+    uint8_t buttons = 0;
+    bool buttonsKnown = false;
 };
 
 // Name of the key an event stands for, for hold bookkeeping ("W", "Shift").

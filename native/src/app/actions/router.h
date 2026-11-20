@@ -48,6 +48,11 @@ public:
     bool sequencePending() const { return seqActive_; }
     // Ends every hold (focus lost, window deactivated) and forgets a pending sequence.
     void cancelAll(ActionEnv& env, int64_t timeMs = 0);
+    // The triggers of the running holds: "btn:2" (a mouse button), "key:W" (a key by its event key id).
+    std::vector<std::string> heldTriggers() const;
+    // Ends the holds started by `trigger` as if it had been released (a release the system never delivered). True when one ended.
+    bool release(const std::string& trigger, ActionEnv& env, int64_t timeMs = 0);
+    static std::string mouseTrigger(int button) { return "btn:" + std::to_string(button); }
 
 private:
     struct Hold {
