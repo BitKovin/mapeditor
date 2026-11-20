@@ -5,6 +5,9 @@
 #include "test_util.h"
 #include <doctest.h>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 
 using namespace core;
 using namespace testutil;
@@ -428,4 +431,75 @@ TEST_CASE("lightmap uv: Scene builds the layout from the open document and light
     dir.write("game_profile.json", json{{"lighting", {{"receiveBakedLight", {"func_door"}}}}});
     scene.loadGameProfile();
     CHECK(scene.lightmapLayout().faces.size() == 12);
+}
+
+TEST_CASE("lightmap uv: the stages give the layout of buildLightmapLayout, and a group charted alone gives the charts of the whole level") {
+    // two rooms in two entities and a lone box: three groups at a small merge angle, the room walls form groups of their own at 90
+    const auto s = surfacesOf({ent("w", "worldspawn", {Brush::makeBox("floor", {0, -1, 0}, {8, 0, 6}), Brush::makeBox("wall", {0, 0, 0}, {8, 3, 1})}),
+                               ent("g", "func_group", {Brush::makeBox("a", {20, 0, 0}, {24, 3, 2}), Brush::makeBox("b", {24, 0, 0}, {28, 3, 2})}),
+                               ent("d", "func_detail", {Brush::makeBox("c", {40, 0, 0}, {42, 2, 2})})});
+    for (const double angle : {0.0, 15.0, 90.0}) {
+        INFO("merge angle " << angle);
+        LightmapSettings cfg;
+        cfg.mergeAngleDeg = angle;
+        const LightingClasses classes = LightingClasses::defaults();
+        const LayoutFaces prepared = prepareLayoutFaces(s, classes, cfg);
+        const auto groups = chartGroups(prepared);
+        // every face is in exactly one group, ascending inside it
+        std::vector<int> seen(prepared.faceCount(), 0);
+        for (const auto& g : groups) {
+            CHECK(std::is_sorted(g.begin(), g.end()));
+            for (int f : g) ++seen[static_cast<size_t>(f)];
+        }
+        CHECK(std::all_of(seen.begin(), seen.end(), [](int n) { return n == 1; }));
+        // the stages in the order buildLightmapLayout runs them, with the groups charted in reverse order: same layout, byte for byte
+        std::vector<ChartShape> shapes;
+        for (auto it = groups.rbegin(); it != groups.rend(); ++it)
+            for (auto& c : buildCharts(prepared, *it)) shapes.push_back(std::move(c));
+        const LightmapLayout staged = placeCharts(prepared, shapes, cfg);
+        const LightmapLayout whole = buildLightmapLayout(s, classes, cfg);
+        CHECK(staged.toJson().dump() == whole.toJson().dump());
+        // no chart reaches over a group: its faces are all in the group its root is in
+        size_t chartCount = 0;
+        for (const auto& g : groups) {
+            const auto charts = buildCharts(prepared, g);
+            chartCount += charts.size();
+            std::vector<int> facesOfCharts;
+            for (const ChartShape& c : charts) {
+                CHECK(std::is_sorted(c.faces.begin(), c.faces.end()));
+                for (int f : c.faces) {
+                    CHECK(std::binary_search(g.begin(), g.end(), f));
+                    facesOfCharts.push_back(f);
+                }
+            }
+            std::sort(facesOfCharts.begin(), facesOfCharts.end());
+            CHECK(facesOfCharts == g);   // every face of the group is in exactly one of its charts
+        }
+        CHECK(chartCount == whole.charts.size());
+    }
+}
+
+// T5.2 acceptance helper: with LAYOUT_DUMP_DIR set, writes buildLightmapLayout(...).toJson() of core/assets/maps/*.map.json and of lvl2 to that folder, so a
+// build before and a build after a change of the layout code can be compared byte by byte. Does nothing without the variable.
+TEST_CASE("lightmap uv: dump the layouts of the sample maps (LAYOUT_DUMP_DIR)") {
+    const char* dump = std::getenv("LAYOUT_DUMP_DIR");
+    if (!dump) return;
+    namespace fs = std::filesystem;
+    fs::create_directories(dump);
+    struct Source { fs::path root, map; };
+    std::vector<Source> sources;
+    const fs::path coreAssets = fs::path(TESTDATA_DIR).parent_path() / "core" / "assets";
+    for (const char* m : {"demo", "demo_lit", "engine_test", "sky_test"}) sources.push_back({coreAssets, std::string("maps/") + m + ".map.json"});
+    const fs::path game = "F:/Git/SdlWasmEngine/source/Games/ShooterGame/GameData";
+    if (fs::exists(game / "maps/lvl2.map.json")) sources.push_back({game, "maps/lvl2.map.json"});
+    for (const Source& src : sources) {
+        if (!fs::exists(src.root / src.map)) continue;
+        Scene scene(src.root);
+        scene.loadGameProfile();
+        scene.openDocument(src.map.generic_string());
+        const LightmapLayout layout = scene.lightmapLayout();
+        std::ofstream out(fs::path(dump) / (src.map.stem().stem().string() + ".layout.json"), std::ios::binary);
+        out << layout.toJson().dump();
+        CHECK(layout.charts.size() > 0);
+    }
 }

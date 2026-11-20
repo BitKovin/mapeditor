@@ -110,6 +110,49 @@ struct LightmapLayout {
 LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, const LightingClasses& classes,
                                    const LightmapSettings& settings = {});
 
+// ---- the same layout in stages (T5.2), so the native editor can chart one group of faces on its own and place the result -----------------------
+// buildLightmapLayout(...) = prepareLayoutFaces -> chartGroups -> buildCharts per group -> placeCharts, and gives byte-identical results to the stages run by hand.
+// Faces of one (instance, entity) joined by shared edges that pass the merge test (same density scale and style set, a smooth join or a dihedral angle within
+// `mergeAngleDeg`) form a graph; its connected components are the chart groups. The island growth never leaves a group, so charting one group alone gives the charts
+// the whole level gives for it.
+struct LayoutFaces {
+    struct Impl;
+    std::shared_ptr<const Impl> impl;   // the faces with their frames, scales, styles, shared edges and the settings (immutable once prepared)
+    size_t faceCount() const;
+    std::string faceKey(int face) const;                // LightmapFace::key() of a face index of the groups
+    const std::set<std::string>& culled() const;        // faces left out by the playable-area cull (they are not in the face indices)
+};
+
+// A face's index in the groups is its position in the key-sorted face list (culled faces removed); the same index addresses LightmapLayout::faces.
+LayoutFaces prepareLayoutFaces(const std::vector<LightSurface>& surfaces, const LightingClasses& classes, const LightmapSettings& settings = {});
+// Connected components, each a list of ascending face indices; groups in the order of their lowest face.
+std::vector<std::vector<int>> chartGroups(const LayoutFaces& layout);
+
+// One face of a chart: its position in the chart's plane is  m0 * p.x + m1 * p.y + m2 * p.z + b  (the unfolding), the texel coordinates then follow from the chart's
+// frame (u, v) and density k.
+struct ChartMember {
+    int face = -1;
+    Vec3 m0, m1, m2, b;
+};
+// A chart before it has a place in a page: faces, size (padding included) and the maps without the placement offset.
+struct ChartShape {
+    int root = -1;                       // the face the chart was grown from (the largest of its group that was free)
+    std::vector<int> faces;              // ascending face indices
+    std::vector<ChartMember> members;
+    Vec3 u, v;                           // plane frame of the root
+    double k = 1;                        // texels per metre
+    int w = 0, h = 0;                    // rectangle size, padding included
+    int originS = 0, originT = 0;
+    std::string texture, rootKey, bucket;
+    Vec3 center;
+    double shrink = 1;
+    std::string warning;                 // "face ... exceeds the chart size limit ..." when the density had to be reduced
+};
+// The charts of one group (island growth, in the order of the global layout restricted to the group). Thread-safe over one LayoutFaces.
+std::vector<ChartShape> buildCharts(const LayoutFaces& layout, const std::vector<int>& group);
+// Places the charts of every group in pages (bucket / Morton order as before; the shapes may come in any order) and writes the faces' affine maps.
+LightmapLayout placeCharts(const LayoutFaces& layout, std::vector<ChartShape> shapes, const LightmapSettings& settings);
+
 // The layout of one style layer: the charts that carry `style`, at the same page and rectangle as in `layout` (so tiles of every layer address the same
 // pixels), faces and chart indices renumbered. Style 0 is every chart.
 LightmapLayout layoutForStyle(const LightmapLayout& layout, int style);

@@ -132,6 +132,7 @@ struct Island {
     Vec3 center;
     std::string texture, rootKey;
     double shrink = 1;
+    std::string warning;
 };
 
 }  // namespace
@@ -186,26 +187,28 @@ json LightmapLayout::toJson() const {
                 {"faces", fj}, {"charts", cj}, {"warnings", warnings}};
 }
 
-// ---- the generator ---------------------------------------------------------------------------------------------------
-LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, const LightingClasses& classes, const LightmapSettings& cfg) {
-    // MAPEDITOR_LAYOUT_PROFILE=1 prints where the time of a layout goes (stderr)
-    static const bool profileOn = std::getenv("MAPEDITOR_LAYOUT_PROFILE") != nullptr;
-    auto profT = std::chrono::steady_clock::now();
-    std::string profPrev = "start";
-    auto prof = [&](const char* next) {
-        if (!profileOn) return;
-        const auto now = std::chrono::steady_clock::now();
-        std::fprintf(stderr, "layout %s: %.0f ms\n", profPrev.c_str(), std::chrono::duration<double, std::milli>(now - profT).count());
-        profT = now;
-        profPrev = next;
-    };
-    LightmapLayout out;
-    out.settings = cfg;
+// ---- the generator, in stages (T5.2): prepare -> chartGroups -> buildCharts per group -> placeCharts ------------------------------------
+struct LayoutFaces::Impl {
+    LightmapSettings cfg;
+    int pad = 0, atlas = 0, sideLimit = 0;
+    double cosLimit = 1, isolationGap = 1;
+    std::vector<Face> faces;               // sorted by key, culled faces removed
+    std::vector<std::vector<Adj>> adj;     // shared edges, sorted by the other face's key
+    std::set<std::pair<int, int>> adjacentFaces;
+    std::set<std::string> culled;
+};
+
+size_t LayoutFaces::faceCount() const { return impl ? impl->faces.size() : 0; }
+std::string LayoutFaces::faceKey(int face) const { return impl->faces[static_cast<size_t>(face)].out.key(); }
+const std::set<std::string>& LayoutFaces::culled() const {
+    static const std::set<std::string> none;
+    return impl ? impl->culled : none;
+}
+
+LayoutFaces prepareLayoutFaces(const std::vector<LightSurface>& surfaces, const LightingClasses& classes, const LightmapSettings& cfg) {
     const int pad = std::max(0, cfg.padding);
     const int atlas = std::max(8, cfg.atlasSize);
-    const int sideLimit = std::max(1, std::min(cfg.maxChartTexels, atlas - 2 * pad));
-
-    prof("A");
+    std::set<std::string> culled;
     // ---- A. faces (one per authored face side) ----------------------------------------------------------------------
     std::map<std::string, size_t> byKey;
     std::vector<Face> faces;
@@ -286,8 +289,8 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
             }
         });
         // the culled faces leave the layout before charts are built; the compiler leaves them out of the map by their keys
-        for (const Face& f : faces) if (f.culled) out.culled.insert(f.out.key());
-        if (!out.culled.empty()) {
+        for (const Face& f : faces) if (f.culled) culled.insert(f.out.key());
+        if (!culled.empty()) {
             faces.erase(std::remove_if(faces.begin(), faces.end(), [](const Face& f) { return f.culled; }), faces.end());
             N = static_cast<int>(faces.size());
         }
@@ -303,7 +306,6 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
             }
     }
 
-    prof("B");
     // ---- B. adjacency (shared edges) --------------------------------------------------------------------------------
     struct PieceRef {
         int face;
@@ -421,14 +423,82 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
     // bilinear filtering at the edge of one reads texels of the other: light leaks, dark / bright edges at corners.
     const double isolationGap = 2.0 * pad + 1.0;
 
-    prof("C");
+    auto impl = std::make_shared<LayoutFaces::Impl>();
+    impl->cfg = cfg;
+    impl->pad = pad;
+    impl->atlas = atlas;
+    impl->sideLimit = std::max(1, std::min(cfg.maxChartTexels, atlas - 2 * pad));
+    impl->cosLimit = std::cos(std::min(180.0, std::max(0.0, cfg.mergeAngleDeg)) * kPi / 180.0) - 1e-6;  // tolerance ~0.06 deg
+    impl->isolationGap = isolationGap;
+    impl->faces = std::move(faces);
+    impl->adj = std::move(adj);
+    impl->adjacentFaces = std::move(adjacentFaces);
+    impl->culled = std::move(culled);
+    LayoutFaces result;
+    result.impl = std::move(impl);
+    return result;
+}
+
+std::vector<std::vector<int>> chartGroups(const LayoutFaces& layout) {
+    const LayoutFaces::Impl& I = *layout.impl;
+    const int N = static_cast<int>(I.faces.size());
+    // an edge joins two faces when the island growth may unfold one into the other: same density scale, same style set, and a smooth join or a small dihedral angle
+    std::vector<int> parent(static_cast<size_t>(N));
+    for (int i = 0; i < N; ++i) parent[static_cast<size_t>(i)] = i;
+    const auto find = [&](int x) {
+        while (parent[static_cast<size_t>(x)] != x) {
+            parent[static_cast<size_t>(x)] = parent[static_cast<size_t>(parent[static_cast<size_t>(x)])];
+            x = parent[static_cast<size_t>(x)];
+        }
+        return x;
+    };
+    for (int i = 0; i < N; ++i)
+        for (const Adj& a : I.adj[static_cast<size_t>(i)]) {
+            const Face &pf = I.faces[static_cast<size_t>(i)], &cf = I.faces[static_cast<size_t>(a.other)];
+            if (std::fabs(cf.scale - pf.scale) > 1e-9) continue;
+            if (cf.styles != pf.styles) continue;
+            const bool smoothJoin = pf.smooth && pf.smooth == cf.smooth && pf.smooth->onSmoothEdge(a.p, a.q, I.cfg.edgeEps * 2);
+            if (!smoothJoin && cf.out.normal.dot(pf.out.normal) < I.cosLimit) continue;
+            const int ra = find(i), rb = find(a.other);
+            if (ra != rb) parent[static_cast<size_t>(std::max(ra, rb))] = std::min(ra, rb);
+        }
+    std::vector<std::vector<int>> groups;
+    std::vector<int> groupOf(static_cast<size_t>(N), -1);
+    for (int i = 0; i < N; ++i) {   // groups in the order of their lowest face, faces ascending inside a group
+        const int r = find(i);
+        if (groupOf[static_cast<size_t>(r)] < 0) {
+            groupOf[static_cast<size_t>(r)] = static_cast<int>(groups.size());
+            groups.emplace_back();
+        }
+        groups[static_cast<size_t>(groupOf[static_cast<size_t>(r)])].push_back(i);
+    }
+    return groups;
+}
+
+std::vector<ChartShape> buildCharts(const LayoutFaces& layout, const std::vector<int>& group) {
+    const LayoutFaces::Impl& I = *layout.impl;
+    const LightmapSettings& cfg = I.cfg;
+    const std::vector<Face>& faces = I.faces;
+    const std::vector<std::vector<Adj>>& adj = I.adj;
+    const std::set<std::pair<int, int>>& adjacentFaces = I.adjacentFaces;
+    const int pad = I.pad, sideLimit = I.sideLimit;
+    const double isolationGap = I.isolationGap, cosLimit = I.cosLimit;
     // ---- C. islands (unfold connected faces) ------------------------------------------------------------------------
-    const double cosLimit = std::cos(std::min(180.0, std::max(0.0, cfg.mergeAngleDeg)) * kPi / 180.0) - 1e-6;  // tolerance ~0.06 deg
-    std::vector<int> assigned(N, -1);
+    // faces outside the group read as "assigned": the growth never leaves it (every edge it may cross joins two faces of one group)
+    struct Assigned {
+        const std::vector<int>& group;
+        std::vector<int> value;
+        int outside = 0;
+        explicit Assigned(const std::vector<int>& g) : group(g), value(g.size(), -1) {}
+        int& operator[](int face) {
+            const auto it = std::lower_bound(group.begin(), group.end(), face);
+            if (it == group.end() || *it != face) return outside = 0;
+            return value[static_cast<size_t>(it - group.begin())];
+        }
+    } assigned(group);
     std::vector<Island> islands;
 
-    std::vector<int> order(N);
-    for (int i = 0; i < N; ++i) order[i] = i;
+    std::vector<int> order = group;   // the global order restricted to the group: by area, ties by face index
     std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return faces[a].out.area > faces[b].out.area; });
 
     auto polysOf = [&](const Island& isl, int face, const M3& M, const Vec3& b) {
@@ -540,7 +610,6 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
         islands.push_back(std::move(isl));
     }
 
-    prof("D");
     // ---- D. chart rectangles ----------------------------------------------------------------------------------------
     for (auto& isl : islands) {
         auto extent = [&] {
@@ -562,8 +631,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
             isl.k *= f;
             isl.minS *= f; isl.maxS *= f; isl.minT *= f; isl.maxT *= f;
             extent();
-            out.warnings.push_back("face " + faces[isl.root].out.key() + " exceeds the chart size limit: density reduced to " +
-                                   std::to_string(isl.k) + " texels/m");
+            isl.warning = "face " + faces[isl.root].out.key() + " exceeds the chart size limit: density reduced to " + std::to_string(isl.k) + " texels/m";
         }
         isl.w += 2 * pad;
         isl.h += 2 * pad;
@@ -581,7 +649,51 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
         isl.bucket = faces[isl.root].group + "|" + isl.texture;
     }
 
-    prof("E");
+    std::vector<ChartShape> shapes;
+    shapes.reserve(islands.size());
+    for (Island& isl : islands) {
+        ChartShape c;
+        c.root = isl.root;
+        for (const Member& m : isl.members) {
+            c.members.push_back({m.face, m.M.c0, m.M.c1, m.M.c2, m.b});
+            c.faces.push_back(m.face);
+        }
+        std::sort(c.faces.begin(), c.faces.end());
+        c.u = isl.u;
+        c.v = isl.v;
+        c.k = isl.k;
+        c.w = isl.w;
+        c.h = isl.h;
+        c.originS = isl.originS;
+        c.originT = isl.originT;
+        c.texture = std::move(isl.texture);
+        c.rootKey = std::move(isl.rootKey);
+        c.bucket = std::move(isl.bucket);
+        c.center = isl.center;
+        c.shrink = isl.shrink;
+        c.warning = std::move(isl.warning);
+        shapes.push_back(std::move(c));
+    }
+    return shapes;
+}
+
+LightmapLayout placeCharts(const LayoutFaces& layout, std::vector<ChartShape> shapes, const LightmapSettings& cfg) {
+    const LayoutFaces::Impl& I = *layout.impl;
+    const std::vector<Face>& faces = I.faces;
+    const int N = static_cast<int>(faces.size());
+    const int pad = I.pad, atlas = I.atlas;
+    LightmapLayout out;
+    out.settings = cfg;
+    out.culled = I.culled;
+    // the order the islands were made in: roots by area, ties by face index (so the shapes may come in any order, e.g. group by group, in parallel)
+    std::stable_sort(shapes.begin(), shapes.end(), [&](const ChartShape& a, const ChartShape& b) {
+        const double aa = faces[static_cast<size_t>(a.root)].out.area, ab = faces[static_cast<size_t>(b.root)].out.area;
+        return aa != ab ? aa > ab : a.root < b.root;
+    });
+    std::vector<ChartShape>& islands = shapes;
+    for (const ChartShape& s : islands)
+        if (!s.warning.empty()) out.warnings.push_back(s.warning);
+
     // ---- E. packing: buckets (instance, entity, texture) in order, Morton order inside a bucket -----------------------
     Vec3 gmn{1e300, 1e300, 1e300}, gmx{-1e300, -1e300, -1e300};
     for (const auto& f : faces) {
@@ -591,9 +703,11 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
     auto q = [&](double v, double lo, double hi) {
         return hi - lo < 1e-9 ? 0u : static_cast<uint32_t>(std::min(1023.0, std::max(0.0, (v - lo) / (hi - lo) * 1023.0)));
     };
-    for (auto& isl : islands)
-        isl.morton = part1by2(q(isl.center.x, gmn.x, gmx.x)) | (part1by2(q(isl.center.y, gmn.y, gmx.y)) << 1) |
-                     (part1by2(q(isl.center.z, gmn.z, gmx.z)) << 2);
+    std::vector<uint32_t> morton(islands.size());
+    for (size_t i = 0; i < islands.size(); ++i) {
+        const ChartShape& isl = islands[i];
+        morton[i] = part1by2(q(isl.center.x, gmn.x, gmx.x)) | (part1by2(q(isl.center.y, gmn.y, gmx.y)) << 1) | (part1by2(q(isl.center.z, gmn.z, gmx.z)) << 2);
+    }
 
     std::map<std::string, std::vector<int>> buckets;
     for (int i = 0; i < static_cast<int>(islands.size()); ++i) buckets[islands[i].bucket].push_back(i);
@@ -602,7 +716,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
     for (auto& kv : buckets) {
         auto& list = kv.second;
         std::sort(list.begin(), list.end(), [&](int a, int b) {
-            if (islands[a].morton != islands[b].morton) return islands[a].morton < islands[b].morton;
+            if (morton[a] != morton[b]) return morton[a] < morton[b];
             return islands[a].rootKey < islands[b].rootKey;
         });
         auto tryAll = [&](Page& page, std::vector<std::array<int, 3>>& res) {
@@ -652,7 +766,6 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
     }
     if (islands.empty()) pages.clear();
 
-    prof("F");
     // ---- F. write the result ----------------------------------------------------------------------------------------
     out.pageCount = static_cast<int>(pages.size());
     for (const auto& p : pages) out.pageFill.push_back(static_cast<double>(p.used) / (static_cast<double>(atlas) * atlas));
@@ -661,7 +774,7 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
     out.faces.resize(N);
     for (int i = 0; i < N; ++i) out.faces[i] = faces[i].out;
     for (int ci = 0; ci < static_cast<int>(islands.size()); ++ci) {
-        const Island& isl = islands[ci];
+        const ChartShape& isl = islands[ci];
         LightmapChart c;
         c.page = placement[ci][0];
         c.x = placement[ci][1];
@@ -680,8 +793,8 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
             f.chart = ci;
             c.faces.push_back(m.face);
             // s = (M p + b).u * k - originS + pad + chart.x
-            f.su = Vec3{m.M.c0.dot(isl.u), m.M.c1.dot(isl.u), m.M.c2.dot(isl.u)} * isl.k;
-            f.sv = Vec3{m.M.c0.dot(isl.v), m.M.c1.dot(isl.v), m.M.c2.dot(isl.v)} * isl.k;
+            f.su = Vec3{m.m0.dot(isl.u), m.m1.dot(isl.u), m.m2.dot(isl.u)} * isl.k;
+            f.sv = Vec3{m.m0.dot(isl.v), m.m1.dot(isl.v), m.m2.dot(isl.v)} * isl.k;
             f.so = m.b.dot(isl.u) * isl.k - isl.originS + pad + c.x;
             f.to = m.b.dot(isl.v) * isl.k - isl.originT + pad + c.y;
             f.texelsPerMeter = isl.k;
@@ -689,7 +802,35 @@ LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, co
         std::sort(c.faces.begin(), c.faces.end());
         out.charts.push_back(std::move(c));
     }
-    // charts remember their page-local rect; the page index is stored on the chart, faces address the page through it
+    return out;
+}
+
+LightmapLayout buildLightmapLayout(const std::vector<LightSurface>& surfaces, const LightingClasses& classes, const LightmapSettings& cfg) {
+    // MAPEDITOR_LAYOUT_PROFILE=1 prints where the time of a layout goes (stderr)
+    static const bool profileOn = std::getenv("MAPEDITOR_LAYOUT_PROFILE") != nullptr;
+    auto profT = std::chrono::steady_clock::now();
+    std::string profPrev = "start";
+    auto prof = [&](const char* next) {
+        if (!profileOn) return;
+        const auto now = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "layout %s: %.0f ms\n", profPrev.c_str(), std::chrono::duration<double, std::milli>(now - profT).count());
+        profT = now;
+        profPrev = next;
+    };
+    prof("prepare");
+    const LayoutFaces layout = prepareLayoutFaces(surfaces, classes, cfg);
+    prof("groups");
+    const std::vector<std::vector<int>> groups = chartGroups(layout);
+    prof("charts");
+    std::vector<std::vector<ChartShape>> perGroup(groups.size());
+    parallelFor(groups.size(), 8, [&](size_t b, size_t e) {
+        for (size_t g = b; g < e; ++g) perGroup[g] = buildCharts(layout, groups[g]);
+    });
+    std::vector<ChartShape> shapes;
+    for (auto& list : perGroup)
+        for (auto& c : list) shapes.push_back(std::move(c));
+    prof("place");
+    LightmapLayout out = placeCharts(layout, std::move(shapes), cfg);
     prof("end");
     return out;
 }
