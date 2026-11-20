@@ -12,6 +12,7 @@ namespace {
 const char* const kCameraNames[] = {"fly", "orbit", "top", "front", "side"};
 const char* const kRenderNames[] = {"unlit", "lit", "wireframe", "lightingOnly"};
 const char* const kGizmoNames[] = {"move", "rotate", "scale"};
+const char* const kDlssNames[] = {"off", "quality", "dlaa"};
 
 template <size_t N>
 int indexOf(const char* const (&names)[N], const std::string& s, int fallback) {
@@ -49,6 +50,12 @@ const std::vector<double>& scaleSnaps() {
 
 const char* cameraModeName(CameraMode m) { return kCameraNames[static_cast<int>(m)]; }
 const char* renderModeName(RenderMode m) { return kRenderNames[static_cast<int>(m)]; }
+const char* dlssModeName(DlssMode m) { return kDlssNames[static_cast<int>(m)]; }
+DlssMode dlssModeFromName(const std::string& name) {
+    for (int i = 0; i < 3; ++i)
+        if (name == kDlssNames[i]) return static_cast<DlssMode>(i);
+    return DlssMode::Quality;
+}
 
 std::string settingsToJson(const ViewportSettings& s) {
     nlohmann::json j;
@@ -59,6 +66,7 @@ std::string settingsToJson(const ViewportSettings& s) {
     j["showVolumes"] = s.showVolumes;
     j["backfaceCulling"] = s.backfaceCulling;
     j["renderMode"] = renderModeName(s.renderMode);
+    j["dlss"] = dlssModeName(s.dlss);
     j["showGrid"] = s.showGrid;
     j["showOrigins"] = s.showOrigins;
     j["showDirections"] = s.showDirections;
@@ -85,6 +93,7 @@ ViewportSettings settingsFromJson(const std::string& text) {
         s.cameraMode = static_cast<CameraMode>(indexOf(kCameraNames, j["cameraMode"].get<std::string>(), 0));
     if (j.contains("renderMode") && j["renderMode"].is_string())
         s.renderMode = static_cast<RenderMode>(indexOf(kRenderNames, j["renderMode"].get<std::string>(), 0));
+    if (j.contains("dlss") && j["dlss"].is_string()) s.dlss = dlssModeFromName(j["dlss"].get<std::string>());   // an unknown value is Quality
     if (j.contains("gizmo") && j["gizmo"].is_string())
         s.gizmo = static_cast<GizmoMode>(indexOf(kGizmoNames, j["gizmo"].get<std::string>(), 0));
     readNum(j, "flySpeed", s.flySpeed);

@@ -8,6 +8,7 @@
 #include "base/log.h"
 #include "base/trace.h"
 #include "gpu/swapchain.h"
+#include "render/dlss_math.h"
 #include "render/lightmap_view.h"
 #include "render/mesh_pass.h"
 #include "render/scene_pass.h"
@@ -73,6 +74,19 @@ struct RenderThread::Viewport {
     VmaAllocation depthAlloc = nullptr;
     VkImageView depthView = VK_NULL_HANDLE;
     bool gpuReady = false;
+    // DLSS (render thread only, except dlssInfo which is guarded by RenderThread::mutex_).
+    DlssTargets dlss;
+    int dlssMode = 0;                     // the mode the targets were made for
+    int dlssFailedMode = 0;               // Streamline refused this mode: draw normally until the mode changes
+    bool dlssReset = false;               // the next upscaled frame starts a new history
+    uint32_t dlssFrame = 0;               // jitter sequence position
+    uint32_t dlssSettle = 0;              // frames still to render after the last change so the history converges (the loop is demand driven)
+    Mat4 prevViewProj = mat4Identity();
+    bool havePrev = false;
+    unsigned lastCut = 0;
+    int lastRenderMode = 0;
+    uint64_t lastChanges = 0;
+    DlssInfo dlssInfo;
 };
 
 RenderThread::RenderThread(gpu::Device& device) : device_(device) {
@@ -123,6 +137,8 @@ RenderThread::~RenderThread() {
     wake_.notify_all();
     if (thread_.joinable()) thread_.join();
     vkQueueWaitIdle(device_.graphicsQueue());
+    meshHdr_.reset();
+    dlssPass_.reset();
     mesh_.reset();
     pass_.reset();
     scatter_.reset();
@@ -390,6 +406,12 @@ uint64_t RenderThread::framesRendered(ViewportId id) const {
     return it == viewports_.end() ? 0 : it->second->frames;
 }
 
+RenderThread::DlssInfo RenderThread::dlssInfo(ViewportId id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = viewports_.find(id);
+    return it == viewports_.end() ? DlssInfo{} : it->second->dlssInfo;
+}
+
 uint64_t RenderThread::swapchainRecreations(ViewportId id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = viewports_.find(id);
@@ -411,6 +433,7 @@ void RenderThread::releaseViewport(Viewport& v) {
             f = Frame{};
         }
     }
+    releaseDlss(v);
     if (v.depthView) vkDestroyImageView(device_.device(), v.depthView, nullptr);
     if (v.depth) vmaDestroyImage(device_.allocator(), v.depth, v.depthAlloc);
     v.depthView = VK_NULL_HANDLE;
@@ -418,6 +441,167 @@ void RenderThread::releaseViewport(Viewport& v) {
     v.depthAlloc = nullptr;
     v.swapchain.reset();
     v.gpuReady = false;
+}
+
+void RenderThread::releaseDlss(Viewport& v) {
+    if (v.dlss.valid() && dlssPass_) {
+        vkQueueWaitIdle(device_.graphicsQueue());
+        if (gpu::Streamline* sl = device_.streamline()) sl->dlssRelease(v.id);
+        dlssPass_->destroyTargets(v.dlss);
+    }
+    v.dlssMode = 0;
+    v.havePrev = false;
+    v.dlssSettle = 0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    v.dlssInfo.active = false;
+}
+
+bool RenderThread::recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState& view, VkExtent2D extent, const DrawLists& lists, const float clear[3], LitParams lit,
+                              gpu::Streamline& sl) {
+    const int mode = view.dlss;
+    if (!dlssPass_ || dlssPass_->swapchainFormat() != v.swapchain->format()) {
+        vkQueueWaitIdle(device_.graphicsQueue());
+        dlssPass_ = std::make_unique<DlssPass>(device_, v.swapchain->format(), kDepthFormat);
+    }
+    if (!meshHdr_)
+        meshHdr_ = std::make_unique<MeshPass>(device_, VK_FORMAT_R16G16B16A16_SFLOAT, kDepthFormat, textures_->layout(), lightmapView_->layout());
+    if (!dlssPass_->valid() || !meshHdr_->valid()) {
+        v.dlssFailedMode = mode;
+        base::logWarning("DLSS: the pipelines could not be made; this viewport is drawn without it");
+        return false;
+    }
+    DlssTargets& t = v.dlss;
+    if (!t.valid() || t.out.width != extent.width || t.out.height != extent.height || v.dlssMode != mode) {
+        uint32_t rw = 0, rh = 0;
+        if (!sl.dlssRenderSize(mode, extent.width, extent.height, &rw, &rh)) {
+            v.dlssFailedMode = mode;
+            base::logWarning("DLSS: no render size for " + std::to_string(extent.width) + "x" + std::to_string(extent.height) + "; this viewport is drawn without it");
+            return false;
+        }
+        vkQueueWaitIdle(device_.graphicsQueue());
+        sl.dlssRelease(v.id);
+        if (!dlssPass_->createTargets(t, {rw, rh}, extent)) {
+            v.dlssFailedMode = mode;
+            return false;
+        }
+        base::logInfo("DLSS " + std::string(dlssModeName(static_cast<DlssMode>(mode))) + ": viewport " + std::to_string(v.id) + " renders " + std::to_string(rw) + "x" +
+                      std::to_string(rh) + " for " + std::to_string(extent.width) + "x" + std::to_string(extent.height));
+        v.dlssMode = mode;
+        v.dlssReset = true;
+        v.dlssFrame = 0;
+        v.havePrev = false;
+    }
+    const uint32_t rw = t.render.width, rh = t.render.height;
+    const uint32_t phases = dlssPhaseCount(rw, extent.width);
+    double jx = 0, jy = 0;
+    dlssJitter(v.dlssFrame++, phases, &jx, &jy);
+    const Mat4 jittered = jitteredViewProj(view.viewProj, jx, jy, rw, rh);
+    const uint64_t changes = scene_->changeSerial();
+    const bool moved = !v.havePrev || view.viewProj != v.prevViewProj;
+    const bool reset = v.dlssReset || !v.havePrev || view.cut != v.lastCut || view.renderMode != v.lastRenderMode || changes != v.lastChanges;
+    const bool changed = moved || reset;
+    const Mat4 prevVP = v.havePrev ? v.prevViewProj : view.viewProj;
+    const Mat4 clipToPrev = mat4Multiply(prevVP, mat4Invert(view.viewProj));
+    const Mat4 prevToClip = mat4Multiply(view.viewProj, mat4Invert(prevVP));
+    const Mat4 reproject = mat4Multiply(prevVP, mat4Invert(jittered));
+    v.prevViewProj = view.viewProj;
+    v.havePrev = true;
+    v.lastCut = view.cut;
+    v.lastRenderMode = view.renderMode;
+    v.lastChanges = changes;
+    v.dlssReset = false;
+    if (changed) v.dlssSettle = phases + 6;
+
+    // 1. the scene at the render size, jittered
+    dlssPass_->beginScene(cmd, t);
+    VkRenderingAttachmentInfo att{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    att.imageView = t.color.view;
+    att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att.clearValue.color = {{clear[0], clear[1], clear[2], 1.0f}};
+    VkRenderingAttachmentInfo datt{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    datt.imageView = t.depth.view;
+    datt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    datt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    datt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    datt.clearValue.depthStencil = {1.0f, 0};
+    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea = {{0, 0}, t.render};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &att;
+    ri.pDepthAttachment = &datt;
+    vkCmdBeginRendering(cmd, &ri);
+    {
+        const VkViewport viewport{0.0f, 0.0f, static_cast<float>(rw), static_cast<float>(rh), 0.0f, 1.0f};
+        const VkRect2D scissor{{0, 0}, t.render};
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+    }
+    ViewState sceneView = view;
+    sceneView.viewProj = jittered;
+    lit.lodBias = dlssMipBias(rw, extent.width);
+    FrameOverlays none;
+    meshHdr_->record(cmd, sceneView, *scene_, lists, textures_->set(), skyIndex_, true, none, lightmapView_->set(), lit, kMeshScene);
+    vkCmdEndRendering(cmd);
+
+    // 2. camera motion vectors from the depth, 3. the upscale
+    float rep[16];
+    for (int i = 0; i < 16; ++i) rep[i] = static_cast<float>(reproject[static_cast<size_t>(i)]);
+    dlssPass_->endSceneAndMotion(cmd, t, rep, static_cast<float>(jx), static_cast<float>(jy));
+    dlssPass_->beforeUpscale(cmd, t);
+    gpu::DlssFrame df;
+    df.viewport = v.id;
+    df.mode = mode;
+    df.renderW = rw;
+    df.renderH = rh;
+    df.outW = extent.width;
+    df.outH = extent.height;
+    df.jitter[0] = static_cast<float>(jx);
+    df.jitter[1] = static_cast<float>(jy);
+    const auto toFloat = [](const Mat4& m, float* out) {
+        for (size_t i = 0; i < 16; ++i) out[i] = static_cast<float>(m[i]);
+    };
+    toFloat(view.proj, df.viewToClip);
+    toFloat(mat4Invert(view.proj), df.clipToView);
+    toFloat(clipToPrev, df.clipToPrevClip);
+    toFloat(prevToClip, df.prevClipToClip);
+    for (int i = 0; i < 3; ++i) {
+        df.position[i] = static_cast<float>(view.eye[i]);
+        df.up[i] = static_cast<float>(view.up[i]);
+        df.right[i] = static_cast<float>(view.right[i]);
+        df.forward[i] = static_cast<float>(view.forward[i]);
+    }
+    df.nearPlane = static_cast<float>(view.nearPlane);
+    df.farPlane = static_cast<float>(view.farPlane);
+    df.fovY = static_cast<float>(view.fovY);
+    df.aspect = static_cast<float>(extent.width) / static_cast<float>(std::max(1u, extent.height));
+    df.reset = reset;
+    df.color = DlssPass::color(t);
+    df.depth = DlssPass::depth(t);
+    df.mvec = DlssPass::mvec(t);
+    df.out = DlssPass::output(t);
+    std::string err;
+    const bool ok = sl.dlssEvaluate(cmd, df, &err);
+    if (!ok) {
+        v.dlssFailedMode = mode;
+        base::logError("DLSS: " + err + "; this viewport is drawn without it");
+    }
+    dlssPass_->afterUpscale(cmd, t);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        v.dlssInfo.active = ok;
+        v.dlssInfo.failed = !ok;
+        v.dlssInfo.mode = mode;
+        v.dlssInfo.renderW = rw;
+        v.dlssInfo.renderH = rh;
+        v.dlssInfo.outW = extent.width;
+        v.dlssInfo.outH = extent.height;
+        if (reset) ++v.dlssInfo.resets;
+        if (ok) ++v.dlssInfo.frames;
+    }
+    return ok;
 }
 
 // Waits until every frame and upload submitted so far finished (the display pages may change, the descriptor set may be rewritten).
@@ -708,19 +892,6 @@ void RenderThread::loop() {
                 std::lock_guard<std::mutex> lock(mutex_);
                 info_.visibleObjects = lists.visible;
             }
-            VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-            ri.renderArea = {{0, 0}, extent};
-            ri.layerCount = 1;
-            ri.colorAttachmentCount = 1;
-            ri.pColorAttachments = &att;
-            ri.pDepthAttachment = &datt;
-            vkCmdBeginRendering(f.cmd, &ri);
-            {
-                const VkViewport viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
-                const VkRect2D scissor{{0, 0}, extent};
-                vkCmdSetViewport(f.cmd, 0, 1, &viewport);
-                vkCmdSetScissor(f.cmd, 0, 1, &scissor);
-            }
             LineList selLines, bandLines;
             const auto uploadLines = [&](const LineVertex* v, size_t n) {
                 LineList l;
@@ -774,15 +945,39 @@ void RenderThread::loop() {
             }
             ov.extent[0] = static_cast<float>(extent.width);
             ov.extent[1] = static_cast<float>(extent.height);
-            if (mesh_) {
-                LitParams lit;
-                lit.mode = w.view.renderMode;
-                if (litSeen_) {
-                    lit.exposure = litSeen_->exposure;
-                    lit.brightness = litSeen_->brightness;
-                }
-                mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true, ov, lightmapView_->set(), lit);
+            LitParams lit;
+            lit.mode = w.view.renderMode;
+            if (litSeen_) {
+                lit.exposure = litSeen_->exposure;
+                lit.brightness = litSeen_->brightness;
             }
+            // DLSS Super Resolution (T6.8): the scene at the render size and the upscale come first, outside the display pass; the display pass then copies
+            // the result to the swapchain image and draws the overlays at full size. Any trouble falls back to the normal frame below.
+            bool useDlss = false;
+            if (w.view.dlss != 0 && w.view.perspective && sl && sl->dlssAvailable() && v.dlssFailedMode != w.view.dlss && mesh_)
+                useDlss = recordDlss(v, f.cmd, w.view, extent, lists, w.clear, lit, *sl);
+            if (!useDlss && v.dlss.valid() && (w.view.dlss == 0 || !w.view.perspective)) releaseDlss(v);
+            if (!useDlss) v.havePrev = false;
+            if (w.view.dlss == 0) v.dlssFailedMode = 0;
+            if (!useDlss && v.dlssInfo.active) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                v.dlssInfo.active = false;
+            }
+            VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+            ri.renderArea = {{0, 0}, extent};
+            ri.layerCount = 1;
+            ri.colorAttachmentCount = 1;
+            ri.pColorAttachments = &att;
+            ri.pDepthAttachment = &datt;
+            vkCmdBeginRendering(f.cmd, &ri);
+            {
+                const VkViewport viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
+                const VkRect2D scissor{{0, 0}, extent};
+                vkCmdSetViewport(f.cmd, 0, 1, &viewport);
+                vkCmdSetScissor(f.cmd, 0, 1, &scissor);
+            }
+            if (useDlss) dlssPass_->resolve(f.cmd, v.dlss);
+            if (mesh_) mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true, ov, lightmapView_->set(), lit, useDlss ? kMeshOverlays : kMeshAll);
             if (pass_) pass_->record(f.cmd, extent, w.view, !scene_->hasObjects());
             vkCmdEndRendering(f.cmd);
 
@@ -889,6 +1084,11 @@ void RenderThread::loop() {
             std::lock_guard<std::mutex> lock(mutex_);
             ++v.frames;
             totalFrames_.fetch_add(1);
+            if (useDlss && v.dlssSettle > 0) {   // the loop only draws what changed: a still camera needs a few more jittered frames
+                --v.dlssSettle;
+                v.dirty = true;
+                wake_.notify_all();
+            }
         }
         if (active) {
             ring_->endFrame(lastValue);

@@ -89,6 +89,14 @@ void ViewportWindow::setRenderMode(RenderMode mode) {
     viewChanged();
 }
 
+void ViewportWindow::setDlssMode(DlssMode mode) {
+    if (mode == rig_.settings().dlss) return;
+    ViewportSettings s = rig_.settings();
+    s.dlss = mode;
+    rig_.applySettings(s);
+    viewChanged();
+}
+
 void ViewportWindow::requestRedraw() {
     if (id_ != 0) renderThread_.markDirty(id_);
 }

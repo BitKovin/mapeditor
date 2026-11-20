@@ -344,3 +344,152 @@ TEST_CASE("a viewport frame through Streamline: Reflex markers count the frames 
     CHECK(st.frames >= 20);
     CHECK(gpuFx.device->validationErrors() == 0);
 }
+
+// T6.8: DLSS Super Resolution of a viewport: the scene is drawn smaller, upscaled by DLSS and the overlays are drawn at full size over it.
+TEST_CASE("DLSS: a viewport is upscaled from a smaller render, the picture matches the plain one, history resets are counted" * doctest::test_suite("gpu")) {
+    GpuFixture gpuFx(true);
+    if (!gpuFx.device) return;
+    if (!gpuFx.device->caps().dlss) { MESSAGE("DLSS unavailable (" << gpuFx.device->caps().streamlineNote << "): skipped"); return; }
+    {
+        TestWindow window(320, 240);
+        VkSurfaceKHR surface = gpuFx.makeSurface(window.hwnd());
+        {
+            render::RenderThread rt(*gpuFx.device);
+            const auto id = rt.addViewport(surface, 320, 240);
+            render::ViewState view = frontView(320, 240);
+
+            // Off: nothing changes, no upscaling is reported.
+            rt.setView(id, view);
+            const auto plain = rt.capture(id);
+            REQUIRE(plain.ok());
+            CHECK_FALSE(rt.dlssInfo(id).active);
+
+            // Quality: two thirds of the size, the same picture.
+            view.dlss = 1;
+            rt.setView(id, view);
+            auto img = rt.capture(id);
+            REQUIRE(img.ok());
+            render::RenderThread::DlssInfo info = rt.dlssInfo(id);
+            CHECK(info.active);
+            CHECK_FALSE(info.failed);
+            CHECK(info.mode == 1);
+            CHECK(info.outW == 320);
+            CHECK(info.outH == 240);
+            CHECK(info.renderW < 320);
+            CHECK(info.renderH < 240);
+            CHECK(static_cast<double>(info.renderW) / info.outW == doctest::Approx(2.0 / 3.0).epsilon(0.03));
+            CHECK(img.width == 320);
+            CHECK(img.height == 240);
+            CHECK(closeTo(pixel(img, 4, 4), {27, 27, 29}, 6));          // the clear colour survives the upscaler
+            CHECK(closeTo(pixel(img, 160, 120), {108, 108, 142}, 14));  // the box face in the middle
+            bool grid = false;                                          // the grid is an overlay drawn at full size after the upscaler
+            for (uint32_t y = 200; y < 240 && !grid; ++y)
+                for (uint32_t x = 0; x < 320; ++x)
+                    if (pixel(img, x, y).r > 60) { grid = true; break; }
+            CHECK(grid);
+
+            // The loop draws on demand; DLSS asks for a few more frames after a change so its history converges, with no reset in between.
+            for (int i = 0; i < 200 && rt.dlssInfo(id).frames < 20; ++i) sleepMs(10);
+            info = rt.dlssInfo(id);
+            CHECK(info.frames >= 20);
+            CHECK(info.resets == 1);   // the first frame only
+
+            // A moving camera does not reset; a camera cut does.
+            render::CameraRig rig;
+            rig.fly().lookAt({0.3, 1.5, 6}, {0, 0.8, 0});
+            view = rig.viewState(320, 240);
+            view.dlss = 1;
+            rt.setView(id, view);
+            for (int i = 0; i < 100 && rt.dlssInfo(id).frames < info.frames + 2; ++i) sleepMs(10);
+            CHECK(rt.dlssInfo(id).resets == 1);
+            view.cut += 1;
+            rt.setView(id, view);
+            for (int i = 0; i < 100 && rt.dlssInfo(id).resets < 2; ++i) sleepMs(10);
+            CHECK(rt.dlssInfo(id).resets == 2);
+
+            // DLAA renders at the output size.
+            view.dlss = 2;
+            rt.setView(id, view);
+            img = rt.capture(id);
+            REQUIRE(img.ok());
+            info = rt.dlssInfo(id);
+            CHECK(info.active);
+            CHECK(info.mode == 2);
+            CHECK(info.renderW == 320);
+            CHECK(info.renderH == 240);
+
+            // A resize makes new targets and a new history.
+            const uint64_t resetsBefore = rt.dlssInfo(id).resets;
+            window.resizeClient(400, 300);
+            rt.resizeViewport(id, 400, 300);
+            view = render::CameraRig().viewState(400, 300);
+            view.dlss = 2;
+            render::CameraRig rig2;
+            rig2.fly().lookAt({0, 1.5, 6}, {0, 0.8, 0});
+            view = rig2.viewState(400, 300);
+            view.dlss = 2;
+            rt.setView(id, view);
+            img = rt.capture(id);
+            REQUIRE(img.ok());
+            CHECK(img.width == 400);
+            info = rt.dlssInfo(id);
+            CHECK(info.outW == 400);
+            CHECK(info.resets > resetsBefore);
+
+            // Back to Off: drawn the normal way again, the picture of the first frame.
+            view.dlss = 0;
+            rt.setView(id, view);
+            img = rt.capture(id);
+            REQUIRE(img.ok());
+            CHECK_FALSE(rt.dlssInfo(id).active);
+            CHECK(closeTo(pixel(img, 4, 4), {27, 27, 29}, 3));
+            rt.removeViewport(id);
+        }
+        vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);
+    }
+    CHECK(gpuFx.device->validationErrors() == 0);
+}
+
+TEST_CASE("DLSS is ignored in an orthographic view and without Streamline" * doctest::test_suite("gpu")) {
+    {
+        GpuFixture gpuFx(true);
+        if (!gpuFx.device) return;
+        TestWindow window(320, 240);
+        VkSurfaceKHR surface = gpuFx.makeSurface(window.hwnd());
+        {
+            render::RenderThread rt(*gpuFx.device);
+            const auto id = rt.addViewport(surface, 320, 240);
+            render::CameraRig rig;
+            rig.setMode(render::CameraMode::Top);
+            render::ViewState view = rig.viewState(320, 240);
+            view.dlss = 1;   // asked for, but a top view is orthographic
+            rt.setView(id, view);
+            const auto img = rt.capture(id);
+            REQUIRE(img.ok());
+            CHECK_FALSE(rt.dlssInfo(id).active);
+            rt.removeViewport(id);
+        }
+        vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);
+        CHECK(gpuFx.device->validationErrors() == 0);
+    }
+    {
+        GpuFixture plain(false);   // no Streamline: the request is ignored and the frame is the normal one
+        if (!plain.device) return;
+        TestWindow window(320, 240);
+        VkSurfaceKHR surface = plain.makeSurface(window.hwnd());
+        {
+            render::RenderThread rt(*plain.device);
+            const auto id = rt.addViewport(surface, 320, 240);
+            render::ViewState view = frontView(320, 240);
+            view.dlss = 1;
+            rt.setView(id, view);
+            const auto img = rt.capture(id);
+            REQUIRE(img.ok());
+            CHECK_FALSE(rt.dlssInfo(id).active);
+            CHECK(closeTo(pixel(img, 160, 120), {108, 108, 142}, 8));
+            rt.removeViewport(id);
+        }
+        vkDestroySurfaceKHR(plain.device->instance(), surface, nullptr);
+        CHECK(plain.device->validationErrors() == 0);
+    }
+}

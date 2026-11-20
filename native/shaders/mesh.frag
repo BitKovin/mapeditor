@@ -13,7 +13,7 @@ layout(push_constant) uniform PC {
     mat4 viewProj;
     vec4 eye;
     vec4 misc;    // x = pass (0 opaque, 1 translucent, 2 volume, 3 sky background)
-    vec4 lit;     // x = mode (0 unlit, 1 lit, 2 lighting only), y = exposure, z = brightness
+    vec4 lit;     // x = mode (0 unlit, 1 lit, 2 lighting only), y = exposure, z = brightness, w = texture lod bias (DLSS renders below the output size)
 } pc;
 
 layout(location = 0) in vec3 vN;
@@ -79,7 +79,7 @@ void main() {
         outColor = vec4(skyColor(vTex, m.x, vDir), 1.0);
         return;
     }
-    vec4 t = texture(textures[nonuniformEXT(vTex)], vUv);
+    vec4 t = texture(textures[nonuniformEXT(vTex)], vUv, pc.lit.w);
     float a = 1.0;
     if (m.x > 1.5) {                 // translucent
         if (pass < 0.5) discard;     // drawn in the blended pass

@@ -5,7 +5,7 @@ layout(push_constant) uniform PC {
     mat4 viewProj;
     vec4 eye;
     vec4 misc;    // x = pass (0 opaque, 1 translucent, 2 volume, 3 sky background), y = sky texture index (background)
-    vec4 lit;     // x = mode (0 unlit, 1 lit, 2 lighting only), y = exposure, z = brightness (fragment shader)
+    vec4 lit;     // x = mode (0 unlit, 1 lit, 2 lighting only), y = exposure, z = brightness, w = texture lod bias (fragment shader)
 } pc;
 
 layout(location = 0) in vec3 aPos;

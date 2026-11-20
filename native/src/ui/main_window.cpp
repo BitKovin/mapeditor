@@ -246,6 +246,8 @@ render::ViewportWindow* MainWindow::activeViewport() const {
 
 bool MainWindow::lightingAvailable() const { return lighting_ && lighting_->valid(); }
 
+bool MainWindow::dlssAvailable() const { return services_.device && services_.device->caps().dlss; }
+
 bool MainWindow::lightingSettled() const {
     if (!lightingAvailable()) return true;
     const auto st = lighting_->status();
@@ -284,6 +286,20 @@ void MainWindow::refreshStats() {
     if (services_.renderThread) {
         const auto info = services_.renderThread->sceneInfo();
         rows.emplace_back("Lit objects", std::to_string(info.scene.litObjects) + " of " + std::to_string(info.scene.objects));
+        int n = 0;
+        for (const ViewportPanel& panel : panels_) {   // one row per viewport that asks for DLSS
+            ++n;
+            if (!panel.window || panel.window->rig().settings().dlss == render::DlssMode::Off) continue;
+            const auto d = services_.renderThread->dlssInfo(panel.window->viewportId());
+            std::string text;
+            if (d.active)
+                text = std::string(render::dlssModeName(static_cast<render::DlssMode>(d.mode))) + " " + std::to_string(d.renderW) + "x" + std::to_string(d.renderH) + " -> " +
+                       std::to_string(d.outW) + "x" + std::to_string(d.outH);
+            else if (d.failed) text = "off: Streamline refused (see the log)";
+            else if (!dlssAvailable()) text = "off: not available on this device";
+            else text = "waiting for a perspective view";
+            rows.emplace_back("DLSS (viewport " + std::to_string(n) + ")", text);
+        }
     }
     std::string key;
     for (const auto& r : rows) key += r.first + "" + r.second + "";

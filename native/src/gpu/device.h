@@ -70,6 +70,7 @@ struct DeviceCaps {
 
     bool streamline = false;              // the device was created through the Streamline interposer
     bool reflex = false;                  // Reflex low latency is on (needs streamline)
+    bool dlss = false;                    // DLSS Super Resolution can run (needs streamline, an RTX GPU and sl.dlss.dll + nvngx_dlss.dll)
     bool diagnostics = false;             // device diagnostics config + checkpoints are on (--gpu-crash-dumps)
     std::string streamlineNote;           // why Streamline is off when it was asked for ("sl.interposer.dll not found ...")
 

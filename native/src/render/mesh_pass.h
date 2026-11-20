@@ -40,7 +40,12 @@ struct FrameOverlays {
 struct LitParams {
     int mode = 0;
     float exposure = 1, brightness = 0;
+    float lodBias = 0;   // added to every texture lookup (the DLSS path renders at a lower resolution: log2(render / output) - 1)
 };
+
+// What MeshPass::record draws: the scene (sky, opaque, translucent, volumes) and / or the overlays over it (entity lines, selection, labels, gizmo, rubber band).
+// DLSS draws the scene at the render resolution and the overlays at the output resolution after the upscaler.
+enum MeshParts : int { kMeshScene = 1, kMeshOverlays = 2, kMeshAll = 3 };
 
 class MeshPass {
 public:
@@ -56,7 +61,7 @@ public:
 
     // Inside vkCmdBeginRendering (viewport and scissor already set). `skyTexture` = a sky entry of the texture table (TextureTable::skyIndex), 0 = none.
     void record(VkCommandBuffer cmd, const ViewState& view, const GpuScene& scene, const DrawLists& lists, VkDescriptorSet textures, uint32_t skyTexture,
-                bool showVolumes, const FrameOverlays& overlays, VkDescriptorSet lightmaps = VK_NULL_HANDLE, const LitParams& lit = {}) const;
+                bool showVolumes, const FrameOverlays& overlays, VkDescriptorSet lightmaps = VK_NULL_HANDLE, const LitParams& lit = {}, int parts = kMeshAll) const;
 
 private:
     const gpu::Device& device_;

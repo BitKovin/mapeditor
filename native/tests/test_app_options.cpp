@@ -20,8 +20,9 @@ TEST_CASE("empty command line gives the defaults") {
 TEST_CASE("all options are read") {
     const auto r = parseArgs({"--assets", "D:/a", "--map", "maps/x.map.json", "--automation-port", "8123", "--no-lighting",
                               "--validation", "--log", "l.txt", "--trace", "t.json", "--screenshot", "s.png", "--layout", "4",
-                              "--no-streamline", "--gpu-crash-dumps"});
+                              "--no-streamline", "--gpu-crash-dumps", "--dlss", "dlaa"});
     REQUIRE(r.error.empty());
+    CHECK(r.options.dlss == "dlaa");
     CHECK(r.options.noStreamline);
     CHECK(r.options.gpuCrashDumps);
     CHECK(r.options.assetsRoot == "D:/a");
@@ -42,5 +43,9 @@ TEST_CASE("bad command lines report an error") {
     CHECK_FALSE(parseArgs({"--automation-port", "70000"}).error.empty());
     CHECK_FALSE(parseArgs({"--layout", "3"}).error.empty());
     CHECK_FALSE(parseArgs({"--layout"}).error.empty());
+    CHECK_FALSE(parseArgs({"--dlss"}).error.empty());
+    CHECK_FALSE(parseArgs({"--dlss", "balanced"}).error.empty());   // no lower preset
+    CHECK(parseArgs({"--dlss", "quality"}).error.empty());
+    CHECK(parseArgs({}).options.dlss.empty());
     CHECK(parseArgs({"--help"}).options.help);
 }

@@ -66,6 +66,7 @@ const Camera& CameraRig::active() const { return const_cast<CameraRig*>(this)->a
 void CameraRig::setMode(CameraMode mode) {
     if (mode == settings_.cameraMode) return;
     const Camera& from = active();
+    ++cut_;
     clearFlyKeys();
     // The old camera must stay unchanged while the new one reads it: take over from a copy of what matters.
     Camera* to = nullptr;
@@ -118,7 +119,10 @@ bool CameraRig::advance(double dt) {
     return true;
 }
 
-void CameraRig::frame(Vec3 boxMin, Vec3 boxMax) { active().frame(boxMin, boxMax); }
+void CameraRig::frame(Vec3 boxMin, Vec3 boxMax) {
+    ++cut_;
+    active().frame(boxMin, boxMax);
+}
 
 ViewState CameraRig::viewState(double widthPx, double heightPx) {
     ViewState s;
@@ -133,6 +137,20 @@ ViewState CameraRig::viewState(double widthPx, double heightPx) {
     s.eye[2] = eyePos.z;
     s.perspective = !isOrthoMode(settings_.cameraMode);
     s.renderMode = settings_.renderMode == RenderMode::Lit ? 1 : settings_.renderMode == RenderMode::LightingOnly ? 2 : 0;
+    s.dlss = static_cast<int>(settings_.dlss);
+    s.cut = cut_;
+    if (s.perspective) {
+        const CameraBasis b = cam.basis();
+        s.proj = mat4Perspective(cam.fovY, aspect, cam.nearPlane, cam.farPlane);
+        s.fovY = cam.fovY;
+        s.nearPlane = cam.nearPlane;
+        s.farPlane = cam.farPlane;
+        for (int i = 0; i < 3; ++i) {
+            s.right[i] = b.right[i];
+            s.up[i] = b.up[i];
+            s.forward[i] = b.forward[i];
+        }
+    }
     const Vec3 t = cam.target();
     double mpp;
     switch (settings_.cameraMode) {
@@ -171,6 +189,7 @@ std::string CameraRig::poseToJson() const {
 void CameraRig::poseFromJson(const std::string& text) {
     const nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
     if (!j.is_object()) return;
+    ++cut_;
     if (j.contains("fly") && j["fly"].is_object()) {
         const auto& f = j["fly"];
         readVec(f, "position", fly_.position);

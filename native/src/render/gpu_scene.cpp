@@ -273,6 +273,7 @@ bool GpuScene::sync(VkCommandBuffer cmd, gpu::UploadRing& ring, uint64_t complet
 }
 
 void GpuScene::rebuildDraws() {
+    ++changes_;
     draws_.clear();
     draws_.reserve(objects_.size());
     rawObjects_ = 0;

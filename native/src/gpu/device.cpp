@@ -173,6 +173,7 @@ std::vector<std::pair<std::string, std::string>> DeviceCaps::rows() const {
         {"dedicated compute queue", onOff(dedicatedComputeQueue)},
         {"Streamline", streamline ? "on (interposer)" : streamlineNote.empty() ? "off" : "off: " + streamlineNote},
         {"Reflex low latency", onOff(reflex)},
+        {"DLSS Super Resolution", onOff(dlss)},
         {"GPU crash dumps", diagnostics ? "on (--gpu-crash-dumps)" : "off"},
         {"Lit mode", lit() ? "available" : "unavailable (no ray query device)"},
     };
@@ -566,6 +567,7 @@ bool Device::init(const DeviceOptions& options, bool useStreamline, std::string*
         streamline_->deviceCreated(instance_, physical_, device_);
         caps_.streamline = true;
         caps_.reflex = streamline_->status().reflexActive;
+        caps_.dlss = streamline_->dlssAvailable();
     }
 
     // ---- caps text ----

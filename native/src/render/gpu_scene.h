@@ -86,6 +86,8 @@ public:
     VkBuffer vertexBuffer() const { return vertices_.buffer(); }
     VkBuffer indexBuffer() const { return indices_.buffer(); }
     bool hasObjects() const { return !draws_.empty(); }
+    // Grows whenever what is drawn changed (an object uploaded, removed, hidden or shown): the DLSS history is not valid across such a change.
+    uint64_t changeSerial() const { return changes_; }
     SceneStats stats() const;
     uint32_t litObjects_ = 0;
 
@@ -142,6 +144,7 @@ private:
     std::vector<VkDrawIndexedIndirectCommand> scratchSolid_, scratchTranslucent_, scratchVolume_;
     uint32_t rawObjects_ = 0;
     uint64_t uploads_ = 0;
+    uint64_t changes_ = 0;
     bool loggedFull_ = false, loggedRing_ = false;
 };
 

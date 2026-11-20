@@ -56,6 +56,13 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
                 return r;
             }
         }
+        else if (a == "--dlss") {
+            if (!value(o.dlss)) return r;
+            if (o.dlss != "off" && o.dlss != "quality" && o.dlss != "dlaa") {
+                r.error = "invalid DLSS mode (use off, quality or dlaa): " + o.dlss;
+                return r;
+            }
+        }
         else if (a == "--log-input") o.logInput = true;
         else if (a == "--no-lighting") o.noLighting = true;
         else if (a == "--validation") o.validation = true;

@@ -137,7 +137,7 @@ if(EXISTS "${NATIVE_STREAMLINE_DIR}/include/sl.h")
   if(MSVC)
     target_compile_options(native_gpu PRIVATE /external:W0)
   endif()
-  set(_sl_files sl.interposer.dll sl.common.dll sl.reflex.dll sl.pcl.dll NvLowLatencyVk.dll)
+  set(_sl_files sl.interposer.dll sl.common.dll sl.reflex.dll sl.pcl.dll NvLowLatencyVk.dll sl.dlss.dll nvngx_dlss.dll)
   set(_sl_copy)
   foreach(_f IN LISTS _sl_files)
     list(APPEND _sl_copy COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${NATIVE_STREAMLINE_DIR}/bin/x64/${_f}" "${CMAKE_BINARY_DIR}/${_f}")
@@ -153,7 +153,7 @@ native_module(light  SOURCES src/light/module_info.cpp src/light/page_allocator.
                      DEPENDS native_scene native_gpu)
 add_dependencies(native_light native_shaders)
 target_include_directories(native_light PRIVATE "${NATIVE_SHADER_GEN_DIR}")
-native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp src/render/picking.cpp src/render/picking.h src/render/selection_outline.cpp src/render/selection_outline.h src/render/line_vertex.h
+native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp src/render/dlss_pass.cpp src/render/dlss_math.h src/render/picking.cpp src/render/picking.h src/render/selection_outline.cpp src/render/selection_outline.h src/render/line_vertex.h
                      src/render/viewport_window.cpp src/render/viewport_window.h src/render/lightmap_view.cpp src/render/lightmap_view.h
                      src/render/entity_overlay.cpp src/render/entity_overlay.h src/render/glyph_atlas.cpp src/render/glyph_atlas.h
                      src/render/camera.cpp src/render/camera_rig.cpp src/render/viewport_settings.cpp
@@ -191,7 +191,7 @@ target_link_libraries(native_tests PRIVATE native_ui Qt6::Widgets Qt6::Test)
 native_warnings(native_tests)
 
 # Tests that need real windows and the GPU (Qt "windows" platform): viewports in docks, re-docking, resizing.
-add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp tests/test_gui_document.cpp tests/test_gui_select.cpp tests/test_gui_transform.cpp tests/test_gui_box.cpp tests/test_gui_edit.cpp tests/test_gui_panels.cpp tests/test_gui_settings.cpp tests/test_gui_keymap.cpp tests/test_gui_palette.cpp tests/test_gui_gate_m4.cpp tests/test_gui_lit.cpp tests/test_gui_hardware_input.cpp)
+add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp tests/test_gui_document.cpp tests/test_gui_select.cpp tests/test_gui_transform.cpp tests/test_gui_box.cpp tests/test_gui_edit.cpp tests/test_gui_panels.cpp tests/test_gui_settings.cpp tests/test_gui_keymap.cpp tests/test_gui_palette.cpp tests/test_gui_gate_m4.cpp tests/test_gui_lit.cpp tests/test_gui_hardware_input.cpp tests/test_gui_bench_dlss.cpp)
 target_include_directories(native_gui_tests PRIVATE src)
 target_compile_definitions(native_gui_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
                            NATIVE_CORE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/assets")

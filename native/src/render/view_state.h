@@ -17,6 +17,12 @@ struct ViewState {
     double eye[3] = {0, 0, 0};       // camera position (sky faces are drawn by view direction)
     bool perspective = true;         // false: an orthographic view (no sky background)
     int renderMode = 0;              // 0 = Unlit / Wireframe, 1 = Lit, 2 = Lighting only (the lit modes ask the bake for light)
+    // DLSS Super Resolution (T6.8): the viewport's mode (a DlssMode as int, 0 = off) and what the upscaler needs to know about the camera.
+    int dlss = 0;
+    Mat4 proj = mat4Identity();      // the unjittered projection (perspective views only)
+    double fovY = 0, nearPlane = 0, farPlane = 0;
+    double right[3] = {1, 0, 0}, up[3] = {0, 1, 0}, forward[3] = {0, 0, -1};
+    unsigned cut = 0;                // grows when the camera jumped (frame selection, camera mode change, pose load): the upscaler drops its history
 };
 
 } // namespace native::render

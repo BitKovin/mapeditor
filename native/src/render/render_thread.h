@@ -31,8 +31,10 @@
 #include "light/page_images.h"
 #include "render/gpu_scene.h"
 #include "render/entity_overlay.h"
+#include "render/dlss_pass.h"
 #include "render/glyph_atlas.h"
 #include "render/line_vertex.h"
+#include "render/mesh_pass.h"
 #include "render/view_state.h"
 
 namespace native::render {
@@ -100,6 +102,16 @@ public:
     };
     SceneInfo sceneInfo() const;
 
+    // What the DLSS path does in a viewport (Stats panel, tests): `active` = the last frame was upscaled; `failed` = Streamline refused and the viewport draws normally.
+    struct DlssInfo {
+        bool active = false, failed = false;
+        int mode = 0;                          // DlssMode as int of the last frame's request
+        uint32_t renderW = 0, renderH = 0, outW = 0, outH = 0;
+        uint64_t resets = 0;                   // frames that told DLSS to drop its history
+        uint64_t frames = 0;                   // frames upscaled so far
+    };
+    DlssInfo dlssInfo(ViewportId id) const;
+
     // Renders the next frame of this viewport and returns its pixels. Blocks the caller (not the render thread's other
     // viewports) up to timeoutMs; returns an empty image on timeout or when the viewport has no surface area.
     CapturedImage capture(ViewportId id, int timeoutMs = 4000);
@@ -116,6 +128,11 @@ private:
     void loop();
     bool ensureSwapchain(Viewport& v);
     void releaseViewport(Viewport& v);
+    // T6.8: records the scene at the render size, the motion vectors and the DLSS upscale of one viewport frame into `cmd` (outside a render pass). False
+    // when the frame has to be drawn the normal way (no DLSS here, a failure; the viewport's DLSS state says why).
+    bool recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState& view, VkExtent2D extent, const DrawLists& lists, const float clear[3], LitParams lit,
+                    gpu::Streamline& sl);
+    void releaseDlss(Viewport& v);
 
     gpu::Device& device_;
     VkSemaphore renderTimeline_ = VK_NULL_HANDLE;
@@ -126,6 +143,8 @@ private:
     std::unique_ptr<GpuScene> scene_;
     std::unique_ptr<ScenePass> pass_;     // render thread only
     std::unique_ptr<MeshPass> mesh_;      // render thread only
+    std::unique_ptr<MeshPass> meshHdr_;   // the scene at the DLSS render size (RGBA16F), made on first use
+    std::unique_ptr<DlssPass> dlssPass_;  // render thread only
     // Lit modes (render thread only, except link_)
     struct LightSubmit {
         bool wait = false, signal = false;

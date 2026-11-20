@@ -108,6 +108,10 @@ int main(int argc, char** argv) {
                           : parsed.options.renderMode == "lightingOnly" ? native::render::RenderMode::LightingOnly : native::render::RenderMode::Unlit;
         for (const native::ui::ViewportPanel& panel : window.viewports()) panel.window->setRenderMode(mode);
     }
+    if (!parsed.options.dlss.empty()) {
+        const native::render::DlssMode mode = native::render::dlssModeFromName(parsed.options.dlss);
+        for (const native::ui::ViewportPanel& panel : window.viewports()) panel.window->setDlssMode(mode);
+    }
     if (!parsed.options.map.empty()) window.openDocument(parsed.options.map);
 
     int shotResult = 0;

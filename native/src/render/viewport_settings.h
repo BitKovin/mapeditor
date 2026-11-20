@@ -13,6 +13,8 @@ namespace native::render {
 enum class CameraMode { Fly, Orbit, Top, Front, Side };
 enum class RenderMode { Unlit, Lit, Wireframe, LightingOnly };
 enum class GizmoMode { Move, Rotate, Scale };
+// DLSS Super Resolution of a perspective viewport (11_NVIDIA_TECH.md §2.2). Quality and DLAA are the only presets: no lower one anywhere.
+enum class DlssMode : int { Off = 0, Quality = 1, Dlaa = 2 };
 
 constexpr double kFlySpeedMin = 0.05, kFlySpeedMax = 500, kWheelSpeedFactor = 1.2;
 
@@ -30,6 +32,7 @@ struct ViewportSettings {
     double flySpeed = 8;
     bool showOutlines = false, showSubtractive = true, showVolumes = true, backfaceCulling = true;
     RenderMode renderMode = RenderMode::Unlit;
+    DlssMode dlss = DlssMode::Off;   // perspective viewports only; Off by default (turned on in Settings > Editor or with View > DLSS)
     bool showGrid = true, showOrigins = true, showDirections = true, showLinks = true, showLightGizmos = true;
     bool showLightvol = false, showVisibility = false, showLightmapDensity = false, showTexelHeat = false, showSizes = true;
     bool snapEnabled = true;
@@ -47,6 +50,9 @@ inline double scaleSnapStep(const ViewportSettings& s) { return s.snapEnabled ? 
 
 const char* cameraModeName(CameraMode m);
 const char* renderModeName(RenderMode m);
+const char* dlssModeName(DlssMode m);   // "off", "quality", "dlaa"
+// Text -> mode for files and the command line: "off" / "quality" / "dlaa"; anything else (a preset that does not exist here, such as "balanced") is Quality.
+DlssMode dlssModeFromName(const std::string& name);
 
 // JSON text; unknown / missing fields keep their defaults, bad values are clamped or ignored.
 std::string settingsToJson(const ViewportSettings& s);

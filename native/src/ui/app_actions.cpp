@@ -776,6 +776,33 @@ void registerAppActions(actions::Registry& r) {
         };
         add(r, std::move(d));
     }
+    {
+        ActionDef d;
+        d.id = "view.dlss";
+        d.label = "DLSS";
+        d.category = "View";
+        d.description = "NVIDIA DLSS Super Resolution for the active perspective viewport: Quality renders at two thirds of the size and upscales, DLAA renders at full size and only removes the aliasing. There is no lower preset.";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&View/&DLSS (active viewport)";
+        d.params = {{"mode", "off"}};
+        d.variants = {{"&Off", {{"mode", "off"}}}, {"&Quality", {{"mode", "quality"}}}, {"&DLAA", {{"mode", "dlaa"}}}};
+        d.enabled = [](const ActionEnv& env, const json& p) {
+            const UiEnv* u = env.as<UiEnv>();
+            if (!u || !u->viewport) return false;
+            return p.value("mode", "off") == "off" || (u->window && u->window->dlssAvailable());
+        };
+        d.checked = [](const ActionEnv& env, const json& p) {
+            const auto* vp = viewportOf(env);
+            if (!vp) return false;
+            return vp->rig().settings().dlss == render::dlssModeFromName(p.value("mode", "off"));
+        };
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            auto* vp = viewportOf(env);
+            if (!vp) return;
+            vp->setDlssMode(render::dlssModeFromName(inv.params.value("mode", "off")));
+        };
+        add(r, std::move(d));
+    }
     {   // the dock panels: closing one with its x leaves it reachable here
         struct Panel {
             const char* id;

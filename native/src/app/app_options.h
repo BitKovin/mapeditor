@@ -4,8 +4,9 @@
 //   mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
 //                        [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]
 //                        [--layout <1|2|4>] [--log-input] [--render-mode <unlit|lit|lightingOnly>]
-//                        [--no-streamline] [--gpu-crash-dumps]
+//                        [--no-streamline] [--gpu-crash-dumps] [--dlss <off|quality|dlaa>]
 // --no-streamline creates the Vulkan device the normal way (no NVIDIA Streamline interposer: no Reflex, no DLSS), T6.7.
+// --dlss starts every perspective viewport with DLSS Super Resolution off / Quality / DLAA instead of its saved setting (T6.8; there is no lower preset).
 // --gpu-crash-dumps enables the NV device diagnostics so a lost device writes gpu_crash_<time>.txt next to the log (T6.7).
 // --trace writes a Chrome trace-event file (chrome://tracing, Perfetto) of jobs / frames / bake steps.
 // --layout starts with 1, 2 or 4 viewports instead of the saved layout (T1.4).
@@ -31,6 +32,7 @@ struct AppOptions {
     std::string traceFile;        // --trace
     std::string screenshotPath;   // --screenshot
     bool logInput = false;        // --log-input
+    std::string dlss;             // --dlss off | quality | dlaa (every viewport starts in it); empty = the saved one
     std::string renderMode;       // --render-mode unlit | lit | lightingOnly (every viewport starts in it); empty = the saved one
     int layoutViewports = 0;      // --layout; 0 = the saved layout (default 1 viewport)
     bool help = false;            // --help / -h

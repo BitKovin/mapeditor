@@ -61,6 +61,12 @@ struct App {
     App() {
         gpu::DeviceOptions o;
         o.validation = true;
+        {   // NATIVE_NO_VALIDATION=1: measurements (the bench) run without the layer, whose CPU cost hides the real frame rate
+            char* nv = nullptr;
+            size_t nvn = 0;
+            if (_dupenv_s(&nv, &nvn, "NATIVE_NO_VALIDATION") == 0 && nv && nv[0] == '1') o.validation = false;
+            free(nv);
+        }
         o.streamline = true;   // as the program runs: the GUI tests also cover the Streamline interposer (T6.7)
         std::string err;
         device = gpu::Device::create(o, &err);

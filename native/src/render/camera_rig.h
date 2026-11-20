@@ -67,6 +67,7 @@ private:
     OrthoCamera ortho_[3] = {OrthoCamera(OrthoAxis::Top), OrthoCamera(OrthoAxis::Front), OrthoCamera(OrthoAxis::Side)};
     unsigned keys_ = 0;
     bool boost_ = false;
+    unsigned cut_ = 0;               // see ViewState::cut
 };
 
 // Spacing (metres) of the minor grid lines: gridSize doubled until lines are at least minPixels apart on screen.

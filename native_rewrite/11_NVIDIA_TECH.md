@@ -75,6 +75,19 @@ viewports show large levels; DLSS-SR lets a viewport render at 67 % scale (the Q
 - **Gate:** a new line in 09 §3 "G-frame-4K": 4 viewports at 4K with DLSS **Quality** ≥ 100 fps on lvl2, and the same scene at 1440p DLSS Off
   unchanged (no regression when Off; G-frame stays 100 fps without DLSS). If Quality does not reach 100 fps, profile and report; do not add a lower preset. Measure with the Stats panel (GPU ms per viewport) before and after, in the commit message.
 
+> **As built (T6.8, SDK 2.14.16):** `sl.dlss.dll` + `nvngx_dlss.dll` are copied next to the exe and `kFeatureDLSS` is requested in `slInit`; `slDLSSGetOptimalSettings` /
+> `slDLSSSetOptions` come through `slGetFeatureFunction`, `slSetConstants` / `slEvaluateFeature` / `slFreeResources` through `GetProcAddress` on the interposer. Tags are
+> local to the evaluate call (`slEvaluateFeature` inputs: viewport, `kBufferTypeScalingInputColor`, `kBufferTypeDepth`, `kBufferTypeMotionVectors`,
+> `kBufferTypeScalingOutputColor`, lifecycle `eOnlyValidNow`, explicit extents). Options: `colorBuffersHDR = eFalse` (the scene is linear but already display-referred),
+> `useAutoExposure = eTrue`. Constants: matrices copied unchanged from the column-major `Mat4`, jitter in pixels (Halton 2,3, `max(8, 8 (out/render)^2)` phases, the
+> scene is shifted by the same value), `mvecScale = (1/renderW, 1/renderH)` with pixel-space vectors prev - cur from the compute pass `dlss_mvec.comp` (camera motion
+> only), `depthInverted = false`, `motionVectorsJittered = false`. There are no per-object motion vectors: a change of the scene (`GpuScene::changeSerial`) resets the
+> history and the loop draws `phases + 6` more frames. Settings: per viewport, no Settings > Editor default yet; `--dlss`, View > DLSS, JSON `dlss` in the viewport settings.
+> The overlays are drawn after the resolve at the output size; the resolve writes the (nearest) render-size depth to the output-size depth buffer so they depth-test.
+> **Measured gate (RTX 4070 Ti, 143 Hz display, lvl2, 4 x 3840x2160):** Quality 85.4 fps per viewport, DLAA 79.7, Off 140.1, Quality 1440p 141 (Off and 1440p are capped by the
+> display refresh). The DLSS evaluate costs about 1.2 ms per 4K viewport on this GPU (without it the same run is at the display cap), so the gate (100 fps) is not met with four
+> 4K viewports; no lower preset was added. See 08 T6.8.
+
 ### 2.3 DLSS Ray Reconstruction — only for a ray-traced *screen-space* image
 RR is a denoiser (and upscaler) for **noisy ray-traced images in screen space**: it takes the noisy radiance of a few rays per pixel together
 with guide buffers (diffuse albedo, specular albedo, normals, roughness, depth, motion vectors, and for specular the hit distance) and returns a

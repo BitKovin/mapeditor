@@ -5,6 +5,7 @@
 
 #include "render/camera.h"
 #include "render/camera_rig.h"
+#include "render/dlss_math.h"
 #include "render/viewport_settings.h"
 
 using namespace native::render;
@@ -345,4 +346,128 @@ TEST_CASE("camera rig: view state, adaptive grid, pose JSON") {
     CHECK(near3(c.fly().position, CameraRig().fly().position));   // a malformed vector is ignored
     CHECK(c.fly().pitch == FlyCamera::kMaxPitch);                 // clamped
     CHECK(c.orbit().distance == 0.2);
+}
+
+// ---- T6.8: DLSS Super Resolution, the parts that need no GPU --------------------------------------------------------------------
+
+TEST_CASE("DLSS setting: off by default, saved by name, an unknown name means Quality") {
+    CHECK(ViewportSettings{}.dlss == DlssMode::Off);
+    ViewportSettings s;
+    s.dlss = DlssMode::Dlaa;
+    CHECK(settingsFromJson(settingsToJson(s)).dlss == DlssMode::Dlaa);
+    s.dlss = DlssMode::Quality;
+    CHECK(settingsFromJson(settingsToJson(s)).dlss == DlssMode::Quality);
+    s.dlss = DlssMode::Off;
+    CHECK(settingsFromJson(settingsToJson(s)).dlss == DlssMode::Off);
+    CHECK(settingsFromJson(R"({"cameraMode":"orbit"})").dlss == DlssMode::Off);                   // missing: the default
+    CHECK(settingsFromJson(R"({"dlss":"balanced"})").dlss == DlssMode::Quality);                  // no lower preset exists: clamped to Quality
+    CHECK(settingsFromJson(R"({"dlss":"performance"})").dlss == DlssMode::Quality);
+    CHECK(settingsFromJson(R"({"dlss":"ultraPerformance"})").dlss == DlssMode::Quality);
+    CHECK(settingsFromJson(R"({"dlss":7})").dlss == DlssMode::Off);                               // not a string: ignored
+    CHECK(std::string(dlssModeName(DlssMode::Dlaa)) == "dlaa");
+    CHECK(dlssModeFromName("off") == DlssMode::Off);
+    CHECK(dlssModeFromName("dlaa") == DlssMode::Dlaa);
+}
+
+TEST_CASE("DLSS render size: Quality is two thirds, DLAA the full size") {
+    uint32_t w = 0, h = 0;
+    dlssRenderSize(DlssMode::Quality, 3840, 2160, &w, &h);
+    CHECK(w == 2560);
+    CHECK(h == 1440);
+    dlssRenderSize(DlssMode::Quality, 2560, 1440, &w, &h);
+    CHECK(w == 1707);
+    CHECK(h == 960);
+    dlssRenderSize(DlssMode::Dlaa, 2560, 1440, &w, &h);
+    CHECK(w == 2560);
+    CHECK(h == 1440);
+    dlssRenderSize(DlssMode::Quality, 1, 1, &w, &h);
+    CHECK(w == 1);
+    CHECK(h == 1);
+}
+
+TEST_CASE("DLSS jitter: Halton (2, 3), inside the pixel, a full cycle covers it, phases follow the scale") {
+    CHECK(halton(1, 2) == doctest::Approx(0.5));
+    CHECK(halton(2, 2) == doctest::Approx(0.25));
+    CHECK(halton(3, 2) == doctest::Approx(0.75));
+    CHECK(halton(1, 3) == doctest::Approx(1.0 / 3));
+    CHECK(halton(2, 3) == doctest::Approx(2.0 / 3));
+    CHECK(dlssPhaseCount(2560, 3840) == 18);   // 8 * 1.5^2
+    CHECK(dlssPhaseCount(3840, 3840) == 8);    // DLAA
+    const uint32_t phases = dlssPhaseCount(1707, 2560);
+    double minX = 1, maxX = -1, minY = 1, maxY = -1;
+    for (uint32_t i = 0; i < phases * 2; ++i) {
+        double jx = 0, jy = 0;
+        dlssJitter(i, phases, &jx, &jy);
+        CHECK(jx >= -0.5);
+        CHECK(jx < 0.5);
+        CHECK(jy >= -0.5);
+        CHECK(jy < 0.5);
+        minX = std::min(minX, jx); maxX = std::max(maxX, jx);
+        minY = std::min(minY, jy); maxY = std::max(maxY, jy);
+        double jx2 = 0, jy2 = 0;
+        dlssJitter(i + phases, phases, &jx2, &jy2);   // the sequence repeats after a cycle
+        CHECK(jx2 == jx);
+        CHECK(jy2 == jy);
+    }
+    CHECK(minX < -0.4);
+    CHECK(maxX > 0.4);
+    CHECK(minY < -0.4);
+    CHECK(maxY > 0.4);
+}
+
+TEST_CASE("DLSS jittered projection moves the picture by the jitter in pixels and keeps the depth") {
+    FlyCamera cam;
+    cam.lookAt({0, 2, 8}, {0, 1, 0});
+    const double aspect = 1.5;
+    const Mat4 vp = cam.viewProj(aspect);
+    const double w = 600, h = 400;   // render size
+    const Vec3 p{1.0, 1.5, -2.0};
+    const Vec3 a = mat4Transform(vp, p);
+    const Mat4 jittered = jitteredViewProj(vp, 0.25, -0.4, w, h);
+    const Vec3 b = mat4Transform(jittered, p);
+    CHECK((b.x - a.x) * 0.5 * w == doctest::Approx(0.25));   // NDC spans 2: pixels = ndc * size / 2
+    CHECK((b.y - a.y) * 0.5 * h == doctest::Approx(-0.4));
+    CHECK(b.z == doctest::Approx(a.z));                      // depth is not touched
+    const Mat4 none = jitteredViewProj(vp, 0, 0, w, h);
+    for (size_t i = 0; i < 16; ++i) CHECK(none[i] == doctest::Approx(vp[i]));
+}
+
+TEST_CASE("DLSS texture LOD bias is log2(render / output) - 1, zero without upscaling") {
+    CHECK(dlssMipBias(2560, 3840) == doctest::Approx(std::log2(2.0 / 3.0) - 1.0));
+    CHECK(dlssMipBias(3840, 3840) == 0.0f);
+    CHECK(dlssMipBias(0, 3840) == 0.0f);
+    CHECK(dlssMipBias(1280, 2560) == doctest::Approx(-2.0));
+}
+
+TEST_CASE("the view state carries what the upscaler needs and a cut serial that grows when the camera jumps") {
+    CameraRig rig;
+    ViewState a = rig.viewState(800, 600);
+    CHECK(a.perspective);
+    CHECK(a.dlss == 0);
+    CHECK(a.fovY == doctest::Approx(rig.fly().fovY));
+    CHECK(a.nearPlane == doctest::Approx(rig.fly().nearPlane));
+    CHECK(a.farPlane == doctest::Approx(rig.fly().farPlane));
+    const Vec3 f = rig.fly().forward();
+    CHECK(a.forward[0] == doctest::Approx(f.x));
+    CHECK(a.forward[1] == doctest::Approx(f.y));
+    CHECK(a.forward[2] == doctest::Approx(f.z));
+    // the stored projection times the view is the view-projection
+    const Mat4 viewM = mat4LookAt(rig.fly().eye(), rig.fly().target(), {0, 1, 0});
+    const Mat4 vp = mat4Multiply(a.proj, viewM);
+    for (size_t i = 0; i < 16; ++i) CHECK(vp[i] == doctest::Approx(a.viewProj[i]).epsilon(1e-9));
+    // moving the camera is not a cut; framing, a camera mode change and loading a pose are
+    rig.fly().move(1, 0, 0);
+    CHECK(rig.viewState(800, 600).cut == a.cut);
+    rig.frame({-1, 0, -1}, {1, 2, 1});
+    const unsigned afterFrame = rig.viewState(800, 600).cut;
+    CHECK(afterFrame != a.cut);
+    rig.setMode(CameraMode::Top);
+    const unsigned afterMode = rig.viewState(800, 600).cut;
+    CHECK(afterMode != afterFrame);
+    rig.poseFromJson(rig.poseToJson());
+    CHECK(rig.viewState(800, 600).cut != afterMode);
+    ViewportSettings s;
+    s.dlss = DlssMode::Quality;
+    rig.applySettings(s);
+    CHECK(rig.viewState(800, 600).dlss == 1);
 }

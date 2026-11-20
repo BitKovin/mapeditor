@@ -23,7 +23,7 @@ struct PushConstants {
     float viewProj[16];
     float eye[4];
     float misc[4];   // x = pass (0 opaque, 1 translucent, 2 volume, 3 sky background), y = sky texture index
-    float lit[4];    // x = mode (0 unlit, 1 lit, 2 lighting only), y = exposure, z = brightness
+    float lit[4];    // x = mode (0 unlit, 1 lit, 2 lighting only), y = exposure, z = brightness, w = texture lod bias
 };
 static_assert(sizeof(PushConstants) == 112);
 
@@ -227,7 +227,7 @@ MeshPass::~MeshPass() {
 }
 
 void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene& scene, const DrawLists& lists, VkDescriptorSet textures,
-                      uint32_t skyTexture, bool showVolumes, const FrameOverlays& ov, VkDescriptorSet lightmaps, const LitParams& lit) const {
+                      uint32_t skyTexture, bool showVolumes, const FrameOverlays& ov, VkDescriptorSet lightmaps, const LitParams& lit, int parts) const {
     if (!valid()) return;
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &textures, 0, nullptr);
     if (lightmaps) vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 1, 1, &lightmaps, 0, nullptr);
@@ -235,11 +235,12 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
     pc.lit[0] = lightmaps ? static_cast<float>(lit.mode) : 0.f;
     pc.lit[1] = lit.exposure;
     pc.lit[2] = lit.brightness;
+    pc.lit[3] = lit.lodBias;
     for (int i = 0; i < 16; ++i) pc.viewProj[i] = static_cast<float>(view.viewProj[i]);
     for (int i = 0; i < 3; ++i) pc.eye[i] = static_cast<float>(view.eye[i]);
     const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    if (skyTexture != 0 && view.perspective) {
+    if ((parts & kMeshScene) && skyTexture != 0 && view.perspective) {
         const Mat4 inv = mat4Invert(view.viewProj);
         PushConstants bgc = pc;
         for (int i = 0; i < 16; ++i) bgc.viewProj[i] = static_cast<float>(inv[i]);
@@ -284,8 +285,8 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
         lines(topLines_, ov.gizmo, view.viewProj);
         lines(screenLines_, ov.screen, mat4Identity());
     };
-    if (lists.solid.count == 0 && lists.volume.count == 0) {
-        overlays();
+    if (!(parts & kMeshScene) || (lists.solid.count == 0 && lists.volume.count == 0)) {
+        if (parts & kMeshOverlays) overlays();
         return;
     }
     const VkDeviceSize zero = 0;
@@ -303,7 +304,7 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
     draw(opaque_, 0, lists.solid);
     draw(translucent_, 1, lists.translucent);
     if (showVolumes) draw(volume_, 2, lists.volume);
-    overlays();
+    if (parts & kMeshOverlays) overlays();
 }
 
 } // namespace native::render

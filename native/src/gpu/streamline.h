@@ -2,7 +2,8 @@
 //
 // Owns: loading sl.interposer.dll (never linked, so a missing DLL or a missing SDK only means "no Streamline"), slInit /
 // slShutdown, the Vulkan entry points the interposer provides (volk is pointed at them so SL sees instance, device, swapchain
-// and present calls), the Reflex options and the per-frame sleep / marker calls. T6.8 adds DLSS through the same object.
+// and present calls), the Reflex options, the per-frame sleep / marker calls, and (T6.8) DLSS Super Resolution: per viewport the options,
+// the constants, the resource tags and the evaluate call recorded into the frame's command buffer.
 // Thread: load / deviceCreated on the UI thread before the render thread exists; beginFrame / sleep / marker on the render
 // thread only; status() from any thread.
 // Spec: 11_NVIDIA_TECH.md §1, §2.1; 08_MILESTONES.md T6.7. The SDK itself lives in third_party/streamline (fetched by
@@ -29,11 +30,37 @@ enum class PclMarker : uint32_t {
     PresentEnd,
 };
 
+// One image handed to DLSS (the SL header is not visible to callers).
+struct DlssImage {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;           // the view the feature reads / writes (depth: depth aspect only)
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkImageUsageFlags usage = 0;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;   // the layout the image has on the command buffer at the evaluate call
+    uint32_t width = 0, height = 0;
+};
+
+// Everything one DLSS evaluate needs. Matrices are the column-major arrays of render/math3d.h copied unchanged (Streamline reads them as the
+// row-major, row-vector form of the same matrix) and carry no jitter.
+struct DlssFrame {
+    uint32_t viewport = 0;                       // the viewport id: one DLSS instance and history per viewport
+    int mode = 1;                                // 1 = Quality (MaxQuality), 2 = DLAA
+    uint32_t renderW = 0, renderH = 0, outW = 0, outH = 0;
+    float jitter[2] = {0, 0};                    // pixels of the render image, as applied to the projection
+    float viewToClip[16] = {}, clipToView[16] = {}, clipToPrevClip[16] = {}, prevClipToClip[16] = {};
+    float position[3] = {}, up[3] = {}, right[3] = {}, forward[3] = {};
+    float nearPlane = 0.05f, farPlane = 2000.0f, fovY = 0.9f, aspect = 1.0f;
+    bool reset = false;                          // the history is not valid for this frame (camera cut, resize, mode switch, big change)
+    DlssImage color, depth, mvec, out;           // colour in (render size), depth (render size), motion vectors in pixels (render size), colour out (output size)
+};
+
 struct StreamlineStatus {
     bool loaded = false;               // slInit succeeded
     bool reflexSupported = false;      // slIsFeatureSupported(Reflex) on the chosen adapter
     bool reflexActive = false;         // low-latency mode is on and the driver reports it available
     bool pclSupported = false;
+    bool dlssSupported = false;        // the DLSS Super Resolution plugin is usable on this adapter (RTX GPU, nvngx_dlss.dll present)
     std::string version;               // "2.14.16"
     std::string note;                  // why something is off ("sl.interposer.dll not found", ...); empty when all is well
     double latencyMs = 0;              // average of the last frame reports: simulation start -> GPU render end
@@ -61,6 +88,16 @@ public:
     void beginFrame();
     void sleep();
     void marker(PclMarker m);
+
+    // DLSS Super Resolution (render thread only; SL's DLSS calls are not thread safe). mode 1 = Quality, 2 = DLAA.
+    bool dlssAvailable() const;
+    // The render size DLSS wants for an output size and mode; false when DLSS is not available.
+    bool dlssRenderSize(int mode, uint32_t outW, uint32_t outH, uint32_t* renderW, uint32_t* renderH);
+    // Sets the options (when they changed), the constants and the tags of the viewport and records the upscale into `cmd` (outside a render pass).
+    // The command buffer's bound state is undefined afterwards. False with *err set when SL refuses (the output image then has no valid content).
+    bool dlssEvaluate(VkCommandBuffer cmd, const DlssFrame& frame, std::string* err);
+    // The viewport's DLSS resources go (the GPU must be idle).
+    void dlssRelease(uint32_t viewport);
 
     StreamlineStatus status() const;
 
