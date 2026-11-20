@@ -26,6 +26,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstdio>
 
 #include "base/log.h"
 #include "doc/commands.h"
@@ -208,11 +209,15 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     statusFields_->refreshNow();   // the hints need the registry and the keymap
     if (place_) place_->refreshTooltips();
     if (services_.watchInput) {
-        inputTimer_.setInterval(100);
+        inputTimer_.setInterval(16);
         QObject::connect(&inputTimer_, &QTimer::timeout, this, [this] {
             bool pointerLocked = false;
-            for (const ViewportPanel& p : panels_) pointerLocked = pointerLocked || p.window->pointerGrabbed();
-            if (router_.holding() || pointerLocked) reconcileInput();
+            bool flying = false;
+            for (const ViewportPanel& p : panels_) {
+                pointerLocked = pointerLocked || p.window->pointerGrabbed();
+                flying = flying || p.window->rig().flying();
+            }
+            if (router_.holding() || pointerLocked || flying) reconcileInput();
         });
         inputTimer_.start();
     }
@@ -241,7 +246,52 @@ render::ViewportWindow* MainWindow::activeViewport() const {
 
 bool MainWindow::lightingAvailable() const { return lighting_ && lighting_->valid(); }
 
-void MainWindow::setStatsRows(const std::vector<std::pair<std::string, std::string>>& rows) { stats_->setRows(rows); }
+bool MainWindow::lightingSettled() const {
+    if (!lightingAvailable()) return true;
+    const auto st = lighting_->status();
+    return st.epoch > 0 && (st.converged || !st.error.empty());
+}
+
+std::string MainWindow::lightingText() const {
+    if (!lighting_) return services_.device && !services_.device->caps().lit() ? "unavailable (no ray query device)" : "off";
+    if (!lighting_->valid()) return "unavailable";
+    const auto st = lighting_->status();
+    char buf[160];
+    if (!st.error.empty()) return "error: " + st.error;
+    if (st.epoch == 0 && !st.building) return "waiting for a lit view";
+    if (st.building) return "building the layout and samples";
+    if (st.converged) {
+        std::snprintf(buf, sizeof buf, "converged: %u chunks, %.1f s to build, %.1f s to refine", st.chunks, st.buildSeconds, st.refineSeconds);
+        return buf;
+    }
+    std::snprintf(buf, sizeof buf, "baking: %u / %u chunks", st.convergedChunks, st.chunks);
+    return buf;
+}
+
+void MainWindow::refreshStats() {
+    auto rows = deviceRows_;
+    rows.emplace_back("Lighting", lightingText());
+    if (services_.renderThread) {
+        const auto info = services_.renderThread->sceneInfo();
+        rows.emplace_back("Lit objects", std::to_string(info.scene.litObjects) + " of " + std::to_string(info.scene.objects));
+    }
+    std::string key;
+    for (const auto& r : rows) key += r.first + "" + r.second + "";
+    if (key == statsShown_) return;
+    statsShown_ = key;
+    stats_->setRows(rows);
+}
+
+void MainWindow::setStatsRows(const std::vector<std::pair<std::string, std::string>>& rows) {
+    deviceRows_ = rows;
+    statsShown_.clear();
+    refreshStats();
+    if (!statsTimer_.isActive()) {
+        statsTimer_.setInterval(500);
+        QObject::connect(&statsTimer_, &QTimer::timeout, this, [this] { refreshStats(); });
+        statsTimer_.start();
+    }
+}
 
 // ---- viewports ----------------------------------------------------------------------------------------------------------------
 
@@ -418,7 +468,11 @@ bool MainWindow::routeKey(const QKeyEvent& e, bool press) {
     setContextsFor(vp);
     UiEnv ui{this, vp ? vp : activeViewport()};
     actions::ActionEnv env{&ui};
-    const auto r = router_.handle(fromKeyEvent(e, press, isTextInput(QApplication::focusWidget())), env);
+    const actions::InputEvent ev = fromKeyEvent(e, press, isTextInput(QApplication::focusWidget()));
+    const auto r = router_.handle(ev, env);
+    if (inputLogging())
+        base::logInfo(std::string("input: key ") + (press ? "press " : "release ") + ev.key + " scan=" + ev.scan + (ev.autoRepeat ? " auto-repeat" : "") + " holding=" + std::to_string(router_.heldTriggers().size()) +
+                      " handled=" + (r.handled ? "yes" : "no") + " viewport=" + (vp ? "under cursor" : "none"));
     if (!router_.holding()) holdViewport_ = nullptr;
     return r.handled;
 }
@@ -671,9 +725,18 @@ void MainWindow::reconcileInput(const InputProbe& probe) {
         for (const std::string& trigger : router_.heldTriggers()) {
             bool known = false;
             const bool down = probe(trigger, known);
-            if (known && !down) router_.release(trigger, env, nowMs());
+            if (known && !down) {
+                if (inputLogging()) base::logInfo("input: " + trigger + " is up on the keyboard but was held: released by the probe");
+                router_.release(trigger, env, nowMs());
+            }
         }
         if (!router_.holding()) holdViewport_ = nullptr;
+    }
+    for (const ViewportPanel& p : panels_) {   // a camera that flies with nothing held (a release went to another viewport, or never came) stops
+        if (!router_.holding() && p.window->rig().flying()) {
+            if (inputLogging()) base::logInfo("input: a viewport flies with no key held: stopped");
+            p.window->resetInput();
+        }
     }
     for (const ViewportPanel& p : panels_) {   // a locked pointer needs its right or middle button
         if (!p.window->pointerGrabbed()) continue;

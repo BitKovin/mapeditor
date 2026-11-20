@@ -173,6 +173,10 @@ public:
     std::string assetsRoot() const { return assetsRoot_; }
     // Whether the lit render modes can work: the device has ray queries and a second queue, and the lighting service runs.
     bool lightingAvailable() const;
+    // Whether the bake of the latest snapshot finished (true without a service); --screenshot waits for it in the lit modes.
+    bool lightingSettled() const;
+    // One line about the live lighting ("baking 120 / 1577 chunks", "error: ..."); shown in the Stats panel.
+    std::string lightingText() const;
     void setAssetsRoot(const std::string& folder);
     // Opens a map: a path relative to the assets root, or an absolute path inside it. Loads on the job pool (the window stays
     // responsive, the status bar says "Loading ...") or synchronously without one; replaces the document when done. Errors go to
@@ -510,6 +514,10 @@ private:
     LayoutPreset preset_ = LayoutPreset::One;
     int active_ = 0;
     QTimer saveTimer_;
+    QTimer statsTimer_;   // refreshes the Stats panel rows that change (lighting)
+    std::vector<std::pair<std::string, std::string>> deviceRows_;
+    std::string statsShown_;
+    void refreshStats();
     QTimer inputTimer_;
     bool building_ = false;
     actions::Registry registry_;

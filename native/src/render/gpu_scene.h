@@ -55,6 +55,7 @@ struct SceneStats {
     uint32_t queued = 0;              // waiting for upload
     uint64_t vertexBytesUsed = 0, indexBytesUsed = 0;
     uint64_t uploads = 0;
+    uint32_t litObjects = 0;          // objects of the snapshot drawn from a lit mesh (lightmap coordinates) of the bake
 };
 
 using HiddenObjects = std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>;
@@ -86,6 +87,7 @@ public:
     VkBuffer indexBuffer() const { return indices_.buffer(); }
     bool hasObjects() const { return !draws_.empty(); }
     SceneStats stats() const;
+    uint32_t litObjects_ = 0;
 
 private:
     struct Object {

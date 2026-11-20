@@ -183,6 +183,7 @@ A hold (fly key, look / pan / select drag) must never outlive the key or button 
 - **MainWindow**: key releases still reach the router while a menu or dialog is open (a key *press* for the popup cancels the holds); `cancelInput()` (application deactivated, viewports
   rebuilt) also resets every viewport; a click in a viewport takes the keyboard from a text field; while something is held a 100 ms timer (`Services::watchInput`, on in the app) asks the
   system (`ui/input_probe`: GetAsyncKeyState) whether each held key / button is still down and releases the ones that are not (`reconcileInput(probe)`, testable with a fake probe).
+Added after a report of keyboard flight that went on until the next input: the probe timer runs every 16 ms while anything is held, a viewport that flies while the router holds nothing is stopped, and `--log-input` writes every routed key event and every repair to the log. `test_gui_hardware_input.cpp` sends real scan-code input (SendInput, only when the test window is the foreground window) with auto-repeat and a random hand; it could not reproduce the report, so the cause is still open.
 Tests that inject events without real buttons set `Services::verifyButtons = false` (gui_support does), since the real moves that follow report no button.
 
 ## As built: the binding editor (T4.6)

@@ -424,8 +424,9 @@ bool LightingService::build(const LightingInputs& in, std::unique_ptr<Epoch>& ou
         error = "the acceleration structures could not be built";
         return false;
     }
-    e->lightBuffer = std::make_unique<LightBuffer>(device_, static_cast<uint32_t>(e->lights.lights.size()) + 16);
-    if (!e->lightBuffer->valid() || !e->lightBuffer->set(packLights(e->lights.lights), static_cast<uint32_t>(e->lights.lights.size()))) {
+    const std::vector<float> packedLights = packLights(e->lights.lights);   // the records, then the sky tables (they are far more than the lights)
+    e->lightBuffer = std::make_unique<LightBuffer>(device_, static_cast<uint32_t>(packedLights.size() * sizeof(float) / 128) + 16);
+    if (!e->lightBuffer->valid() || !e->lightBuffer->set(packedLights, static_cast<uint32_t>(e->lights.lights.size()))) {
         error = "the lights did not fit";
         return false;
     }

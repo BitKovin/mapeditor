@@ -48,6 +48,14 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
             }
             o.layoutViewports = std::atoi(v.c_str());
         }
+        else if (a == "--render-mode") {
+            if (!value(o.renderMode)) return r;
+            if (o.renderMode != "unlit" && o.renderMode != "lit" && o.renderMode != "lightingOnly") {
+                r.error = "invalid render mode (use unlit, lit or lightingOnly): " + o.renderMode;
+                return r;
+            }
+        }
+        else if (a == "--log-input") o.logInput = true;
         else if (a == "--no-lighting") o.noLighting = true;
         else if (a == "--validation") o.validation = true;
         else if (a == "--help" || a == "-h") o.help = true;

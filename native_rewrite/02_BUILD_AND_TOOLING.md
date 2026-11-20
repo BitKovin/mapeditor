@@ -76,6 +76,7 @@ mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--
   `%APPDATA%/MapEditor/MapEditorNative.ini` and restored at the next start. Keys: the shipped preset is copied next to the exe
   (`<exe dir>/keymaps/default.json`, from `native/assets/keymaps/`); the user's changes are read from
   `%APPDATA%/mapeditor_native/keymaps/default.json` (not used by `--screenshot`).
+- `--render-mode <unlit|lit|lightingOnly>` starts every viewport in that render mode (a `--screenshot` run waits for the bake in the lit modes).
 - `--assets <folder>` sets the assets root (maps and prefabs are opened from and saved to it; otherwise the saved setting `assets/root`
   is used) and `--map <assets-relative path>` opens that map at start-up (T2.2).
 - `--automation-port` opens the local JSON socket (08_MILESTONES.md M9). Default: off.

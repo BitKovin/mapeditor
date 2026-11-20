@@ -88,6 +88,7 @@ SceneStats GpuScene::stats() const {
     s.vertexBytesUsed = vertices_.usedBytes();
     s.indexBytesUsed = indices_.usedBytes();
     s.uploads = uploads_;
+    s.litObjects = litObjects_;
     return s;
 }
 
@@ -192,12 +193,16 @@ bool GpuScene::sync(VkCommandBuffer cmd, gpu::UploadRing& ring, uint64_t complet
         queue_.clear();
         std::vector<Work> work;
         work.reserve(next->objects.size());
+        litObjects_ = 0;
         for (const auto& [key, p] : next->objects) {
             std::shared_ptr<const scene::RenderMesh> mesh = p.render ? p.render : p.raw;
             if (!mesh) continue;
             if (p.render && lit_) {   // the copy with lightmap coordinates, while it was made from this very mesh
                 const auto lit = lit_->objects.find(key);
-                if (lit != lit_->objects.end() && lit->second.source == p.render) mesh = lit->second.lit;
+                if (lit != lit_->objects.end() && lit->second.source == p.render) {
+                    mesh = lit->second.lit;
+                    ++litObjects_;
+                }
             }
             const auto it = objects_.find(key);
             if (it != objects_.end() && !it->second.mesh.expired() && it->second.meshPtr == mesh.get()) {

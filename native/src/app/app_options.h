@@ -3,7 +3,7 @@
 // Owns: parsing only (no Qt, no I/O), so it is unit-testable. Thread: any.
 //   mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
 //                        [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]
-//                        [--layout <1|2|4>]
+//                        [--layout <1|2|4>] [--log-input] [--render-mode <unlit|lit|lightingOnly>]
 // --trace writes a Chrome trace-event file (chrome://tracing, Perfetto) of jobs / frames / bake steps.
 // --layout starts with 1, 2 or 4 viewports instead of the saved layout (T1.4).
 // --screenshot is a development aid (added with T0.4 for visual checks): after the window is shown and has painted once the
@@ -25,6 +25,8 @@ struct AppOptions {
     std::string logFile;          // --log
     std::string traceFile;        // --trace
     std::string screenshotPath;   // --screenshot
+    bool logInput = false;        // --log-input
+    std::string renderMode;       // --render-mode unlit | lit | lightingOnly (every viewport starts in it); empty = the saved one
     int layoutViewports = 0;      // --layout; 0 = the saved layout (default 1 viewport)
     bool help = false;            // --help / -h
 };

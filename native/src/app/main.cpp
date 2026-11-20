@@ -21,9 +21,11 @@
 #include "base/log.h"
 #include "base/trace.h"
 #include "gpu/device.h"
+#include "render/viewport_settings.h"
 #include "render/render_thread.h"
 #include "render/viewport_window.h"
 #include "ui/main_window.h"
+#include "ui/input_probe.h"
 
 int main(int argc, char** argv) {
     QApplication::setOrganizationName(QStringLiteral("MapEditor"));
@@ -86,6 +88,7 @@ int main(int argc, char** argv) {
     services.settings = screenshotRun ? nullptr : &layoutSettings;
     services.forceViewports = parsed.options.layoutViewports;
     services.watchInput = true;
+    native::ui::setInputLogging(parsed.options.logInput);
     // Keys: the shipped preset next to the exe, the person's changes in %APPDATA%\mapeditor_native\keymaps (none in a screenshot run).
     services.keymapPresetPath = (QCoreApplication::applicationDirPath() + QStringLiteral("/keymaps/default.json")).toStdString();
     const QString appData = qEnvironmentVariable("APPDATA");
@@ -94,6 +97,11 @@ int main(int argc, char** argv) {
     native::ui::MainWindow window(services);
     window.setStatsRows(device->caps().rows());
     window.show();
+    if (!parsed.options.renderMode.empty()) {
+        const auto mode = parsed.options.renderMode == "lit" ? native::render::RenderMode::Lit
+                          : parsed.options.renderMode == "lightingOnly" ? native::render::RenderMode::LightingOnly : native::render::RenderMode::Unlit;
+        for (const native::ui::ViewportPanel& panel : window.viewports()) panel.window->setRenderMode(mode);
+    }
     if (!parsed.options.map.empty()) window.openDocument(parsed.options.map);
 
     int shotResult = 0;
@@ -123,6 +131,7 @@ int main(int argc, char** argv) {
             const bool expectScene = !parsed.options.map.empty();
             if (*waited < 600) return;
             if (expectScene && !window.sceneReady() && *waited < 20000) return;
+            if (expectScene && !parsed.options.renderMode.empty() && parsed.options.renderMode != "unlit" && !window.lightingSettled() && *waited < 120000) return;
             if (expectScene && !*framed) {
                 *framed = window.frameScene();
                 *waited = std::max(*waited, 19000) - 400;   // a few more frames with the camera in place

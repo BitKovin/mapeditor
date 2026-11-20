@@ -39,6 +39,12 @@ int virtualKeyOf(const std::string& name) {
 } // namespace
 #endif
 
+namespace {
+bool g_inputLogging = false;
+}
+void setInputLogging(bool on) { g_inputLogging = on; }
+bool inputLogging() { return g_inputLogging; }
+
 bool hardwareTriggerDown(const std::string& trigger, bool& known) {
     known = false;
 #ifdef _WIN32
