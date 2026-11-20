@@ -68,6 +68,11 @@ struct ActionDef {
     std::function<void(ActionEnv&, const Invocation&)> run;
     std::function<bool(const ActionEnv&, const nlohmann::json&)> checked;   // Toggle only
     std::string icon;
+    // Status bar hints (T4.7): the short verb shown after the keys of the action while its context is the active mode ("confirm", "constrain"); empty = the label.
+    std::string hint;
+    // The command palette can run it with a typed argument: "grid 0.25" runs this action with {paletteParam: 0.25} (a number when paletteNumeric, else the text).
+    std::string paletteKeyword, paletteParam;
+    bool paletteNumeric = false;
 };
 
 class Registry {

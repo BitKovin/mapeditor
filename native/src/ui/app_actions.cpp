@@ -76,6 +76,7 @@ void selectAction(actions::Registry& r) {
     d.kind = ActionKind::Hold;
     d.contexts = {"tool:select"};
     d.params = json{{"op", "replace"}};
+    d.hint = "select";
     d.enabled = haveViewport;
     d.run = [](ActionEnv& env, const Invocation& inv) {
         const UiEnv* u = env.as<UiEnv>();
@@ -99,6 +100,9 @@ void gridActions(actions::Registry& r) {
     {
         ActionDef d;
         d.id = "grid.set";
+        d.paletteKeyword = "grid";
+        d.paletteParam = "size";
+        d.paletteNumeric = true;
         d.label = "Set grid size";
         d.category = "Grid";
         d.description = "Sets the grid size (metres) of the active viewport; the size is the binding's parameter.";
@@ -201,6 +205,7 @@ void transformActions(actions::Registry& r) {
     {
         ActionDef d;
         d.id = "transform.confirm";
+        d.hint = "confirm";
         d.label = "Confirm transform";
         d.category = "Transform";
         d.kind = ActionKind::Modal;
@@ -212,6 +217,7 @@ void transformActions(actions::Registry& r) {
     {
         ActionDef d;
         d.id = "transform.cancel";
+        d.hint = "cancel";
         d.label = "Cancel transform";
         d.category = "Transform";
         d.kind = ActionKind::Modal;
@@ -223,6 +229,7 @@ void transformActions(actions::Registry& r) {
     {
         ActionDef d;
         d.id = "transform.axis";
+        d.hint = "constrain";
         d.label = "Constrain to axis";
         d.category = "Transform";
         d.description = "Limits the running transform to the world axis in the binding's parameter (0 = X, 1 = Y, 2 = Z); again lifts the limit.";
@@ -333,6 +340,7 @@ void boxActions(actions::Registry& r) {
     {
         ActionDef d;
         d.id = "shape.turn";
+        d.hint = "turn shape";
         d.label = "Turn shape";
         d.category = "Tools";
         d.description = "Turns the shape being drawn a quarter turn about its height: which way a ramp rises, stairs climb, an arch spans.";
@@ -345,6 +353,7 @@ void boxActions(actions::Registry& r) {
     {
         ActionDef d;
         d.id = "box.draw";
+        d.hint = "draw";
         d.label = "Draw box";
         d.category = "Tools";
         d.description = "Drag a rectangle on the surface under the pointer, move the pointer for the height and click to finish.";
@@ -360,6 +369,7 @@ void boxActions(actions::Registry& r) {
     {
         ActionDef d;
         d.id = "box.cancel";
+        d.hint = "cancel";
         d.label = "Cancel drawing";
         d.category = "Tools";
         d.contexts = {"tool:box"};
@@ -499,6 +509,48 @@ void editActions(actions::Registry& r) {
             }
             w->setHideRules(rules);
         };
+        add(r, std::move(d));
+    }
+}
+
+// The command palette and the key help (T4.7): found from the Help menu, bound to F3 / Ctrl+Shift+P and the hold of F1 in the default keymap.
+void helpActions(actions::Registry& r) {
+    const auto windowOf = [](const ActionEnv& env) { auto* u = env.as<UiEnv>(); return u ? u->window : nullptr; };
+    {
+        ActionDef d;
+        d.id = "view.command_palette";
+        d.label = "Command palette...";
+        d.category = "View";
+        d.description = "Search every action by name and run it; recently used first. Type an argument after the name: grid 0.25.";
+        d.menu = "&Help";
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->openPalette(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "help.keys";
+        d.label = "Key help (hold)";
+        d.category = "Help";
+        d.description = "While held, a sheet over the viewport lists the keys that work now.";
+        d.kind = ActionKind::Hold;
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
+        d.run = [windowOf](ActionEnv& env, const Invocation& inv) {
+            if (auto* w = windowOf(env)) w->showKeyHelp(!isRelease(inv.event));
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "help.keys_toggle";
+        d.label = "Key help";
+        d.category = "Help";
+        d.description = "Shows or hides the sheet over the viewport that lists the keys that work now.";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&Help";
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
+        d.checked = [windowOf](const ActionEnv& env, const json&) { auto* w = windowOf(env); return w && w->keyHelpShown(); };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->showKeyHelp(!w->keyHelpShown()); };
         add(r, std::move(d));
     }
 }
@@ -799,6 +851,7 @@ void registerAppActions(actions::Registry& r) {
         };
         add(r, std::move(d));
     }
+    helpActions(r);
 }
 
 } // namespace native::ui

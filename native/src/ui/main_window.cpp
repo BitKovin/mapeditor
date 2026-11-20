@@ -42,6 +42,7 @@
 #include "scene/size_labels.h"
 #include "ui/glyph_atlas_qt.h"
 #include "ui/input_adapter.h"
+#include "ui/place_panel.h"
 #include "ui/registry_menus.h"
 #include "ui/box_drawing.h"
 #include "ui/stats_panel.h"
@@ -202,6 +203,8 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     loadKeymap();
     menus_ = new RegistryMenus(menuBar(), registry_, keymap_, [this] { return currentUiEnv(); }, this);
     menus_->build();
+    statusFields_->refreshNow();   // the hints need the registry and the keymap
+    if (place_) place_->refreshTooltips();
     if (services_.watchInput) {
         inputTimer_.setInterval(100);
         QObject::connect(&inputTimer_, &QTimer::timeout, this, [this] {
@@ -395,7 +398,7 @@ void MainWindow::setContextsFor(render::ViewportWindow* vp) {
     } else if (vp) {
         const std::vector<std::string> v = viewportContexts(*vp);
         contexts.insert(contexts.end(), v.begin(), v.end());
-        contexts.push_back(tool_ == Tool::Box ? "tool:box" : "tool:select");
+        contexts.push_back(modeContext() == "tool:box" ? "tool:box" : "tool:select");
     }
     router_.contexts().set(contexts);
 }

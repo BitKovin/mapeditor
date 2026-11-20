@@ -27,6 +27,12 @@ QLabel* field(QStatusBar* bar, const char* name) {
 
 StatusFields::StatusFields(MainWindow& window) : QObject(&window), win_(window) {
     QStatusBar* bar = window.statusBar();
+    hint_ = new QLabel(bar);   // permanent, so a message of the line on the left (a running transform) does not hide it
+    hint_->setObjectName(QStringLiteral("status:hint"));
+    hint_->setMargin(2);
+    hint_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);   // long hints are cut instead of widening the window
+    hint_->setTextInteractionFlags(Qt::NoTextInteraction);
+    bar->addPermanentWidget(hint_, 1);
     tool_ = field(bar, "status:tool");
     grid_ = field(bar, "status:grid");
     selection_ = field(bar, "status:selection");
@@ -43,7 +49,7 @@ StatusFields::StatusFields(MainWindow& window) : QObject(&window), win_(window) 
     timer_->setInterval(0);
     QObject::connect(timer_, &QTimer::timeout, this, [this] { refreshNow(); });
     for (const auto signal : {&MainWindow::selectionChanged, &MainWindow::toolChanged, &MainWindow::documentChanged, &MainWindow::assetsRootChanged,
-                              &MainWindow::viewportsChanged, &MainWindow::entityDefinitionsChanged})
+                              &MainWindow::viewportsChanged, &MainWindow::entityDefinitionsChanged, &MainWindow::keymapChanged, &MainWindow::transformChanged})
         QObject::connect(&window, signal, this, [this] { schedule(); });
     QObject::connect(&window, &MainWindow::documentEdited, this, [this] { schedule(); });
     refreshNow();
@@ -57,6 +63,7 @@ void StatusFields::set(QLabel* label, const QString& text) {
     ++updates_;
 }
 
+QString StatusFields::hintText() const { return hint_->text(); }
 QString StatusFields::toolText() const { return tool_->text(); }
 QString StatusFields::gridText() const { return grid_->text(); }
 QString StatusFields::selectionText() const { return selection_->text(); }
@@ -65,6 +72,7 @@ QString StatusFields::folderText() const { return folder_->text(); }
 
 void StatusFields::refreshNow() {
     timer_->stop();
+    set(hint_, qs(win_.hintText()));
     set(tool_, win_.tool() == MainWindow::Tool::Box ? QStringLiteral("Tool: Box") : QStringLiteral("Tool: Select"));
     if (render::ViewportWindow* vp = win_.activeViewport()) set(grid_, qs(tools::gridText(vp->rig().settings())));
     else set(grid_, QString());

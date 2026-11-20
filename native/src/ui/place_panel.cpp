@@ -86,6 +86,8 @@ PlacePanel::PlacePanel(MainWindow& window, QWidget* parent) : QWidget(parent), w
     auto* shapes = new QWidget;
     buildShapes(shapes);
     tabs_->addTab(shapes, QStringLiteral("Shapes"));
+    refreshTooltips();
+    QObject::connect(&win_, &MainWindow::keymapChanged, this, [this] { refreshTooltips(); });
 
     auto* prefabPage = new QWidget;
     auto* pl = new QVBoxLayout(prefabPage);
@@ -152,6 +154,23 @@ PlacePanel::PlacePanel(MainWindow& window, QWidget* parent) : QWidget(parent), w
 PlacePanel::~PlacePanel() = default;
 
 // ---- shapes --------------------------------------------------------------------------------------------------------------------------
+
+void PlacePanel::refreshTooltips() {
+    shapeTips_.clear();
+    for (size_t i = 0; i < shapeButtons_.size(); ++i) {
+        const std::string keys = win_.keymap().displayText("shape.set", {{"shape", tools::shapeName(kShapes[i].id)}});
+        QString tip = QString::fromLatin1(kShapes[i].label);
+        if (!keys.empty()) tip += QStringLiteral(" (") + QString::fromStdString(keys) + QLatin1Char(')');
+        tip += QStringLiteral(": drag on a surface (the start snaps to the grid), release, move for height, click. Shift = equal sides, Esc = cancel");
+        shapeButtons_[i]->setToolTip(tip);
+        shapeTips_.push_back(tip);
+    }
+    if (turn_) {
+        const std::string keys = win_.keymap().displayText("shape.turn");
+        turn_->setToolTip(QStringLiteral("Which way the shape faces in the box you draw (quarter turns about its height); editable later")
+                          + (keys.empty() ? QString() : QStringLiteral(" - turn while drawing: ") + QString::fromStdString(keys)));
+    }
+}
 
 void PlacePanel::buildShapes(QWidget* page) {
     auto* v = new QVBoxLayout(page);

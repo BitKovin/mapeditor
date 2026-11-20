@@ -44,6 +44,9 @@ public:
     const std::vector<std::string>& prefabFiles() const { return prefabFiles_; }
     // The panel's shape widgets follow the window (the tool or its parameters changed).
     void syncShape();
+    // The shape buttons and the orientation box name their key from the keymap ("Cylinder (C): drag ..."); follows a rebinding.
+    void refreshTooltips();
+    QString shapeTooltip(size_t index) const { return static_cast<qsizetype>(index) < shapeTips_.size() ? shapeTips_[static_cast<qsizetype>(index)] : QString(); }
 
 private:
     void buildShapes(QWidget* page);
@@ -57,6 +60,7 @@ private:
     QLineEdit *entityFilter_ = nullptr, *prefabFilter_ = nullptr;
     QLabel* prefabInfo_ = nullptr;
     std::vector<QToolButton*> shapeButtons_;
+    QStringList shapeTips_;
     QSpinBox *sides_ = nullptr, *steps_ = nullptr, *segments_ = nullptr, *rings_ = nullptr, *archSegments_ = nullptr;
     QDoubleSpinBox* archThickness_ = nullptr;
     QCheckBox* smooth_ = nullptr;

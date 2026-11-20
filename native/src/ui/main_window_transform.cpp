@@ -85,6 +85,7 @@ bool MainWindow::startTransform(render::ViewportWindow* vp, tools::ModalKind kin
     transform_ = std::move(t);
     refreshGizmos();
     showTransformStatus();
+    emit transformChanged();
     return true;
 }
 
@@ -230,6 +231,7 @@ void MainWindow::endTransform(bool confirm) {
     transform_.reset();
     statusBar()->showMessage(confirm ? QString::fromStdString(label) : QStringLiteral("Cancelled"), 3000);
     refreshGizmos();
+    emit transformChanged();
 }
 
 void MainWindow::toggleTransformAxis(int axis) {

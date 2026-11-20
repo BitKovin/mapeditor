@@ -27,6 +27,8 @@ public:
     QString selectionText() const;
     QString mapText() const;
     QString folderText() const;
+    // The keys of the active tool / modal operator ("LMB / Enter confirm  ·  RMB / Escape cancel"), made from the keymap.
+    QString hintText() const;
     // Recomputes the labels at once (tests; the window schedules it).
     void refreshNow();
     // How many times the label texts really changed (a cheap way for tests to see that nothing was rebuilt without a reason).
@@ -38,7 +40,7 @@ private:
     void set(QLabel* label, const QString& text);
 
     MainWindow& win_;
-    QLabel *tool_ = nullptr, *grid_ = nullptr, *selection_ = nullptr, *map_ = nullptr;
+    QLabel *hint_ = nullptr, *tool_ = nullptr, *grid_ = nullptr, *selection_ = nullptr, *map_ = nullptr;
     QToolButton* folder_ = nullptr;
     QTimer* timer_ = nullptr;
     int updates_ = 0;

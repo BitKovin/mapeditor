@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "app/actions/keymap.h"
+#include "app/actions/palette.h"
 #include "app/actions/registry.h"
 #include "app/actions/router.h"
 #include "render/math3d.h"
@@ -91,6 +92,7 @@ class OutlinerPanel;
 class DetailsPanel;
 class PlacePanel;
 class StatusFields;
+class KeyHelpOverlay;
 
 // What the window needs from the application (owned by main(); the window never outlives them). All null in widget-only tests.
 struct Services {
@@ -355,6 +357,24 @@ public:
     // After the user layer was edited (the binding editor): saves it, refreshes the menus and tells the listeners.
     void keymapEdited();
 
+    // ---- discoverability (T4.7) ----
+    // The UiEnv a menu or the palette runs actions with: this window and its active viewport.
+    UiEnv uiEnv() const { return currentUiEnv(); }
+    // Runs an action by id as a menu entry would (no key involved); false when unknown or disabled.
+    bool runAction(const std::string& id, const nlohmann::json& params = nullptr);
+    // The command palette (a modal dialog); the chosen action runs after it closed.
+    void openPalette();
+    // The recently used palette entries (kept in the settings as "palette/recent").
+    std::vector<actions::Recent> paletteRecent() const;
+    void setPaletteRecent(const std::vector<actions::Recent>& list);
+    // The key help sheet over the active viewport (built from the contexts active now; made again when the keymap changes).
+    void showKeyHelp(bool show);
+    bool keyHelpShown() const;
+    KeyHelpOverlay* keyHelp() const { return keyHelp_; }
+    // The context of the mode that owns the keys now: "modal:transform" while a transform runs, else "tool:box" / "tool:select". Its bindings are the status bar hints.
+    std::string modeContext() const;
+    std::string hintText() const;
+
 signals:
     // The game folder was changed.
     void assetsRootChanged();
@@ -370,6 +390,8 @@ signals:
     void hiddenChanged();
     // The tool, the shape or its parameters changed.
     void toolChanged();
+    // A modal transform started or ended (the keys that are active change with it).
+    void transformChanged();
     // The current document changed (opened, saved under a new path, replaced): panels refresh their title and contents.
     void documentChanged();
     // The current version changed (an edit, undo, redo, or a new document: `all`): what differs from the previous one.
@@ -471,6 +493,7 @@ private:
     std::string activeKeymapPath() const;
     tools::EditorPrefs prefs_;
     StatusFields* statusFields_ = nullptr;
+    KeyHelpOverlay* keyHelp_ = nullptr;
     std::function<bool(const QString&, const QString&)> confirmHandler_;
     std::vector<ViewportPanel> panels_;
     LayoutPreset preset_ = LayoutPreset::One;
