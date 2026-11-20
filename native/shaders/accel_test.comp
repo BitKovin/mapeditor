@@ -1,0 +1,24 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+// Test shader (T6.3): closest hit of a list of rays against the TLAS, double sided and opaque as the bake sees it.
+// rays[2 i] = (origin.xyz, tmax), rays[2 i + 1] = (direction.xyz, 0); hits[i] = (t or -1, b1, b2, instanceCustomIndex bits)
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+layout(std430, set = 0, binding = 1) readonly buffer Rays { vec4 rays[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer Hits { vec4 hits[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(rays.length()) / 2u) return;
+    vec4 a = rays[2u * i], b = rays[2u * i + 1u];
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFF, a.xyz, 0.0, b.xyz, a.w);
+    while (rayQueryProceedEXT(rq)) {}
+    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+        vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+        hits[i] = vec4(rayQueryGetIntersectionTEXT(rq, true), bary.x, bary.y, uintBitsToFloat(uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true))));
+    } else {
+        hits[i] = vec4(-1.0, 0.0, 0.0, 0.0);
+    }
+}

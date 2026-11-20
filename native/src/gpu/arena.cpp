@@ -32,6 +32,13 @@ Arena::~Arena() {
     if (buffer_) vmaDestroyBuffer(device_.allocator(), buffer_, allocation_);
 }
 
+VkDeviceAddress Arena::deviceAddress() const {
+    if (!buffer_) return 0;
+    VkBufferDeviceAddressInfo i{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    i.buffer = buffer_;
+    return vkGetBufferDeviceAddress(device_.device(), &i);
+}
+
 Arena::Block Arena::allocate(VkDeviceSize size, VkDeviceSize alignment) {
     Block b;
     if (!valid() || size == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0) return b;

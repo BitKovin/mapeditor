@@ -38,6 +38,8 @@ public:
 
     bool valid() const { return buffer_ != VK_NULL_HANDLE && block_ != nullptr; }
     VkBuffer buffer() const { return buffer_; }
+    // The buffer's device address (needs VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT in `usage`), 0 otherwise.
+    VkDeviceAddress deviceAddress() const;
     VkDeviceSize capacity() const { return capacity_; }
     const std::string& name() const { return name_; }
 
