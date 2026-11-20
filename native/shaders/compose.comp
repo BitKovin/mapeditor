@@ -1,0 +1,80 @@
+#version 460
+// Display value of every texel of the composed rectangles (a chunk's texels plus the gutter ring), written as mailbox entries (light/mailbox.h):
+//   shown(slot) = max(0, (ambient + D_local + D_sun + D_sky) * aoFactor(slot))       (a port of LiveBaker::shownValue without the indirect light)
+// A texel without a sample of its own takes the average of the shown values of the samples in its 3 x 3 neighbourhood (LiveBaker::renderTile); alpha 1 =
+// there is a value, alpha 0 (and rgb 0) = nothing here.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, r32ui) uniform readonly uimage2DArray slotMap;
+// One job per rectangle: (x | y << 16, w | h << 16, page, prefix = entries before it)
+layout(std430, set = 0, binding = 1) readonly buffer Jobs { uvec4 jobs[]; };
+layout(std430, set = 0, binding = 2) readonly buffer DLocal { vec4 dLocal[]; };
+layout(std430, set = 0, binding = 3) readonly buffer DSun { vec4 dSun[]; };
+layout(std430, set = 0, binding = 4) readonly buffer DSky { vec4 dSky[]; };
+layout(std430, set = 0, binding = 5) readonly buffer Occlusion { float occlusion[]; };
+layout(std430, set = 0, binding = 6) writeonly buffer Out { uvec4 entries[]; };
+
+layout(push_constant) uniform PC {
+    uint jobCount;
+    uint total;       // entries over all jobs
+    uint atlas;
+    uint aoActive;    // 1: the level has baked ambient occlusion
+    vec4 ambient;     // rgb
+    float aoStrength, aoPower, aoIntensity;
+    uint pad0;
+} pc;
+
+vec3 shown(uint slot) {
+    vec3 v = pc.ambient.rgb + dLocal[slot].rgb + dSun[slot].rgb + dSky[slot].rgb;
+    float k = 1.0;
+    if (pc.aoActive != 0u) {
+        uint bits = floatBitsToUint(occlusion[slot]);
+        if ((bits & 0x7fffffffu) <= 0x7f800000u) {   // not NaN: the occlusion is known
+            float open = pow(clamp(1.0 - pc.aoStrength * occlusion[slot], 0.0, 1.0), pc.aoPower);
+            k = 1.0 - pc.aoIntensity * (1.0 - open);
+        }
+    }
+    return max(v * k, vec3(0.0));
+}
+
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g >= pc.total) return;
+    uint lo = 0u, hi = pc.jobCount - 1u;
+    while (lo < hi) {
+        uint mid = (lo + hi + 1u) >> 1u;
+        if (jobs[mid].w <= g) lo = mid; else hi = mid - 1u;
+    }
+    uvec4 job = jobs[lo];
+    uint w = job.y & 0xffffu;
+    uint local = g - job.w;
+    uint x = (job.x & 0xffffu) + local % w;
+    uint y = (job.x >> 16u) + local / w;
+    uint page = job.z;
+
+    vec3 v = vec3(0.0);
+    float a = 0.0;
+    uint own = imageLoad(slotMap, ivec3(int(x), int(y), int(page))).x;
+    if (own != 0u) {
+        v = shown(own - 1u);
+        a = 1.0;
+    } else {
+        int count = 0;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                int nx = int(x) + dx, ny = int(y) + dy;
+                if (nx < 0 || ny < 0 || nx >= int(pc.atlas) || ny >= int(pc.atlas)) continue;
+                uint s = imageLoad(slotMap, ivec3(nx, ny, int(page))).x;
+                if (s == 0u) continue;
+                v += shown(s - 1u);
+                ++count;
+            }
+        if (count > 0) {
+            v /= float(count);
+            a = 1.0;
+        }
+    }
+    v = min(v, vec3(65504.0));
+    entries[g] = uvec4(x | (y << 16u), page, packHalf2x16(v.rg), packHalf2x16(vec2(v.b, a)));
+}

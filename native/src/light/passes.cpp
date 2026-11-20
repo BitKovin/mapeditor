@@ -5,7 +5,9 @@
 
 #include "native_shaders/accumulate_comp.spv.h"
 #include "native_shaders/ao_comp.spv.h"
+#include "native_shaders/compose_comp.spv.h"
 #include "native_shaders/direct_comp.spv.h"
+#include "native_shaders/slotmap_comp.spv.h"
 
 namespace native::light {
 
@@ -69,6 +71,23 @@ bool JobList::set(const std::vector<PassJob>& jobs) {
     return true;
 }
 
+bool JobList::setCompose(const std::vector<ComposeJob>& rects) {
+    if (!valid() || rects.size() > capacity_) return false;
+    auto* out = static_cast<uint32_t*>(mapped_);
+    uint32_t prefix = 0;
+    for (size_t i = 0; i < rects.size(); ++i) {
+        out[i * 4] = rects[i].x | (rects[i].y << 16);
+        out[i * 4 + 1] = rects[i].w | (rects[i].h << 16);
+        out[i * 4 + 2] = rects[i].page;
+        out[i * 4 + 3] = prefix;
+        prefix += rects[i].w * rects[i].h;
+    }
+    vmaFlushAllocation(device_.allocator(), allocation_, 0, std::max<VkDeviceSize>(rects.size() * 16, 16));
+    count_ = static_cast<uint32_t>(rects.size());
+    total_ = prefix;
+    return true;
+}
+
 LightBuffer::LightBuffer(gpu::Device& device, uint32_t capacityLights) : device_(device), capacityBytes_(static_cast<uint64_t>(capacityLights) * 128) {
     void* mapped = nullptr;
     makeMapped(device, capacityBytes_, buffer_, allocation_, mapped);
@@ -126,14 +145,18 @@ Passes::Passes(gpu::Device& device) : device_(device) {
     // direct: 0 samples, 1 jobs, 2 sub-texel data, 3 lights, 4 out, 5 tlas
     // ao:     0 samples, 1 jobs, 2 out, 3 tlas
     // accumulate: 0 samples, 1 jobs, 2 pass values, 3 running mean
+    // slotmap: 0 samples, 1 jobs, 2 slot map image;  compose: 0 slot map image, 1 compose jobs, 2..4 class means, 5 occlusion, 6 mailbox
+    const VkDescriptorType si = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     valid_ = device.caps().lit() && makePass(direct_, shaders::k_direct_comp_spv, sizeof(shaders::k_direct_comp_spv), {sb, sb, sb, sb, sb, as}, 48) &&
              makePass(ao_, shaders::k_ao_comp_spv, sizeof(shaders::k_ao_comp_spv), {sb, sb, sb, as}, 32) &&
-             makePass(accumulate_, shaders::k_accumulate_comp_spv, sizeof(shaders::k_accumulate_comp_spv), {sb, sb, sb, sb}, 16);
+             makePass(accumulate_, shaders::k_accumulate_comp_spv, sizeof(shaders::k_accumulate_comp_spv), {sb, sb, sb, sb}, 16) &&
+             makePass(slotMap_, shaders::k_slotmap_comp_spv, sizeof(shaders::k_slotmap_comp_spv), {sb, sb, si}, 16) &&
+             makePass(compose_, shaders::k_compose_comp_spv, sizeof(shaders::k_compose_comp_spv), {si, sb, sb, sb, sb, sb, sb}, 48);
     if (!valid_) return;
-    const VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 512}};
+    const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 512}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 512}};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     dpi.maxSets = 512;
-    dpi.poolSizeCount = 2;
+    dpi.poolSizeCount = 3;
     dpi.pPoolSizes = sizes;
     valid_ = vkCreateDescriptorPool(device.device(), &dpi, nullptr, &pool_) == VK_SUCCESS;
 }
@@ -144,6 +167,8 @@ Passes::~Passes() {
     destroyPass(direct_);
     destroyPass(ao_);
     destroyPass(accumulate_);
+    destroyPass(slotMap_);
+    destroyPass(compose_);
 }
 
 void Passes::resetDescriptors() {
@@ -179,6 +204,18 @@ struct Writes {
         w.descriptorCount = 1;
         w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         w.pBufferInfo = &infos.back();
+        writes.push_back(w);
+    }
+    std::vector<VkDescriptorImageInfo> images;
+    void image(uint32_t binding, VkImageView v) {
+        images.reserve(4);
+        images.push_back({VK_NULL_HANDLE, v, VK_IMAGE_LAYOUT_GENERAL});
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet = set;
+        w.dstBinding = binding;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        w.pImageInfo = &images.back();
         writes.push_back(w);
     }
     void accel(uint32_t binding, VkAccelerationStructureKHR a) {
@@ -238,6 +275,54 @@ bool Passes::recordDirect(VkCommandBuffer cmd, const SampleStore& store, Results
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, accumulate_.layout, 0, 1, &aset, 0, nullptr);
     vkCmdPushConstants(cmd, accumulate_.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(apc), apc);
     vkCmdDispatch(cmd, groupsFor(jobs.total()), 1, 1);
+    computeBarrier(cmd);
+    return true;
+}
+
+bool Passes::recordSlotMap(VkCommandBuffer cmd, const SampleStore& store, const JobList& jobs, VkImageView slotMap) {
+    if (!valid_ || !store.valid() || !jobs.valid() || slotMap == VK_NULL_HANDLE) return false;
+    if (jobs.total() == 0) return true;
+    VkDescriptorSet set = allocateSet(slotMap_);
+    if (!set) return false;
+    Writes w(set, 2);
+    w.buffer(0, store.sampleBuffer());
+    w.buffer(1, jobs.buffer());
+    w.image(2, slotMap);
+    w.apply(device_.device());
+    const uint32_t pc[4] = {jobs.count(), jobs.total(), 0, 0};
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, slotMap_.pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, slotMap_.layout, 0, 1, &set, 0, nullptr);
+    vkCmdPushConstants(cmd, slotMap_.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), pc);
+    vkCmdDispatch(cmd, groupsFor(jobs.total()), 1, 1);
+    computeBarrier(cmd);
+    return true;
+}
+
+bool Passes::recordCompose(VkCommandBuffer cmd, const Results& results, VkImageView slotMap, const JobList& composeJobs, VkBuffer mailbox, const ComposeParams& params) {
+    if (!valid_ || !composeJobs.valid() || slotMap == VK_NULL_HANDLE || mailbox == VK_NULL_HANDLE) return false;
+    if (composeJobs.total() == 0) return true;
+    VkDescriptorSet set = allocateSet(compose_);
+    if (!set) return false;
+    Writes w(set, 6);
+    w.image(0, slotMap);
+    w.buffer(1, composeJobs.buffer());
+    w.buffer(2, results.direct(LightClass::Local));
+    w.buffer(3, results.direct(LightClass::Sun));
+    w.buffer(4, results.direct(LightClass::Sky));
+    w.buffer(5, results.occlusion());
+    w.buffer(6, mailbox);
+    w.apply(device_.device());
+    struct ComposePush {
+        uint32_t jobCount, total, atlas, aoActive;
+        float ambient[4];
+        float aoStrength, aoPower, aoIntensity;
+        uint32_t pad;
+    } pc{composeJobs.count(), composeJobs.total(), params.atlas, params.aoActive ? 1u : 0u, {params.ambient[0], params.ambient[1], params.ambient[2], 0.f},
+         params.aoStrength, params.aoPower, params.aoIntensity, 0};
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compose_.pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compose_.layout, 0, 1, &set, 0, nullptr);
+    vkCmdPushConstants(cmd, compose_.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdDispatch(cmd, groupsFor(composeJobs.total()), 1, 1);
     computeBarrier(cmd);
     return true;
 }

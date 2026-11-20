@@ -11,6 +11,14 @@
 
 namespace native_test {
 
+// Timeline semaphores of a submission: wait for `wait` to reach `waitValue` (null = none), signal `signal` with `signalValue` (null = none).
+struct SubmitSync {
+    VkSemaphore wait = VK_NULL_HANDLE;
+    uint64_t waitValue = 0;
+    VkSemaphore signal = VK_NULL_HANDLE;
+    uint64_t signalValue = 0;
+};
+
 // A one-shot command buffer on the graphics queue (compute = false) or the compute queue, waited for.
 class OneShot {
 public:
@@ -20,7 +28,7 @@ public:
         vkCreateCommandPool(d.device(), &pi, nullptr, &pool_);
     }
     ~OneShot() { vkDestroyCommandPool(d_.device(), pool_, nullptr); }
-    void run(const std::function<void(VkCommandBuffer)>& record) {
+    void run(const std::function<void(VkCommandBuffer)>& record, const SubmitSync& sync = {}) {
         VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         ai.commandPool = pool_;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -34,9 +42,25 @@ public:
         vkEndCommandBuffer(cmd);
         VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
         cbi.commandBuffer = cmd;
+        VkSemaphoreSubmitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        waitInfo.semaphore = sync.wait;
+        waitInfo.value = sync.waitValue;
+        waitInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        VkSemaphoreSubmitInfo signalInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        signalInfo.semaphore = sync.signal;
+        signalInfo.value = sync.signalValue;
+        signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
         si.commandBufferInfoCount = 1;
         si.pCommandBufferInfos = &cbi;
+        if (sync.wait) {
+            si.waitSemaphoreInfoCount = 1;
+            si.pWaitSemaphoreInfos = &waitInfo;
+        }
+        if (sync.signal) {
+            si.signalSemaphoreInfoCount = 1;
+            si.pSignalSemaphoreInfos = &signalInfo;
+        }
         vkQueueSubmit2(queue_, 1, &si, VK_NULL_HANDLE);
         vkQueueWaitIdle(queue_);
         vkFreeCommandBuffers(d_.device(), pool_, 1, &cmd);

@@ -22,6 +22,11 @@ struct PassJob {
     uint32_t slotBase = 0, count = 0, passes = 0;
 };
 
+// A rectangle of one page the compose pass writes display texels for.
+struct ComposeJob {
+    uint32_t page = 0, x = 0, y = 0, w = 0, h = 0;
+};
+
 // The jobs of one dispatch in host-visible memory (uvec4 {slotBase, count, prefix, passes} each). Fill with set(), keep alive until the submission is done.
 class JobList {
 public:
@@ -32,6 +37,8 @@ public:
     bool valid() const { return buffer_ != VK_NULL_HANDLE; }
     // False when more jobs than the capacity. Replaces the previous content (not while a submission that reads it is pending).
     bool set(const std::vector<PassJob>& jobs);
+    // The same buffer as compose jobs: uvec4 {x | y << 16, w | h << 16, page, prefix}; total() = the texels (mailbox entries) over all rectangles.
+    bool setCompose(const std::vector<ComposeJob>& rects);
     VkBuffer buffer() const { return buffer_; }
     uint32_t count() const { return count_; }
     uint32_t total() const { return total_; }     // samples over all jobs
@@ -73,6 +80,13 @@ struct DirectParams {
     uint32_t perPass = 16;        // random numbers a pass draws: max(area, sky, gi samples per pass), as LiveBaker::refineBatch
 };
 
+struct ComposeParams {
+    uint32_t atlas = 1024;
+    float ambient[3] = {0, 0, 0};
+    bool aoActive = false;
+    float aoStrength = 1, aoPower = 1, aoIntensity = 1;   // AoSettings
+};
+
 class Passes {
 public:
     explicit Passes(gpu::Device& device);
@@ -89,6 +103,11 @@ public:
     // (no TLAS) or the pool is full.
     bool recordDirect(VkCommandBuffer cmd, const SampleStore& store, Results& results, const Accel& accel, const LightBuffer& lights, const JobList& jobs,
                       LightClass cls, const DirectParams& params);
+    // Writes slot + 1 of every sample of the jobs into the slot map image (R32_UINT array, one texel per atlas texel; 0 = no sample). Needs the layer to exist.
+    bool recordSlotMap(VkCommandBuffer cmd, const SampleStore& store, const JobList& jobs, VkImageView slotMap);
+    // Display values of the rectangles (compose jobs) as mailbox entries (light/mailbox.h) into `mailbox`: shown = max(0, (ambient + sum of the class means) *
+    // aoFactor), gutter texels the average of their neighbours, alpha 0 where there is nothing.
+    bool recordCompose(VkCommandBuffer cmd, const Results& results, VkImageView slotMap, const JobList& composeJobs, VkBuffer mailbox, const ComposeParams& params);
     // Ambient occlusion of the jobs' samples into results.occlusion() (overwrites). Same barrier.
     bool recordOcclusion(VkCommandBuffer cmd, const SampleStore& store, Results& results, const Accel& accel, const JobList& jobs, uint32_t rays, float radius,
                          float falloff);
@@ -105,7 +124,7 @@ private:
     VkDescriptorSet allocateSet(const Pass& p);
 
     gpu::Device& device_;
-    Pass direct_, ao_, accumulate_;
+    Pass direct_, ao_, accumulate_, slotMap_, compose_;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     bool valid_ = false;
 };

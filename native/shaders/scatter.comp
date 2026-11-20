@@ -1,0 +1,21 @@
+#version 460
+// Copies a mailbox (entries of {x | y << 16, page, rg, ba} as half floats) into the display page images: the render thread's half of the hand-over between the
+// bake and the renderer (06_LIGHTING.md §8).
+
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Entries { uvec4 entries[]; };
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray display;
+
+layout(push_constant) uniform PC {
+    uint count;
+    uint pad0, pad1, pad2;
+} pc;
+
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g >= pc.count) return;
+    uvec4 e = entries[g];
+    vec2 rg = unpackHalf2x16(e.z), ba = unpackHalf2x16(e.w);
+    imageStore(display, ivec3(int(e.x & 0xffffu), int(e.x >> 16u), int(e.y)), vec4(rg, ba));
+}

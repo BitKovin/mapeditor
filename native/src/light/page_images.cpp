@@ -117,6 +117,11 @@ bool PageImages::ensureLayers(int layers) {
             region.extent = {static_cast<uint32_t>(atlas_), static_cast<uint32_t>(atlas_), 1};
             vkCmdCopyImage(cmd, image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
         }
+        if (layers > keep) {   // new layers start as zero (alpha 0 = nothing baked here; a slot map entry 0 = no sample)
+            const VkClearColorValue zero{};
+            const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, static_cast<uint32_t>(keep), static_cast<uint32_t>(layers - keep)};
+            vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &range);
+        }
         barrier(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, static_cast<uint32_t>(layers), VK_ACCESS_2_TRANSFER_WRITE_BIT,
                 VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     });

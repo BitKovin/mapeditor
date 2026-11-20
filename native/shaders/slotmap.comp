@@ -1,0 +1,26 @@
+#version 460
+// Writes slot + 1 into the per-page slot map (R32_UINT array image, one texel per atlas texel, 0 = no sample) for every sample of the jobs. The compose pass
+// finds a texel's sample (and its neighbours for the gutter) through it.
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 64) in;
+
+#include "light_common.glsl"
+
+layout(set = 0, binding = 2, r32ui) uniform uimage2DArray slotMap;
+
+layout(push_constant) uniform PC {
+    uint jobCount;
+    uint total;
+    uint pad0, pad1;
+} pc;
+
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g >= pc.total) return;
+    uvec4 job;
+    uint slot;
+    if (!findSlot(g, pc.jobCount, job, slot)) return;
+    uvec4 rec = samples[2u * slot + 1u];
+    imageStore(slotMap, ivec3(int(rec.y & 0xffffu), int(rec.y >> 16u), int(rec.z)), uvec4(slot + 1u));
+}

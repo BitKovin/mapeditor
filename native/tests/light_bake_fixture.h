@@ -201,6 +201,28 @@ struct LightFixture {
     }
 };
 
+// The Core's reference for the fixture's scene: a LiveBaker (bounces off, its own GPU session) refined until it converged with the same quality as `params`.
+inline std::unique_ptr<core::LiveBaker> makeReference(const LightFixture& f, int maxPasses, const native::light::DirectParams& params) {
+    core::LiveSettings s;
+    s.bounces = false;
+    s.useGpu = true;
+    s.denoiseIndirect = false;
+    s.useTextures = false;
+    s.maxPasses = maxPasses;
+    s.areaSamplesPerPass = static_cast<int>(params.areaSamples);
+    s.skySamplesPerPass = static_cast<int>(params.skySamples);
+    s.directSupersample = static_cast<int>(params.superSamples);
+    s.classes = f.classes;
+    auto ref = std::make_unique<core::LiveBaker>(s);
+    ref->setGeometry(f.live->layout(), f.surfaces, {}, f.solids);
+    ref->setLights(f.lights);
+    const core::Vec3 cam{0, 0, 0};
+    int guard = 0;
+    while (!ref->converged() && guard++ < 10000) ref->step(&cam, 1000000);
+    REQUIRE(ref->converged());
+    return ref;
+}
+
 // The factor LiveBaker::aoFactor applies for an occluded fraction `occ` (1 = open / AO off / not computed).
 inline float aoFactorOf(const core::AoSettings& ao, float occ) {
     if (!ao.active() || std::isnan(occ)) return 1.f;

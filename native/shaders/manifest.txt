@@ -15,3 +15,6 @@ accel_test_comp|accel_test.comp|vulkan1.3|
 direct_comp|direct.comp|vulkan1.3|
 ao_comp|ao.comp|vulkan1.3|
 accumulate_comp|accumulate.comp|vulkan1.3|
+slotmap_comp|slotmap.comp|vulkan1.3|
+compose_comp|compose.comp|vulkan1.3|
+scatter_comp|scatter.comp|vulkan1.3|
