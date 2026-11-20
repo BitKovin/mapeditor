@@ -75,8 +75,9 @@ clean image. It is **not** a lightmap denoiser: our light is gathered per *texel
 guide buffers for a texel. So RR does **not** replace `atrous.comp` / OIDN for the live bake (06 §12): that stays as specified. Using RR there
 would need a fake screen-space image of the lightmap and would lose the "exact bake" parity.
 
-What RR is for in this editor — one proposed feature, **not in REQUIREMENTS, needs the user's yes before it is built** (task T7.7, ask first):
-- A **"Path-traced preview"** viewport mode: primary rays (or rasterised G-buffer) + 1-2 ray-query bounces from the *camera* using the same
+**Superseded 2026-11-20:** the user made the ray-traced viewport *the* Lit mode and chose RR as its denoiser (12_RT_VIEWPORT.md §7, §11;
+tasks R2–R8 in 08). The text below is the earlier proposal, kept for its notes on inputs; where it differs, 12 wins.
+- (earlier) A **"Path-traced preview"** viewport mode: primary rays (or rasterised G-buffer) + 1-2 ray-query bounces from the *camera* using the same
   TLAS, lights and albedo library as the bake, denoised and upscaled by DLSS-RR. It shows dynamic things the baked light cannot: glossy
   reflections of the real scene, translucent glass, and the *current* un-baked state of an edit instantly (a moved brush is lit correctly
   the moment it moves, before the bake catches up). It is the answer to "Lit view lags behind a brush edit" without waiting for chunks, and it is a
@@ -97,7 +98,7 @@ What RR is for in this editor — one proposed feature, **not in REQUIREMENTS, n
 - **DLSS Frame Generation / Multi Frame Generation:** adds latency and invents frames; the editor's interactions (dragging, picking, typing
   numbers into the transform) must show the real state every frame. Not used.
 - **NIS / sharpening, DeepDVC, Latewarp:** no need.
-- The **lightmap bounce gather and denoise** stay as specified in 06 (parity with the export is the point).
+- NRD: not needed, RR denoises the RT viewport (12 §11 C). The live lightmap gather / OIDN of 06 are frozen with the chunked bake.
 
 ## 3. NVIDIA technology outside Streamline (and where it already is in the plan)
 
@@ -119,7 +120,7 @@ What RR is for in this editor — one proposed feature, **not in REQUIREMENTS, n
    Reflex reports active; with `--no-streamline` and with the interposer missing, the editor runs as before (test both).
 2. **T6.8** DLSS-SR for perspective viewports (setting, resources, reset rules, overlays after). Accept: screenshots Off / Quality at 1440p (user
    looks), G-frame-4K (Quality, 100 fps), no validation errors, no ghosting trail when a brush is dragged (user confirms with a recording or shots).
-3. **T7.7** (only after the user agrees to the Path-traced preview mode) the mode itself with DLSS-RR.
+3. **R1–R8** (08 M7): the ray-traced Lit viewport of 12, with DLSS-RR from R2 on (T6.8 first: NVIDIA integrates DLSS-SR before RR).
 4. Everything else in the table is already a task.
 
 Rules for all three: a feature failing at run time (init error, missing DLL, unsupported GPU) is logged once, shown in the Stats panel as

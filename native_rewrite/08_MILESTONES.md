@@ -261,21 +261,11 @@ opens and looks the same.
   `demo_lit.map.json` and a generated room set (`bench_bake --rooms 6` scene); no validation errors; Lit view of demo_lit
   looks like the Shell's Lit view with bounces off (user confirms screenshots).
 
-### T6.5 Scheduler, visibility feedback, budget
-- **Read:** 06 §9.
-- **Do:** `visibleChunks` from the Lit shader, priorities, Frostbite budget controller, interaction detection, background
-  setting, "Show stale chunks" overlay.
-  Also the benchmark mode `--bench <scenario>` of 09 §3 (scenarios `open`, `orbit`, `light_drag`, `sun_turn`; `brush_move` and
-  `undo` are added in T8.3).
-- **Accept:** perf gate **G-light** (09 §3) for direct light; frame time stays ≤ 10 ms while baking with the mouse held
-  down.
-
-### T6.6 Light editing invalidation (direct)
-- **Read:** 06 §7 (light rows).
-- **Do:** expose the Core's `influence(const Light&)` (now in an anonymous namespace in `core/src/live_bake.cpp`) in
-  `live_bake.h` without changing it; implement the light rows of 06 §7.
-- **Accept:** test: after moving a point light, every buffer value of samples outside old ∪ new influence is bit-identical
-  to before; G-light passes on lvl2 for point, spot, rect and directional lights.
+### T6.5, T6.6 — dropped (2026-11-20)
+The user decided (12_RT_VIEWPORT.md §11 A) that Lit is the **ray-traced viewport** of 12, not the chunked live lightmap bake. The
+chunked bake (T6.1–T6.4 code) is frozen: it keeps compiling and its tests keep passing, no further tasks. The scheduler / budget
+(T6.5) and light invalidation (T6.6) of the lightmap path are not built; their RT counterparts are R4 (ChangeSet regions) and R8
+(budget, `--bench`). Next task: **T6.7** (Streamline first: user's decision §11 B), then T6.8, then M7 (R1–R8).
 
 ### T6.7 NVIDIA Streamline bootstrap, Reflex, crash dumps
 - **Read:** 11_NVIDIA_TECH.md §1, §2.1, §3 (and 05 §device, 02 third_party).
@@ -293,49 +283,71 @@ opens and looks the same.
 
 ---
 
-## M7 — Bounces, denoise, light styles
+## M7 — Ray-traced Lit viewport (12_RT_VIEWPORT.md)
 
-### T7.1 Gather (compute fallback)
-- **Do:** straight port of `lightmap_gather.comp` to the new layout; `I`, `S` update in `accumulate.comp`; fine GI grid.
-- **Accept:** parity with bounces on (06 §1) against `core::LiveBaker` on demo_lit and the room scene.
+Replaces the old M7 (gather, preview denoise, OIDN on pages, full lightmap invalidation table, path-traced preview T7.7): user's
+decisions of 2026-11-20 (12 §11). Every task reads 12 in full first; NVIDIA SDK code (RTXDI, SHaRC) may be used and changed (12 §11 C);
+HLSL kernels are compiled with DXC to SPIR-V.
 
-### T7.2 Gather on the ray tracing pipeline with SER
-- **Do:** `gather.rgen/rmiss/rchit`, SBT, SER path and non-SER path; choose at start-up from `DeviceCaps`.
-- **Accept:** same results as T7.1 for a fixed schedule (bit-identical or within 1e-5 relative); GPU time of the gather on
-  lvl2 visible chunks measured for: compute, RT without SER, RT with SER — written to the commit message. Keep the
-  fastest as default.
+### R1 RT scene on the render thread
+- **Read:** 12 §3; `light/accel.*` (T6.3).
+- **Do:** BLAS per object from the `GpuScene` vertex / index buffers (build-input usage), instance mask bits per class, object records
+  (vertex addresses, texture ids, transparency table of `surfaceAt`), TLAS rebuilt in the frame the snapshot changed it; fast build on
+  edit, fast-trace rebuild + compaction after 2 s idle (was T8.3's BLAS policy); DXC step in the shader build.
+- **Accept:** 100 000 random rays vs `core::TriangleBvh` closest hits on demo_lit and lvl2 (as T6.3); a one-object edit rebuilds one
+  BLAS in the same frame; 0 validation errors.
 
-### T7.3 Preview denoise
-- **Do:** `atrous.comp` on composed chunks (06 §12).
-- **Accept:** no light bleeding across charts (test: two charts with 0 and 10 light side by side stay 0 and 10); user
-  confirms the look.
+### R2 G-buffer, accumulation, DLSS Ray Reconstruction (first signal: AO)
+- **Read:** 12 §3, §7; 11 §2.3.
+- **Do:** MRT outputs of the mesh pass, history buffers with per-class sample counts, converged stop, DLSS-RR evaluation (tags of 12 §7)
+  and the still-camera blend to the running mean, à-trous fallback without RR; Lit / Lighting-only use the RT path.
+- **Accept:** AO parity (12 §9) without RR; a still camera converges and stops tracing (counter); RR on: image clean while flying
+  (user looks); resize / mode switch / camera cut reset; 0 validation errors.
 
-### T7.4 OIDN on converged pages
-- **Do:** as 06 §12, with external memory when available.
-- **Accept:** converged lvl2 view equals the Core's denoised live result in look (user confirms); denoise never blocks the
-  bake thread (timed).
+### R3 Direct light (RIS, no reuse)
+- **Read:** 12 §2, §4; `core/shaders/lightmap_direct.comp`.
+- **Do:** the `rt_lit` kernel, shared HLSL light header (ports of `evalLight`, `rectFormFactor`, `transmit`, `surfaceAt`, sky tables),
+  light grid, all light types, dark lights, transparency, sun, sky.
+- **Accept:** direct parity against the CPU reference and against `core::LiveBaker` sampled through the lightmap (12 §9).
 
-### T7.5 Light styles
-- **Do:** per-style layers (06 §6), style patterns animated in the renderer (`light_styles.h`, `lightStyles.ts`).
-- **Accept:** converted `lightStyles.test.ts`; a styled light flickers in Lit as in the engine.
+### R4 ChangeSet regions
+- **Read:** 12 §6; 06 §7 (the table is the region rule); expose the Core's `influence(const Light&)` in `live_bake.h` unchanged (was T6.6).
+- **Do:** regions per signal class from each ChangeSet, reset pass, RR reset rule.
+- **Accept:** invalidation and latency tests of 12 §9 (old light gone the frame after a move; pixels outside keep their history
+  bit-identical).
 
-### T7.6 Full invalidation table
-- **Do:** every row of 06 §7.
-- **Accept:** one test per row (synthetic scene): only the expected classes / regions change; S zeroed where required;
-  no displayed texel goes to 0 during a re-bake (test samples the display between steps).
+### R5 ReSTIR DI with RTXDI
+- **Read:** 12 §4; RTXDI docs and its minimal sample.
+- **Do:** RTXDI runtime + the `RAB_*` bridge on our light records, temporal and spatial reuse, unbiased mode.
+- **Accept:** converged mean equals R3's within the noise; RMSE after one frame on lvl2 ≥ 3× lower than R3.
 
-### T7.7 Path-traced preview with DLSS Ray Reconstruction (only if the user agrees to the mode)
-- **Read:** 11_NVIDIA_TECH.md §2.3. **Ask the user first**: the mode is not in REQUIREMENTS.md.
-- **Do:** a viewport mode that ray-traces from the camera on the bake's TLAS and denoises with DLSS-RR (Quality or native only).
-- **Accept:** the mode shows a dragged brush correctly lit on the frame it moves; other viewports keep 100 fps; off by default.
+### R6 SHaRC and bounces
+- **Read:** 12 §5; SHaRC `docs/Integration.md`.
+- **Do:** update / resolve / compaction / query on `S`, one GI ray per pixel, cells zeroed in change regions.
+- **Accept:** bounce parity (12 §9); after a light move, no cell inside the indirect radius keeps old light (test).
 
-**M7 gate:** G-light including bounces (09 §3).
+### R7 Light styles and translucency
+- **Read:** 12 §4 (styles), §8; `light_styles.h`, `lightStyles.ts`.
+- **Do:** per-style direct layers, animated style values in compose, translucent pass lighting.
+- **Accept:** converted `lightStyles.test.ts`; a styled light flickers as in the engine without smear; user confirms the look.
+
+### R8 Budget, bench, gates
+- **Read:** 12 §9; 09 §3.
+- **Do:** per-frame ray budget across viewports (active first), `--bench <scenario>` (`open`, `orbit`, `light_drag`, `sun_turn`;
+  `brush_move`, `undo` too).
+- **Accept:** G-rt-move, G-rt-still, G-rt-edit (12 §9); measurements in the commit message.
+
+**M7 gate:** G-rt-move, G-rt-still, G-rt-edit.
 
 ---
 
 ## M8 — Brush edits in Lit
 
-### T8.1 Incremental re-layout
+**2026-11-20:** with the RT viewport (12) a brush edit is lit through R1 (BLAS of the edited object in the same frame) and R4 (regions).
+T8.1, T8.2 and T8.5 belong to the frozen live lightmap bake and are **not built**; T8.3 keeps only its gate **G-brush** (09 §3), measured
+on the RT viewport (its BLAS policy moved to R1); T8.4 (opacity micromaps) applies to the RT scene unchanged.
+
+### T8.1 Incremental re-layout (frozen)
 - **Read:** 06 §3.3.
 - **Accept:** property test: 200 random edits (move / resize / delete / add brushes) on demo_lit; after each, the live chart
   groups and shapes equal a full `buildLightmapLayout` of the same document (placement ignored).
@@ -395,6 +407,9 @@ opens and looks the same.
 ---
 
 ## M10 — Light volume
+
+**2026-11-20:** the live light volume was part of the live bake; in the RT viewport models and brush entities are lit per pixel. M10
+waits: ask the user whether a light volume preview is still wanted before starting it (the export bakes its own volume either way).
 
 ### T10.1 Probe residency and bricks
 ### T10.2 Probe passes and fit (GPU port of `fitProbeDirectFirst`, or CPU per brick first)
@@ -487,19 +502,23 @@ Each needs a measurement before and after in the commit message.
 | T6.2 | yes (`light/samples.{h,cpp}`: `prepareChart(live, chart, pieces, solids, giScale)` (pure CPU, thread safe: `core::buildChartSamples`, samples reordered by a stable counting sort so every chunk's samples are contiguous, octahedral snorm16x2 normals, `randomId` = PCG hash of the texel index so a re-evaluated chunk draws the same numbers, fine GI grid entries from `buildGiSamples` of the sorted samples, world bounds per chunk, empty chunks get no row) and `SampleStore` (sample arena + chunk table arena as `gpu::Arena`, `upload` through the `UploadRing`, `release`, CPU copy of the 64-byte `GpuChunk` rows). GPU layout per chart block: 32-byte `SampleRecord` x count, 12 sub-texel floats x count, 32-byte grid records; offsets in 16-byte units so a shader indexes one `uvec4` array. Test `test_light_samples.cpp` [gpu] on demo_lit with giScale 1 and 2: every uploaded sample read back equals `buildTexelSamples` of the same layout per texel (position and the 12 sub floats bit-exact, normal within 2e-4 of the octahedral quantisation, random id, page, texel), counts equal, grid entries equal `buildGiSamples(whole, 2).count()`, bounds contain the samples, the GPU chunk table read back equals the CPU copy, release / re-upload restores the arena use, 0 validation errors; native_tests 258. Deviations: order inside the arena is chunk-major, not the Core's (compared per texel); no wiring from the scene builder yet (T6.4 feeds the store)) | `native: T6.2` |
 | T6.3 | yes (`light/accel.{h,cpp}`: `buildAccelObjects(surfaces, classes, layout)` = `core::buildOccluders` split per object (key = instance | entity | brush instance | brush; a relief face's mesh replaces its flat pieces once; triangles and lightmap attributes in the Core's order inside an object; hash per object), `Accel` (vertex / attribute / BLAS-storage `gpu::Arena`s with device addresses (new `Arena::deviceAddress()`), one BLAS per object PREFER_FAST_TRACE, TLAS rebuilt on every change with identity instances, double sided, `instanceCustomIndex` = slot, `ObjectRecord {attrAddress, triangleCount, flags}` buffer per slot, slots reused, changed objects (hash) rebuilt alone, removed objects freed, blocking update on the compute queue). Test `test_light_accel.cpp` [gpu] with the new `accel_test.comp` (ray query closest hit): 100 000 random rays against the TLAS vs `core::TriangleBvh::closestHit`: demo_lit (13 objects, 276 triangles) 0 hit / miss mismatches, worst distance difference 3.5e-6 m; lvl2 (2069 objects, 34 830 triangles, BLAS 7 MB, built in 78 ms) 0 mismatches, worst 8.1e-5 m (float at 500 m; limit 1e-4); an edit of one object rebuilds one BLAS and the rays see the moved geometry, nothing changed rebuilds nothing, removing an object drops it (30 000 rays each vs a fresh BVH); object triangle / attribute counts equal the Core's mesh; 0 validation errors; native_tests 260. Deviations: BLAS policy (fast build first, compact after 2 s idle) and OMM left to T8.3 / T8.4; `transparent` is always false for now (cutout / translucent flags and the surfaceAt table come with the albedo attach in T7); albedo UVs / texture index not in the object records yet) | `native: T6.3` |
 | T6.4 | yes (three stages. (1) `light/passes` + `light/results`: `direct.comp` per light class (Local / Sun / Sky), `ao.comp`, `accumulate.comp` over a job list of chunks (`uvec4{slotBase, count, prefix, passes}`), per-slot running mean per class, ports of the Core shaders on the slot-indexed native sample layout (`SampleStore` is slot-indexed). (2) `slotmap.comp` (slot + 1 per atlas texel), `compose.comp` (shown value = `max(0, (ambient + Dlocal + Dsun + Dsky) * aoFactor)`, 3 x 3 gutter, half-float `MailboxEntry`), `light/mailbox` (3-slot ring, bake and render timeline semaphores, newest finished wins), `Scatter` (entries into the RGBA16F display pages on the render side). (3) `light/lit_mesh` (`makeLitMesh`: copy of a `RenderMesh` with lightmap uv, page and `kFlagLit` per vertex from the layout; `RenderMesh::pieces` + `addTriangle(a,b,c,piece)` carry the relief piece index), `light/light_link` (`LitSet` = layout + lit meshes + epoch of one bake, `LightLink` = mailbox + current set + notify + wanted flag), `light/lighting_service` (`LightingService`: the bake thread; per complete snapshot an epoch: Core inputs from the snapshot, `LiveLayout` over the whole level, samples, `Accel`, results, lit meshes published through the link; then waves of passes over every chunk in batches of 1 M samples on the compute queue, composing changed chunks into mailboxes; latest inputs win; refuses to run on a device without ray queries or a second queue), `render/lightmap_view` (set 1 of the mesh pipelines), `mesh.frag` Lit / Lighting-only path (bicubic B-spline lightmap from four bilinear fetches, `clamp(albedo * light * exposure + brightness, 0, 1)`, white albedo in Lighting only, surfaces without lightmap dimmed), `RenderThread::setLightLink` (display pages sized and cleared per epoch, scatter before every frame, lit viewports wake it), `GpuScene::setLit`, `ViewState::renderMode`, `ViewportWindow::setRenderMode`, action `view.render_mode` (View > Render mode: Unlit / Lit / Lighting only; the lit entries are disabled without a lit-capable device), MainWindow owns link and service (made once in `setupScene`, fed by `onSnapshot`). Tests: `test_light_service.cpp` [gpu] demo_lit end to end: layout equals the Core's (71 charts, 0 placed differently), 353971 display texels vs `core::LiveBaker` bounces off: 0 missing, mean 0.87 %, p99 4.9 %, lit triangles agree with the Core's baked coverage; the earlier stages' parity tests (direct light mean 0.39 % / p99 2.0 % on demo_lit and 6 x 6 room set 5.9 M samples; AO and shown value mean < 0.5 %, p99 < 2.3 %); `test_lit_view.cpp` [gpu]: demo_lit through builder, service and render thread, Lit frame differs from Unlit (mean 64 of 255), not black, Lighting only differs from Lit, writes `native/build/lit_view_demo_lit.png` (Unlit | Lit | Lighting only); 0 validation errors; native_tests 267, native_gui_tests 35. Stats panel rows "Lighting" (waiting / building / baking n / m chunks / converged / error) and "Lit objects"; `--render-mode unlit|lit|lightingOnly` starts every viewport in that mode (a `--screenshot` run then waits for the bake); `test_gui_lit.cpp` opens demo_lit in a real MainWindow (lit meshes used, Lighting only not one grey; `NATIVE_TEST_LIT_ROOT` / `NATIVE_TEST_LIT_MAP` look at another level, lvl2: 84 893 chunks, 4.0 s build, 10.5 s refine); the light buffer is sized from the packed records (the sky table is far larger than the lights: lvl2 failed with "the lights did not fit" before). Deviations: the whole level (layout, samples, lit meshes) is rebuilt for every complete snapshot (M8 makes it incremental); batches go in layout order, no camera priority or budget (T6.5); static models are not lit; unlit / non-chart surfaces are dimmed in the lit modes; exposure and brightness come from the level settings only; bounces and light styles come later; Wireframe has no pipeline yet; the Shell side-by-side look is the user's to confirm) | `native: T6.4` |
-| T6.5 | | |
-| T6.6 | | |
-| T7.1 | | |
-| T7.2 | | |
-| T7.3 | | |
-| T7.4 | | |
-| T7.5 | | |
-| T7.6 | | |
-| T8.1 | | |
-| T8.2 | | |
+| T6.5 | dropped (RT viewport, 12 §11 A) | |
+| T6.6 | dropped (RT viewport; `influence` exposure moved to R4) | |
+| T6.7 | | |
+| T6.8 | | |
+| R1 | | |
+| R2 | | |
+| R3 | | |
+| R4 | | |
+| R5 | | |
+| R6 | | |
+| R7 | | |
+| R8 | | |
+| T8.1 | frozen (live lightmap bake) | |
+| T8.2 | frozen (live lightmap bake) | |
 | T8.3 | | |
 | T8.4 | | |
-| T8.5 | | |
+| T8.5 | frozen (live lightmap bake) | |
 | T9.1 | | |
 | T9.2 | | |
 | T9.3 | | |

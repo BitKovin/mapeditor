@@ -1,5 +1,10 @@
 # 06 — Live lighting: the exact bake, on the GPU, in place
 
+> **2026-11-20: the live lightmap bake described here is frozen** (user's decision, 12_RT_VIEWPORT.md §11 A). Lit is the ray-traced
+> viewport of 12. What stays in force from this file: the light model and parity sources (§0.1, §1), the acceleration structure rules (§5,
+> reused by R1), the invalidation table (§7, used by R4 as the region rule) and the export (§13). T6.1–T6.4 code remains but gets no new
+> tasks.
+
 Read DESIGN §6.4–§6.11 first: they define the light model, the layout, the live baker's rules and what the user expects to
 see. This file defines how the native app runs **the same model** without the transport, with GPU-resident results, and
 with less invalidation.
