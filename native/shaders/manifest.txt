@@ -12,3 +12,6 @@ overlay_frag|overlay.frag|vulkan1.3|
 label_vert|label.vert|vulkan1.3|
 label_frag|label.frag|vulkan1.3|
 accel_test_comp|accel_test.comp|vulkan1.3|
+direct_comp|direct.comp|vulkan1.3|
+ao_comp|ao.comp|vulkan1.3|
+accumulate_comp|accumulate.comp|vulkan1.3|

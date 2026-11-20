@@ -1,0 +1,311 @@
+#version 460
+// Direct light of lightmap samples for one class of lights (local = point / spot / rect, sun = directional, sky), one invocation per sample of the
+// jobs. A port of core/shaders/lightmap_direct.comp (ray query variant): the same light maths, shadow rays, sub-texel super sampling and random
+// number sequences (sample2 with the sample's random id), over the native sample layout (light/samples.h). Writes this pass's value per slot
+// (rgb, the ambient is added when composing); accumulate.comp merges it into the running mean.
+// Transparent surfaces (cutout / translucent) come with T7: every occluder is opaque here.
+#extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 64) in;
+
+#include "light_common.glsl"
+
+layout(std430, set = 0, binding = 2) readonly buffer SubInfo { vec4 subd[]; };      // 3 x vec4 per slot: (centre, mask bits), du, dv
+layout(std430, set = 0, binding = 3) readonly buffer Lights { vec4 lt[]; };         // 8 x vec4 per light, then the sky tables
+layout(std430, set = 0, binding = 4) writeonly buffer Out { vec4 res[]; };          // this pass's direct light per slot
+layout(set = 0, binding = 5) uniform accelerationStructureEXT tlas;
+
+layout(push_constant) uniform PC {
+    uint jobCount;
+    uint total;          // samples over all jobs
+    uint lightCount;
+    uint areaSamples;    // shadow rays per sample for lights with a size / rect
+    uint skySamples;     // cosine-weighted rays per sample for a sky light
+    uint superSamples;   // sub-texel positions per texel (1 = off, at most 8)
+    uint classMask;      // bit 0: point / spot / rect, bit 1: directional, bit 2: sky
+    uint perPass;        // random numbers drawn per pass: a chunk's pass p starts at p * perPass
+    float bias;
+    float farDistance;
+    uint pad0, pad1;
+} pc;
+
+uint gOffset = 0u;
+
+const float PI = 3.14159265358979323846;
+const float MIN_DIST = 0.05;
+const uint LREC = 8u;  // vec4 per light record
+
+// light record layout (8 vec4) and the skybox tables: see core/shaders/lightmap_direct.comp
+
+
+float window(float d, float r) {
+    float q = d / r;
+    float w = clamp(1.0 - q * q * q * q, 0.0, 1.0);
+    return w * w;
+}
+
+// light record layout (8 vec4):
+//   0: position.xyz, radius
+//   1: colour * brightness (rgb), type (0 point, 1 spot, 2 directional, 3 rect, 4 sky)
+//   2: forward.xyz, cos(inner)
+//   3: right.xyz,   cos(outer)
+//   4: up.xyz,      source size
+//   5: width, height, cast shadows, style
+//   6: bounce power, 0, 0, 0
+//   7: sky light: first vec4 of its skybox tables in lt[] (behind the records), 1 = has them (0 = uniform sky); else unused
+// Skybox tables (core/sky.h SkyRadiance, REQUIREMENTS §28 K12): SKY_LON x SKY_LAT radiance cells (rgb), then SKY_NLON x SKY_NLAT irradiance samples.
+const int SKY_LON = 32, SKY_LAT = 8, SKY_NLON = 16, SKY_NLAT = 9;
+
+// Super sampling (RAY_QUERY only): subd[3 * i + 0] = (texel centre on the chart plane, bits of a uint mask: bit k = sub position k lies inside
+// the fragment), subd[3 * i + 1] = world displacement per +1 texel in u, subd[3 * i + 2] = per +1 texel in v. Sub position k = centre +
+// u * SUB[k].x + v * SUB[k].y (texels). SUB MUST match kSuperOffsets in lightbake.h (the D3D 8x MSAA pattern).
+const vec2 SUB[8] = vec2[8](vec2(0.0625, -0.1875), vec2(-0.0625, 0.1875), vec2(0.3125, 0.0625), vec2(-0.1875, -0.3125),
+                            vec2(-0.3125, 0.3125), vec2(-0.4375, -0.0625), vec2(0.1875, 0.4375), vec2(0.4375, -0.4375));
+
+// Fraction of the receiver's cosine-weighted hemisphere covered by the rectangle (Arvo), see rectFormFactor() in lightbake.cpp.
+float rectFormFactor(uint k, vec3 p, vec3 n) {
+    vec3 pos = lt[k * LREC + 0u].xyz;
+    vec3 right = lt[k * LREC + 3u].xyz;
+    vec3 up = lt[k * LREC + 4u].xyz;
+    vec3 hr = right * (lt[k * LREC + 5u].x * 0.5);
+    vec3 hu = up * (lt[k * LREC + 5u].y * 0.5);
+    vec3 corner[4] = vec3[4](pos - hr - hu, pos + hr - hu, pos + hr + hu, pos - hr + hu);
+    vec3 poly[8];
+    int count = 0;
+    for (int i = 0; i < 4; ++i) {
+        vec3 a = corner[i] - p;
+        vec3 b = corner[(i + 1) % 4] - p;
+        float da = dot(n, a), db = dot(n, b);
+        if (da >= 0.0) poly[count++] = a;
+        if ((da >= 0.0) != (db >= 0.0)) poly[count++] = a + (b - a) * (da / (da - db));
+    }
+    if (count < 3) return 0.0;
+    float sum = 0.0;
+    for (int i = 0; i < count; ++i) {
+        vec3 a = poly[i];
+        vec3 b = poly[(i + 1) % count];
+        float la = length(a), lb = length(b);
+        if (la < 1e-12 || lb < 1e-12) continue;
+        vec3 c = cross(a, b);
+        float lc = length(c);
+        if (lc < 1e-12) continue;
+        float theta = acos(clamp(dot(a, b) / (la * lb), -1.0, 1.0));
+        sum += theta * dot(c, n) / lc;
+    }
+    return abs(sum) / (2.0 * PI);
+}
+
+// SkyRadiance::at / irradianceAt in src/sky.cpp: longitude atan2(x, -z) from -pi, elevation asin(y).
+vec3 skyRadiance(uint k, vec3 dir) {
+    if (dir.y <= 0.0) return vec3(0.0);
+    uint base = uint(lt[k * LREC + 7u].x + 0.5);
+    int i = clamp(int(floor((atan(dir.x, -dir.z) + PI) / (2.0 * PI) * float(SKY_LON))), 0, SKY_LON - 1);
+    int j = clamp(int(floor(asin(clamp(dir.y / length(dir), -1.0, 1.0)) / (0.5 * PI) * float(SKY_LAT))), 0, SKY_LAT - 1);
+    return lt[base + uint(j * SKY_LON + i)].rgb;
+}
+vec3 skyIrradiance(uint k, vec3 n) {
+    uint base = uint(lt[k * LREC + 7u].x + 0.5) + uint(SKY_LON * SKY_LAT);
+    float fu = (atan(n.x, -n.z) + PI) / (2.0 * PI) * float(SKY_NLON);
+    float fv = (asin(clamp(n.y / length(n), -1.0, 1.0)) + 0.5 * PI) / PI * float(SKY_NLAT - 1);
+    int i0 = int(floor(fu)), j0 = clamp(int(floor(fv)), 0, SKY_NLAT - 2);
+    float a = fu - float(i0), b = clamp(fv - float(j0), 0.0, 1.0);
+    int ia = ((i0 % SKY_NLON) + SKY_NLON) % SKY_NLON, ib = (ia + 1) % SKY_NLON;
+    vec3 e00 = lt[base + uint(j0 * SKY_NLON + ia)].rgb, e10 = lt[base + uint(j0 * SKY_NLON + ib)].rgb;
+    vec3 e01 = lt[base + uint((j0 + 1) * SKY_NLON + ia)].rgb, e11 = lt[base + uint((j0 + 1) * SKY_NLON + ib)].rgb;
+    return mix(mix(e00, e10, a), mix(e01, e11, a), b);
+}
+
+// Unshadowed irradiance (pi absorbed) from light k.
+vec3 evalLight(uint k, vec3 p, vec3 n) {
+    vec4 a = lt[k * LREC + 0u];
+    vec4 b = lt[k * LREC + 1u];
+    int type = int(b.w + 0.5);
+    if (type == 0 || type == 1) {  // point, spot
+        vec3 d = a.xyz - p;
+        float dist = length(d);
+        if (dist >= a.w) return vec3(0.0);
+        vec3 l = dist > 1e-9 ? d / dist : n;
+        float cosT = max(0.0, dot(n, l));
+        float dd = max(dist, MIN_DIST);
+        float s = window(dist, a.w) / (dd * dd) * cosT;
+        if (type == 1) {
+            vec4 f = lt[k * LREC + 2u];   // forward.xyz, cos(inner)
+            float cosOuter = lt[k * LREC + 3u].w;
+            float t = clamp((dot(f.xyz, -l) - cosOuter) / (f.w - cosOuter), 0.0, 1.0);
+            s *= t * t;
+        }
+        return b.rgb * s;
+    }
+    if (type == 2) {  // directional
+        return b.rgb * max(0.0, dot(n, -lt[k * LREC + 2u].xyz));
+    }
+    if (type == 3) {  // rect
+        vec3 d = a.xyz - p;
+        float dist = length(d);
+        if (dist >= a.w || dot(p - a.xyz, lt[k * LREC + 2u].xyz) <= 0.0) return vec3(0.0);
+        return b.rgb * (rectFormFactor(k, p, n) * window(dist, a.w));
+    }
+    if (type == 4) {  // sky: the level's skybox when it has one, else a uniform upper hemisphere
+        return lt[k * LREC + 7u].y > 0.5 ? b.rgb * skyIrradiance(k, n) : b.rgb * ((1.0 + n.y) * 0.5);
+    }
+    return vec3(0.0);
+}
+
+// ---- shadows ---------------------------------------------------------------------------------------------------------------
+uint pcg(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// two numbers in [0,1) for (texel, light, sample): per-texel random offset + R2 sequence (same code as sample2() on the CPU)
+vec2 sample2(uint texel, uint light, uint s) {
+    uint h = pcg(texel + pcg(light * 7919u + 12345u));
+    float u0 = float(h >> 8) * (1.0 / 16777216.0);
+    float v0 = float(pcg(h) >> 8) * (1.0 / 16777216.0);
+    return fract(vec2(u0, v0) + float(s) * vec2(0.7548776662, 0.5698402909));
+}
+
+void frameOf(vec3 n, out vec3 t, out vec3 b) {
+    t = abs(n.y) < 0.99 ? normalize(cross(n, vec3(0.0, 1.0, 0.0))) : vec3(1.0, 0.0, 0.0);
+    b = cross(n, t);
+}
+
+
+// Light that gets through along the segment o + t * d, t in [0, tmax]: 0 behind any surface (all occluders are opaque for now).
+vec3 transmit(vec3 o, vec3 d, float tmax) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF, o, 0.0, d, tmax);
+    while (rayQueryProceedEXT(rq)) {}
+    return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? vec3(0.0) : vec3(1.0);
+}
+
+vec3 blocked(vec3 o, vec3 target) {
+    vec3 d = target - o;
+    float dist = length(d);
+    if (dist <= pc.bias) return vec3(1.0);
+    return transmit(o, d / dist, dist - pc.bias);
+}
+
+// Light of light k that reaches o (surface point lifted along the normal), per channel. Not for sky lights.
+vec3 visibility(uint k, uint texel, vec3 o) {
+    vec4 a = lt[k * LREC + 0u];
+    int type = int(lt[k * LREC + 1u].w + 0.5);
+    float size = lt[k * LREC + 4u].w;
+    int n = int(max(1u, pc.areaSamples));
+    vec3 open = vec3(0.0);
+    int total = 1;
+    if (type == 0 || type == 1) {
+        if (size <= 0.0) {
+            open = blocked(o, a.xyz);
+        } else {
+            total = n;
+            vec3 l = normalize(a.xyz - o);
+            vec3 t, b;
+            frameOf(l, t, b);
+            for (int i = 0; i < n; ++i) {
+                vec2 uv = sample2(texel, k, uint(i) + gOffset);
+                float phi = 2.0 * PI * uv.y;
+                float r = size * sqrt(uv.x);
+                open += blocked(o, a.xyz + t * (cos(phi) * r) + b * (sin(phi) * r));
+            }
+        }
+    } else if (type == 2) {
+        vec3 toLight = -lt[k * LREC + 2u].xyz;
+        if (size <= 0.0) {
+            open = transmit(o, toLight, pc.farDistance);
+        } else {
+            total = n;
+            vec3 t, b;
+            frameOf(toLight, t, b);
+            float tanHalf = tan(radians(size * 0.5));
+            for (int i = 0; i < n; ++i) {
+                vec2 uv = sample2(texel, k, uint(i) + gOffset);
+                float phi = 2.0 * PI * uv.y;
+                float r = tanHalf * sqrt(uv.x);
+                vec3 dir = normalize(toLight + t * (cos(phi) * r) + b * (sin(phi) * r));
+                open += transmit(o, dir, pc.farDistance);
+            }
+        }
+    } else if (type == 3) {
+        total = n;
+        vec3 right = lt[k * LREC + 3u].xyz;
+        vec3 up = lt[k * LREC + 4u].xyz;
+        float w = lt[k * LREC + 5u].x, h = lt[k * LREC + 5u].y;
+        for (int i = 0; i < n; ++i) {
+            vec2 uv = sample2(texel, k, uint(i) + gOffset);
+            open += blocked(o, a.xyz + right * ((uv.x - 0.5) * w) + up * ((uv.y - 0.5) * h));
+        }
+    }
+    return open / float(total);
+}
+
+// Sky with occlusion: cosine-weighted rays around the normal; only upward rays that escape count, each with the skybox's light from its direction.
+vec3 skyVisibility(uint k, uint texel, vec3 o, vec3 n) {
+    vec3 t, b;
+    frameOf(n, t, b);
+    int total = int(max(1u, pc.skySamples));
+    vec3 open = vec3(0.0);
+    for (int i = 0; i < total; ++i) {
+        vec2 uv = sample2(texel, k, uint(i) + gOffset);
+        float r = sqrt(uv.x), phi = 2.0 * PI * uv.y;
+        vec3 dir = t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - uv.x));
+        if (dir.y > 0.0) open += transmit(o, dir, pc.farDistance) * (lt[k * LREC + 7u].y > 0.5 ? skyRadiance(k, dir) : vec3(1.0));
+    }
+    return open / float(total);
+}
+
+// Adds the light of the lights of the class at point p (normal n, random id `seed`) to sum.
+void shade(vec3 p, vec3 n, uint seed, inout vec3 sum) {
+    vec3 o = p + n * pc.bias;
+    for (uint k = 0u; k < pc.lightCount; ++k) {
+        int type = int(lt[k * LREC + 1u].w + 0.5);
+        uint cls = type == 2 ? 2u : type == 4 ? 4u : 1u;
+        if ((pc.classMask & cls) == 0u) continue;
+        vec3 v;
+        if (lt[k * LREC + 5u].z > 0.5) {  // this light casts shadows
+            if (type == 4) {
+                v = lt[k * LREC + 1u].rgb * skyVisibility(k, seed, o, n);
+            } else {
+                v = evalLight(k, p, n);
+                if (v.x != 0.0 || v.y != 0.0 || v.z != 0.0) v *= visibility(k, seed, o);  // != : a dark light (negative brightness) is shadowed too
+            }
+        } else {
+            v = evalLight(k, p, n);
+        }
+        sum += v;
+    }
+}
+
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g >= pc.total) return;
+    uvec4 job;
+    uint slot;
+    if (!findSlot(g, pc.jobCount, job, slot)) return;
+    gOffset = job.w * pc.perPass;
+    uint seed = sampleRandomId(slot);
+    vec3 p = samplePos(slot);
+    vec3 n = sampleNormal(slot);
+    vec3 sum = vec3(0.0);
+    uint mask = 0u;
+    if (pc.superSamples > 1u) mask = floatBitsToUint(subd[3u * slot].w) & ((1u << min(pc.superSamples, 8u)) - 1u);
+    if (mask != 0u) {
+        // super sampled: every light at each valid sub position (own random numbers: seed * 8 + k), averaged
+        vec3 centre = subd[3u * slot].xyz;
+        vec3 du = subd[3u * slot + 1u].xyz;
+        vec3 dv = subd[3u * slot + 2u].xyz;
+        vec3 acc = vec3(0.0);
+        uint cnt = 0u;
+        for (uint k = 0u; k < 8u; ++k) {
+            if ((mask & (1u << k)) == 0u) continue;
+            shade(centre + du * SUB[k].x + dv * SUB[k].y, n, seed * 8u + k, acc);
+            ++cnt;
+        }
+        sum = acc / float(cnt);
+    } else {
+        shade(p, n, seed, sum);
+    }
+    res[slot] = vec4(sum, 0.0);
+}

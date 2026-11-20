@@ -116,34 +116,32 @@ PreparedChart prepareChart(const LiveLayout& live, int chart, const std::vector<
     out.count = static_cast<uint32_t>(n);
     out.gridCount = static_cast<uint32_t>(gi.count());
 
-    // bytes: [samples][sub][grid]
-    out.bytes.assign(static_cast<size_t>(n) * 80 + static_cast<size_t>(out.gridCount) * 32, 0);
-    auto* samples = reinterpret_cast<SampleRecord*>(out.bytes.data());
-    auto* sub = reinterpret_cast<float*>(out.bytes.data() + n * 32);
-    auto* grid = reinterpret_cast<SampleRecord*>(out.bytes.data() + n * 80);
+    // records
+    out.samples.resize(n);
+    if (hasSub) out.sub.assign(sorted.sub.begin(), sorted.sub.end());
+    out.grid.resize(out.gridCount);
     const uint32_t perPage = static_cast<uint32_t>(atlas) * static_cast<uint32_t>(atlas);
     for (size_t k = 0; k < n; ++k) {
-        SampleRecord& r = samples[k];
+        SampleRecord& r = out.samples[k];
         const uint32_t t = sorted.texel[k];
         std::memcpy(r.pos, &sorted.pos[k * 4], 3 * sizeof(float));
         r.randomId = randomIdOfTexel(t);
         r.normalOct = encodeNormalOct(&sorted.nrm[k * 4]);
         r.xy = (t % static_cast<uint32_t>(atlas)) | (((t / static_cast<uint32_t>(atlas)) % static_cast<uint32_t>(atlas)) << 16);
         r.page = t / perPage;
-        r.subFirst = static_cast<uint32_t>(k);
-        if (hasSub) std::memcpy(sub + k * 12, &sorted.sub[k * 12], 12 * sizeof(float));
+        r.aux = 0;
     }
     if (out.gridCount > 0) {
         const uint32_t fine = static_cast<uint32_t>(gi.s.atlas), finePerPage = fine * fine;
         for (size_t j = 0; j < out.gridCount; ++j) {
-            SampleRecord& r = grid[j];
+            SampleRecord& r = out.grid[j];
             const uint32_t t = gi.s.texel[j];
             std::memcpy(r.pos, &gi.s.pos[j * 4], 3 * sizeof(float));
             r.randomId = randomIdOfTexel(t);
             r.normalOct = encodeNormalOct(&gi.s.nrm[j * 4]);
             r.xy = (t % fine) | (((t / fine) % fine) << 16);
             r.page = t / finePerPage;
-            r.subFirst = gi.owner[j];
+            r.aux = gi.owner[j];   // chart-relative until upload() adds the slot base
         }
     }
 
@@ -176,8 +174,11 @@ PreparedChart prepareChart(const LiveLayout& live, int chart, const std::vector<
 
 // ---- the store ---------------------------------------------------------------------------------------------------------------------
 
-SampleStore::SampleStore(gpu::Device& device, uint64_t arenaBytes, uint32_t chunkCapacity)
-    : samples_(device, arenaBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "light samples"),
+SampleStore::SampleStore(gpu::Device& device, uint32_t slotCapacity, uint32_t gridCapacity, uint32_t chunkCapacity)
+    : slotCapacity_(slotCapacity),
+      samples_(device, static_cast<uint64_t>(slotCapacity) * sizeof(SampleRecord), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "light samples"),
+      sub_(device, static_cast<uint64_t>(slotCapacity) * 48, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "light sub texel data"),
+      grid_(device, static_cast<uint64_t>(std::max<uint32_t>(gridCapacity, 1)) * sizeof(SampleRecord), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "light grid"),
       table_(device, static_cast<uint64_t>(chunkCapacity) * sizeof(GpuChunk), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "light chunks") {}
 
 SampleStore::~SampleStore() = default;
@@ -186,6 +187,7 @@ void SampleStore::release(int chart) {
     if (chart < 0 || static_cast<size_t>(chart) >= charts_.size()) return;
     ChartEntry& e = charts_[static_cast<size_t>(chart)];
     if (e.samples.ok()) samples_.free(e.samples);
+    if (e.grid.ok()) grid_.free(e.grid);
     if (e.table.ok()) table_.free(e.table);
     e = {};
 }
@@ -205,17 +207,25 @@ bool SampleStore::upload(VkCommandBuffer cmd, gpu::UploadRing& ring, const Prepa
     if (chart.chart < 0) return false;
     release(chart.chart);
     if (charts_.size() <= static_cast<size_t>(chart.chart)) charts_.resize(static_cast<size_t>(chart.chart) + 1);
-    if (chart.bytes.empty()) return true;   // a chart without samples has nothing on the GPU
+    if (chart.samples.empty()) return true;   // a chart without samples has nothing on the GPU
     ChartEntry e;
-    e.samples = samples_.allocate(chart.bytes.size(), 16);
+    e.samples = samples_.allocate(chart.samples.size() * sizeof(SampleRecord), sizeof(SampleRecord));
     if (!e.samples.ok()) return false;
+    if (chart.gridCount > 0) {
+        e.grid = grid_.allocate(static_cast<VkDeviceSize>(chart.gridCount) * sizeof(SampleRecord), sizeof(SampleRecord));
+        if (!e.grid.ok()) {
+            samples_.free(e.samples);
+            return false;
+        }
+    }
     e.table = table_.allocate(chart.chunks.size() * sizeof(GpuChunk), 64);
     if (!e.table.ok()) {
         samples_.free(e.samples);
+        if (e.grid.ok()) grid_.free(e.grid);
         return false;
     }
-    const uint32_t base = static_cast<uint32_t>(e.samples.offset / 16);
-    const uint32_t subBase = base + chart.count * 2, gridBase = subBase + chart.count * 3;
+    e.slotBase = static_cast<uint32_t>(e.samples.offset / sizeof(SampleRecord));
+    e.gridBase = e.grid.ok() ? static_cast<uint32_t>(e.grid.offset / sizeof(SampleRecord)) : 0;
     e.count = chart.count;
     e.gridCount = chart.gridCount;
     e.chunkCount = static_cast<uint32_t>(chart.chunks.size());
@@ -229,18 +239,23 @@ bool SampleStore::upload(VkCommandBuffer cmd, gpu::UploadRing& ring, const Prepa
         g.page = page;
         g.rectXY = c.x | (c.y << 16);
         g.rectWH = c.w | (c.h << 16);
-        g.sampleBase = base + c.first * 2;
-        g.sampleCount = c.count;
-        g.subBase = subBase + c.first * 3;
-        g.gridBase = gridBase + c.gridFirst * 2;
+        g.slotBase = e.slotBase + c.first;
+        g.slotCount = c.count;
+        g.gridBase = e.gridBase + c.gridFirst;
         g.gridCount = c.gridCount;
         g.state = 1;
         std::memcpy(g.boundsMin, c.boundsMin, sizeof(g.boundsMin));
         std::memcpy(g.boundsMax, c.boundsMax, sizeof(g.boundsMax));
     }
-    if (!ring.upload(cmd, samples_.buffer(), e.samples.offset, chart.bytes.data(), chart.bytes.size()) ||
-        !ring.upload(cmd, table_.buffer(), e.table.offset, rows.data(), rows.size() * sizeof(GpuChunk))) {
+    std::vector<SampleRecord> grid = chart.grid;
+    for (SampleRecord& r : grid) r.aux += e.slotBase;   // the owning base sample as a slot
+    bool ok = ring.upload(cmd, samples_.buffer(), e.samples.offset, chart.samples.data(), chart.samples.size() * sizeof(SampleRecord)) &&
+              ring.upload(cmd, table_.buffer(), e.table.offset, rows.data(), rows.size() * sizeof(GpuChunk));
+    if (ok && !chart.sub.empty()) ok = ring.upload(cmd, sub_.buffer(), static_cast<VkDeviceSize>(e.slotBase) * 48, chart.sub.data(), chart.sub.size() * sizeof(float));
+    if (ok && !grid.empty()) ok = ring.upload(cmd, grid_.buffer(), e.grid.offset, grid.data(), grid.size() * sizeof(SampleRecord));
+    if (!ok) {
         samples_.free(e.samples);
+        if (e.grid.ok()) grid_.free(e.grid);
         table_.free(e.table);
         return false;
     }

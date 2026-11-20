@@ -1,0 +1,30 @@
+#version 460
+// Merges one pass of a light class into its running mean: D' = D + (pass - D) * k with k = 1 / (passes + 1), k = 1 on the first pass of a chunk (a stale
+// chunk's old value is replaced, never averaged). D.a keeps the pass count. Direct light only for now: the indirect moving average and the bounce source
+// S come with the gather pass (T7). Port of the merge in LiveBaker::refineOnGpu.
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 64) in;
+
+#include "light_common.glsl"
+
+layout(std430, set = 0, binding = 2) readonly buffer Pass { vec4 pass_[]; };     // this pass's value per slot (direct.comp)
+layout(std430, set = 0, binding = 3) buffer Running { vec4 running[]; };         // running mean per slot: rgb + pass count
+
+layout(push_constant) uniform PC {
+    uint jobCount;
+    uint total;
+    uint pad0, pad1;
+} pc;
+
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g >= pc.total) return;
+    uvec4 job;
+    uint slot;
+    if (!findSlot(g, pc.jobCount, job, slot)) return;
+    uint p = job.w;
+    float k = p == 0u ? 1.0 : 1.0 / float(p + 1u);
+    vec3 d = running[slot].rgb;
+    running[slot] = vec4(d + (pass_[slot].rgb - d) * k, float(p + 1u));
+}

@@ -1,0 +1,61 @@
+#version 460
+// Baked ambient occlusion of lightmap samples (level settings `_ao_*`), hardware ray traced through VK_KHR_ray_query, one invocation per sample of the jobs.
+// A port of core/shaders/lightmap_ao.comp over the native sample layout; MUST stay equivalent to LiveBaker::computeOcclusion (the stratified directions
+// are turned by a hash of the sample's random id). Transparent surfaces come with T7: every occluder is opaque here.
+#extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 64) in;
+
+#include "light_common.glsl"
+
+layout(std430, set = 0, binding = 2) writeonly buffer Result { float occ[]; };   // occluded fraction 0..1 per slot
+layout(set = 0, binding = 3) uniform accelerationStructureEXT tlas;
+
+layout(push_constant) uniform PC {
+    uint jobCount;
+    uint total;
+    uint rays;       // rays per sample
+    uint pad0;
+    float radius;    // m: how far the rays look
+    float bias;      // origin offset along the normal
+    float falloff;   // a hit weighs (1 - d / radius)^falloff (0: every hit 1)
+    uint pad1;
+} pc;
+
+const float PI = 3.14159265358979323846;
+const float GOLDEN = 0.6180339887498949;
+
+// Distance to the nearest occluding surface along o + t * d within the radius, or -1.
+float nearestHit(vec3 o, vec3 d) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFF, o, 0.0, d, pc.radius);
+    while (rayQueryProceedEXT(rq)) {}
+    return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? rayQueryGetIntersectionTEXT(rq, true) : -1.0;
+}
+
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g >= pc.total) return;
+    uvec4 job;
+    uint slot;
+    if (!findSlot(g, pc.jobCount, job, slot)) return;
+    vec3 n = sampleNormal(slot);
+    vec3 helper = abs(n.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    vec3 tu = normalize(cross(n, helper)), tv = cross(n, tu);
+    // the same turn of the stratified directions per sample as on the CPU (a hash of the sample's random-number id)
+    uint h = sampleRandomId(slot) * 2654435761u;
+    h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15;
+    float turn = float(h & 0xFFFFFFu) / 16777216.0;
+    vec3 o = samplePos(slot) + n * pc.bias;
+    uint rays = max(1u, pc.rays);
+    float sum = 0.0;
+    for (uint k = 0u; k < rays; ++k) {
+        float u1 = (float(k) + 0.5) / float(rays), u2 = fract(float(k) * GOLDEN + turn);
+        float r = sqrt(u1), phi = 2.0 * PI * u2;
+        vec3 dir = normalize(tu * (r * cos(phi)) + tv * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - u1)));
+        float d = nearestHit(o, dir);
+        if (d >= 0.0 && d < pc.radius) sum += pc.falloff == 1.0 ? 1.0 - d / pc.radius : pow(1.0 - d / pc.radius, pc.falloff);
+    }
+    occ[slot] = sum / float(rays);
+}

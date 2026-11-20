@@ -14,6 +14,7 @@
 #include "core/lighting_classes.h"
 #include "core/scene.h"
 #include "gpu/device.h"
+#include "gpu_test_util.h"
 #include "gpu/upload_ring.h"
 #include "light/layout.h"
 #include "light/samples.h"
@@ -21,67 +22,8 @@
 using namespace native;
 namespace fs = std::filesystem;
 
-namespace {
-
-// A one-shot command buffer on the graphics queue, waited for.
-class OneShot {
-public:
-    explicit OneShot(gpu::Device& d) : d_(d) {
-        VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-        pi.queueFamilyIndex = d.graphicsFamily();
-        vkCreateCommandPool(d.device(), &pi, nullptr, &pool_);
-    }
-    ~OneShot() { vkDestroyCommandPool(d_.device(), pool_, nullptr); }
-    void run(const std::function<void(VkCommandBuffer)>& record) {
-        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        ai.commandPool = pool_;
-        ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        ai.commandBufferCount = 1;
-        VkCommandBuffer cmd = VK_NULL_HANDLE;
-        vkAllocateCommandBuffers(d_.device(), &ai, &cmd);
-        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(cmd, &bi);
-        record(cmd);
-        vkEndCommandBuffer(cmd);
-        VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-        cbi.commandBuffer = cmd;
-        VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-        si.commandBufferInfoCount = 1;
-        si.pCommandBufferInfos = &cbi;
-        vkQueueSubmit2(d_.graphicsQueue(), 1, &si, VK_NULL_HANDLE);
-        vkQueueWaitIdle(d_.graphicsQueue());
-        vkFreeCommandBuffers(d_.device(), pool_, 1, &cmd);
-    }
-
-private:
-    gpu::Device& d_;
-    VkCommandPool pool_ = VK_NULL_HANDLE;
-};
-
-std::vector<uint8_t> readBack(gpu::Device& d, OneShot& shot, VkBuffer src, uint64_t size) {
-    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bci.size = size;
-    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    VmaAllocationCreateInfo aci{};
-    aci.usage = VMA_MEMORY_USAGE_AUTO;
-    aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    VkBuffer buf = VK_NULL_HANDLE;
-    VmaAllocation a = nullptr;
-    VmaAllocationInfo info{};
-    REQUIRE(vmaCreateBuffer(d.allocator(), &bci, &aci, &buf, &a, &info) == VK_SUCCESS);
-    shot.run([&](VkCommandBuffer cmd) {
-        VkBufferCopy r{0, 0, size};
-        vkCmdCopyBuffer(cmd, src, buf, 1, &r);
-    });
-    vmaInvalidateAllocation(d.allocator(), a, 0, VK_WHOLE_SIZE);
-    std::vector<uint8_t> out(size);
-    std::memcpy(out.data(), info.pMappedData, size);
-    vmaDestroyBuffer(d.allocator(), buf, a);
-    return out;
-}
-
-} // namespace
+using native_test::OneShot;
+using native_test::readBack;
 
 TEST_CASE("sample arena: the uploaded per-chart samples equal buildTexelSamples (demo_lit), the chunk table describes them" * doctest::test_suite("gpu")) {
     gpu::DeviceOptions o;
@@ -112,7 +54,7 @@ TEST_CASE("sample arena: the uploaded per-chart samples equal buildTexelSamples 
 
     for (const int giScale : {1, 2}) {
         INFO("giScale " << giScale);
-        light::SampleStore store(*device, giScale > 1 ? 512ull << 20 : 64ull << 20, 4096);
+        light::SampleStore store(*device, 1u << 21, giScale > 1 ? (1u << 22) : 16u, 4096);
         REQUIRE(store.valid());
         gpu::UploadRing ring(*device, {giScale > 1 ? 384ull << 20 : 64ull << 20, 2});
         OneShot shot(*device);
@@ -146,7 +88,11 @@ TEST_CASE("sample arena: the uploaded per-chart samples equal buildTexelSamples 
         if (giScale == 2) CHECK(gridTotal == core::buildGiSamples(whole, 2).count());
         (void)hiddenTotal;
 
-        const std::vector<uint8_t> arena = readBack(*device, shot, store.sampleBuffer(), store.sampleArena().capacity());
+        const uint64_t slots = store.usedSlots() + 1;   // slots are handed out from the front; everything uploaded lies below the highest used one
+        const std::vector<uint8_t> arena = readBack(*device, shot, store.sampleBuffer(), static_cast<uint64_t>(store.slotCapacity()) * sizeof(light::SampleRecord));
+        const std::vector<uint8_t> subs = readBack(*device, shot, store.subBuffer(), static_cast<uint64_t>(store.slotCapacity()) * 48);
+        const std::vector<uint8_t> grid = giScale > 1 ? readBack(*device, shot, store.gridBuffer(), static_cast<uint64_t>(1u << 22) * sizeof(light::SampleRecord)) : std::vector<uint8_t>();
+        (void)slots;
         const std::vector<uint8_t> table = readBack(*device, shot, store.chunkBuffer(), static_cast<uint64_t>(store.chunkRows()) * sizeof(light::GpuChunk));
         REQUIRE(table.size() == store.chunkRows() * sizeof(light::GpuChunk));
         // the GPU copy of the chunk table is the CPU copy
@@ -169,10 +115,10 @@ TEST_CASE("sample arena: the uploaded per-chart samples equal buildTexelSamples 
                 REQUIRE(rh >= 1);
                 REQUIRE(rw <= static_cast<uint32_t>(live.chunkTexels()));
                 REQUIRE(rh <= static_cast<uint32_t>(live.chunkTexels()));
-                covered += g.sampleCount;
-                for (uint32_t i = 0; i < g.sampleCount; ++i) {
+                covered += g.slotCount;
+                for (uint32_t i = 0; i < g.slotCount; ++i) {
                     ++seen;
-                    const auto* rec = reinterpret_cast<const light::SampleRecord*>(arena.data() + static_cast<size_t>(g.sampleBase + 2 * i) * 16);
+                    const auto* rec = reinterpret_cast<const light::SampleRecord*>(arena.data() + static_cast<size_t>(g.slotBase + i) * 32);
                     const uint32_t x = rec->xy & 0xffffu, y = rec->xy >> 16;
                     const uint32_t texel = (rec->page * atlas + y) * atlas + x;
                     const auto it = at.find(texel);
@@ -184,7 +130,7 @@ TEST_CASE("sample arena: the uploaded per-chart samples equal buildTexelSamples 
                     light::decodeNormalOct(rec->normalOct, n);
                     for (int a = 0; a < 3; ++a) REQUIRE(std::fabs(n[a] - whole.nrm[w * 4 + static_cast<size_t>(a)]) < 2e-4f);
                     REQUIRE(rec->randomId == light::randomIdOfTexel(texel));
-                    const auto* sub = reinterpret_cast<const float*>(arena.data() + static_cast<size_t>(g.subBase + 3 * i) * 16);
+                    const auto* sub = reinterpret_cast<const float*>(subs.data() + static_cast<size_t>(g.slotBase + i) * 48);
                     REQUIRE(std::memcmp(sub, &whole.sub[w * 12], 12 * sizeof(float)) == 0);
                     // inside the chunk rectangle unless it is a padding texel (clamped to the nearest chunk)
                     const bool inside = x >= rx && x < rx + rw && y >= ry && y < ry + rh;
@@ -198,8 +144,9 @@ TEST_CASE("sample arena: the uploaded per-chart samples equal buildTexelSamples 
                 }
                 gridSeen += g.gridCount;
                 for (uint32_t j = 0; j < g.gridCount; ++j) {
-                    const auto* rec = reinterpret_cast<const light::SampleRecord*>(arena.data() + static_cast<size_t>(g.gridBase + 2 * j) * 16);
-                    REQUIRE(rec->subFirst < entry->count);
+                    const auto* rec = reinterpret_cast<const light::SampleRecord*>(grid.data() + static_cast<size_t>(g.gridBase + j) * 32);
+                    REQUIRE(rec->aux >= entry->slotBase);
+                    REQUIRE(rec->aux < entry->slotBase + entry->count);
                 }
             }
             CHECK(covered == entry->count);
@@ -209,16 +156,16 @@ TEST_CASE("sample arena: the uploaded per-chart samples equal buildTexelSamples 
         CHECK(gridSeen == gridTotal);
 
         // releasing a chart gives its space back; uploading it again works
-        const uint64_t used = store.sampleBytes();
+        const uint32_t used = store.usedSlots();
         size_t victim = 0;
         while (!store.chart(static_cast<int>(victim))) ++victim;
         store.release(static_cast<int>(victim));
-        CHECK(store.sampleBytes() < used);
+        CHECK(store.usedSlots() < used);
         CHECK(store.chart(static_cast<int>(victim)) == nullptr);
         REQUIRE(ring.beginFrame(1));
         shot.run([&](VkCommandBuffer cmd) { REQUIRE(store.upload(cmd, ring, prepared[victim], prepared[victim].page)); });
         ring.endFrame(2);
-        CHECK(store.sampleBytes() == used);
+        CHECK(store.usedSlots() == used);
         REQUIRE(store.chart(static_cast<int>(victim)));
     }
     CHECK(device->validationErrors() == 0);
