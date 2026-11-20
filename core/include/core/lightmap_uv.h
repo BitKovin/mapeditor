@@ -152,6 +152,14 @@ struct ChartShape {
 std::vector<ChartShape> buildCharts(const LayoutFaces& layout, const std::vector<int>& group);
 // Places the charts of every group in pages (bucket / Morton order as before; the shapes may come in any order) and writes the faces' affine maps.
 LightmapLayout placeCharts(const LayoutFaces& layout, std::vector<ChartShape> shapes, const LightmapSettings& settings);
+// Where a chart sits: its rectangle's top-left corner on a page.
+struct ChartPlacement {
+    int page = 0, x = 0, y = 0;
+};
+// The layout for charts the caller placed itself (the editor's page allocator): chart i is `shapes[i]` at `at[i]` (the shapes in the order that becomes
+// LightmapLayout::charts; rectangles must not overlap and lie in the page), `pageCount` pages. placeCharts() is its packer followed by this.
+LightmapLayout placeChartsAt(const LayoutFaces& layout, const std::vector<ChartShape>& shapes, const std::vector<ChartPlacement>& at, int pageCount,
+                             const LightmapSettings& settings);
 
 // The layout of one style layer: the charts that carry `style`, at the same page and rectangle as in `layout` (so tiles of every layer address the same
 // pixels), faces and chart indices renumbered. Style 0 is every chart.

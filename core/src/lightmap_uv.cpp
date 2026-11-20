@@ -680,19 +680,13 @@ std::vector<ChartShape> buildCharts(const LayoutFaces& layout, const std::vector
 LightmapLayout placeCharts(const LayoutFaces& layout, std::vector<ChartShape> shapes, const LightmapSettings& cfg) {
     const LayoutFaces::Impl& I = *layout.impl;
     const std::vector<Face>& faces = I.faces;
-    const int N = static_cast<int>(faces.size());
-    const int pad = I.pad, atlas = I.atlas;
-    LightmapLayout out;
-    out.settings = cfg;
-    out.culled = I.culled;
+    const int atlas = I.atlas;
     // the order the islands were made in: roots by area, ties by face index (so the shapes may come in any order, e.g. group by group, in parallel)
     std::stable_sort(shapes.begin(), shapes.end(), [&](const ChartShape& a, const ChartShape& b) {
         const double aa = faces[static_cast<size_t>(a.root)].out.area, ab = faces[static_cast<size_t>(b.root)].out.area;
         return aa != ab ? aa > ab : a.root < b.root;
     });
     std::vector<ChartShape>& islands = shapes;
-    for (const ChartShape& s : islands)
-        if (!s.warning.empty()) out.warnings.push_back(s.warning);
 
     // ---- E. packing: buckets (instance, entity, texture) in order, Morton order inside a bucket -----------------------
     Vec3 gmn{1e300, 1e300, 1e300}, gmx{-1e300, -1e300, -1e300};
@@ -765,20 +759,38 @@ LightmapLayout placeCharts(const LayoutFaces& layout, std::vector<ChartShape> sh
         }
     }
     if (islands.empty()) pages.clear();
+    std::vector<ChartPlacement> at(islands.size());
+    for (size_t i = 0; i < islands.size(); ++i) at[i] = {placement[i][0], placement[i][1], placement[i][2]};
+    return placeChartsAt(layout, std::move(islands), at, static_cast<int>(pages.size()), cfg);
+}
 
-    // ---- F. write the result ----------------------------------------------------------------------------------------
-    out.pageCount = static_cast<int>(pages.size());
-    for (const auto& p : pages) out.pageFill.push_back(static_cast<double>(p.used) / (static_cast<double>(atlas) * atlas));
-    std::map<std::string, int> faceIndexByKey;
-    for (int i = 0; i < N; ++i) faceIndexByKey[faces[i].out.key()] = i;
+// ---- F. write the result ----------------------------------------------------------------------------------------
+LightmapLayout placeChartsAt(const LayoutFaces& layout, const std::vector<ChartShape>& islands, const std::vector<ChartPlacement>& placement, int pageCount,
+                             const LightmapSettings& cfg) {
+    const LayoutFaces::Impl& I = *layout.impl;
+    const std::vector<Face>& faces = I.faces;
+    const int N = static_cast<int>(faces.size());
+    const int pad = I.pad, atlas = I.atlas;
+    LightmapLayout out;
+    out.settings = cfg;
+    out.culled = I.culled;
+    for (const ChartShape& s : islands)
+        if (!s.warning.empty()) out.warnings.push_back(s.warning);
+    out.pageCount = pageCount;
+    std::vector<long long> used(static_cast<size_t>(std::max(0, pageCount)), 0);
+    for (size_t i = 0; i < islands.size(); ++i) {
+        const int pg = placement[i].page;
+        if (pg >= 0 && pg < pageCount) used[static_cast<size_t>(pg)] += static_cast<long long>(islands[i].w) * islands[i].h;
+    }
+    for (const long long u : used) out.pageFill.push_back(static_cast<double>(u) / (static_cast<double>(atlas) * atlas));
     out.faces.resize(N);
     for (int i = 0; i < N; ++i) out.faces[i] = faces[i].out;
     for (int ci = 0; ci < static_cast<int>(islands.size()); ++ci) {
         const ChartShape& isl = islands[ci];
         LightmapChart c;
-        c.page = placement[ci][0];
-        c.x = placement[ci][1];
-        c.y = placement[ci][2];
+        c.page = placement[ci].page;
+        c.x = placement[ci].x;
+        c.y = placement[ci].y;
         c.w = isl.w;
         c.h = isl.h;
         c.instance = faces[isl.root].out.instance;
