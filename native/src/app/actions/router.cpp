@@ -128,6 +128,9 @@ std::string Router::resolve(const InputEvent& event, const ActionEnv& env) const
 
 Router::Result Router::handle(const InputEvent& e, ActionEnv& env) {
     Result result;
+    // Some systems report key repeat as release + press pairs: the release of a repeat is not the user letting go (the real release
+    // comes later without the flag), so it must not end a hold. Without this a held fly key stopped after the first repeat.
+    if (e.type == InputEvent::Type::KeyRelease && e.autoRepeat) return result;
     const bool keyEvent = e.type == InputEvent::Type::KeyPress || e.type == InputEvent::Type::KeyRelease;
     // A focused text field gets every key without Ctrl / Alt / Meta (typing); chords with those still reach the router.
     // A key RELEASE always counts: it may end a hold that began before the field got the keyboard.

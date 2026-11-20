@@ -414,6 +414,11 @@ TEST_CASE("holds: a mouse drag runs its action, pushes its hold context, and fly
     rep.autoRepeat = true;
     CHECK(r.handle(rep, env).handled);
     CHECK(log.ran.size() == before);
+    // A release that is part of the system's key repeat (release + press pairs) is not the user letting go: the hold goes on.
+    InputEvent repeatUp = keyUp("W");
+    repeatUp.autoRepeat = true;
+    CHECK_FALSE(r.handle(repeatUp, env).handled);
+    CHECK(r.holding("camera.fly.forward"));
     // Releasing the key and the button end the holds, the hold context disappears, and the old behaviour is back.
     CHECK(r.handle(keyUp("W"), env).action == "camera.fly.forward");
     CHECK_FALSE(r.holding("camera.fly.forward"));

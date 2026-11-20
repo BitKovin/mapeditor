@@ -511,6 +511,9 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
     actions::ActionEnv env{&ui};
     const bool before = router_.holding();
     const auto r = router_.handle(ev, env);
+    if (inputLogging() && ev.type != actions::InputEvent::Type::MouseMove)   // wheel and buttons: what the router did with them and what stays held
+        base::logInfo(std::string("input: ") + (ev.type == actions::InputEvent::Type::Wheel ? "wheel " + std::to_string(ev.wheel) : ev.type == actions::InputEvent::Type::MousePress ? "mouse press " + std::to_string(ev.button) : "mouse release " + std::to_string(ev.button)) +
+                      " holding=" + std::to_string(router_.heldTriggers().size()) + " handled=" + (r.handled ? "yes" : "no") + " action=" + r.action);
     if (ev.type == actions::InputEvent::Type::MousePress && r.handled && router_.holding() && !before) holdViewport_ = vp;
     if (!router_.holding()) holdViewport_ = nullptr;
     return r.handled;
