@@ -128,14 +128,15 @@ target_link_libraries(native_vk PUBLIC vendored)   # the Core's copy of the Vulk
 native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/swapchain.cpp src/gpu/upload_ring.cpp src/gpu/arena.cpp DEPENDS native_base native_vk)
 native_module(light  SOURCES src/light/module_info.cpp src/light/page_allocator.cpp src/light/page_allocator.h src/light/layout.cpp src/light/layout.h src/light/page_images.cpp src/light/page_images.h src/light/samples.cpp src/light/samples.h src/light/accel.cpp src/light/accel.h
                      src/light/light_pack.cpp src/light/light_pack.h src/light/results.cpp src/light/results.h src/light/passes.cpp src/light/passes.h src/light/mailbox.cpp src/light/mailbox.h
+                     src/light/lit_mesh.cpp src/light/lit_mesh.h src/light/light_link.cpp src/light/light_link.h src/light/lighting_service.cpp src/light/lighting_service.h
                      DEPENDS native_scene native_gpu)
 add_dependencies(native_light native_shaders)
 target_include_directories(native_light PRIVATE "${NATIVE_SHADER_GEN_DIR}")
 native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp src/render/picking.cpp src/render/picking.h src/render/selection_outline.cpp src/render/selection_outline.h src/render/line_vertex.h
-                     src/render/viewport_window.cpp src/render/viewport_window.h
+                     src/render/viewport_window.cpp src/render/viewport_window.h src/render/lightmap_view.cpp src/render/lightmap_view.h
                      src/render/entity_overlay.cpp src/render/entity_overlay.h src/render/glyph_atlas.cpp src/render/glyph_atlas.h
                      src/render/camera.cpp src/render/camera_rig.cpp src/render/viewport_settings.cpp
-                     DEPENDS native_scene native_gpu Qt6::Gui)
+                     DEPENDS native_scene native_light native_gpu Qt6::Gui)
 add_dependencies(native_render native_shaders)
 target_include_directories(native_render PRIVATE "${NATIVE_SHADER_GEN_DIR}")
 # The action system (registry, contexts, keymap layers, input router) is Qt-free and sits next to base: the viewport glue (render),
@@ -160,7 +161,7 @@ add_custom_command(TARGET mapeditor_native POST_BUILD
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_scene_relief.cpp tests/test_picking.cpp tests/test_scene_overlays.cpp tests/test_tools_transform.cpp tests/test_tools_modal.cpp tests/test_tools_gizmo.cpp tests/test_tools_box.cpp tests/test_tools_clipboard.cpp tests/test_tools_visibility.cpp tests/test_tools_properties.cpp tests/test_tools_outliner.cpp tests/test_tools_details.cpp tests/test_tools_settings.cpp tests/test_keymap_edit.cpp tests/test_palette.cpp tests/test_light_layout.cpp tests/test_light_images.cpp tests/test_light_samples.cpp tests/test_light_accel.cpp tests/test_light_bake.cpp tests/test_light_compose.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_scene_relief.cpp tests/test_picking.cpp tests/test_scene_overlays.cpp tests/test_tools_transform.cpp tests/test_tools_modal.cpp tests/test_tools_gizmo.cpp tests/test_tools_box.cpp tests/test_tools_clipboard.cpp tests/test_tools_visibility.cpp tests/test_tools_properties.cpp tests/test_tools_outliner.cpp tests/test_tools_details.cpp tests/test_tools_settings.cpp tests/test_keymap_edit.cpp tests/test_palette.cpp tests/test_light_layout.cpp tests/test_light_images.cpp tests/test_light_samples.cpp tests/test_light_accel.cpp tests/test_light_bake.cpp tests/test_light_compose.cpp tests/test_light_service.cpp tests/test_lit_view.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src "${NATIVE_SHADER_GEN_DIR}")
 add_dependencies(native_tests native_shaders)
 target_compile_definitions(native_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"

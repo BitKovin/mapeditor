@@ -57,7 +57,7 @@ bool isSkyTexture(const std::string& name) {
 }
 
 size_t RenderMesh::bytes() const {
-    size_t n = sizeof(*this) + vertices.capacity() * sizeof(RenderVertex) + indices.capacity() * sizeof(uint32_t);
+    size_t n = sizeof(*this) + vertices.capacity() * sizeof(RenderVertex) + indices.capacity() * sizeof(uint32_t) + pieces.capacity() * sizeof(uint32_t);
     for (const auto& t : textures) n += t.capacity() + sizeof(std::string);
     return n;
 }
@@ -69,7 +69,7 @@ uint32_t RenderMesh::slotOf(const std::string& texture) {
     return static_cast<uint32_t>(textures.size() - 1);
 }
 
-void RenderMesh::addTriangle(const RenderVertex& a, const RenderVertex& b, const RenderVertex& c) {
+void RenderMesh::addTriangle(const RenderVertex& a, const RenderVertex& b, const RenderVertex& c, uint32_t piece) {
     const uint32_t base = static_cast<uint32_t>(vertices.size());
     vertices.push_back(a);
     vertices.push_back(b);
@@ -77,6 +77,7 @@ void RenderMesh::addTriangle(const RenderVertex& a, const RenderVertex& b, const
     indices.push_back(base);
     indices.push_back(base + 1);
     indices.push_back(base + 2);
+    pieces.push_back(piece);
 }
 
 std::shared_ptr<const RenderMesh> buildRawMesh(const core::Brush& brush, bool volume) {

@@ -8,11 +8,11 @@ namespace native::light {
 
 namespace {
 
-// One-shot command buffer on the compute queue, waited for.
-bool submitOnce(gpu::Device& device, const std::function<void(VkCommandBuffer)>& record) {
+// One-shot command buffer on the compute queue (or the graphics queue), waited for.
+bool submitOnce(gpu::Device& device, bool graphics, const std::function<void(VkCommandBuffer)>& record) {
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    pci.queueFamilyIndex = device.computeFamily();
+    pci.queueFamilyIndex = graphics ? device.graphicsFamily() : device.computeFamily();
     VkCommandPool pool = VK_NULL_HANDLE;
     if (vkCreateCommandPool(device.device(), &pci, nullptr, &pool) != VK_SUCCESS) return false;
     VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -32,7 +32,8 @@ bool submitOnce(gpu::Device& device, const std::function<void(VkCommandBuffer)>&
         VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
         si.commandBufferInfoCount = 1;
         si.pCommandBufferInfos = &cbi;
-        ok = vkQueueSubmit2(device.computeQueue(), 1, &si, VK_NULL_HANDLE) == VK_SUCCESS && vkQueueWaitIdle(device.computeQueue()) == VK_SUCCESS;
+        const VkQueue queue = graphics ? device.graphicsQueue() : device.computeQueue();
+        ok = vkQueueSubmit2(queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS && vkQueueWaitIdle(queue) == VK_SUCCESS;
     }
     vkDestroyCommandPool(device.device(), pool, nullptr);
     return ok;
@@ -58,7 +59,8 @@ void barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayo
 
 } // namespace
 
-PageImages::PageImages(gpu::Device& device, int atlasSize, VkFormat format) : device_(device), atlas_(atlasSize), format_(format) {}
+PageImages::PageImages(gpu::Device& device, int atlasSize, VkFormat format, bool onGraphicsQueue)
+    : device_(device), atlas_(atlasSize), format_(format), graphics_(onGraphicsQueue) {}
 
 PageImages::~PageImages() { destroy(); }
 
@@ -106,7 +108,7 @@ bool PageImages::ensureLayers(int layers) {
     VkImageView view = VK_NULL_HANDLE;
     if (!create(layers, image, alloc, view)) return false;
     const int keep = layers_;
-    const bool done = submitOnce(device_, [&](VkCommandBuffer cmd) {
+    const bool done = submitOnce(device_, graphics_, [&](VkCommandBuffer cmd) {
         barrier(cmd, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(layers), 0, VK_ACCESS_2_TRANSFER_WRITE_BIT);
         if (keep > 0) {
             barrier(cmd, image_, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, static_cast<uint32_t>(keep), VK_ACCESS_2_MEMORY_WRITE_BIT,
@@ -161,7 +163,7 @@ bool PageImages::writeLayer(int layer, const std::vector<uint16_t>& texels) {
     if (vmaCreateBuffer(device_.allocator(), &bci, &aci, &buf, &a, &info) != VK_SUCCESS) return false;
     std::memcpy(info.pMappedData, texels.data(), bytes);
     vmaFlushAllocation(device_.allocator(), a, 0, VK_WHOLE_SIZE);
-    const bool ok = submitOnce(device_, [&](VkCommandBuffer cmd) {
+    const bool ok = submitOnce(device_, graphics_, [&](VkCommandBuffer cmd) {
         barrier(cmd, image_, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(layers_), VK_ACCESS_2_MEMORY_WRITE_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
         VkBufferImageCopy r{};
@@ -188,7 +190,7 @@ bool PageImages::readLayer(int layer, std::vector<uint16_t>& texels) {
     VmaAllocation a = nullptr;
     VmaAllocationInfo info{};
     if (vmaCreateBuffer(device_.allocator(), &bci, &aci, &buf, &a, &info) != VK_SUCCESS) return false;
-    const bool ok = submitOnce(device_, [&](VkCommandBuffer cmd) {
+    const bool ok = submitOnce(device_, graphics_, [&](VkCommandBuffer cmd) {
         barrier(cmd, image_, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, static_cast<uint32_t>(layers_), VK_ACCESS_2_MEMORY_WRITE_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
         VkBufferImageCopy r{};

@@ -26,6 +26,9 @@
 
 #include "base/jobs.h"
 #include "gpu/device.h"
+#include "light/light_link.h"
+#include "light/mailbox.h"
+#include "light/page_images.h"
 #include "render/gpu_scene.h"
 #include "render/entity_overlay.h"
 #include "render/glyph_atlas.h"
@@ -37,6 +40,7 @@ namespace native::render {
 class ScenePass;
 class MeshPass;
 class TextureTable;
+class LightmapView;
 
 using ViewportId = uint32_t;
 
@@ -83,6 +87,9 @@ public:
     void setSizeLabels(ViewportId id, std::shared_ptr<const std::vector<TextItem>> labels);
     // The transform gizmo of a viewport (world space line list, two vertices a line, drawn over everything; null = none).
     void setGizmoLines(ViewportId id, std::shared_ptr<const std::vector<LineVertex>> lines);
+    // The bake's side of the lit modes: the lit meshes, the mailboxes and the "a viewport wants light" flag (set while some viewport is in a lit mode). The renderer
+    // scatters the newest mailbox into its display pages before every frame. Call it before the lighting service starts, and with null before the link goes.
+    void setLightLink(std::shared_ptr<light::LightLink> link);
     // The skybox ("env/<name> cube") drawn behind the scene in perspective views; "" = none.
     void setSkyTexture(const std::string& name);
     // What the scene holds on the GPU and how the textures stand (refreshed every loop iteration).
@@ -119,6 +126,20 @@ private:
     std::unique_ptr<GpuScene> scene_;
     std::unique_ptr<ScenePass> pass_;     // render thread only
     std::unique_ptr<MeshPass> mesh_;      // render thread only
+    // Lit modes (render thread only, except link_)
+    struct LightSubmit {
+        bool wait = false, signal = false;
+        uint64_t waitValue = 0, signalValue = 0;
+    };
+    LightSubmit syncLighting(light::LightLink& link, VkCommandBuffer cmd);
+    void waitForFrames();
+    std::shared_ptr<light::LightLink> link_;                  // guarded by mutex_
+    std::unique_ptr<LightmapView> lightmapView_;
+    std::unique_ptr<light::PageImages> display_;              // the display pages the lit shader samples
+    std::unique_ptr<light::Scatter> scatter_;
+    std::shared_ptr<const light::LitSet> litSeen_;
+    uint64_t mailboxRenderValue_ = 0;
+    uint32_t scatterUses_ = 0;
     VkCommandPool uploadPool_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkCommandBuffer uploadCmd_[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     uint64_t ringValue_[2] = {0, 0};      // timeline value that frees each ring slice

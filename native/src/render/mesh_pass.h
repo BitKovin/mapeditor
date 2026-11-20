@@ -36,9 +36,16 @@ struct FrameOverlays {
     float extent[2] = {1, 1};    // the viewport in pixels
 };
 
+// How a viewport shades the scene (RenderMode): 0 = Unlit, 1 = Lit (albedo x light), 2 = Lighting only.
+struct LitParams {
+    int mode = 0;
+    float exposure = 1, brightness = 0;
+};
+
 class MeshPass {
 public:
-    MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat depthFormat, VkDescriptorSetLayout textureLayout);
+    // `lightmapLayout` = set 1 (the display pages, render/lightmap_view.h).
+    MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat depthFormat, VkDescriptorSetLayout textureLayout, VkDescriptorSetLayout lightmapLayout);
     ~MeshPass();
     MeshPass(const MeshPass&) = delete;
     MeshPass& operator=(const MeshPass&) = delete;
@@ -49,7 +56,7 @@ public:
 
     // Inside vkCmdBeginRendering (viewport and scissor already set). `skyTexture` = a sky entry of the texture table (TextureTable::skyIndex), 0 = none.
     void record(VkCommandBuffer cmd, const ViewState& view, const GpuScene& scene, const DrawLists& lists, VkDescriptorSet textures, uint32_t skyTexture,
-                bool showVolumes, const FrameOverlays& overlays) const;
+                bool showVolumes, const FrameOverlays& overlays, VkDescriptorSet lightmaps = VK_NULL_HANDLE, const LitParams& lit = {}) const;
 
 private:
     const gpu::Device& device_;

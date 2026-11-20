@@ -37,6 +37,8 @@
 #include "render/render_thread.h"
 #include "render/selection_outline.h"
 #include "render/viewport_window.h"
+#include "light/light_link.h"
+#include "light/lighting_service.h"
 #include "scene/builder.h"
 #include "scene/point_box.h"
 #include "scene/size_labels.h"
@@ -223,6 +225,9 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
 }
 
 MainWindow::~MainWindow() {
+    lighting_.reset();   // the bake thread reads the link and the device
+    if (services_.renderThread) services_.renderThread->setLightLink(nullptr);
+    lightLink_.reset();
     builder_.reset();   // waits for its jobs; its listener points at the render thread
     if (QCoreApplication::instance()) QCoreApplication::instance()->removeEventFilter(this);
     saveTimer_.stop();
@@ -233,6 +238,8 @@ render::ViewportWindow* MainWindow::activeViewport() const {
     if (panels_.empty()) return nullptr;
     return panels_[static_cast<size_t>(std::clamp(active_, 0, static_cast<int>(panels_.size()) - 1))].window;
 }
+
+bool MainWindow::lightingAvailable() const { return lighting_ && lighting_->valid(); }
 
 void MainWindow::setStatsRows(const std::vector<std::pair<std::string, std::string>>& rows) { stats_->setRows(rows); }
 
@@ -449,6 +456,13 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
 
 void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
     if (!picker_) picker_ = std::make_unique<render::Picker>();
+    if (lighting_ && profile_ && snapshot && snapshot->complete) {   // the lit modes' bake follows complete snapshots
+        light::LightingInputs in;
+        in.snapshot = snapshot;
+        in.profile = profile_;
+        in.assetsRoot = assetsRoot_;
+        lighting_->setInputs(std::move(in));
+    }
     picker_->setSnapshot(std::move(snapshot));
     refreshHidden();   // also refreshes the outline when it prunes the selection; otherwise:
     refreshOutline();

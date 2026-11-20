@@ -5,6 +5,7 @@ layout(push_constant) uniform PC {
     mat4 viewProj;
     vec4 eye;
     vec4 misc;    // x = pass (0 opaque, 1 translucent, 2 volume, 3 sky background), y = sky texture index (background)
+    vec4 lit;     // x = mode (0 unlit, 1 lit, 2 lighting only), y = exposure, z = brightness (fragment shader)
 } pc;
 
 layout(location = 0) in vec3 aPos;
@@ -12,12 +13,15 @@ layout(location = 1) in uint aNormal;
 layout(location = 2) in vec2 aUv;
 layout(location = 3) in uint aPageFlags;   // low 16 bits: lightmap page, high 16 bits: flags
 layout(location = 4) in uint aTex;
+layout(location = 5) in vec2 aLm;          // lightmap coordinates of the live layout (RenderVertex::lm), page in aPageFlags
 
 layout(location = 0) out vec3 vN;
 layout(location = 1) out vec2 vUv;
 layout(location = 2) flat out uint vTex;
 layout(location = 3) flat out uint vFlags;
 layout(location = 4) out vec3 vDir;
+layout(location = 5) out vec2 vLm;
+layout(location = 6) flat out uint vPage;
 
 vec3 octDecode(uint p) {
     vec2 e = vec2(float(int(p << 16) >> 16), float(int(p) >> 16)) / 32767.0;
@@ -32,5 +36,7 @@ void main() {
     vUv = aUv;
     vTex = aTex;
     vFlags = aPageFlags >> 16;
+    vLm = aLm;
+    vPage = aPageFlags & 0xffffu;
     vDir = aPos - pc.eye.xyz;
 }

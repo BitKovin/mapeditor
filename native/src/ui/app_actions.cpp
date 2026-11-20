@@ -746,6 +746,36 @@ void registerAppActions(actions::Registry& r) {
         };
         add(r, std::move(d));
     }
+    {
+        ActionDef d;
+        d.id = "view.render_mode";
+        d.label = "Render mode";
+        d.category = "View";
+        d.description = "Switches the active viewport between the unlit view and the lit views (Lit: textures times the live lighting; Lighting only: the light on white surfaces).";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&View/&Render mode (active viewport)";
+        d.params = {{"mode", "unlit"}};
+        d.variants = {{"&Unlit", {{"mode", "unlit"}}}, {"&Lit", {{"mode", "lit"}}}, {"Lighting &only", {{"mode", "lightingOnly"}}}};
+        d.enabled = [](const ActionEnv& env, const json& p) {
+            const UiEnv* u = env.as<UiEnv>();
+            if (!u || !u->viewport) return false;
+            return p.value("mode", "unlit") == "unlit" || (u->window && u->window->lightingAvailable());
+        };
+        d.checked = [](const ActionEnv& env, const json& p) {
+            const auto* vp = viewportOf(env);
+            if (!vp) return false;
+            const std::string m = p.value("mode", "unlit");
+            const render::RenderMode cur = vp->rig().settings().renderMode;
+            return m == "lit" ? cur == render::RenderMode::Lit : m == "lightingOnly" ? cur == render::RenderMode::LightingOnly : cur == render::RenderMode::Unlit;
+        };
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            auto* vp = viewportOf(env);
+            if (!vp) return;
+            const std::string m = inv.params.value("mode", "unlit");
+            vp->setRenderMode(m == "lit" ? render::RenderMode::Lit : m == "lightingOnly" ? render::RenderMode::LightingOnly : render::RenderMode::Unlit);
+        };
+        add(r, std::move(d));
+    }
     {   // the dock panels: closing one with its x leaves it reachable here
         struct Panel {
             const char* id;

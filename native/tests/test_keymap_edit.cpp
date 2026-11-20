@@ -433,7 +433,7 @@ TEST_CASE("the default preset gives every action that exists a binding, except t
     for (const std::string& id : ids) all += id + " ";
     // what stays unbound on purpose: it is reached from a menu or a panel, or needs a parameter the user picks
     const std::set<std::string> allowed = {"file.open_recent", "file.set_assets_root", "grid.set", "view.hide_rule", "view.details.toggle", "view.outliner.toggle",
-                                           "view.place.toggle", "view.stats.toggle", "help.keys_toggle"};
+                                           "view.place.toggle", "view.stats.toggle", "view.render_mode", "help.keys_toggle"};
     for (const std::string& id : ids) {
         INFO("unbound: " << all);
         CHECK(allowed.count(id) == 1);

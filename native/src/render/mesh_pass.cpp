@@ -23,8 +23,9 @@ struct PushConstants {
     float viewProj[16];
     float eye[4];
     float misc[4];   // x = pass (0 opaque, 1 translucent, 2 volume, 3 sky background), y = sky texture index
+    float lit[4];    // x = mode (0 unlit, 1 lit, 2 lighting only), y = exposure, z = brightness
 };
-static_assert(sizeof(PushConstants) == 96);
+static_assert(sizeof(PushConstants) == 112);
 
 VkShaderModule makeModule(VkDevice dev, const uint32_t* words, size_t sizeBytes) {
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -60,12 +61,13 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat colorFor
     VkVertexInputBindingDescription binding{0, sizeof(scene::RenderVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputBindingDescription lineBinding{0, sizeof(LineVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription lineAttrs[2] = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0}, {1, 0, VK_FORMAT_R8G8B8A8_UNORM, 12}};
-    VkVertexInputAttributeDescription attrs[5] = {
+    VkVertexInputAttributeDescription attrs[6] = {
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(scene::RenderVertex, pos))},
         {1, 0, VK_FORMAT_R32_UINT, static_cast<uint32_t>(offsetof(scene::RenderVertex, normal))},
         {2, 0, VK_FORMAT_R32G32_SFLOAT, static_cast<uint32_t>(offsetof(scene::RenderVertex, uv))},
         {3, 0, VK_FORMAT_R32_UINT, static_cast<uint32_t>(offsetof(scene::RenderVertex, page))},   // page (low 16) and flags (high 16) as one word
         {4, 0, VK_FORMAT_R32_UINT, static_cast<uint32_t>(offsetof(scene::RenderVertex, texture))},
+        {5, 0, VK_FORMAT_R32G32_SFLOAT, static_cast<uint32_t>(offsetof(scene::RenderVertex, lm))},
     };
     VkVertexInputBindingDescription labelBinding{0, sizeof(LabelVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription labelAttrs[4] = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0}, {1, 0, VK_FORMAT_R32G32_SFLOAT, 12}, {2, 0, VK_FORMAT_R32G32_SFLOAT, 20}, {3, 0, VK_FORMAT_R8G8B8A8_UNORM, 28}};
@@ -83,7 +85,7 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat colorFor
     } else if (spec.vertexInput) {
         vi.vertexBindingDescriptionCount = 1;
         vi.pVertexBindingDescriptions = &binding;
-        vi.vertexAttributeDescriptionCount = 5;
+        vi.vertexAttributeDescriptionCount = 6;
         vi.pVertexAttributeDescriptions = attrs;
     }
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -151,13 +153,14 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat colorFor
 
 } // namespace
 
-MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat depthFormat, VkDescriptorSetLayout textureLayout)
+MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat depthFormat, VkDescriptorSetLayout textureLayout, VkDescriptorSetLayout lightmapLayout)
     : device_(device), colorFormat_(colorFormat), depthFormat_(depthFormat) {
     const VkDevice dev = device_.device();
     VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants)};
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    lci.setLayoutCount = 1;
-    lci.pSetLayouts = &textureLayout;
+    const VkDescriptorSetLayout setLayouts[2] = {textureLayout, lightmapLayout};
+    lci.setLayoutCount = 2;
+    lci.pSetLayouts = setLayouts;
     lci.pushConstantRangeCount = 1;
     lci.pPushConstantRanges = &range;
     vkCreatePipelineLayout(dev, &lci, nullptr, &layout_);
@@ -224,10 +227,14 @@ MeshPass::~MeshPass() {
 }
 
 void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene& scene, const DrawLists& lists, VkDescriptorSet textures,
-                      uint32_t skyTexture, bool showVolumes, const FrameOverlays& ov) const {
+                      uint32_t skyTexture, bool showVolumes, const FrameOverlays& ov, VkDescriptorSet lightmaps, const LitParams& lit) const {
     if (!valid()) return;
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &textures, 0, nullptr);
+    if (lightmaps) vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 1, 1, &lightmaps, 0, nullptr);
     PushConstants pc{};
+    pc.lit[0] = lightmaps ? static_cast<float>(lit.mode) : 0.f;
+    pc.lit[1] = lit.exposure;
+    pc.lit[2] = lit.brightness;
     for (int i = 0; i < 16; ++i) pc.viewProj[i] = static_cast<float>(view.viewProj[i]);
     for (int i = 0; i < 3; ++i) pc.eye[i] = static_cast<float>(view.eye[i]);
     const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;

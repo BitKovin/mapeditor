@@ -17,7 +17,8 @@ namespace native::light {
 
 class PageImages {
 public:
-    PageImages(gpu::Device& device, int atlasSize, VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT);
+    // `onGraphicsQueue`: the blocking copies (growing, read / write) go through the graphics queue (the render thread's display pages) instead of the compute queue.
+    PageImages(gpu::Device& device, int atlasSize, VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT, bool onGraphicsQueue = false);
     ~PageImages();
     PageImages(const PageImages&) = delete;
     PageImages& operator=(const PageImages&) = delete;
@@ -43,6 +44,7 @@ private:
     gpu::Device& device_;
     int atlas_;
     VkFormat format_;
+    bool graphics_ = false;
     int layers_ = 0;
     VkImage image_ = VK_NULL_HANDLE;
     VmaAllocation alloc_ = nullptr;

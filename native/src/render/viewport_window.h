@@ -50,6 +50,7 @@ public:
     // The box-select rectangle in logical window pixels; `on` false hides it.
     void setRubberBand(bool on, QPointF a = QPointF(), QPointF b = QPointF());
     void setCameraMode(CameraMode mode);
+    void setRenderMode(RenderMode mode);
     // Called after every change made by user input (so the layout can be saved); UI thread.
     void setChangedCallback(std::function<void()> cb) { onChanged_ = std::move(cb); }
     // Called when a mouse button is pressed in this viewport (the UI marks it as the active one).

@@ -119,7 +119,7 @@ ObjectGeometry buildGeometry(const std::vector<core::LightSurface>& own, const s
                 }
                 return vertex(tp::v3(p), uv, n, slot, flags);
             };
-            for (size_t k = 1; k + 1 < s.verts.size(); ++k) mesh->addTriangle(at(s.verts[0]), at(s.verts[k]), at(s.verts[k + 1]));
+            for (size_t k = 1; k + 1 < s.verts.size(); ++k) mesh->addTriangle(at(s.verts[0]), at(s.verts[k]), at(s.verts[k + 1]), static_cast<uint32_t>(i));
             continue;
         }
 
@@ -129,7 +129,7 @@ ObjectGeometry buildGeometry(const std::vector<core::LightSurface>& own, const s
             const uint32_t slot = mesh->slotOf(t.texture.empty() ? std::string("dev/grey") : t.texture);
             const uint16_t flags = flagsOf(mesh->textures[slot]);
             mesh->addTriangle(vertex(t.pos[0], t.uv[0], octOfV3(t.normal[0]), slot, flags), vertex(t.pos[1], t.uv[1], octOfV3(t.normal[1]), slot, flags),
-                              vertex(t.pos[2], t.uv[2], octOfV3(t.normal[2]), slot, flags));
+                              vertex(t.pos[2], t.uv[2], octOfV3(t.normal[2]), slot, flags), static_cast<uint32_t>(i));
         }
         if (!ft->relief) continue;
         const std::string key = faceKeyOf(s);

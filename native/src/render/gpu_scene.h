@@ -26,6 +26,7 @@
 #include "gpu/arena.h"
 #include "gpu/device.h"
 #include "gpu/upload_ring.h"
+#include "light/light_link.h"
 #include "render/math3d.h"
 #include "render/texture_table.h"
 #include "scene/render_mesh.h"
@@ -70,6 +71,9 @@ public:
     void setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);
     // The objects that are not drawn (Hide); null = none. Takes effect at the next sync.
     void setHidden(std::shared_ptr<const HiddenObjects> hidden);
+    // The lit copies of the objects' meshes (light/lit_mesh), made for the live layout; an object whose mesh is not the one its copy was made from keeps its plain
+    // mesh. null = none. Takes effect at the next sync.
+    void setLit(std::shared_ptr<const light::LitSet> lit);
 
     // Render thread: takes the pending snapshot and uploads what changed. `completed` = timeline value the GPU reached, `submitted` = the last
     // value submitted so far (ranges freed now may be read until then). True when work remains (the slice was full): call again next frame.
@@ -117,6 +121,8 @@ private:
     std::shared_ptr<const HiddenObjects> pendingHidden_;
     bool hiddenPending_ = false;
     std::shared_ptr<const HiddenObjects> hidden_;
+    std::shared_ptr<const light::LitSet> pendingLit_, lit_;
+    bool litPending_ = false;
 
     std::shared_ptr<const scene::SceneSnapshot> current_;
     std::unordered_map<scene::ObjectKey, Object, scene::ObjectKey::Hash> objects_;

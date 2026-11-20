@@ -64,6 +64,12 @@ void GpuScene::setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot)
     pending_ = std::move(snapshot);
 }
 
+void GpuScene::setLit(std::shared_ptr<const light::LitSet> lit) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pendingLit_ = std::move(lit);
+    litPending_ = true;
+}
+
 void GpuScene::setHidden(std::shared_ptr<const HiddenObjects> hidden) {
     std::lock_guard<std::mutex> lock(mutex_);
     pendingHidden_ = std::move(hidden);
@@ -162,10 +168,17 @@ bool GpuScene::upload(VkCommandBuffer cmd, gpu::UploadRing& ring, const Work& w)
 bool GpuScene::sync(VkCommandBuffer cmd, gpu::UploadRing& ring, uint64_t completed, uint64_t submitted) {
     // the snapshot: what differs from what is on the GPU becomes work
     std::shared_ptr<const scene::SceneSnapshot> next;
+    bool relit = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         next = std::move(pending_);
         pending_.reset();
+        if (litPending_) {
+            lit_ = std::move(pendingLit_);
+            pendingLit_.reset();
+            litPending_ = false;
+            relit = true;
+        }
         if (hiddenPending_) {
             hidden_ = std::move(pendingHidden_);
             pendingHidden_.reset();
@@ -173,14 +186,19 @@ bool GpuScene::sync(VkCommandBuffer cmd, gpu::UploadRing& ring, uint64_t complet
             drawsDirty_ = true;
         }
     }
-    if (next) {
-        current_ = next;
+    if (next) current_ = next;
+    if ((next || relit) && current_) {
+        next = current_;
         queue_.clear();
         std::vector<Work> work;
         work.reserve(next->objects.size());
         for (const auto& [key, p] : next->objects) {
-            const std::shared_ptr<const scene::RenderMesh>& mesh = p.render ? p.render : p.raw;
+            std::shared_ptr<const scene::RenderMesh> mesh = p.render ? p.render : p.raw;
             if (!mesh) continue;
+            if (p.render && lit_) {   // the copy with lightmap coordinates, while it was made from this very mesh
+                const auto lit = lit_->objects.find(key);
+                if (lit != lit_->objects.end() && lit->second.source == p.render) mesh = lit->second.lit;
+            }
             const auto it = objects_.find(key);
             if (it != objects_.end() && !it->second.mesh.expired() && it->second.meshPtr == mesh.get()) {
                 if (!(it->second.bounds == p.bounds)) {

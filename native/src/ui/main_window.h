@@ -66,6 +66,13 @@ namespace native::scene {
 struct SceneSnapshot;
 class SceneBuilder;
 } // namespace native::scene
+namespace native::light {
+class LightLink;
+class LightingService;
+} // namespace native::light
+namespace core {
+struct GameProfile;
+}
 namespace core::texplan {
 class TexEnvironment;
 } // namespace core::texplan
@@ -164,6 +171,8 @@ public:
     bool isDirty() const;
     // The folder maps are opened from and saved to (paths in documents are relative to it). Persisted in the settings.
     std::string assetsRoot() const { return assetsRoot_; }
+    // Whether the lit render modes can work: the device has ray queries and a second queue, and the lighting service runs.
+    bool lightingAvailable() const;
     void setAssetsRoot(const std::string& folder);
     // Opens a map: a path relative to the assets root, or an absolute path inside it. Loads on the job pool (the window stays
     // responsive, the status bar says "Loading ...") or synchronously without one; replaces the document when done. Errors go to
@@ -517,6 +526,9 @@ private:
     std::shared_ptr<doc::PrefabResolver> prefabResolver_;
     std::shared_ptr<const doc::Expansion> expansion_;
     std::unique_ptr<scene::SceneBuilder> builder_;
+    std::shared_ptr<const core::GameProfile> profile_;     // the loaded game profile (the lighting service reads it)
+    std::shared_ptr<light::LightLink> lightLink_;          // bake -> render hand-over (null without a lit-capable device)
+    std::unique_ptr<light::LightingService> lighting_;     // the bake thread (stopped before the link and the render thread go)
     std::unique_ptr<render::Picker> picker_;
     struct PickDrag {
         render::ViewportWindow* viewport = nullptr;

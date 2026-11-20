@@ -81,6 +81,14 @@ void ViewportWindow::setCameraMode(CameraMode mode) {
     viewChanged();
 }
 
+void ViewportWindow::setRenderMode(RenderMode mode) {
+    if (mode == rig_.settings().renderMode) return;
+    ViewportSettings s = rig_.settings();
+    s.renderMode = mode;
+    rig_.applySettings(s);
+    viewChanged();
+}
+
 void ViewportWindow::requestRedraw() {
     if (id_ != 0) renderThread_.markDirty(id_);
 }

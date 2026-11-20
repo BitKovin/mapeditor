@@ -132,6 +132,7 @@ ViewState CameraRig::viewState(double widthPx, double heightPx) {
     s.eye[1] = eyePos.y;
     s.eye[2] = eyePos.z;
     s.perspective = !isOrthoMode(settings_.cameraMode);
+    s.renderMode = settings_.renderMode == RenderMode::Lit ? 1 : settings_.renderMode == RenderMode::LightingOnly ? 2 : 0;
     const Vec3 t = cam.target();
     double mpp;
     switch (settings_.cameraMode) {

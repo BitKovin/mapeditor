@@ -16,6 +16,7 @@ struct ViewState {
     bool showAxes = true;
     double eye[3] = {0, 0, 0};       // camera position (sky faces are drawn by view direction)
     bool perspective = true;         // false: an orthographic view (no sky background)
+    int renderMode = 0;              // 0 = Unlit / Wireframe, 1 = Lit, 2 = Lighting only (the lit modes ask the bake for light)
 };
 
 } // namespace native::render

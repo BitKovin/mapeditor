@@ -22,7 +22,8 @@ namespace native::scene {
 
 struct ReliefEnv;
 
-// 40 bytes. normal = octahedral, two snorm16. lm / page are for the lightmap of the Lit modes (T7+), zero until then.
+// 40 bytes. normal = octahedral, two snorm16. lm / page are the lightmap coordinates of the Lit modes: zero in the meshes the scene builder makes, filled
+// (with kFlagLit) in the copies light/lit_mesh makes for the live layout.
 struct RenderVertex {
     float pos[3];
     uint32_t normal;       // octEncode(): snorm16 x, snorm16 y in the low / high half
@@ -36,6 +37,7 @@ static_assert(sizeof(RenderVertex) == 40);
 
 inline constexpr uint16_t kFlagSky = 1;      // a sky texture: drawn by view direction, no light
 inline constexpr uint16_t kFlagVolume = 2;   // an authored volume (a subtractive brush) drawn translucent
+inline constexpr uint16_t kFlagLit = 4;      // lm / page address a chart of the live layout
 
 uint32_t octEncode(float x, float y, float z);
 void octDecode(uint32_t packed, float out[3]);
@@ -49,12 +51,16 @@ struct RenderMesh {
     std::vector<RenderVertex> vertices;
     std::vector<uint32_t> indices;           // triangles
     std::vector<std::string> textures;       // slot -> texture name; "" never occurs
+    // Per triangle: the index of the surface piece (core::LightSurface of the object's ObjectProducts::surfaces) it was made from, kNoPiece for raw meshes.
+    // The lit copy takes the lightmap coordinates of the piece's chart.
+    std::vector<uint32_t> pieces;
+    static constexpr uint32_t kNoPiece = 0xffffffffu;
     bool empty() const { return indices.empty(); }
     size_t bytes() const;
 
     // Adds a triangle (three vertices, own indices); `texture` is added to the slots when new. Vertices are not shared between triangles.
     uint32_t slotOf(const std::string& texture);
-    void addTriangle(const RenderVertex& a, const RenderVertex& b, const RenderVertex& c);
+    void addTriangle(const RenderVertex& a, const RenderVertex& b, const RenderVertex& c, uint32_t piece = kNoPiece);
 };
 
 // The authored brush as triangles: every face fan-triangulated from its stored loop, albedo coordinates from the face's own stored uvs when it has

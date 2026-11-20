@@ -11,6 +11,8 @@ layout(location = 1) out vec2 vUv;
 layout(location = 2) flat out uint vTex;
 layout(location = 3) flat out uint vFlags;
 layout(location = 4) out vec3 vDir;
+layout(location = 5) out vec2 vLm;
+layout(location = 6) flat out uint vPage;
 
 void main() {
     vec2 c = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2) * 2.0 - 1.0;   // (-1,-1) (3,-1) (-1,3)
@@ -20,5 +22,7 @@ void main() {
     vUv = vec2(0.0);
     vTex = uint(pc.misc.y);
     vFlags = 1u;
+    vLm = vec2(0.0);
+    vPage = 0u;
     vDir = p.xyz / p.w - pc.eye.xyz;
 }

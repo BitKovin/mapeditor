@@ -32,6 +32,9 @@
 #include "render/picking.h"
 #include "render/render_thread.h"
 #include "render/viewport_window.h"
+#include "light/light_link.h"
+#include "light/lighting_service.h"
+#include "gpu/device.h"
 #include "scene/builder.h"
 #include "scene/point_box.h"
 #include "ui/main_window.h"
@@ -452,6 +455,17 @@ void MainWindow::setupScene() {
         reportError(QStringLiteral("game_profile.json: ") + QString::fromUtf8(e.what()));
         emit entityDefinitionsChanged();
         return;
+    }
+    profile_ = std::make_shared<const core::GameProfile>(profile);
+    if (!lighting_ && services_.device && services_.device->caps().lit()) {   // the live lighting: made once, fed by onSnapshot
+        lightLink_ = std::make_shared<light::LightLink>(*services_.device);
+        services_.renderThread->setLightLink(lightLink_);
+        lighting_ = std::make_unique<light::LightingService>(*services_.device, *lightLink_);
+        if (!lighting_->valid()) {
+            lighting_.reset();
+            services_.renderThread->setLightLink(nullptr);
+            lightLink_.reset();
+        }
     }
     texEnv_ = std::make_shared<core::texplan::TexEnvironment>(root, profile);
     scene::ReliefEnv env;

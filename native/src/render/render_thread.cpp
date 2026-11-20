@@ -8,6 +8,7 @@
 #include "base/log.h"
 #include "base/trace.h"
 #include "gpu/swapchain.h"
+#include "render/lightmap_view.h"
 #include "render/mesh_pass.h"
 #include "render/scene_pass.h"
 #include "render/texture_table.h"
@@ -85,6 +86,12 @@ RenderThread::RenderThread(gpu::Device& device) : device_(device) {
     ring_ = std::make_unique<gpu::UploadRing>(device_);
     textures_ = std::make_unique<TextureTable>(device_);
     scene_ = std::make_unique<GpuScene>(device_, *textures_);
+    // the display pages of the lit modes: one empty layer until the bake publishes its layout (the shader needs something to sample)
+    lightmapView_ = std::make_unique<LightmapView>(device_);
+    display_ = std::make_unique<light::PageImages>(device_, 1024, VK_FORMAT_R16G16B16A16_SFLOAT, true);
+    display_->ensureLayers(1);
+    lightmapView_->update(display_->view());
+    scatter_ = std::make_unique<light::Scatter>(device_);
     textures_->setGpuIdleWait([this] {
         VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
         const uint64_t value = nextTimelineValue_.load();
@@ -108,6 +115,7 @@ RenderThread::RenderThread(gpu::Device& device) : device_(device) {
 }
 
 RenderThread::~RenderThread() {
+    setLightLink(nullptr);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         stop_ = true;
@@ -117,12 +125,47 @@ RenderThread::~RenderThread() {
     vkQueueWaitIdle(device_.graphicsQueue());
     mesh_.reset();
     pass_.reset();
+    scatter_.reset();
+    display_.reset();
+    lightmapView_.reset();
     scene_.reset();
     textures_.reset();
     ring_.reset();
     for (VkCommandPool p : uploadPool_)
         if (p) vkDestroyCommandPool(device_.device(), p, nullptr);
     vkDestroySemaphore(device_.device(), renderTimeline_, nullptr);
+}
+
+void RenderThread::setLightLink(std::shared_ptr<light::LightLink> link) {
+    std::shared_ptr<light::LightLink> old;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        old = std::move(link_);
+        link_ = std::move(link);
+        if (link_) {
+            bool lit = false;
+            for (auto& kv : viewports_) lit = lit || kv.second->view.renderMode > 0;
+            link_->setWanted(lit);
+        }
+        workPending_ = true;
+    }
+    if (old) old->setNotify({});
+    std::shared_ptr<light::LightLink> now;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        now = link_;
+    }
+    if (now)
+        now->setNotify([this] {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                workPending_ = true;
+                for (auto& kv : viewports_)
+                    if (kv.second->view.renderMode > 0) kv.second->dirty = true;
+            }
+            wake_.notify_all();
+        });
+    wake_.notify_all();
 }
 
 void RenderThread::setHiddenObjects(std::shared_ptr<const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>> hidden) {
@@ -236,6 +279,11 @@ void RenderThread::setView(ViewportId id, const ViewState& view) {
         if (it == viewports_.end()) return;
         it->second->view = view;
         it->second->dirty = true;
+        if (link_) {
+            bool lit = false;
+            for (auto& kv : viewports_) lit = lit || kv.second->view.renderMode > 0;
+            link_->setWanted(lit);
+        }
     }
     wake_.notify_all();
 }
@@ -372,6 +420,89 @@ void RenderThread::releaseViewport(Viewport& v) {
     v.gpuReady = false;
 }
 
+// Waits until every frame and upload submitted so far finished (the display pages may change, the descriptor set may be rewritten).
+void RenderThread::waitForFrames() {
+    const uint64_t value = nextTimelineValue_.load();
+    if (value == 0) return;
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1;
+    wi.pSemaphores = &renderTimeline_;
+    wi.pValues = &value;
+    vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+}
+
+// The lit modes' part of an upload iteration: a new epoch of the bake (new layout: the display pages are sized and emptied, the scene takes the lit meshes), then the
+// newest finished mailbox scattered into the display pages. Recorded into the iteration's upload command buffer; the returned values go into its submit.
+RenderThread::LightSubmit RenderThread::syncLighting(light::LightLink& link, VkCommandBuffer cmd) {
+    LightSubmit out;
+    const auto barrier = [&] {
+        VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        mb.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        di.memoryBarrierCount = 1;
+        di.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(cmd, &di);
+    };
+    const std::shared_ptr<const light::LitSet> set = link.current();
+    if (set != litSeen_) {
+        litSeen_ = set;
+        if (set) {
+            const int atlas = std::max(1, set->atlasSize), pages = std::max(1, set->pageCount);
+            bool changed = false;
+            if (display_->atlasSize() != atlas) {
+                waitForFrames();
+                display_ = std::make_unique<light::PageImages>(device_, atlas, VK_FORMAT_R16G16B16A16_SFLOAT, true);
+                changed = display_->ensureLayers(pages);
+            } else if (display_->layers() < pages) {
+                waitForFrames();
+                changed = display_->ensureLayers(pages);
+            }
+            if (changed) lightmapView_->update(display_->view());
+            // the old layout's texels mean nothing in the new one
+            barrier();
+            const VkClearColorValue zero{};
+            const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, static_cast<uint32_t>(display_->layers())};
+            vkCmdClearColorImage(cmd, display_->image(), VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+            barrier();
+        }
+        scene_->setLit(set);
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& kv : viewports_) kv.second->dirty = true;
+    }
+    light::Mailbox& mailbox = link.mailbox();
+    const light::Mailbox::Taken t = mailbox.takeNewest();
+    if (t.slot < 0) return out;
+    const uint64_t renderValue = ++mailboxRenderValue_;
+    if (set && t.bakeValue >= set->firstBakeValue && t.entries > 0) {   // a mailbox of an older layout is dropped
+        if (scatterUses_ >= 8) {
+            VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+            const uint64_t last = renderValue - 1;
+            wi.semaphoreCount = 1;
+            VkSemaphore s = mailbox.renderTimeline();
+            wi.pSemaphores = &s;
+            wi.pValues = &last;
+            vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+            scatter_->resetDescriptors();
+            scatterUses_ = 0;
+        }
+        barrier();
+        if (scatter_->record(cmd, mailbox.buffer(t.slot), t.entries, display_->view())) ++scatterUses_;
+    }
+    mailbox.consumed(t.slot, renderValue);
+    out.wait = out.signal = true;
+    out.waitValue = t.bakeValue;
+    out.signalValue = renderValue;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& kv : viewports_)
+            if (kv.second->view.renderMode > 0) kv.second->dirty = true;
+    }
+    return out;
+}
+
 void RenderThread::loop() {
     base::traceSetThreadName("render");
     for (;;) {
@@ -392,6 +523,7 @@ void RenderThread::loop() {
         std::string skyName;
         std::shared_ptr<const EntityOverlay> overlay;
         std::shared_ptr<const GlyphAtlas> atlas;
+        std::shared_ptr<light::LightLink> link;
         std::vector<std::shared_ptr<Viewport>> toRelease;
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -406,6 +538,7 @@ void RenderThread::loop() {
             skyName = skyName_;
             overlay = entityOverlay_;
             atlas = glyphAtlas_;
+            link = link_;
             if (stop_) {
                 for (auto& kv : viewports_) toRelease.push_back(kv.second);
             } else {
@@ -433,6 +566,7 @@ void RenderThread::loop() {
 
         // the iteration's upload ring slice and upload commands (scene geometry, textures), then every viewport's frame
         uint64_t lastValue = 0;
+        LightSubmit lightSubmit;
         const uint32_t slot = static_cast<uint32_t>(iteration_++ % 2);
         const bool active = !work.empty() || doUpload;
         if (active) {
@@ -455,6 +589,7 @@ void RenderThread::loop() {
             VkCommandBufferBeginInfo ubi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             ubi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             vkBeginCommandBuffer(uploadCmd_[slot], &ubi);
+            if (link) lightSubmit = syncLighting(*link, uploadCmd_[slot]);
             if (atlas.get() != atlasSeen_) {
                 atlasSeen_ = atlas.get();
                 atlasIndex_ = atlas && atlas->ok() ? textures_->addImage("glyphs" + std::to_string(++atlasSerial_), atlas->width, atlas->height, atlas->rgba) : 0;
@@ -464,17 +599,31 @@ void RenderThread::loop() {
             more = textures_->upload(uploadCmd_[slot], *ring_) || more;
             vkEndCommandBuffer(uploadCmd_[slot]);
             const uint64_t value = ++nextTimelineValue_;
-            VkSemaphoreSubmitInfo sig{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-            sig.semaphore = renderTimeline_;
-            sig.value = value;
-            sig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            VkSemaphoreSubmitInfo sigs[2]{{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
+            sigs[0].semaphore = renderTimeline_;
+            sigs[0].value = value;
+            sigs[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            VkSemaphoreSubmitInfo lightWait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
             VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
             cbi.commandBuffer = uploadCmd_[slot];
             VkSubmitInfo2 usi{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
             usi.commandBufferInfoCount = 1;
             usi.pCommandBufferInfos = &cbi;
             usi.signalSemaphoreInfoCount = 1;
-            usi.pSignalSemaphoreInfos = &sig;
+            usi.pSignalSemaphoreInfos = sigs;
+            if (lightSubmit.wait && link) {   // the mailbox's compose must have finished; the frame says when the mailbox may be reused
+                lightWait.semaphore = link->mailbox().bakeTimeline();
+                lightWait.value = lightSubmit.waitValue;
+                lightWait.stageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                usi.waitSemaphoreInfoCount = 1;
+                usi.pWaitSemaphoreInfos = &lightWait;
+            }
+            if (lightSubmit.signal && link) {
+                sigs[1].semaphore = link->mailbox().renderTimeline();
+                sigs[1].value = lightSubmit.signalValue;
+                sigs[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                usi.signalSemaphoreInfoCount = 2;
+            }
             vkQueueSubmit2(device_.graphicsQueue(), 1, &usi, VK_NULL_HANDLE);
             lastValue = value;
             if (more) {
@@ -614,7 +763,15 @@ void RenderThread::loop() {
             }
             ov.extent[0] = static_cast<float>(extent.width);
             ov.extent[1] = static_cast<float>(extent.height);
-            if (mesh_) mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true, ov);
+            if (mesh_) {
+                LitParams lit;
+                lit.mode = w.view.renderMode;
+                if (litSeen_) {
+                    lit.exposure = litSeen_->exposure;
+                    lit.brightness = litSeen_->brightness;
+                }
+                mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true, ov, lightmapView_->set(), lit);
+            }
             if (pass_) pass_->record(f.cmd, extent, w.view, !scene_->hasObjects());
             vkCmdEndRendering(f.cmd);
 
@@ -809,7 +966,7 @@ bool RenderThread::ensureSwapchain(Viewport& v) {
     if (!pass_ || pass_->format() != v.swapchain->format()) {
         mesh_.reset();
         pass_ = std::make_unique<ScenePass>(device_, v.swapchain->format(), kDepthFormat);
-        mesh_ = std::make_unique<MeshPass>(device_, v.swapchain->format(), kDepthFormat, textures_->layout());
+        mesh_ = std::make_unique<MeshPass>(device_, v.swapchain->format(), kDepthFormat, textures_->layout(), lightmapView_->layout());
     }
     return pass_->valid() && mesh_->valid();
 }

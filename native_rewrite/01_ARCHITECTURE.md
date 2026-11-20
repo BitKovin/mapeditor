@@ -91,7 +91,7 @@ native/
 ```
 
 Dependency rule (enforced by CMake target structure): `base` ← `doc` ← `scene` ← `light`, `render` ← `tools` ← `ui` ← `app`.
-`gpu` depends only on `base`. `light` and `render` depend on `gpu` and `scene`. Nothing below `ui` includes a Qt header
+`gpu` depends only on `base`. `light` depends on `gpu` and `scene`; `render` depends on `gpu`, `scene` and `light` (the mailbox, the display pages, the lit mesh set). Nothing below `ui` includes a Qt header
 except `render/viewport_window.*` (the Vulkan surface) — so `doc`, `scene`, `light` are testable without Qt.
 
 Core is linked as `core_lib` (a static library: the same process, the same memory). Native code includes `core/...` headers
