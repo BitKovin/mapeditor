@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "render/viewport_window.h"
+#include "tools/texturing/face_edit.h"
 #include "ui/main_window.h"
 #include "ui/brush_actions.h"
 #include "ui/texture_actions.h"
@@ -56,11 +57,16 @@ void dragAction(actions::Registry& r, const char* id, const char* label, const c
     d.run = [pan](ActionEnv& env, const Invocation& inv) {
         render::ViewportWindow* vp = viewportOf(env);
         if (!vp) return;
+        MainWindow* win = env.as<UiEnv>()->window;
+        if (!pan && win && inv.event.type == InputEvent::Type::MousePress) win->contextClickBegin(QPointF(inv.event.x, inv.event.y));
         if (isRelease(inv.event)) {
             vp->stopFlight();   // the fly keys belong to the camera only while the look button is held
+            // the button went up where it went down: a right-click, not a drag of the camera
+            if (!pan && win && win->contextClickEnd()) win->openContextMenu(vp, win->contextClickAt());
             return;
         }
         if (inv.event.type != InputEvent::Type::MouseMove) return;
+        if (!pan && win) win->contextClickMove(inv.event.dx, inv.event.dy);
         const double h = std::max(1, vp->height());
         if (pan) vp->rig().pan(inv.event.dx, inv.event.dy, h);
         else vp->rig().drag(inv.event.dx, inv.event.dy, h);
@@ -445,6 +451,51 @@ void editActions(actions::Registry& r) {
                 case 7: w->hideSelected(); break;
                 default: break;
             }
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "edit.make_entity";
+        d.label = "Make entity";
+        d.category = "Edit";
+        d.description = "Moves the selected brushes into a new entity of the given class (the right-click menu lists the brush entity classes).";
+        d.params = json{{"classname", "func_group"}};
+        d.contexts = {"area:viewport"};
+        d.enabled = hasSelection;
+        d.run = [windowOf](ActionEnv& env, const Invocation& inv) {
+            if (auto* w = windowOf(env)) w->makeEntitySelected(inv.params.value("classname", std::string("func_group")));
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "view.properties";
+        d.label = "Properties";
+        d.category = "View";
+        d.description = "Brings the Details dock forward.";
+        d.enabled = hasSelection;
+        d.run = [windowOf](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) w->showProperties();
+        };
+        add(r, std::move(d));
+    }
+    for (const bool flow : {false, true}) {   // the face menu of a right-click on another face
+        ActionDef d;
+        d.id = flow ? "context.flow_surface" : "context.copy_surface";
+        d.label = flow ? "Flow texture from the selected face" : "Copy UV and texture from the selected face";
+        d.category = "Texture";
+        d.description = flow ? "Continues the selected face's texture onto the face that was right-clicked." : "Copies the selected face's texture and UV onto the face that was right-clicked.";
+        d.params = json{{"entityId", ""}, {"brushId", ""}, {"faceId", 0}};
+        d.enabled = hasDocument;
+        d.run = [windowOf, flow](ActionEnv& env, const Invocation& inv) {
+            auto* w = windowOf(env);
+            if (!w || !inv.params.is_object()) return;
+            native::tools::tex::FaceRef to;
+            to.entityId = inv.params.value("entityId", std::string());
+            to.brushId = inv.params.value("brushId", std::string());
+            to.faceId = inv.params.value("faceId", 0u);
+            w->surfaceOnto(flow, to);
         };
         add(r, std::move(d));
     }

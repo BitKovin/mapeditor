@@ -17,6 +17,7 @@
 #include <deque>
 #include <functional>
 #include <atomic>
+#include <cmath>
 #include <memory>
 #include <optional>
 #include <set>
@@ -33,6 +34,7 @@
 #include "render/math3d.h"
 #include "render/rt_lights.h"
 #include "scene/snapshot.h"
+#include "tools/context_menu.h"
 #include "tools/details.h"
 #include "tools/face_drag.h"
 #include "tools/resize2d.h"
@@ -103,7 +105,9 @@ class ViewportWindow;
 namespace native::doc { struct SelRef; }
 namespace native::exporting { class ExportJob; }
 namespace core { struct BspExportResult; }
-namespace native::render { struct LineVertex; enum class GizmoMode; struct PickOptions; }
+namespace native::render { struct LineVertex; enum class GizmoMode; struct PickOptions; struct PickHit; }
+
+class QMenu;
 
 namespace native::ui {
 
@@ -505,6 +509,23 @@ public:
     bool duplicateSelected();   // the copies are selected
     bool groupSelected();       // brushes -> a new func_group
     bool ungroupSelected();     // the brushes of func_group entities (or any selected brushes) -> worldspawn
+    // Right-click menus (T11.10c): the selection follows the click, the entries come from tools/context_menu and run through the registry.
+    // `contextClick*` tell a right-click from a look / orbit / pan drag (the button went down and up within 4 px).
+    void contextClickBegin(QPointF at) { rmbDown_ = at; rmbTravel_ = 0; }
+    void contextClickMove(double dx, double dy) { rmbTravel_ += std::abs(dx) + std::abs(dy); }
+    bool contextClickEnd() const { return rmbTravel_ < 4; }
+    QPointF contextClickAt() const { return rmbDown_; }
+    // The menu for a right-click at `p` (viewport pixels): nullptr when there is none (no document, a tool owns the pointer). The click first selects what is under it.
+    std::unique_ptr<QMenu> buildContextMenu(render::ViewportWindow* viewport, QPointF p);
+    // What a right-click on `hit` (null = empty space) offers; an object under the pointer joins the selection first. Tests call these two without a viewport.
+    std::vector<tools::MenuEntry> contextEntries(const std::optional<render::PickHit>& hit);
+    std::unique_ptr<QMenu> contextMenuOf(const std::vector<tools::MenuEntry>& entries, render::ViewportWindow* viewport);
+    void selectHit(const render::PickHit& hit);   // a click on a hit: the object (the whole shape of a parametric part)
+    void openContextMenu(render::ViewportWindow* viewport, QPointF p);   // builds it and shows it at the pointer (does not block)
+    bool makeEntitySelected(const std::string& classname);
+    void showProperties();   // brings the Details dock forward
+    // The selected face's texture and UV (or its texture flowing on) onto another face.
+    bool surfaceOnto(bool flow, const tools::tex::FaceRef& to);
     // Turn into prefab (T11.7a): the selection is written as a prefab file under the prefab folder (named `name`, else asked for) and replaced by one instance of it at the
     // selection's pivot, one undo step; the instance is selected. An existing file of that name is only replaced after a yes. False when refused (the status bar says why).
     bool turnIntoPrefab(const std::string& name = {});
@@ -780,6 +801,8 @@ private:
     std::unique_ptr<render::RtLightsProducer> rtLights_;   // the ray traced Lit path lights (null without --rt-lit); stopped before the render thread goes
     std::unique_ptr<light::LightingService> lighting_;     // the bake thread (stopped before the link and the render thread go)
     std::unique_ptr<render::Picker> picker_;
+    QPointF rmbDown_;
+    double rmbTravel_ = 0;
     std::unique_ptr<scene::ModelStore> modelStore_;   // the models of entities; reset before the render thread goes
     std::shared_ptr<std::atomic<bool>> modelChangeQueued_ = std::make_shared<std::atomic<bool>>(false);
     struct PickDrag {

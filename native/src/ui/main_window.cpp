@@ -727,6 +727,19 @@ namespace {
 doc::SelRef objectRef(const doc::DocumentVersion& d, const doc::SelRef& r) { return doc::wholeEntityIfSole(d, r); }
 } // namespace
 
+void MainWindow::selectHit(const render::PickHit& hit) {
+    const doc::SelRef ref = objectRef(*document_, hit.toSelRef(false));
+    // a click on any part of a placed shape selects the whole shape (REQUIREMENTS 22 P1)
+    const std::vector<std::string> parts = ref.instancePath.empty() && !ref.brushId.empty() ? tools::parametric::shapeMembers(*document_, ref.entityId, ref.brushId) : std::vector<std::string>{};
+    if (parts.size() > 1) {
+        std::vector<doc::SelRef> refs;
+        for (const std::string& b : parts) refs.push_back(doc::SelRef::brush(ref.entityId, b));
+        selection_->selectMany(*document_, refs);
+    } else {
+        selection_->select(ref);
+    }
+}
+
 void MainWindow::pickAt(render::ViewportWindow* vp, QPointF p, PickOp op) {
     if (!vp || !picker_ || !document_) return;
     const QSizeF size = vp->size();
@@ -736,20 +749,8 @@ void MainWindow::pickAt(render::ViewportWindow* vp, QPointF p, PickOp op) {
     const std::optional<render::PickHit> hit = picker_->pick(ray, pickOptions());
     switch (op) {
         case PickOp::Replace:
-            if (hit) {
-                const doc::SelRef ref = objectRef(*document_, hit->toSelRef(false));
-                // a click on any part of a placed shape selects the whole shape (REQUIREMENTS 22 P1)
-                const std::vector<std::string> parts = ref.instancePath.empty() && !ref.brushId.empty() ? tools::parametric::shapeMembers(*document_, ref.entityId, ref.brushId) : std::vector<std::string>{};
-                if (parts.size() > 1) {
-                    std::vector<doc::SelRef> refs;
-                    for (const std::string& b : parts) refs.push_back(doc::SelRef::brush(ref.entityId, b));
-                    selection_->selectMany(*document_, refs);
-                } else {
-                    selection_->select(ref);
-                }
-            } else {
-                selection_->clear();
-            }
+            if (hit) selectHit(*hit);
+            else selection_->clear();
             break;
         case PickOp::Face:
             if (hit) selection_->select(hit->faceId && hit->instance.empty() ? hit->toSelRef(true) : objectRef(*document_, hit->toSelRef(false)));

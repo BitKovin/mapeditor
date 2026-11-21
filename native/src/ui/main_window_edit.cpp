@@ -2,8 +2,14 @@
 // the hide state from tools/visibility. The OS clipboard carries the Shell's clipboard JSON, so both editors paste each other's copies.
 #include <QClipboard>
 #include <QGuiApplication>
+#include <DockWidget.h>
+
+#include <QAction>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QMenu>
+#include <QPointer>
+#include <QTimer>
 #include <QSettings>
 #include <QStatusBar>
 
@@ -13,6 +19,10 @@
 
 #include "doc/io.h"
 #include "doc/level_settings.h"
+#include "tools/context_menu.h"
+#include "tools/texturing/face_edit.h"
+#include "ui/app_actions.h"
+#include "render/viewport_window.h"
 #include "doc/selection.h"
 #include "tools/prefabize.h"
 #include "render/picking.h"
@@ -61,6 +71,106 @@ bool MainWindow::groupSelected() {
 bool MainWindow::ungroupSelected() {
     if (!document_ || selection_->empty()) return false;
     return applyEdit(tools::moveSelectionToWorld(document_, selection_->items()));
+}
+
+bool MainWindow::makeEntitySelected(const std::string& classname) {
+    if (!document_ || selection_->empty()) return false;
+    return applyEdit(tools::makeEntityFromSelection(document_, selection_->items(), classname));
+}
+
+void MainWindow::showProperties() {
+    if (!detailsDock_) return;
+    detailsDock_->toggleView(true);
+    detailsDock_->setAsCurrentTab();
+}
+
+bool MainWindow::surfaceOnto(bool flow, const tools::tex::FaceRef& to) {
+    const auto from = selectedFaceRef();
+    if (!document_ || !from) {
+        statusBar()->showMessage(QStringLiteral("Select the face to copy from first"), 4000);
+        return false;
+    }
+    const tools::tex::InfoFn info = textureInfo();
+    return applyBrushEdit(flow ? tools::tex::flowTexture(document_, *from, to, info) : tools::tex::copySurface(document_, *from, to, info));
+}
+
+std::unique_ptr<QMenu> MainWindow::buildContextMenu(render::ViewportWindow* vp, QPointF p) {
+    if (!vp || !document_ || !picker_ || transforming() || knifing() || clipperActive() || box_) return nullptr;
+    std::optional<render::PickHit> hit;
+    if (!meshMode()) {
+        const QSizeF size = vp->size();
+        if (size.width() < 1 || size.height() < 1) return nullptr;
+        const render::Ray ray = render::rayThrough(vp->currentView().viewProj, p.x() / size.width() * 2.0 - 1.0, p.y() / size.height() * 2.0 - 1.0);
+        hit = picker_->pick(ray, pickOptions());
+    } else if (!meshTarget()) {
+        return nullptr;
+    }
+    return contextMenuOf(contextEntries(hit), vp);
+}
+
+std::vector<tools::MenuEntry> MainWindow::contextEntries(const std::optional<render::PickHit>& hit) {
+    if (meshMode()) return tools::meshContextMenu();
+    const auto face = selectedFaceRef();
+    if (face && hit && hit->faceId && hit->instance.empty() && !hit->pointEntity &&
+        !(hit->entityId == face->entityId && hit->brushId == face->brushId && *hit->faceId == face->faceId)) {
+        // a face is selected and another face is right-clicked: offer to copy onto it (the selection stays, so it can be pasted again)
+        return tools::surfaceContextMenu(hit->entityId, hit->brushId, *hit->faceId);
+    }
+    if (hit) {   // what is under the pointer joins the selection unless it is part of it
+        const doc::SelRef ref = doc::wholeEntityIfSole(*document_, hit->toSelRef(false));
+        const auto& items = selection_->items();
+        const bool selected = std::any_of(items.begin(), items.end(), [&](const doc::SelRef& s) { return s == ref || (s.entityId == ref.entityId && s.brushId.empty() && ref.instancePath.empty() && s.instancePath.empty()); });
+        if (!selected) selectHit(*hit);
+    }
+    std::vector<std::string> groups;
+    if (entityDefs_)
+        for (const core::EntClass& c : entityDefs_->classes)
+            if (c.kind == core::EntClass::Kind::Group) groups.push_back(c.name);
+    return tools::objectContextMenu(groups, hide_.keys.size());
+}
+
+std::unique_ptr<QMenu> MainWindow::contextMenuOf(const std::vector<tools::MenuEntry>& entries, render::ViewportWindow* vp) {
+    auto menu = std::make_unique<QMenu>();
+    menu->setObjectName(QStringLiteral("contextMenu"));
+    UiEnv ui{this, vp};
+    const actions::ActionEnv env{&ui};
+    std::function<void(QMenu*, const std::vector<tools::MenuEntry>&)> fill = [&](QMenu* into, const std::vector<tools::MenuEntry>& list) {
+        for (const tools::MenuEntry& e : list) {
+            if (e.separator) {
+                into->addSeparator();
+            } else if (!e.sub.empty()) {
+                QMenu* sub = into->addMenu(qs(e.label));
+                fill(sub, e.sub);
+            } else {
+                QAction* a = into->addAction(qs(e.label));
+                const actions::ActionDef* def = registry_.find(e.action);
+                a->setObjectName(qs(e.action));
+                a->setEnabled(def && registry_.isEnabled(*def, env, e.params));
+                const std::string action = e.action;
+                const nlohmann::json params = e.params;
+                QObject::connect(a, &QAction::triggered, this, [this, vp = QPointer<render::ViewportWindow>(vp), action, params] {
+                    UiEnv run{this, vp ? vp.data() : activeViewport()};
+                    actions::ActionEnv e2{&run};
+                    registry_.run(action, e2, params);
+                });
+            }
+        }
+    };
+    fill(menu.get(), entries);
+    return menu;
+}
+
+void MainWindow::openContextMenu(render::ViewportWindow* vp, QPointF p) {
+    if (!vp) return;
+    // after the event that ended the right button has been handled (the menu takes the mouse; the router must not be in the middle of a hold)
+    QTimer::singleShot(0, this, [this, vp = QPointer<render::ViewportWindow>(vp), p] {
+        if (!vp) return;
+        std::unique_ptr<QMenu> menu = buildContextMenu(vp, p);
+        if (!menu) return;
+        QMenu* raw = menu.release();
+        raw->setAttribute(Qt::WA_DeleteOnClose);
+        raw->popup(vp->mapToGlobal(p.toPoint()));
+    });
 }
 
 bool MainWindow::turnIntoPrefab(const std::string& typedName) {
