@@ -132,6 +132,8 @@ public:
     // settings (render/rt_lighting.h), fed by the editor from every snapshot. Marks every viewport dirty.
     void setRtLit(bool on, const RtLitOptions& options = {});
     void setRtLighting(const RtLighting& lighting);
+    // The level lights (R3, render/rt_lights.h), fed by the editor from every snapshot (RtLightsProducer). Restarts the accumulation of every ray traced viewport; null = no lights.
+    void setRtLights(std::shared_ptr<const RtLightData> lights);
     struct RtLitInfo {
         bool active = false;                   // the last frame of the viewport was drawn by the ray traced path
         bool reconstruction = false;           // ... with DLSS Ray Reconstruction
@@ -183,6 +185,10 @@ private:
     std::atomic<bool> rtLitEnabled_{false};
     RtLitOptions rtLitOptions_;           // guarded by mutex_
     RtLighting rtLighting_;               // guarded by mutex_
+    std::shared_ptr<const RtLightData> rtLightData_;   // guarded by mutex_
+    uint64_t rtLightSerial_ = 1;          // guarded by mutex_; grows with every setRtLights
+    std::unique_ptr<RtLightsGpu> rtLightsGpu_;         // render thread only
+    uint64_t rtLightsUploaded_ = 0;       // the serial rtLightsGpu_ holds
     std::unique_ptr<RtLit> rtLit_;        // render thread only
     RtOptions rtOptions_;                 // guarded by mutex_; read when the RT scene is made
     RtInfo rtInfo_;                       // guarded by mutex_

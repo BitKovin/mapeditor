@@ -112,6 +112,8 @@ viewport cannot drift apart.
   HLSL once, in a shared header that the RTXDI bridge (`RAB_*` callbacks: light sampling, target function, visibility) calls. Our light
   types map onto RTXDI's polymorphic light records with our own sampling (a disc point for sphere sources, a rect point, a cone direction).
 
+> **As built (R3):** see 08 R3. The reservoir is streamed per pixel and frame over the lights of the pixel's grid cell and is not kept between frames (reuse = R5); the history is the running mean of D, not of a reservoir.
+
 ## 5. Bounces: world-space radiance cache for S
 
 The bake gathers bounce light from `S = Db + I` stored in the lightmap atlas. The RT viewport stores `S` in a **spatial hash grid** in

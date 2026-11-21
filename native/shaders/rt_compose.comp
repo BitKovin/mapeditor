@@ -1,5 +1,6 @@
 #version 460
-// R2: the shown colour of the ray traced Lit path (12 §2): clamp(albedo * L * exposure + brightness) with L = max(0, ambient * aoFactor(o)) in Lit,
+// R2/R3: the shown colour of the ray traced Lit path (12 §2): clamp(albedo * L * exposure + brightness) with L = max(0, (ambient + D) * aoFactor(o)) in Lit (D = the direct
+// light: sun, sky and local lights, the same blend rules as `o`),
 // clamp(L * exposure + brightness) in Lighting only. `o` is the running mean of the occlusion, replaced near the start of a history by the filtered signal
 // (blend 1 - min(1, N / mode.z)); aoFactor is applied to that estimate, never to a single sample (it is not linear). For DLSS Ray Reconstruction (flag 8) the
 // input is the single sample of this frame, replaced by the running mean once the camera has been still for mode.w samples, so a still view hands RR its
@@ -28,15 +29,22 @@ void main() {
     }
     vec4 h = imageLoad(uHist, p);
     float o = h.r;
+    vec3 D = imageLoad(uHistD, p).rgb;
     if ((P.u.y & F_RR) != 0u) {
         float x = imageLoad(uSample, p).r;
+        vec3 dx = imageLoad(uSampleD, p).rgb;
         bool still = (P.u.y & F_STILL) != 0u;
-        o = still ? mix(x, h.r, min(1.0, h.b / P.mode.w)) : x;
+        float b = min(1.0, h.b / P.mode.w);
+        o = still ? mix(x, h.r, b) : x;
+        D = still ? mix(dx, D, b) : dx;
     } else if ((P.u.y & F_FILTER) != 0u) {
         float f = pc.finalFil == 0u ? imageLoad(uFil0, p).r : imageLoad(uFil1, p).r;
-        o = mix(f, h.r, min(1.0, h.b / P.mode.z));
+        vec3 fd = pc.finalFil == 0u ? imageLoad(uFilD0, p).rgb : imageLoad(uFilD1, p).rgb;
+        float b = min(1.0, h.b / P.mode.z);
+        o = mix(f, h.r, b);
+        D = mix(fd, D, b);
     }
-    vec3 L = max(vec3(0.0), P.ambient.rgb * aoFactor(o));
+    vec3 L = max(vec3(0.0), (P.ambient.rgb + D) * aoFactor(o));
     vec3 base = P.mode.x > 1.5 ? vec3(1.0) : albedo.rgb;
     imageStore(uOut, p, vec4(clamp(base * L * P.ao2.z + P.ao2.w, 0.0, 1.0), 1.0));
 }

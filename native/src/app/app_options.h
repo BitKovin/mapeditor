@@ -4,10 +4,12 @@
 //   mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
 //                        [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]
 //                        [--layout <1|2|4>] [--log-input] [--render-mode <unlit|lit|lightingOnly>]
-//                        [--no-streamline] [--gpu-crash-dumps] [--dlss <off|quality|dlaa>] [--rt-lit]
+//                        [--no-streamline] [--gpu-crash-dumps] [--dlss <off|quality|dlaa>] [--rt-lit] [--rt-texel <n>]
 // --no-streamline creates the Vulkan device the normal way (no NVIDIA Streamline interposer: no Reflex, no DLSS), T6.7.
 // --dlss starts every perspective viewport with DLSS Super Resolution off / Quality / DLAA instead of its saved setting (T6.8; there is no lower preset).
-// --rt-lit shows the Lit and Lighting only modes of perspective viewports with the ray traced Lit path (R2: ambient occlusion only until R3) instead of the chunked bake, which then does not run.
+// --rt-lit shows the Lit and Lighting only modes of perspective viewports with the ray traced Lit path (R3: ambient, sun, sky, local lights with ray traced shadows; no bounces yet)
+// instead of the chunked bake, which then does not run. --rt-texel <n> = the lightmap look of that path: shading at the centres of a planar grid of n texels per metre, bilinearly
+// weighted like the game samples its lightmaps (default 16, the game base density; 0 = smooth per-pixel light).
 // --gpu-crash-dumps enables the NV device diagnostics so a lost device writes gpu_crash_<time>.txt next to the log (T6.7).
 // --trace writes a Chrome trace-event file (chrome://tracing, Perfetto) of jobs / frames / bake steps.
 // --layout starts with 1, 2 or 4 viewports instead of the saved layout (T1.4).
@@ -30,6 +32,7 @@ struct AppOptions {
     bool noStreamline = false;    // --no-streamline
     bool gpuCrashDumps = false;   // --gpu-crash-dumps
     bool rtLit = false;           // --rt-lit
+    float rtTexel = 16.0f;        // --rt-texel: texels per metre of the lightmap look (0 = off)
     std::string logFile;          // --log
     std::string traceFile;        // --trace
     std::string screenshotPath;   // --screenshot

@@ -69,6 +69,17 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
         else if (a == "--no-streamline") o.noStreamline = true;
         else if (a == "--gpu-crash-dumps") o.gpuCrashDumps = true;
         else if (a == "--rt-lit") o.rtLit = true;
+        else if (a == "--rt-texel") {
+            std::string v;
+            if (!value(v)) return r;
+            char* end = nullptr;
+            const double d = std::strtod(v.c_str(), &end);
+            if (v.empty() || *end != '\0' || !(d >= 0.0 && d <= 1024.0)) {
+                r.error = "invalid texel density (0 .. 1024): " + v;
+                return r;
+            }
+            o.rtTexel = static_cast<float>(d);
+        }
         else if (a == "--help" || a == "-h") o.help = true;
         else {
             r.error = "unknown option: " + a;

@@ -20,8 +20,11 @@ struct Params {
     float prevViewProj[16];
     uint32_t u[4];
     float ambient[4], ao[4], ao2[4], mode[4];
+    float gridOrigin[4];
+    uint32_t gridDim[4], lightInfo[4];
+    float look[4];
 };
-static_assert(sizeof(Params) == 240);
+static_assert(sizeof(Params) == 304);
 
 constexpr uint32_t kFlagReset = 1, kFlagStill = 2, kFlagFilter = 4, kFlagRr = 8;
 
@@ -134,12 +137,12 @@ RtLit::RtLit(const gpu::Device& device) : device_(device) {
     sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     vkCreateSampler(dev, &sci, nullptr, &sampler_);
 
-    VkDescriptorSetLayoutBinding b[12]{};
+    VkDescriptorSetLayoutBinding b[20]{};
     const VkShaderStageFlags cs = VK_SHADER_STAGE_COMPUTE_BIT;
     uint32_t n = 0;
     for (uint32_t i : {0u, 1u, 2u, 3u}) b[n++] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, cs, nullptr};
-    for (uint32_t i : {4u, 5u, 7u, 8u, 9u, 10u}) b[n++] = {i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, cs, nullptr};
-    b[n++] = {11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, cs, nullptr};
+    for (uint32_t i : {4u, 5u, 7u, 8u, 9u, 10u, 13u, 14u, 15u, 19u, 20u}) b[n++] = {i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, cs, nullptr};
+    for (uint32_t i : {11u, 16u, 17u, 18u}) b[n++] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, cs, nullptr};
     b[n++] = {12, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, cs, nullptr};
     VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     lci.bindingCount = n;
@@ -192,6 +195,9 @@ bool RtLit::createTargets(RtLitTargets& t, VkExtent2D render, bool reconstructio
     for (int i = 0; i < 2; ++i) ok = ok && makeImage(device_, t.hist[i], VK_FORMAT_R32G32B32A32_SFLOAT, render, kStorage);
     for (int i = 0; i < 2; ++i) ok = ok && makeImage(device_, t.fil[i], VK_FORMAT_R16G16_SFLOAT, render, kStorage);
     ok = ok && makeImage(device_, t.sample, VK_FORMAT_R16_SFLOAT, render, kStorage);
+    for (int i = 0; i < 2; ++i) ok = ok && makeImage(device_, t.histD[i], VK_FORMAT_R32G32B32A32_SFLOAT, render, kStorage);
+    for (int i = 0; i < 2; ++i) ok = ok && makeImage(device_, t.filD[i], VK_FORMAT_R16G16B16A16_SFLOAT, render, kStorage);
+    ok = ok && makeImage(device_, t.sampleD, VK_FORMAT_R16G16B16A16_SFLOAT, render, kStorage);
     if (reconstruction) {
         ok = ok && makeImage(device_, t.radiance, VK_FORMAT_R16G16B16A16_SFLOAT, render, kStorage | VK_IMAGE_USAGE_SAMPLED_BIT);
         ok = ok && makeImage(device_, t.specAlbedo, VK_FORMAT_R8G8B8A8_UNORM, render, VK_IMAGE_USAGE_SAMPLED_BIT | kTransfer);
@@ -216,7 +222,7 @@ bool RtLit::createTargets(RtLitTargets& t, VkExtent2D render, bool reconstructio
         ok = ok && buffer(t.params[i], t.paramsAlloc[i], sizeof(Params), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true, &t.paramsPtr[i]);
     }
     if (ok) {
-        const VkDescriptorPoolSize sizes[5] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 12}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+        const VkDescriptorPoolSize sizes[5] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 24}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8},
                                                {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2}};
         VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pci.maxSets = 4;
@@ -249,6 +255,9 @@ void RtLit::destroyTargets(RtLitTargets& t) const {
     for (auto& i : t.normal) destroyImage(device_, i);
     for (auto& i : t.hist) destroyImage(device_, i);
     for (auto& i : t.fil) destroyImage(device_, i);
+    for (auto& i : t.histD) destroyImage(device_, i);
+    for (auto& i : t.filD) destroyImage(device_, i);
+    destroyImage(device_, t.sampleD);
     destroyImage(device_, t.dist);
     destroyImage(device_, t.sample);
     destroyImage(device_, t.radiance);
@@ -266,9 +275,12 @@ void RtLit::beginGBuffer(VkCommandBuffer cmd, RtLitTargets& t) const {
         for (int i = 0; i < 2; ++i) {
             imageBarrier(cmd, t.hist[i].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, kAll, 0, kAll, kReadWrite);
             imageBarrier(cmd, t.fil[i].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, kAll, 0, kAll, kReadWrite);
+            imageBarrier(cmd, t.histD[i].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, kAll, 0, kAll, kReadWrite);
+            imageBarrier(cmd, t.filD[i].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, kAll, 0, kAll, kReadWrite);
             imageBarrier(cmd, t.normal[i].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, kAll, 0, kAll, kReadWrite);
         }
         imageBarrier(cmd, t.sample.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, kAll, 0, kAll, kReadWrite);
+        imageBarrier(cmd, t.sampleD.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, kAll, 0, kAll, kReadWrite);
         t.initialized = true;
     }
     t.normalCur ^= 1u;
@@ -286,7 +298,7 @@ void RtLit::endGBuffer(VkCommandBuffer cmd, const RtLitTargets& t) const {
 }
 
 bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, const RtLitFrame& f) const {
-    if (!valid() || !t.valid() || f.tlas == VK_NULL_HANDLE) return false;
+    if (!valid() || !t.valid() || f.tlas == VK_NULL_HANDLE || !f.lights) return false;
     const uint32_t slot = f.slot & 1u;
     const uint32_t w = t.render.width, h = t.render.height;
 
@@ -331,6 +343,18 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
         p.mode[1] = static_cast<float>(f.options.sampleCapMoving);
         p.mode[2] = std::max(1.0f, f.options.meanBlend);
         p.mode[3] = std::max(1.0f, f.options.meanBlendRr);
+        const RtLightData& li = f.lights->info();
+        for (int i = 0; i < 3; ++i) {
+            p.gridOrigin[i] = li.origin[i];
+            p.gridDim[i] = li.dim[i];
+        }
+        p.gridOrigin[3] = li.cell;
+        p.lightInfo[0] = li.lightCount;
+        p.lightInfo[1] = li.globalCount;
+        p.lightInfo[2] = li.lightCount > 0 ? 1u : 0u;
+        p.look[0] = std::max(0.0f, f.options.lightmapTexelsPerMeter);
+        p.look[1] = 0.01f;     // the bake shadow ray offset (light/passes.cpp)
+        p.look[2] = 10000.f;   // the bake far distance
         std::memcpy(t.paramsPtr[slot], &p, sizeof(p));
         vmaFlushAllocation(device_.allocator(), t.paramsAlloc[slot], 0, sizeof(p));
     }
@@ -344,18 +368,24 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
                                          {sampler_, t.normal[t.normalCur].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
                                          {sampler_, t.normal[normalPrev].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
     const VkImageView outView = f.reconstruction ? t.radiance.view : d.output.view;
-    VkDescriptorImageInfo storage[6] = {{VK_NULL_HANDLE, t.hist[f.skipTrace ? other : histPrev].view, VK_IMAGE_LAYOUT_GENERAL},
+    VkDescriptorImageInfo storage[11] = {{VK_NULL_HANDLE, t.hist[f.skipTrace ? other : histPrev].view, VK_IMAGE_LAYOUT_GENERAL},
                                         {VK_NULL_HANDLE, t.hist[histCur].view, VK_IMAGE_LAYOUT_GENERAL},
                                         {VK_NULL_HANDLE, t.fil[0].view, VK_IMAGE_LAYOUT_GENERAL},
                                         {VK_NULL_HANDLE, t.fil[1].view, VK_IMAGE_LAYOUT_GENERAL},
                                         {VK_NULL_HANDLE, outView, VK_IMAGE_LAYOUT_GENERAL},
-                                        {VK_NULL_HANDLE, t.sample.view, VK_IMAGE_LAYOUT_GENERAL}};
+                                        {VK_NULL_HANDLE, t.sample.view, VK_IMAGE_LAYOUT_GENERAL},
+                                        {VK_NULL_HANDLE, t.histD[f.skipTrace ? other : histPrev].view, VK_IMAGE_LAYOUT_GENERAL},
+                                        {VK_NULL_HANDLE, t.histD[histCur].view, VK_IMAGE_LAYOUT_GENERAL},
+                                        {VK_NULL_HANDLE, t.sampleD.view, VK_IMAGE_LAYOUT_GENERAL},
+                                        {VK_NULL_HANDLE, t.filD[0].view, VK_IMAGE_LAYOUT_GENERAL},
+                                        {VK_NULL_HANDLE, t.filD[1].view, VK_IMAGE_LAYOUT_GENERAL}};
+    const VkDescriptorBufferInfo lightInfos[3] = {{f.lights->records(), 0, f.lights->recordsSize()}, {f.lights->cells(), 0, f.lights->cellsSize()}, {f.lights->index(), 0, f.lights->indexSize()}};
     const VkDescriptorBufferInfo counterInfo{t.counters, 0, 8};
     const VkDescriptorBufferInfo paramInfo{t.params[slot], 0, sizeof(Params)};
     VkWriteDescriptorSetAccelerationStructureKHR asw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
     asw.accelerationStructureCount = 1;
     asw.pAccelerationStructures = &f.tlas;
-    VkWriteDescriptorSet writes[14]{};
+    VkWriteDescriptorSet writes[24]{};
     uint32_t n = 0;
     const auto write = [&](uint32_t binding, VkDescriptorType type) -> VkWriteDescriptorSet& {
         VkWriteDescriptorSet& wr = writes[n++];
@@ -367,10 +397,11 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
         return wr;
     };
     for (uint32_t i = 0; i < 4; ++i) write(i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo = &samplers[i];
-    const uint32_t storageBindings[6] = {4, 5, 7, 8, 9, 10};
-    for (uint32_t i = 0; i < 6; ++i) write(storageBindings[i], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo = &storage[i];
+    const uint32_t storageBindings[11] = {4, 5, 7, 8, 9, 10, 13, 14, 15, 19, 20};
+    for (uint32_t i = 0; i < 11; ++i) write(storageBindings[i], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE).pImageInfo = &storage[i];
     write(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo = &counterInfo;
     write(12, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).pBufferInfo = &paramInfo;
+    for (uint32_t i = 0; i < 3; ++i) write(16 + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo = &lightInfos[i];
     {
         VkWriteDescriptorSet& wr = writes[n++];
         wr.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

@@ -235,6 +235,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
 
 MainWindow::~MainWindow() {
     if (services_.device) services_.device->setLostHandler(nullptr);   // waits for a handler call in progress
+    rtLights_.reset();   // its callback feeds the render thread
     lighting_.reset();   // the bake thread reads the link and the device
     if (services_.renderThread) services_.renderThread->setLightLink(nullptr);
     lightLink_.reset();
@@ -546,6 +547,13 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
 void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
     if (!picker_) picker_ = std::make_unique<render::Picker>();
     if (services_.rtLit && services_.renderThread && snapshot && snapshot->doc) services_.renderThread->setRtLighting(render::rtLightingOf(*snapshot->doc));   // the level's ambient / occlusion / exposure
+    if (services_.rtLit && services_.renderThread && profile_ && snapshot && snapshot->complete && snapshot->doc) {   // the level lights, collected off the UI thread
+        if (!rtLights_) {
+            render::RenderThread* rt = services_.renderThread;
+            rtLights_ = std::make_unique<render::RtLightsProducer>([rt](std::shared_ptr<const render::RtLightData> d) { rt->setRtLights(std::move(d)); });
+        }
+        rtLights_->request({snapshot, profile_, assetsRoot_});
+    }
     if (lighting_ && profile_ && snapshot && snapshot->complete) {   // the lit modes' bake follows complete snapshots
         light::LightingInputs in;
         in.snapshot = snapshot;

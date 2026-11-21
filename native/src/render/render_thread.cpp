@@ -97,6 +97,7 @@ struct RenderThread::Viewport {
     bool rtRr = false;                    // the ray traced Lit targets were made for DLSS Ray Reconstruction
     int rtRrFailedMode = 0;               // Streamline refused Ray Reconstruction in this DLSS mode: the filter is used until the mode changes
     RtLighting rtLighting;
+    uint64_t lastLightSerial = 0;         // the lights the accumulation was made with
     uint64_t rtSlotFrame[2] = {0, 0};
     RtLitInfo rtInfo;
 };
@@ -434,6 +435,16 @@ void RenderThread::setRtLit(bool on, const RtLitOptions& options) {
     wake_.notify_all();
 }
 
+void RenderThread::setRtLights(std::shared_ptr<const RtLightData> lights) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    rtLightData_ = std::move(lights);
+    ++rtLightSerial_;
+    if (rtLitEnabled_.load()) {
+        for (auto& kv : viewports_) kv.second->dirty = true;
+        wake_.notify_all();
+    }
+}
+
 void RenderThread::setRtLighting(const RtLighting& lighting) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (rtLighting_ == lighting) return;
@@ -710,10 +721,24 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     }
     RtLitOptions options;
     RtLighting lighting;
+    std::shared_ptr<const RtLightData> lightData;
+    uint64_t lightSerial = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         options = rtLitOptions_;
         lighting = rtLighting_;
+        lightData = rtLightData_;
+        lightSerial = rtLightSerial_;
+    }
+    if (!rtLightsGpu_) rtLightsGpu_ = std::make_unique<RtLightsGpu>(device_);
+    if (lightSerial != rtLightsUploaded_) {   // the buffers are replaced: nothing in flight may still read the old ones
+        waitForFrames();
+        RtLightData none;
+        none.records.assign(64, 0.f);
+        none.cells = {0u, 0u};
+        none.index = {0u};
+        if (rtLightsGpu_->upload(lightData ? *lightData : none)) rtLightsUploaded_ = lightSerial;
+        else if (device_.lost()) return false;
     }
     // DLSS Ray Reconstruction denoises and upscales when the viewport asks for DLSS (Quality / DLAA); otherwise the a-trous filter runs at the output size.
     const int rrMode = view.dlss;
@@ -766,7 +791,8 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     // ---- history rules: what restarts it, what keeps it
     const uint64_t changes = scene_->changeSerial();
     const bool moved = !v.havePrev || view.viewProj != v.prevViewProj;
-    const bool reset = created || !v.havePrev || view.cut != v.lastCut || view.renderMode != v.lastRenderMode || changes != v.lastChanges || !lighting.sameTrace(v.rtLighting);
+    const bool reset = created || !v.havePrev || view.cut != v.lastCut || view.renderMode != v.lastRenderMode || changes != v.lastChanges || !lighting.sameTrace(v.rtLighting) ||
+                         rtLightsUploaded_ != v.lastLightSerial;
     const bool still = !moved && !reset;
     const bool skip = still && v.rtStill >= options.targetSamples + 1;
     const Mat4 prevVP = v.havePrev ? v.prevViewProj : view.viewProj;
@@ -789,6 +815,7 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     v.lastRenderMode = view.renderMode;
     v.lastChanges = changes;
     v.rtLighting = lighting;
+    v.lastLightSerial = rtLightsUploaded_;
 
     // ---- 1. the G-buffer at the render size: albedo (the colour target), normal, distance
     if (rr) rtLit_->prepareReconstruction(cmd, v.rt);
@@ -853,6 +880,7 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     fr.prevViewProj = prevVP;
     fr.lighting = lighting;
     fr.options = options;
+    fr.lights = rtLightsGpu_.get();
     bool ok = rtLit_->record(cmd, v.rt, d, fr);
     if (ok && rr) {   // 3. Ray Reconstruction: the radiance of the compose pass + the guides in, the denoised, upscaled picture out (d.output)
         gpu::DlssFrame df;

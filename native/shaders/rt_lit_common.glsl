@@ -16,6 +16,12 @@ layout(set = 0, binding = 8, rg16f) uniform image2D uFil1;
 layout(set = 0, binding = 9, rgba16f) uniform image2D uOut;
 layout(set = 0, binding = 10, r16f) uniform image2D uSample;
 layout(set = 0, binding = 11, std430) buffer Counters { uint traced; uint surface; } counters;
+// R3: the direct light's history (mean D rgb, mean of the square of its luminance), the frame's D sample (for DLSS Ray Reconstruction) and the filtered D (rgb, variance of the mean luminance).
+layout(set = 0, binding = 13, rgba32f) uniform image2D uHistDPrev;
+layout(set = 0, binding = 14, rgba32f) uniform image2D uHistD;
+layout(set = 0, binding = 15, rgba16f) uniform image2D uSampleD;
+layout(set = 0, binding = 19, rgba16f) uniform image2D uFilD0;
+layout(set = 0, binding = 20, rgba16f) uniform image2D uFilD1;
 layout(set = 0, binding = 12, std140) uniform Params {
     vec4 rayA;       // the pixel's ray: direction = rayA + rayX * ndc.x + rayY * ndc.y (ndc of the pixel centre, jittered), not normalised
     vec4 rayX;
@@ -29,6 +35,10 @@ layout(set = 0, binding = 12, std140) uniform Params {
     vec4 ao;         // radius, intensity, strength, power
     vec4 ao2;        // falloff, origin bias, exposure, brightness
     vec4 mode;       // x = render mode (1 lit, 2 lighting only), y = sample cap while the camera moves, z = samples at which the mean replaces the filter, w = same for RR
+    vec4 gridOrigin; // xyz = the light grid's origin, w = the edge of a cell
+    uvec4 gridDim;   // xyz = cells per axis
+    uvec4 lightInfo; // x = lights, y = directional / sky lights (the first entries of the index list), z = 1 when direct light is traced
+    vec4 look;       // x = lightmap texels per metre for the lightmap look (0 = off), y = shadow ray origin bias, z = far distance
 } P;
 
 const uint F_RESET = 1u, F_STILL = 2u, F_FILTER = 4u, F_RR = 8u;

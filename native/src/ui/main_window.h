@@ -29,6 +29,7 @@
 #include "app/actions/registry.h"
 #include "app/actions/router.h"
 #include "render/math3d.h"
+#include "render/rt_lights.h"
 #include "scene/snapshot.h"
 #include "tools/details.h"
 #include "tools/edit_ops.h"
@@ -541,6 +542,7 @@ private:
     std::unique_ptr<scene::SceneBuilder> builder_;
     std::shared_ptr<const core::GameProfile> profile_;     // the loaded game profile (the lighting service reads it)
     std::shared_ptr<light::LightLink> lightLink_;          // bake -> render hand-over (null without a lit-capable device)
+    std::unique_ptr<render::RtLightsProducer> rtLights_;   // the ray traced Lit path lights (null without --rt-lit); stopped before the render thread goes
     std::unique_ptr<light::LightingService> lighting_;     // the bake thread (stopped before the link and the render thread go)
     std::unique_ptr<render::Picker> picker_;
     struct PickDrag {

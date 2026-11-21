@@ -77,7 +77,11 @@ int main(int argc, char** argv) {
         return 3;
     }
     native::render::RenderThread renderThread(*device);
-    if (parsed.options.rtLit) renderThread.setRtLit(true);
+    if (parsed.options.rtLit) {
+        native::render::RtLitOptions rtOptions;
+        rtOptions.lightmapTexelsPerMeter = parsed.options.rtTexel;
+        renderThread.setRtLit(true, rtOptions);
+    }
 
     // Declared after the render thread and the Qt instance: destroyed first, so every viewport releases its swapchain while
     // both still exist.

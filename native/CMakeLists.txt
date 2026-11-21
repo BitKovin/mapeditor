@@ -164,7 +164,7 @@ native_module(light  SOURCES src/light/module_info.cpp src/light/page_allocator.
                      DEPENDS native_scene native_gpu)
 add_dependencies(native_light native_shaders)
 target_include_directories(native_light PRIVATE "${NATIVE_SHADER_GEN_DIR}")
-native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp src/render/dlss_pass.cpp src/render/rt_scene.cpp src/render/rt_scene.h src/render/rt_lit.cpp src/render/rt_lit.h src/render/rt_lighting.cpp src/render/rt_lighting.h src/render/dlss_math.h src/render/picking.cpp src/render/picking.h src/render/selection_outline.cpp src/render/selection_outline.h src/render/line_vertex.h
+native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp src/render/dlss_pass.cpp src/render/rt_scene.cpp src/render/rt_scene.h src/render/rt_lit.cpp src/render/rt_lit.h src/render/rt_lights.cpp src/render/rt_lights.h src/render/rt_lighting.cpp src/render/rt_lighting.h src/render/dlss_math.h src/render/picking.cpp src/render/picking.h src/render/selection_outline.cpp src/render/selection_outline.h src/render/line_vertex.h
                      src/render/viewport_window.cpp src/render/viewport_window.h src/render/lightmap_view.cpp src/render/lightmap_view.h
                      src/render/entity_overlay.cpp src/render/entity_overlay.h src/render/glyph_atlas.cpp src/render/glyph_atlas.h
                      src/render/camera.cpp src/render/camera_rig.cpp src/render/viewport_settings.cpp

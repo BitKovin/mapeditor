@@ -4,8 +4,8 @@
 // Owns: RtLitTargets (per viewport: the G-buffer's normal pair and distance image, the history pair RGBA32F, the filter pair, the sample image, the converged-stop counters
 // and their read-back, the descriptor sets of two frames in flight) and RtLit (the shared pipelines). The G-buffer itself is drawn by MeshPass (kMeshGBuffer) into
 // DlssTargets::color (albedo) / RtLitTargets::normal / RtLitTargets::dist; the motion vectors come from DlssPass (the same depth -> mvec kernel).
-// Signal (this task): the ambient occlusion `o`, accumulated as a running mean per pixel with a sample count N; `L = ambient * aoFactor(o)`. Direct light, the sun, the sky and
-// bounces join it in R3 - R6 on the same buffers (12_RT_VIEWPORT.md §3, §7).
+// Signals: the ambient occlusion `o` (R2) and the direct light `D` (R3: sun, sky, local lights, rt_light.glsl), each a running mean per pixel with the shared sample count N;
+// `L = (ambient + D) * aoFactor(o)`. Bounces join in R4 - R6 on the same buffers (12_RT_VIEWPORT.md §3, §7).
 // Image layouts: the history pair stays GENERAL and the normal pair SHADER_READ_ONLY between frames; everything else is rewritten each frame (UNDEFINED at the start).
 // Thread: the render thread. Spec: 12_RT_VIEWPORT.md §2, §3, §7, 08_MILESTONES.md R2.
 #pragma once
@@ -20,6 +20,7 @@
 #include "render/dlss_pass.h"
 #include "render/math3d.h"
 #include "render/rt_lighting.h"
+#include "render/rt_lights.h"
 
 namespace native::render {
 
@@ -32,6 +33,7 @@ struct RtLitOptions {
     bool filter = true;                // the fallback denoiser (it never runs while DLSS Ray Reconstruction does)
     float meanBlend = 32.0f;           // N at which the running mean has replaced the filtered value completely
     float meanBlendRr = 64.0f;         // the same for the input of DLSS Ray Reconstruction under a still camera
+    float lightmapTexelsPerMeter = 16.0f;   // the lightmap look: shading at the centres of a planar texel grid of this density, bilinearly weighted (the game base density); 0 = smooth
 };
 
 struct RtLitTargets {
@@ -43,6 +45,7 @@ struct RtLitTargets {
     };
     VkExtent2D render{};
     Image normal[2], dist, hist[2], fil[2], sample, radiance, specAlbedo;   // radiance, specAlbedo: only with reconstruction
+    Image histD[2], filD[2], sampleD;  // the direct light: history (rgb mean, mean of luminance^2), filtered value (rgb, variance of the mean), this frame sample
     bool specAlbedoReady = false;      // specAlbedo was cleared to black and is in SHADER_READ_ONLY
     VkBuffer counters = VK_NULL_HANDLE;
     VmaAllocation countersAlloc = nullptr;
@@ -77,6 +80,7 @@ struct RtLitFrame {
     Mat4 prevViewProj = mat4Identity();          // the previous frame's unjittered matrix
     RtLighting lighting;
     RtLitOptions options;
+    const RtLightsGpu* lights = nullptr;   // the level lights (required; an empty set is fine)
 };
 
 class RtLit {

@@ -2,6 +2,7 @@
 // ray a frame. Checks: the converged picture equals a CPU reference (core::TriangleBvh at the surface point of 2000 pixels, the bake's occlusion model) and the
 // accumulation stops tracing once converged; a still camera keeps its picture; resets (camera cut, resize, mode switch, scene edit, occlusion settings) restart it
 // and a change of the display only (exposure) does not; the a-trous fallback is closer to the converged picture than the raw first frames; 0 validation errors.
+// R3 adds the direct light: point, spot, sun and sky lights with ray traced shadows against a CPU reference of the bake's light model (hard and soft), and the lightmap look.
 // [gpu]: skips itself without a ray tracing device with a second queue.
 #include <doctest.h>
 
@@ -15,7 +16,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <random>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -34,6 +38,7 @@
 #include "gpu/device.h"
 #include "render/camera_rig.h"
 #include "render/render_thread.h"
+#include "render/rt_lights.h"
 #include "scene/builder.h"
 #include "scene/render_mesh.h"
 
@@ -181,6 +186,8 @@ struct Fixture {
     int mode = 2;   // ViewState::renderMode: 1 Lit, 2 Lighting only
     int dlss = 0;   // ViewState::dlss: 0 off (the filter), 1 Quality, 2 DLAA (DLSS Ray Reconstruction)
 
+    fs::path root;
+    std::string mapName = "maps/demo_lit.map.json";
     bool start(uint32_t width, uint32_t height, bool streamline = false) {
         gpu::DeviceOptions o;
         o.validation = true;
@@ -191,9 +198,9 @@ struct Fixture {
             MESSAGE("no ray tracing device with a second queue (" << err << "): GPU test skipped");
             return false;
         }
-        const fs::path root = NATIVE_CORE_ASSETS_DIR;
-        if (!fs::exists(root / "maps/demo_lit.map.json")) return false;
-        snapshot = buildSnapshot(root, "maps/demo_lit.map.json", pool);
+        if (root.empty()) root = NATIVE_CORE_ASSETS_DIR;
+        if (!fs::exists(root / mapName)) return false;
+        snapshot = buildSnapshot(root, mapName, pool);
         if (!snapshot) return false;
         w = width;
         h = height;
@@ -242,6 +249,7 @@ render::RtLitOptions options(uint32_t target) {
     render::RtLitOptions o;
     o.targetSamples = target;
     o.sampleCap = std::max(4096u, target + 8);
+    o.lightmapTexelsPerMeter = 0;   // the smooth picture (the lightmap look has its own test)
     return o;
 }
 
@@ -557,4 +565,340 @@ TEST_CASE("RT Lit: DLSS Ray Reconstruction draws the picture, follows the conver
     REQUIRE(waitFor([&] { f.shot(); return !f.info().reconstruction && f.info().active; }, 30000));
     CHECK(f.info().renderW == f.w);
     CHECK(f.device->validationErrors() == 0);
+}
+
+// ---- R3: direct light ------------------------------------------------------------------------------------------------------------------------------------------------
+
+namespace {
+
+core::Light testLight(core::LightType type, core::Vec3 pos, core::Vec3 forward, double brightness, double radius) {
+    core::Light l;
+    l.type = type;
+    l.position = pos;
+    l.forward = forward.normalized();
+    l.color = {1, 1, 1};
+    l.brightness = brightness;
+    l.radius = radius;
+    l.castShadows = true;
+    l.sourceSize = 0;
+    return l;
+}
+
+std::vector<core::Light> directTestLights() {
+    std::vector<core::Light> lights;
+    lights.push_back(testLight(core::LightType::Point, {-0.5, 2.0, -3.5}, {0, 0, 1}, 6, 14));
+    core::Light spot = testLight(core::LightType::Spot, {3.0, 2.2, 1.0}, {-1, -1, -0.5}, 8, 12);
+    spot.innerAngle = 20;
+    spot.outerAngle = 40;
+    lights.push_back(spot);
+    lights.push_back(testLight(core::LightType::Directional, {0, 0, 0}, {0.3, -1, 0.2}, 0.4, 0));
+    lights.push_back(testLight(core::LightType::Sky, {0, 0, 0}, {0, 0, 1}, 0.25, 0));
+    return lights;
+}
+
+// The bake's light maths on the CPU (core/shaders/lightmap_direct.comp) with exact shadows: the green channel (the lights are white) of the direct light at p.
+double cpuDirect(const std::vector<core::Light>& lights, const core::TriangleBvh& bvh, const core::Vec3& p, const core::Vec3& n, std::mt19937& rng) {
+    const double kPi = 3.14159265358979323846, kBias = 0.01;
+    const core::Vec3 o = p + n * kBias;
+    const auto window = [](double d, double r) {
+        const double q = d / r, w = std::clamp(1.0 - q * q * q * q, 0.0, 1.0);
+        return w * w;
+    };
+    double sum = 0;
+    for (const core::Light& L : lights) {
+        double v = 0;
+        if (L.type == core::LightType::Point || L.type == core::LightType::Spot) {
+            const core::Vec3 d = L.position - p;
+            const double dist = std::sqrt(d.dot(d));
+            if (dist >= L.radius) continue;
+            const core::Vec3 l = d * (1.0 / dist);
+            double s = window(dist, L.radius) / (std::max(dist, 0.05) * std::max(dist, 0.05)) * std::max(0.0, n.dot(l));
+            if (L.type == core::LightType::Spot) {
+                const double cosInner = std::cos(L.innerAngle * kPi / 180.0), cosOuter = std::cos(L.outerAngle * kPi / 180.0);
+                const double t = std::clamp((L.forward.dot(l * -1.0) - cosOuter) / (cosInner - cosOuter), 0.0, 1.0);
+                s *= t * t;
+            }
+            v = s;
+            if (v != 0 && L.castShadows) {
+                const core::Vec3 t = L.position - o;
+                const double td = std::sqrt(t.dot(t));
+                if (td > kBias && bvh.occluded(o, t * (1.0 / td), td - kBias)) v = 0;
+            }
+        } else if (L.type == core::LightType::Directional) {
+            v = std::max(0.0, n.dot(L.forward * -1.0));
+            if (v != 0 && L.castShadows && bvh.occluded(o, L.forward * -1.0, 10000.0)) v = 0;
+        } else if (L.type == core::LightType::Sky) {
+            const core::Vec3 helper = std::abs(n.x) < 0.9 ? core::Vec3{1, 0, 0} : core::Vec3{0, 1, 0};
+            const core::Vec3 tu = n.cross(helper).normalized(), tv = n.cross(tu);
+            std::uniform_real_distribution<double> u(0.0, 1.0);
+            const int kRays = 512;
+            int open = 0;
+            for (int k = 0; k < kRays; ++k) {
+                const double u1 = (k + u(rng)) / kRays, u2 = u(rng);
+                const double rad = std::sqrt(u1), phi = 2.0 * kPi * u2;
+                const core::Vec3 dir = tu * (rad * std::cos(phi)) + tv * (rad * std::sin(phi)) + n * std::sqrt(std::max(0.0, 1.0 - u1));
+                if (dir.y > 0 && !bvh.occluded(o, dir, 10000.0)) ++open;
+            }
+            v = static_cast<double>(open) / kRays;
+        }
+        sum += v * L.brightness;
+    }
+    return sum;
+}
+
+struct SurfaceSample {
+    uint32_t x, y;
+    core::Vec3 p, n;
+};
+
+} // namespace
+
+TEST_CASE("RT Lit: point, spot, sun and sky light with ray traced shadows equal the CPU reference of the bake's light model, and the lightmap look is the bilinear texel mean" * doctest::test_suite("gpu")) {
+    Fixture f;
+    if (!f.start(640, 400)) return;
+    std::vector<uint8_t> blended;
+    const core::OccluderMesh mesh = drawnTriangles(*f.snapshot, &blended);
+    const core::TriangleBvh bvh(mesh);
+    const std::vector<core::Light> lights = directTestLights();
+    render::RtLighting lighting;
+    lighting.ambient[0] = lighting.ambient[1] = lighting.ambient[2] = 0.1f;
+    f.rt->setRtLighting(lighting);
+    f.rt->setRtLights(render::makeRtLightData(lights));
+    f.rt->setRtLit(true, options(2048));
+    REQUIRE(f.shot().width == f.w);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+    f.cut++;
+    f.shot();
+    REQUIRE(f.converge());
+    const render::CapturedImage img = f.shot();
+    REQUIRE(img.ok());
+    savePng(img, "rt_lit_direct_converged.png");
+
+    const render::ViewState vs = f.view();
+    const render::Mat4 inv = render::mat4Invert(vs.viewProj);
+    const auto unproject = [&](double nx, double ny, double nz) {
+        double q[4];
+        const double v[4] = {nx, ny, nz, 1.0};
+        for (int r = 0; r < 4; ++r) q[r] = inv[0 * 4 + r] * v[0] + inv[1 * 4 + r] * v[1] + inv[2 * 4 + r] * v[2] + inv[3 * 4 + r] * v[3];
+        return core::Vec3{q[0] / q[3], q[1] / q[3], q[2] / q[3]};
+    };
+    const core::Vec3 eye{vs.eye[0], vs.eye[1], vs.eye[2]};
+    const auto rayOf = [&](uint32_t x, uint32_t y) {
+        const double nx = (x + 0.5) / f.w * 2.0 - 1.0, ny = (y + 0.5) / f.h * 2.0 - 1.0;
+        return (unproject(nx, ny, 1.0) - unproject(nx, ny, 0.0)).normalized();
+    };
+    const auto hitOf = [&](uint32_t x, uint32_t y) { return bvh.closestHit(eye, rayOf(x, y), 1000.0); };
+    std::vector<SurfaceSample> samples;
+    std::mt19937 rng(11);
+    for (int tries = 0; tries < 40000 && samples.size() < 1500; ++tries) {
+        const uint32_t x = 3 + rng() % (f.w - 6), y = 3 + rng() % (f.h - 6);
+        const auto hit = hitOf(x, y);
+        if (hit.t < 0 || blended[hit.triangle]) continue;
+        bool interior = true;
+        for (const auto& [dx, dy] : {std::pair{3, 0}, std::pair{-3, 0}, std::pair{0, 3}, std::pair{0, -3}}) {
+            const auto o = hitOf(x + dx, y + dy);
+            if (o.t < 0 || o.triangle != hit.triangle) interior = false;
+        }
+        if (!interior) continue;
+        const float* t = &mesh.tris[hit.triangle * 9];
+        const core::Vec3 v0{t[0], t[1], t[2]}, v1{t[3], t[4], t[5]}, v2{t[6], t[7], t[8]};
+        core::Vec3 n = (v1 - v0).cross(v2 - v0).normalized();
+        const core::Vec3 d = rayOf(x, y);
+        if (n.dot(d) > 0) n = n * -1.0;
+        samples.push_back({x, y, eye + d * hit.t, n});
+    }
+    REQUIRE(samples.size() >= 800);
+
+    std::vector<double> expected(samples.size());
+    {
+        const size_t threads = std::max(1u, std::thread::hardware_concurrency());
+        std::vector<std::thread> ts;
+        for (size_t t = 0; t < threads; ++t)
+            ts.emplace_back([&, t] {
+                for (size_t i = samples.size() * t / threads; i < samples.size() * (t + 1) / threads; ++i) {
+                    std::mt19937 r(static_cast<uint32_t>(i) * 2654435761u + 5);
+                    expected[i] = std::clamp(0.1 + cpuDirect(lights, bvh, samples[i].p, samples[i].n, r), 0.0, 1.0);
+                }
+            });
+        for (auto& t : ts) t.join();
+    }
+    const Shot shot{img};
+    double sum = 0, lo = 1, hi = 0;
+    std::vector<double> diffs;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const double d = std::abs(shot.at(samples[i].x, samples[i].y) - expected[i]);
+        diffs.push_back(d);
+        sum += d;
+        lo = std::min(lo, expected[i]);
+        hi = std::max(hi, expected[i]);
+    }
+    std::sort(diffs.begin(), diffs.end());
+    const double mean = sum / static_cast<double>(diffs.size()), p95 = diffs[static_cast<size_t>(0.95 * static_cast<double>(diffs.size() - 1))];
+    MESSAGE(samples.size() << " pixels: expected " << lo << " .. " << hi << ", absolute difference mean " << mean << ", p95 " << p95);
+    CHECK(hi - lo > 0.3);   // lit and shadowed areas
+    CHECK(mean < 0.012);
+    CHECK(p95 < 0.04);
+    CHECK(f.info().tracedPixels == 0);
+    CHECK(f.device->validationErrors() == 0);
+
+    // ---- the lightmap look: the picture is the bilinear mean of the direct light at the centres of the texels of a planar grid (4 texels per metre here, so it shows)
+    render::RtLitOptions look = options(2048);
+    look.lightmapTexelsPerMeter = 4.0f;
+    f.rt->setRtLit(true, look);
+    f.cut++;
+    f.shot();
+    REQUIRE(f.converge());
+    const render::CapturedImage lookImg = f.shot();
+    REQUIRE(lookImg.ok());
+    savePng(lookImg, "rt_lit_direct_texel4.png");
+    const Shot lookShot{lookImg};
+    const double density = 4.0;
+    std::vector<double> lookDiffs;
+    double lookSum = 0, smoothDiff = 0;
+    const size_t count = std::min<size_t>(samples.size(), 600);
+    std::vector<double> want(count);
+    {
+        const size_t threads = std::max(1u, std::thread::hardware_concurrency());
+        std::vector<std::thread> ts;
+        for (size_t t = 0; t < threads; ++t)
+            ts.emplace_back([&, t] {
+                for (size_t i = count * t / threads; i < count * (t + 1) / threads; ++i) {
+                    const SurfaceSample& s = samples[i];
+                    const double an[3] = {std::abs(s.n.x), std::abs(s.n.y), std::abs(s.n.z)};
+                    const int axis = an[0] >= an[1] && an[0] >= an[2] ? 0 : (an[1] >= an[2] ? 1 : 2);
+                    const int ua = axis == 0 ? 1 : 0, va = axis == 2 ? 1 : 2;
+                    const auto comp = [](const core::Vec3& v, int a) { return a == 0 ? v.x : a == 1 ? v.y : v.z; };
+                    const auto setc = [](core::Vec3& v, int a, double x) { (a == 0 ? v.x : a == 1 ? v.y : v.z) = x; };
+                    const double qu = comp(s.p, ua) * density - 0.5, qv = comp(s.p, va) * density - 0.5;
+                    const double bu = std::floor(qu), bv = std::floor(qv), fu = qu - bu, fv = qv - bv;
+                    double acc = 0;
+                    std::mt19937 r(static_cast<uint32_t>(i) + 99);
+                    for (int c = 0; c < 4; ++c) {
+                        const int iu = c & 1, iv = c >> 1;
+                        const double cu = (bu + iu + 0.5) / density, cv = (bv + iv + 0.5) / density;
+                        core::Vec3 centre = s.p;
+                        setc(centre, ua, cu);
+                        setc(centre, va, cv);
+                        setc(centre, axis, comp(s.p, axis) - (comp(s.n, ua) * (cu - comp(s.p, ua)) + comp(s.n, va) * (cv - comp(s.p, va))) / comp(s.n, axis));
+                        const double w = (iu ? fu : 1.0 - fu) * (iv ? fv : 1.0 - fv);
+                        acc += w * cpuDirect(lights, bvh, centre, s.n, r);
+                    }
+                    want[i] = std::clamp(0.1 + acc, 0.0, 1.0);
+                }
+            });
+        for (auto& t : ts) t.join();
+    }
+    for (size_t i = 0; i < count; ++i) {
+        lookDiffs.push_back(std::abs(lookShot.at(samples[i].x, samples[i].y) - want[i]));
+        lookSum += lookDiffs.back();
+        smoothDiff += std::abs(lookShot.at(samples[i].x, samples[i].y) - expected[i]);
+    }
+    std::sort(lookDiffs.begin(), lookDiffs.end());
+    MESSAGE("lightmap look at 4 texels / m: difference to the bilinear reference mean " << lookSum / static_cast<double>(count) << ", p95 "
+            << lookDiffs[static_cast<size_t>(0.95 * static_cast<double>(count - 1))] << "; to the smooth picture " << smoothDiff / static_cast<double>(count));
+    CHECK(lookSum / static_cast<double>(count) < 0.02);
+    CHECK(smoothDiff / static_cast<double>(count) > lookSum / static_cast<double>(count));   // the look is visibly not the smooth picture
+    CHECK(f.device->validationErrors() == 0);
+}
+
+TEST_CASE("RT Lit: lights from a document: the producer collects the level's style 0 lights and the viewport shows them" * doctest::test_suite("gpu")) {
+    const fs::path root = NATIVE_CORE_ASSETS_DIR;
+    if (!fs::exists(root / "maps/demo_lit.map.json")) return;
+    base::JobPool pool(4);
+    const auto snapshot = buildSnapshot(root, "maps/demo_lit.map.json", pool);
+    REQUIRE(snapshot);
+    std::shared_ptr<const render::RtLightData> got;
+    std::mutex mutex;
+    int calls = 0;
+    render::RtLightsProducer producer([&](std::shared_ptr<const render::RtLightData> d) {
+        std::lock_guard<std::mutex> lock(mutex);
+        got = std::move(d);
+        ++calls;
+    });
+    producer.request({snapshot, std::make_shared<core::GameProfile>(core::loadProfile(root)), root});
+    producer.waitIdle();
+    std::lock_guard<std::mutex> lock(mutex);
+    REQUIRE(got);
+    // demo_lit: two point lights (one of them in light style 6: not in the layer of style 0) and a sky light
+    CHECK(got->lightCount == 2);
+    CHECK(got->globalCount == 1);
+    CHECK(got->cells.size() == static_cast<size_t>(got->dim[0]) * got->dim[1] * got->dim[2] * 2);
+    CHECK(calls == 1);
+    // the same document again: nothing new is reported
+    producer.request({snapshot, std::make_shared<core::GameProfile>(core::loadProfile(root)), root});
+    producer.waitIdle();
+    CHECK(calls == 1);
+}
+
+namespace {
+std::string rtEnv(const char* name) {
+    char buf[512];
+    size_t n = 0;
+    return getenv_s(&n, buf, sizeof(buf), name) == 0 && n > 1 ? std::string(buf) : std::string();
+}
+} // namespace
+
+// A look at a real map, not a regression test: runs only when NATIVE_RTLOOK_ROOT (assets root) and NATIVE_RTLOOK_MAP are set. NATIVE_RTLOOK_EYE / _TARGET = "x,y,z",
+// NATIVE_RTLOOK_TEXEL = texels per metre of the lightmap look (default 16, 0 = smooth), NATIVE_RTLOOK_SIZE = "WxH" (default 1280x720), NATIVE_RTLOOK_DLSS = 0/1/2, NATIVE_RTLOOK_MODE = 0 unlit / 1 lit / 2 lighting only, NATIVE_RTLOOK_TIMEOUT = seconds per wait (default 120),
+// NATIVE_RTLOOK_OUT = the png name in native/build (default rt_lit_look.png). The lights come from the document through the producer, like in the editor.
+TEST_CASE("RT Lit: look at a map" * doctest::test_suite("gpu") * doctest::skip(rtEnv("NATIVE_RTLOOK_ROOT").empty())) {
+    const auto env = [](const char* name, const std::string& fallback) {
+        const std::string v = rtEnv(name);
+        return v.empty() ? fallback : v;
+    };
+    const auto numbers = [](std::string text) {
+        for (char& c : text)
+            if (c == ',' || c == 'x') c = ' ';
+        std::istringstream in(text);
+        std::vector<double> out;
+        double d = 0;
+        while (in >> d) out.push_back(d);
+        out.resize(3, 0.0);
+        return out;
+    };
+    const auto vec = [&](const std::string& text) {
+        const std::vector<double> n = numbers(text);
+        return core::Vec3{n[0], n[1], n[2]};
+    };
+    const std::vector<double> size = numbers(env("NATIVE_RTLOOK_SIZE", "1280x720"));
+    const uint32_t w = static_cast<uint32_t>(size[0]), h = static_cast<uint32_t>(size[1]);
+    Fixture f;
+    f.root = env("NATIVE_RTLOOK_ROOT", "");
+    f.mapName = env("NATIVE_RTLOOK_MAP", "maps/lvl2.map.json");
+    if (!f.start(w, h, true)) return;
+    f.dlss = std::atoi(env("NATIVE_RTLOOK_DLSS", "0").c_str());
+    f.mode = std::atoi(env("NATIVE_RTLOOK_MODE", "1").c_str());
+    const core::Vec3 eye = vec(env("NATIVE_RTLOOK_EYE", "41,1.2,20")), target = vec(env("NATIVE_RTLOOK_TARGET", "41,1.2,10"));
+    f.rig.fly().lookAt({eye.x, eye.y, eye.z}, {target.x, target.y, target.z});
+    std::mutex mutex;
+    std::shared_ptr<const render::RtLightData> got;
+    render::RtLightsProducer producer([&](std::shared_ptr<const render::RtLightData> d) {
+        std::lock_guard<std::mutex> lock(mutex);
+        got = d;
+        f.rt->setRtLights(d);
+    });
+    producer.request({f.snapshot, std::make_shared<core::GameProfile>(core::loadProfile(f.root)), f.root});
+    producer.waitIdle();
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        REQUIRE(got);
+        MESSAGE("lights " << got->lightCount << " (global " << got->globalCount << "), grid " << got->dim[0] << "x" << got->dim[1] << "x" << got->dim[2] << " of " << got->cell << " m");
+    }
+    f.rt->setRtLighting(render::rtLightingOf(*f.snapshot->doc));
+    render::RtLitOptions o = options(1024);
+    o.lightmapTexelsPerMeter = static_cast<float>(std::atof(env("NATIVE_RTLOOK_TEXEL", "16").c_str()));
+    f.rt->setRtLit(true, o);
+    REQUIRE(f.shot().width == f.w);
+    // every wait is bounded (NATIVE_RTLOOK_TIMEOUT seconds, default 120): a stuck wait fails with a message instead of looking like a frozen run
+    const int limitMs = std::max(1, std::atoi(env("NATIVE_RTLOOK_TIMEOUT", "120").c_str())) * 1000;
+    REQUIRE_MESSAGE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, limitMs), "the textures / scene did not settle in time");
+    f.cut++;
+    f.shot();
+    // only the ray traced modes (Lit, Lighting only) report a converged stop; the unlit mode is a single frame
+    if (f.mode == 1 || f.mode == 2) REQUIRE_MESSAGE(f.converge(limitMs), "the accumulation did not converge in time");
+    for (int i = 0; i < (f.dlss ? 20 : 1); ++i) f.shot();
+    const render::CapturedImage img = f.shot();
+    REQUIRE(img.ok());
+    savePng(img, env("NATIVE_RTLOOK_OUT", "rt_lit_look.png").c_str());
+    MESSAGE("frames " << f.info().frames << ", render " << f.info().renderW << "x" << f.info().renderH << ", validation errors " << f.device->validationErrors());
 }

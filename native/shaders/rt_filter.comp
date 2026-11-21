@@ -12,6 +12,18 @@ layout(push_constant) uniform PC {
     uint iteration;
 } pc;
 
+// The D signal (R3) rides along: filtered with the weights of the occlusion plus a luminance weight of its own; D = (rgb, variance of the mean luminance).
+vec4 loadD(ivec2 q) {
+    if (pc.iteration == 0u) {
+        vec4 hd = imageLoad(uHistD, q);
+        float n = max(imageLoad(uHist, q).b, 1.0);
+        float l = dot(hd.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float s2 = (n * max(0.0, hd.a - l * l) + 4.0 * 0.05 * (1.0 + l * l)) / (n + 4.0);
+        return vec4(hd.rgb, s2 / n);
+    }
+    return (pc.iteration & 1u) == 1u ? imageLoad(uFilD0, q) : imageLoad(uFilD1, q);
+}
+
 vec2 load(ivec2 q) {
     if (pc.iteration == 0u) {
         vec4 h = imageLoad(uHist, q);
@@ -31,13 +43,19 @@ void main() {
     vec4 np = texelFetch(uNormal, p, 0);
     vec2 centre = load(p);
     vec2 result = centre;
+    vec4 centreD = loadD(p);
+    vec4 resultD = centreD;
     if (np.w > 0.5) {
         float dp = texelFetch(uDist, p, 0).r;
         vec3 n = normalize(np.xyz);
         const float kernel[3] = float[3](1.0, 2.0 / 3.0, 1.0 / 6.0);
         int step = 1 << pc.iteration;
         float sum = 0.0, sumVar = 0.0, wsum = 0.0;
+        vec3 sumD = vec3(0.0);
+        float sumVarD = 0.0, wsumD = 0.0;
         float sigma = 4.0 * sqrt(centre.y) + 1e-3;
+        float lumC = dot(centreD.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float sigmaD = 4.0 * sqrt(centreD.a) + 1e-3 * (1.0 + lumC);
         for (int dy = -2; dy <= 2; ++dy) {
             for (int dx = -2; dx <= 2; ++dx) {
                 ivec2 q = p + ivec2(dx, dy) * step;
@@ -49,14 +67,26 @@ void main() {
                 float w = kernel[abs(dx)] * kernel[abs(dy)];
                 w *= exp(-abs(dq - dp) / (0.02 * dp + 1e-3));
                 w *= pow(max(0.0, dot(n, normalize(nq.xyz))), 32.0);
+                float wg = w;   // the geometry weights; each signal adds its own luminance weight
                 w *= exp(-abs(v.x - centre.x) / sigma);
                 sum += w * v.x;
                 sumVar += w * w * v.y;
                 wsum += w;
+                vec4 vd = loadD(q);
+                float wd = wg * exp(-abs(dot(vd.rgb, vec3(0.2126, 0.7152, 0.0722)) - lumC) / sigmaD);
+                sumD += wd * vd.rgb;
+                sumVarD += wd * wd * vd.a;
+                wsumD += wd;
             }
         }
         if (wsum > 1e-6) result = vec2(sum / wsum, sumVar / (wsum * wsum));
+        if (wsumD > 1e-6) resultD = vec4(sumD / wsumD, sumVarD / (wsumD * wsumD));
     }
-    if ((pc.iteration & 1u) == 0u) imageStore(uFil0, p, vec4(result, 0.0, 0.0));
-    else imageStore(uFil1, p, vec4(result, 0.0, 0.0));
+    if ((pc.iteration & 1u) == 0u) {
+        imageStore(uFil0, p, vec4(result, 0.0, 0.0));
+        imageStore(uFilD0, p, resultD);
+    } else {
+        imageStore(uFil1, p, vec4(result, 0.0, 0.0));
+        imageStore(uFilD1, p, resultD);
+    }
 }
