@@ -450,6 +450,21 @@ void editActions(actions::Registry& r) {
     }
     {
         ActionDef d;
+        d.id = "edit.prefabize";
+        d.label = "Turn into prefab...";
+        d.category = "Edit";
+        d.description = "Saves the selection as a prefab file (centred on its pivot) and replaces it with one instance of that file.";
+        d.menu = "&Edit";
+        d.params = json{{"name", ""}};
+        d.contexts = {"area:viewport"};
+        d.enabled = hasSelection;
+        d.run = [windowOf](ActionEnv& env, const Invocation& inv) {
+            if (auto* w = windowOf(env)) w->turnIntoPrefab(inv.params.value("name", std::string()));
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
         d.id = "edit.paste";
         d.label = "Paste";
         d.category = "Edit";

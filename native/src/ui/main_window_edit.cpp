@@ -2,12 +2,18 @@
 // the hide state from tools/visibility. The OS clipboard carries the Shell's clipboard JSON, so both editors paste each other's copies.
 #include <QClipboard>
 #include <QGuiApplication>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QSettings>
 #include <QStatusBar>
 
+#include <filesystem>
+
 #include <nlohmann/json.hpp>
 
+#include "doc/io.h"
 #include "doc/selection.h"
+#include "tools/prefabize.h"
 #include "render/picking.h"
 #include "render/render_thread.h"
 #include "ui/main_window.h"
@@ -54,6 +60,62 @@ bool MainWindow::groupSelected() {
 bool MainWindow::ungroupSelected() {
     if (!document_ || selection_->empty()) return false;
     return applyEdit(tools::moveSelectionToWorld(document_, selection_->items()));
+}
+
+bool MainWindow::turnIntoPrefab(const std::string& typedName) {
+    namespace fs = std::filesystem;
+    if (!document_ || selection_->empty()) return false;
+    if (assetsRoot_.empty()) {
+        statusBar()->showMessage(QStringLiteral("Turn into prefab: choose the game folder first"), 5000);
+        return false;
+    }
+    const auto extract = tools::extractPrefab(*document_, selection_->items());
+    if (!extract) {
+        statusBar()->showMessage(QStringLiteral("Turn into prefab: nothing selected can go into a prefab"), 5000);
+        return false;
+    }
+    std::string name = typedName;
+    if (name.empty()) {
+        const QString title = QStringLiteral("Turn into prefab"), label = QStringLiteral("Name of the prefab (a folder may come first, e.g. props/crate):");
+        std::optional<std::string> answer;
+        if (nameHandler_) {
+            answer = nameHandler_(title, label, QString());
+        } else {
+            bool ok = false;
+            const QString text = QInputDialog::getText(this, title, label, QLineEdit::Normal, QString(), &ok);
+            if (ok) answer = text.toStdString();
+        }
+        if (!answer || answer->empty()) return false;
+        name = *answer;
+    }
+    std::string problem;
+    const std::string file = tools::prefabFileName(prefabRoot_, name, problem);
+    if (file.empty()) {
+        statusBar()->showMessage(qs(problem), 6000);
+        return false;
+    }
+    const fs::path target = fs::path(assetsRoot_) / file;
+    std::error_code ec;
+    if (fs::exists(target, ec) && !confirm(QStringLiteral("Turn into prefab"), qs("\"" + file + "\" exists already. Replace it? (Instances of it in other maps change too.)"))) return false;
+
+    const tools::EditResult swap = tools::replaceWithInstance(document_, selection_->items(), file, extract->pivot);
+    if (!swap.ok()) {
+        if (!swap.error.empty()) statusBar()->showMessage(qs(swap.error), 6000);
+        return false;
+    }
+    const doc::LoadResult prefab = doc::loadDocumentText(extract->file.dump());
+    if (!prefab.version) {
+        reportError(qs("Turn into prefab: " + prefab.error));
+        return false;
+    }
+    const std::string written = doc::saveDocumentFile(*prefab.version, target);
+    if (!written.empty()) {
+        reportError(qs("Turn into prefab: " + written));
+        return false;
+    }
+    prefabLib_->refresh();
+    emit prefabFileWritten();
+    return applyEdit(swap);
 }
 
 // ---- the clipboard -------------------------------------------------------------------------------------------------------------------

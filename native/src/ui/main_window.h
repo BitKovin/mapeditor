@@ -496,6 +496,12 @@ public:
     bool duplicateSelected();   // the copies are selected
     bool groupSelected();       // brushes -> a new func_group
     bool ungroupSelected();     // the brushes of func_group entities (or any selected brushes) -> worldspawn
+    // Turn into prefab (T11.7a): the selection is written as a prefab file under the prefab folder (named `name`, else asked for) and replaced by one instance of it at the
+    // selection's pivot, one undo step; the instance is selected. An existing file of that name is only replaced after a yes. False when refused (the status bar says why).
+    bool turnIntoPrefab(const std::string& name = {});
+    // Asked for the prefab name (title, label, suggestion); an empty answer or nullopt cancels. The default is an input dialog; tests install an answer.
+    using NameHandler = std::function<std::optional<std::string>(const QString& title, const QString& label, const QString& suggestion)>;
+    void setNameHandler(NameHandler handler) { nameHandler_ = std::move(handler); }
     // The OS clipboard holds the selection as the Shell's clipboard JSON (level-editor/clipboard), so both editors paste each other's copies.
     bool copySelected();
     bool cutSelected();
@@ -595,6 +601,7 @@ public:
 signals:
     // The game folder was changed.
     void assetsRootChanged();
+    void prefabFileWritten();     // a prefab file was written (Turn into prefab): the Place panel lists it
     void texGroupsChanged();   // a group file was written or removed
     // The editor preferences were changed.
     void editorPrefsChanged();
@@ -729,6 +736,7 @@ private:
     StatusFields* statusFields_ = nullptr;
     KeyHelpOverlay* keyHelp_ = nullptr;
     std::function<bool(const QString&, const QString&)> confirmHandler_;
+    NameHandler nameHandler_;
     std::vector<ViewportPanel> panels_;
     LayoutPreset preset_ = LayoutPreset::One;
     int active_ = 0;

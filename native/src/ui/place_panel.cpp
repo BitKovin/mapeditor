@@ -143,6 +143,7 @@ PlacePanel::PlacePanel(MainWindow& window, QWidget* parent) : QWidget(parent), w
         rebuildClasses();
         rescanPrefabs();
     });
+    QObject::connect(&win_, &MainWindow::prefabFileWritten, this, [this] { rescanPrefabs(); });
     QObject::connect(&win_, &MainWindow::toolChanged, this, [this] { syncShape(); });
     QTimer::singleShot(0, this, [this] {   // the window is still being built: the lists are filled when it is up
         rebuildClasses();
