@@ -267,11 +267,23 @@ Regenerated regenerateShape(const std::shared_ptr<const doc::DocumentVersion>& v
 std::shared_ptr<const doc::DocumentVersion> reconcileShapes(const std::shared_ptr<const doc::DocumentVersion>& prev, const std::shared_ptr<const doc::DocumentVersion>& next,
                                                             const std::function<std::string()>& freshGroup) {
     if (!next) return next;
+    const auto carries = [](const doc::BrushNode& b) { return b.raw.is_object() && b.raw.contains("shape"); };
+    bool any = false;   // the common case: no shape anywhere, nothing to do (this runs on every commit, also every step of a drag)
+    for (const auto& e : next->entities) {
+        for (const auto& b : e->brushes)
+            if (carries(*b)) {
+                any = true;
+                break;
+            }
+        if (any) break;
+    }
+    if (!any) return next;
     std::map<std::string, std::set<std::string>> prevMembers;   // group -> "entity|brush"
     std::map<std::string, const doc::BrushNode*> prevBrush;
     if (prev)
         for (const auto& e : prev->entities)
             for (const auto& b : e->brushes) {
+                if (!carries(*b)) continue;
                 const std::string key = e->typed.id + "|" + b->brush.id;
                 prevBrush[key] = b.get();
                 if (const auto s = shapeOf(*b)) prevMembers[s->group].insert(key);
@@ -286,10 +298,10 @@ std::shared_ptr<const doc::DocumentVersion> reconcileShapes(const std::shared_pt
         std::map<std::string, std::vector<const doc::BrushNode*>> groups;
         std::set<std::string> strip;
         std::map<std::string, std::string> regroup;
-        bool any = false;
+        bool has = false;
         for (const auto& b : e->brushes) {
-            if (!b->raw.is_object() || !b->raw.contains("shape")) continue;
-            any = true;
+            if (!carries(*b)) continue;
+            has = true;
             const auto s = shapeOf(*b);
             if (!s) {
                 strip.insert(b->brush.id);
@@ -297,7 +309,7 @@ std::shared_ptr<const doc::DocumentVersion> reconcileShapes(const std::shared_pt
             }
             groups[s->group].push_back(b.get());
         }
-        if (!any) continue;
+        if (!has) continue;
         const auto valid = [&](const std::vector<const doc::BrushNode*>& list) {
             if (list.empty()) return false;
             std::vector<ShapeSpec> specs;

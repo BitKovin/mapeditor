@@ -4,8 +4,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 
 #include "core/entity_class.h"
+#include "tools/parametric.h"
 #include "tools/properties.h"
 
 namespace native::tools {
@@ -98,6 +100,61 @@ DetailsRow checkRow(std::string label, std::string tip, bool checked, DetailsEdi
 }
 
 std::array<double, 3> arr(const core::Vec3& v) { return {v.x, v.y, v.z}; }
+
+// The Shape section of a brush that is a part of a parametric shape (the Shell's panels.ts shapeSection).
+void shapeRows(DetailsForm& f, const std::string& entityId, const std::string& brushId, const parametric::ShapeSpec& s, bool ro) {
+    static const char* const names[] = {"Box", "Cylinder", "Wedge", "Arch", "Stairs", "Sphere"};
+    f.rows.push_back(section(std::string("Shape: ") + names[static_cast<int>(s.kind)] + (s.parts > 1 ? " (part " + std::to_string(s.part + 1) + " of " + std::to_string(s.parts) + ")" : std::string())));
+    const ShapeParams p = parametric::paramsFrom(s.params, s.turn);
+    DetailsEdit base;
+    base.kind = Kind::Shape;
+    base.entityId = entityId;
+    base.brushId = brushId;
+    const auto number = [&](const char* label, const char* key, double value, double lo, double hi, double step, bool integer) {
+        DetailsRow r;
+        r.kind = integer ? RowKind::Integer : RowKind::Real;
+        r.label = label;
+        r.value = formatNumber(value);
+        r.min = lo;
+        r.max = hi;
+        r.step = step;
+        r.readOnly = ro;
+        r.edit = base;
+        r.edit.key = key;
+        f.rows.push_back(std::move(r));
+    };
+    if (s.kind == ShapeId::Cylinder) number("sides", "sides", p.sides, 3, 64, 1, true);
+    if (s.kind == ShapeId::Stairs) number("steps", "steps", p.steps, 2, 64, 1, true);
+    if (s.kind == ShapeId::Sphere) {
+        number("segments", "segments", p.segments, 4, 32, 1, true);
+        number("rings", "rings", p.rings, 2, 16, 1, true);
+    }
+    if (s.kind == ShapeId::Cylinder || s.kind == ShapeId::Sphere) {
+        DetailsEdit e = base;
+        e.key = "smooth";
+        f.rows.push_back(checkRow("smooth", "The round edges are marked smooth (light bake and export shade it round)", p.smooth, e, ro));
+    }
+    if (s.kind == ShapeId::Arch) {
+        number("segments", "archSegments", p.archSegments, 3, 64, 1, true);
+        number("wall thickness (m)", "archThickness", p.archThickness, 0.01, 100, 0.05, false);
+    }
+    number("width (m)", "du", s.frame.du, 0.01, 10000, 0.25, false);
+    number("depth (m)", "dv", s.frame.dv, 0.01, 10000, 0.25, false);
+    number("height (m)", "h", s.frame.h, 0.01, 10000, 0.25, false);
+    DetailsRow turn;
+    turn.kind = RowKind::Choice;
+    turn.label = "orientation";
+    turn.tip = "Which way the shape faces in its box (quarter turns about its height)";
+    for (int t = 0; t < 4; ++t) turn.choices.push_back({std::to_string(t * 90) + "\xC2\xB0", std::to_string(t)});
+    turn.value = std::to_string(s.turn);
+    turn.readOnly = ro;
+    turn.edit = base;
+    turn.edit.key = "turn";
+    f.rows.push_back(std::move(turn));
+    DetailsEdit conv = base;
+    conv.key = "dissolve";
+    f.rows.push_back(checkRow("convert to brushes", "Keep the brushes as they are and forget the generator (a mesh edit does this too)", false, conv, ro));
+}
 
 // The typed row of one key of the .ent class.
 DetailsRow typedRow(const core::EntKey& k, const core::Entity& e, bool ro) {
@@ -283,6 +340,7 @@ void entityRows(DetailsForm& f, const DetailsContext& ctx, const doc::EntityNode
                 }
             }
             f.rows.push_back(note(std::to_string(b.vertices.size()) + " vertices \xC2\xB7 " + std::to_string(b.faces.size()) + " faces"));
+            if (const auto shape = parametric::shapeOf(*node.brushes[static_cast<size_t>(bi)])) shapeRows(f, e.id, b.id, *shape, ro);
         }
     }
 
@@ -574,6 +632,57 @@ DetailsForm buildDetails(const DetailsContext& ctx) {
     return f;
 }
 
+namespace {
+
+EditResult applyShapeEdit(const std::shared_ptr<const doc::DocumentVersion>& base, const DetailsEdit& edit, const EditValue& value) {
+    EditResult r;
+    const int ei = base->findEntity(edit.entityId), bi = base->findBrush(edit.entityId, edit.brushId);
+    if (ei < 0 || bi < 0) return r;
+    const auto spec = parametric::shapeOf(*base->entities[static_cast<size_t>(ei)]->brushes[static_cast<size_t>(bi)]);
+    if (!spec) return r;
+    const auto wholeShape = [&](const doc::DocumentVersion& v) {
+        std::vector<doc::SelRef> out;
+        const int e = v.findEntity(edit.entityId);
+        if (e < 0) return out;
+        for (const auto& b : v.entities[static_cast<size_t>(e)]->brushes)
+            if (const auto s = parametric::shapeOf(*b); s && s->group == spec->group) out.push_back(doc::SelRef::brush(edit.entityId, b->brush.id));
+        return out;
+    };
+    if (edit.key == "dissolve") {
+        if (!value.checked) return r;
+        r.select = wholeShape(*base);
+        r.version = parametric::dissolveShape(base, edit.entityId, spec->group);
+        if (r.version == base) r.version.reset();
+        r.label = "Convert shape to brushes";
+        return r;
+    }
+    parametric::ShapePatch patch;
+    const double v = value.number;
+    if (edit.key == "sides") patch.params["sides"] = std::lround(std::clamp(v, 3.0, 64.0));
+    else if (edit.key == "steps") patch.params["steps"] = std::lround(std::clamp(v, 2.0, 64.0));
+    else if (edit.key == "segments") patch.params["segments"] = std::lround(std::clamp(v, 4.0, 32.0));
+    else if (edit.key == "rings") patch.params["rings"] = std::lround(std::clamp(v, 2.0, 16.0));
+    else if (edit.key == "archSegments") patch.params["archSegments"] = std::lround(std::clamp(v, 3.0, 64.0));
+    else if (edit.key == "archThickness") patch.params["archThickness"] = std::clamp(v, 0.01, 100.0);
+    else if (edit.key == "smooth") patch.params["smooth"] = value.checked;
+    else if (edit.key == "du") patch.du = std::clamp(v, 0.01, 10000.0);
+    else if (edit.key == "dv") patch.dv = std::clamp(v, 0.01, 10000.0);
+    else if (edit.key == "h") patch.h = std::clamp(v, 0.01, 10000.0);
+    else if (edit.key == "turn") patch.turn = std::clamp(static_cast<int>(std::lround(value.text ? std::atof(value.text->c_str()) : v)), 0, 3);
+    else return r;
+    const parametric::Regenerated g = parametric::regenerateShape(base, edit.entityId, spec->group, patch, [] { return newId("b"); });
+    if (!g.ok()) {
+        r.error = g.error;
+        return r;
+    }
+    r.version = g.version;
+    r.label = "Edit shape";
+    r.select = wholeShape(*g.version);   // the whole shape stays selected, whatever its number of parts became
+    return r;
+}
+
+} // namespace
+
 EditResult applyDetailsEdit(const std::shared_ptr<const doc::DocumentVersion>& base, const core::EntityDefinitions* defs, const DetailsEdit& edit, const EditValue& value) {
     if (!base) return {};
     const auto entityNode = [&]() -> const doc::EntityNode* {
@@ -633,6 +742,7 @@ EditResult applyDetailsEdit(const std::shared_ptr<const doc::DocumentVersion>& b
         case Kind::ShareName: return shareTargetName(base, pathsOf(value));
         case Kind::BrushOp: return setBrushOp(base, edit.entityId, edit.brushId, value.checked);
         case Kind::Carve: return setCarve(base, edit.entityId, edit.brushId, static_cast<CarveKey>(edit.axis), value.checked);
+        case Kind::Shape: return applyShapeEdit(base, edit, value);
         case Kind::VertexLit: return setKeyvalue(base, edit.entityId, "_vertex_lit", value.checked ? std::optional<std::string>("1") : std::nullopt);
         case Kind::Spawnflag: {
             const doc::EntityNode* n = entityNode();

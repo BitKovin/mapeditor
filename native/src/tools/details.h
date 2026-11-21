@@ -38,6 +38,7 @@ struct DetailsEdit {
         ShareName,        // the paths of the row
         BrushOp,          // checked = subtractive
         Carve,            // checked; `axis` = CarveKey
+        Shape,            // a parametric shape of the brush: `key` = sides / steps / segments / rings / archSegments / archThickness / smooth / du / dv / h / turn / dissolve
         VertexLit,        // checked
         Spawnflag,        // checked; `bit`
         InstanceName,     // text

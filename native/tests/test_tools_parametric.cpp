@@ -352,3 +352,97 @@ TEST_CASE("parametric: dissolving a shape drops the records and nothing else; th
     CHECK(j["entities"][0]["brushes"][0]["shape"]["kind"] == "stairs");
     CHECK(j["entities"][0]["brushes"][0]["shape"]["frame"]["du"].is_number());
 }
+
+// ---- T11.6b: the Details section, the History hook ----
+
+#include "doc/commands.h"
+#include "tools/details.h"
+
+TEST_CASE("parametric details: a shape's brush shows the Shape rows; editing a row rebuilds the whole shape and keeps it selected; Convert drops the generator") {
+    ShapeParams p;
+    p.steps = 4;
+    const Version d = drawn(ShapeId::Stairs, p);
+    const std::string brush = brushes(d)[1]->brush.id;
+    doc::SelRef sel = doc::SelRef::brush("w", brush);
+    tools::DetailsContext ctx;
+    ctx.doc = d;
+    ctx.selection = &sel;
+    const tools::DetailsForm form = tools::buildDetails(ctx);
+    const tools::DetailsRow* steps = nullptr;
+    const tools::DetailsRow* turn = nullptr;
+    const tools::DetailsRow* conv = nullptr;
+    bool section = false;
+    for (const tools::DetailsRow& r : form.rows) {
+        if (r.kind == tools::RowKind::Section && r.label == "Shape: Stairs (part 2 of 4)") section = true;
+        if (r.label == "steps") steps = &r;
+        if (r.label == "orientation") turn = &r;
+        if (r.label == "convert to brushes") conv = &r;
+    }
+    CHECK(section);
+    REQUIRE(steps);
+    CHECK(steps->value == "4");
+    CHECK(steps->kind == tools::RowKind::Integer);
+    REQUIRE(turn);
+    CHECK(turn->choices.size() == 4);
+    REQUIRE(conv);
+    // an ordinary brush has no such rows
+    {
+        const Version plain = drawn(ShapeId::Wedge, {}, 0, true);
+        doc::SelRef s2 = doc::SelRef::brush("w", "x");
+        tools::DetailsContext c2;
+        c2.doc = plain;
+        c2.selection = &s2;
+        for (const tools::DetailsRow& r : tools::buildDetails(c2).rows) CHECK(r.label != "convert to brushes");
+    }
+    // steps 4 -> 6
+    tools::EditValue v;
+    v.number = 6;
+    const tools::EditResult r = tools::applyDetailsEdit(d, nullptr, steps->edit, v);
+    REQUIRE(r.ok());
+    CHECK(brushes(r.version).size() == 6);
+    CHECK(r.select.size() == 6);
+    CHECK(r.label == "Edit shape");
+    // orientation by text
+    tools::EditValue t;
+    t.text = "2";
+    const tools::EditResult rt = tools::applyDetailsEdit(r.version, nullptr, turn->edit, t);
+    REQUIRE(rt.ok());
+    CHECK(pm::shapeOf(*brushes(rt.version)[0])->turn == 2);
+    // a size of zero is clamped to the smallest size, not refused
+    tools::EditValue z;
+    z.number = 0;
+    for (const tools::DetailsRow& row : form.rows)
+        if (row.label == "width (m)") {
+            const tools::EditResult rw = tools::applyDetailsEdit(d, nullptr, row.edit, z);
+            REQUIRE(rw.ok());
+            CHECK(pm::shapeOf(*brushes(rw.version)[0])->frame.du == doctest::Approx(0.01));
+        }
+    // convert: unchecked does nothing, checked drops the records
+    tools::EditValue off;
+    CHECK_FALSE(tools::applyDetailsEdit(d, nullptr, conv->edit, off).ok());
+    tools::EditValue on;
+    on.checked = true;
+    const tools::EditResult c = tools::applyDetailsEdit(d, nullptr, conv->edit, on);
+    REQUIRE(c.ok());
+    for (const auto& b : brushes(c.version)) CHECK_FALSE(hasShape(*b));
+    CHECK(c.select.size() == 4);
+}
+
+TEST_CASE("parametric history: every commit keeps the records honest; a part edited alone loses the shape, and undo brings it back") {
+    ShapeParams p;
+    p.steps = 3;
+    const Version d = drawn(ShapeId::Stairs, p);
+    doc::History h(d);
+    h.setReconciler([](const Version& prev, const Version& next) { return pm::reconcileShapes(prev, next, [] { return std::string("s_new"); }); });
+    // moving every part keeps the shape
+    const Version all = tools::transformSelections(d, allParts(d), tools::translateBy({1, 0, 0}), false, 0, true);
+    REQUIRE(h.commit({"Move", d, all}));
+    for (const auto& b : brushes(h.current())) CHECK(pm::shapeOf(*b));
+    // moving one alone does not
+    const Version one = tools::transformSelections(h.current(), {doc::SelRef::brush("w", brushes(h.current())[0]->brush.id)}, tools::translateBy({0, 0, 2}), false, 0, true);
+    const Version before = h.current();
+    REQUIRE(h.commit({"Move part", before, one}));
+    for (const auto& b : brushes(h.current())) CHECK_FALSE(hasShape(*b));
+    CHECK(h.undo());
+    for (const auto& b : brushes(h.current())) CHECK(pm::shapeOf(*b));
+}

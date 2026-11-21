@@ -16,6 +16,7 @@
 #include "tools/shapes.h"
 #include "ui/box_drawing.h"
 #include "ui/main_window.h"
+#include "tools/parametric.h"
 #include "ui/view_helpers.h"
 
 namespace native::ui {
@@ -178,11 +179,18 @@ bool MainWindow::commitBox() {
         w.classname = "worldspawn";
         if (!ed.addEntity(w)) return false;
     }
-    for (const core::Brush& b : brushes)
-        if (!ed.addBrush(worldId, b)) {
+    if (shape_ != tools::ShapeId::Box) {   // every part carries the record that lets the Details panel rebuild the shape
+        if (!tools::parametric::addShape(ed, worldId, brushes, shape_, tools::frameOf(d.plane, d.rect, d.height), shapeParams_, shapeParams_.turn, tools::newId("s"))) {
             statusBar()->showMessage(QString::fromStdString(ed.error()), 6000);
             return false;
         }
+    } else {
+        for (const core::Brush& b : brushes)
+            if (!ed.addBrush(worldId, b)) {
+                statusBar()->showMessage(QString::fromStdString(ed.error()), 6000);
+                return false;
+            }
+    }
     const auto after = ed.finish();
     if (!after || !commitEdit(label, after)) return false;
     std::vector<doc::SelRef> refs;

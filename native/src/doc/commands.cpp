@@ -30,6 +30,8 @@ void History::push(Command c) {
 
 bool History::commit(Command c) {
     if (!c.after || !c.before || c.before != current_ || c.before == c.after) return false;
+    if (reconciler_)
+        if (auto fixed = reconciler_(c.before, c.after)) c.after = std::move(fixed);
     auto previous = current_;
     current_ = c.after;
     if (interacting_) {

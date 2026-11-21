@@ -37,6 +37,11 @@ public:
 
     void setListener(Listener l) { listener_ = std::move(l); }
 
+    // Runs on the `after` version of every commit (prev = the version the edit started from): keeps invariants that hold across edits, e.g. parametric shape records (the Shell
+    // store's reconcileShapes). Returns the version to use (the argument itself when nothing changes); null = keep `next`.
+    using Reconciler = std::function<std::shared_ptr<const DocumentVersion>(const std::shared_ptr<const DocumentVersion>& prev, const std::shared_ptr<const DocumentVersion>& next)>;
+    void setReconciler(Reconciler r) { reconciler_ = std::move(r); }
+
     // A new document: the stacks are cleared, the listener hears Reset.
     void reset(std::shared_ptr<const DocumentVersion> version);
 
@@ -73,6 +78,7 @@ private:
     Command interaction_;                              // before = at begin, after = latest; label = the interaction's
     bool interactionDirty_ = false;
     Listener listener_;
+    Reconciler reconciler_;
 };
 
 } // namespace native::doc

@@ -1,5 +1,6 @@
 // ui/main_window -- see main_window.h.
 #include "ui/main_window.h"
+#include "tools/parametric.h"
 
 #include <DockAreaWidget.h>
 #include <DockManager.h>
@@ -173,6 +174,9 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         refreshOutline();
     });
     history_ = std::make_unique<doc::History>();
+    history_->setReconciler([](const std::shared_ptr<const doc::DocumentVersion>& prev, const std::shared_ptr<const doc::DocumentVersion>& next) {
+        return tools::parametric::reconcileShapes(prev, next, [] { return tools::newId("s"); });
+    });
     history_->setListener([this](const std::shared_ptr<const doc::DocumentVersion>& current, const doc::ChangeSet& changes, doc::ChangeCause cause) {
         document_ = current;
         // The selection follows the document before anyone is told about the new version: panels then see both consistent.
@@ -711,8 +715,20 @@ void MainWindow::pickAt(render::ViewportWindow* vp, QPointF p, PickOp op) {
     const std::optional<render::PickHit> hit = picker_->pick(ray, pickOptions());
     switch (op) {
         case PickOp::Replace:
-            if (hit) selection_->select(objectRef(*document_, hit->toSelRef(false)));
-            else selection_->clear();
+            if (hit) {
+                const doc::SelRef ref = objectRef(*document_, hit->toSelRef(false));
+                // a click on any part of a placed shape selects the whole shape (REQUIREMENTS 22 P1)
+                const std::vector<std::string> parts = ref.instancePath.empty() && !ref.brushId.empty() ? tools::parametric::shapeMembers(*document_, ref.entityId, ref.brushId) : std::vector<std::string>{};
+                if (parts.size() > 1) {
+                    std::vector<doc::SelRef> refs;
+                    for (const std::string& b : parts) refs.push_back(doc::SelRef::brush(ref.entityId, b));
+                    selection_->selectMany(*document_, refs);
+                } else {
+                    selection_->select(ref);
+                }
+            } else {
+                selection_->clear();
+            }
             break;
         case PickOp::Face:
             if (hit) selection_->select(hit->faceId && hit->instance.empty() ? hit->toSelRef(true) : objectRef(*document_, hit->toSelRef(false)));
