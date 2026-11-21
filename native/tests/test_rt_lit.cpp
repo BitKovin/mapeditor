@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <iomanip>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -36,6 +37,8 @@
 #include "doc/io.h"
 #include "doc/prefabs.h"
 #include "gpu/device.h"
+#include "light/light_link.h"
+#include "light/lighting_service.h"
 #include "render/camera_rig.h"
 #include "render/render_thread.h"
 #include "render/rt_lights.h"
@@ -890,6 +893,7 @@ TEST_CASE("RT Lit: look at a map" * doctest::test_suite("gpu") * doctest::skip(r
         }
     }
     f.rt->setRtLighting(render::rtLightingOf(*f.snapshot->doc));
+    f.rt->setObjectRules(render::makeRtRules(*f.snapshot, core::LightingClasses::fromProfile(core::loadProfile(f.root))));   // MainWindow does this in the editor
     render::RtLitOptions o = options(1024);
     o.lightmapTexelsPerMeter = static_cast<float>(std::atof(env("NATIVE_RTLOOK_TEXEL", "16").c_str()));
     o.bounces = std::atoi(env("NATIVE_RTLOOK_BOUNCE", "1").c_str()) != 0;
@@ -1081,5 +1085,154 @@ TEST_CASE("RT Lit: bounce light (SHaRC cache of S = Db + I) brightens what the l
     CHECK(darker < pixels / 1000);             // and (apart from noise) nothing gets darker
     CHECK(brighter > pixels / 50);
     CHECK(meanAbsDiff(on, again) < 3.0);       // converged pictures agree run to run
+    CHECK(f.device->validationErrors() == 0);
+}
+
+// The baked Lit view (chunked lightmaps, LightingService converged) against the ray traced Lit view for one camera of a real map. Runs only when NATIVE_CMP_ROOT and NATIVE_CMP_MAP
+// are set (NATIVE_CMP_EYE / _TARGET / _SIZE / _TIMEOUT / _OUT like the look test; NATIVE_CMP_BOUNCE 0 / 1). Writes native/build/<OUT> = bake | ray traced | |difference| x 4 and prints the
+// mean brightness of both and the ratio per 4 x 4 region of the picture.
+TEST_CASE("Compare: the baked Lit view against the ray traced Lit view" * doctest::test_suite("gpu") * doctest::skip(rtEnv("NATIVE_CMP_ROOT").empty())) {
+    const auto env = [](const char* name, const std::string& fallback) {
+        const std::string v = rtEnv(name);
+        return v.empty() ? fallback : v;
+    };
+    const auto numbers = [](std::string text) {
+        for (char& c : text)
+            if (c == ',' || c == 'x') c = ' ';
+        std::istringstream in(text);
+        std::vector<double> out;
+        double d = 0;
+        while (in >> d) out.push_back(d);
+        out.resize(3, 0.0);
+        return out;
+    };
+    const std::vector<double> size = numbers(env("NATIVE_CMP_SIZE", "960x540"));
+    const uint32_t w = static_cast<uint32_t>(size[0]), h = static_cast<uint32_t>(size[1]);
+    const int limitMs = std::max(1, std::atoi(env("NATIVE_CMP_TIMEOUT", "300").c_str())) * 1000;
+    Fixture f;
+    f.root = env("NATIVE_CMP_ROOT", "");
+    f.mapName = env("NATIVE_CMP_MAP", "maps/lvl2.map.json");
+    if (!f.start(w, h, false)) return;
+    const std::vector<double> eye = numbers(env("NATIVE_CMP_EYE", "30,1.2,-14")), target = numbers(env("NATIVE_CMP_TARGET", "26.5,1.0,-23.5"));
+    f.rig.fly().lookAt({eye[0], eye[1], eye[2]}, {target[0], target[1], target[2]});
+    const auto profile = std::make_shared<core::GameProfile>(core::loadProfile(f.root));
+
+    // ---- the bake
+    f.rt->setRtLit(false);
+    auto link = std::make_shared<light::LightLink>(*f.device);
+    REQUIRE(link->valid());
+    f.rt->setLightLink(link);
+    light::LightingService service(*f.device, *link);
+    REQUIRE(service.valid());
+    service.setInputs({f.snapshot, profile, f.root});
+    f.shot();
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, limitMs));
+    REQUIRE_MESSAGE(service.waitConverged(limitMs), "the bake did not converge in time");
+    render::CapturedImage baked;
+    for (int i = 0; i < 6; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        baked = f.shot();
+    }
+    REQUIRE(baked.ok());
+    MESSAGE("bake: " << service.status().chunks << " chunks, error '" << service.status().error << "'");
+
+    // ---- the ray traced view
+    std::mutex mutex;
+    render::RtLightsProducer producer([&](std::shared_ptr<const render::RtLightData> d) {
+        std::lock_guard<std::mutex> lock(mutex);
+        f.rt->setRtLights(d);
+    });
+    producer.request({f.snapshot, profile, f.root});
+    producer.waitIdle();
+    f.rt->setRtLighting(render::rtLightingOf(*f.snapshot->doc));
+    f.rt->setObjectRules(render::makeRtRules(*f.snapshot, core::LightingClasses::fromProfile(*profile)));   // MainWindow does this in the editor
+    render::RtLitOptions o = options(1024);
+    o.lightmapTexelsPerMeter = 16.0f;
+    o.bounces = std::atoi(env("NATIVE_CMP_BOUNCE", "1").c_str()) != 0;
+    f.rt->setRtLit(true, o);
+    f.cut++;
+    f.shot();
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, limitMs));
+    f.cut++;
+    f.shot();
+    REQUIRE_MESSAGE(f.converge(limitMs), "the accumulation did not converge in time");
+    const render::CapturedImage rt = f.shot();
+    REQUIRE(rt.ok());
+    REQUIRE(rt.width == baked.width);
+    REQUIRE(rt.height == baked.height);
+
+    {   // NATIVE_CMP_PROBE = "x,y": which objects the ray through that pixel passes (bounds only), nearest first, with their lighting class and rules
+        const std::vector<double> probe = numbers(env("NATIVE_CMP_PROBE", ""));
+        if (!env("NATIVE_CMP_PROBE", "").empty()) {
+            const render::ViewState vs = f.view();
+            const render::Mat4 inv = render::mat4Invert(vs.viewProj);
+            const auto unproject = [&](double nz) {
+                const double nx = (probe[0] + 0.5) / f.w * 2.0 - 1.0, ny = (probe[1] + 0.5) / f.h * 2.0 - 1.0;
+                double q[4];
+                const double v[4] = {nx, ny, nz, 1.0};
+                for (int r = 0; r < 4; ++r) q[r] = inv[0 * 4 + r] * v[0] + inv[1 * 4 + r] * v[1] + inv[2 * 4 + r] * v[2] + inv[3 * 4 + r] * v[3];
+                return core::Vec3{q[0] / q[3], q[1] / q[3], q[2] / q[3]};
+            };
+            const core::Vec3 ro{vs.eye[0], vs.eye[1], vs.eye[2]};
+            const core::Vec3 d = (unproject(1.0) - unproject(0.0)).normalized();
+            const auto rules = render::makeRtRules(*f.snapshot, core::LightingClasses::fromProfile(*profile));
+            std::vector<std::pair<double, std::string>> hits;
+            for (const auto& [key, prod] : f.snapshot->objects) {
+                if (!prod.bounds.valid()) continue;
+                double t0 = 0, t1 = 1e9;
+                const double lo[3] = {prod.bounds.mn.x, prod.bounds.mn.y, prod.bounds.mn.z}, hi[3] = {prod.bounds.mx.x, prod.bounds.mx.y, prod.bounds.mx.z};
+                const double oo[3] = {ro.x, ro.y, ro.z}, dd[3] = {d.x, d.y, d.z};
+                bool ok = true;
+                for (int a = 0; a < 3 && ok; ++a) {
+                    if (std::abs(dd[a]) < 1e-12) { ok = oo[a] >= lo[a] && oo[a] <= hi[a]; continue; }
+                    double a0 = (lo[a] - oo[a]) / dd[a], a1 = (hi[a] - oo[a]) / dd[a];
+                    if (a0 > a1) std::swap(a0, a1);
+                    t0 = std::max(t0, a0);
+                    t1 = std::min(t1, a1);
+                    ok = t0 <= t1;
+                }
+                if (!ok) continue;
+                const auto r = rules->find(key);
+                std::string cls = prod.surfaces && !prod.surfaces->empty() ? prod.surfaces->front().classname : "?";
+                hits.push_back({t0, key.entityId + "/" + key.brushId + " class '" + cls + "' rules " + (r == rules->end() ? std::string("none") : std::to_string(r->second)) +
+                                        " bounds " + std::to_string(prod.bounds.mn.x) + "," + std::to_string(prod.bounds.mn.y) + "," + std::to_string(prod.bounds.mn.z) + " .. " +
+                                        std::to_string(prod.bounds.mx.x) + "," + std::to_string(prod.bounds.mx.y) + "," + std::to_string(prod.bounds.mx.z)});
+            }
+            std::sort(hits.begin(), hits.end());
+            for (size_t i = 0; i < hits.size() && i < 6; ++i) MESSAGE("probe hit t=" << hits[i].first << ": " << hits[i].second);
+        }
+    }
+    const auto luma = [](const render::CapturedImage& im, size_t i) { return 0.2126 * im.rgba[i] + 0.7152 * im.rgba[i + 1] + 0.0722 * im.rgba[i + 2]; };
+    double sumB = 0, sumR = 0;
+    double cellB[16] = {}, cellR[16] = {};
+    for (uint32_t y = 0; y < rt.height; ++y)
+        for (uint32_t x = 0; x < rt.width; ++x) {
+            const size_t i = (static_cast<size_t>(y) * rt.width + x) * 4;
+            const double b = luma(baked, i), r = luma(rt, i);
+            sumB += b;
+            sumR += r;
+            const size_t c = (y * 4 / rt.height) * 4 + (x * 4 / rt.width);
+            cellB[c] += b;
+            cellR[c] += r;
+        }
+    const double n = static_cast<double>(rt.width) * rt.height;
+    std::ostringstream grid;
+    for (int c = 0; c < 16; ++c) {
+        grid << (c % 4 == 0 ? "\n   " : " ") << std::fixed << std::setprecision(2) << (cellB[c] > 1e-6 ? cellR[c] / cellB[c] : 0.0);
+    }
+    MESSAGE("mean luma bake " << sumB / n << ", ray traced " << sumR / n << ", ratio " << sumR / sumB << "; ratio per region (ray traced / bake):" << grid.str());
+    QImage out(static_cast<int>(rt.width * 3), static_cast<int>(rt.height), QImage::Format_RGBA8888);
+    for (uint32_t y = 0; y < rt.height; ++y)
+        for (uint32_t x = 0; x < rt.width; ++x) {
+            const size_t i = (static_cast<size_t>(y) * rt.width + x) * 4;
+            for (int k = 0; k < 4; ++k) {
+                out.scanLine(static_cast<int>(y))[x * 4 + k] = baked.rgba[i + k];
+                out.scanLine(static_cast<int>(y))[(rt.width + x) * 4 + k] = rt.rgba[i + k];
+                const int d = std::abs(static_cast<int>(baked.rgba[i + k]) - static_cast<int>(rt.rgba[i + k])) * 4;
+                out.scanLine(static_cast<int>(y))[(2 * rt.width + x) * 4 + k] = k == 3 ? 255 : static_cast<uint8_t>(std::min(255, d));
+            }
+        }
+    const fs::path dir = fs::path(NATIVE_CORE_ASSETS_DIR).parent_path().parent_path() / "native" / "build";
+    out.save(QString::fromStdString((dir / env("NATIVE_CMP_OUT", "compare_bake_rt.png")).string()));
     CHECK(f.device->validationErrors() == 0);
 }
