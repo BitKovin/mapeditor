@@ -56,6 +56,7 @@ struct DeviceCaps {
     // Required for Lit (05 §2). Lit is available when all of the first three are on.
     bool accelerationStructure = false;   // VK_KHR_acceleration_structure + deferred_host_operations
     bool rayQuery = false;                // VK_KHR_ray_query
+    bool bounceCache = false;             // ray query + 64-bit buffer atomics + fp16 + int64: the SHaRC radiance cache of the ray traced Lit path (bounce light)
     bool rayTracingPipeline = false;      // VK_KHR_ray_tracing_pipeline (gather pass; falls back to ray query without)
     // Optional.
     bool invocationReorder = false;       // VK_EXT_ray_tracing_invocation_reorder (SER)

@@ -409,7 +409,7 @@ bool RtScene::update(VkCommandBuffer cmd, uint64_t completed, uint64_t submitted
             r.vertexAddress = scene_.vertexAddress() + uint64_t(o.vertexOffset) * kVertexSize;
             r.indexAddress = scene_.indexAddress() + uint64_t(o.firstIndex) * sizeof(uint32_t);
             r.triangleCount = o.indexCount / 3;
-            r.flags = o.raw ? 1u : 0u;
+            r.flags = (o.raw ? 1u : 0u) | ((o.flags & kObjReceives) != 0 ? 2u : 0u);
             r.vertexCount = o.vertexCount;
             VkAccelerationStructureInstanceKHR inst{};
             inst.transform.matrix[0][0] = inst.transform.matrix[1][1] = inst.transform.matrix[2][2] = 1.f;

@@ -47,6 +47,9 @@ TEST_CASE("bad command lines report an error") {
     CHECK(parseArgs({"--dlss", "balanced"}).error.empty());
     CHECK(parseArgs({"--dlss", "ultraPerformance"}).error.empty());
     CHECK_FALSE(parseArgs({"--dlss", "turbo"}).error.empty());
+    CHECK(parseArgs({}).options.rtBounces);
+    CHECK_FALSE(parseArgs({"--rt-bounces", "0"}).options.rtBounces);
+    CHECK_FALSE(parseArgs({"--rt-bounces", "2"}).error.empty());
     CHECK(parseArgs({"--dlss", "quality"}).error.empty());
     CHECK(parseArgs({}).options.dlss.empty());
     CHECK(parseArgs({"--help"}).options.help);

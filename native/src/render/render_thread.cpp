@@ -715,7 +715,7 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     if (!rtScene_ || !rtScene_->valid() || !mesh_) return false;
     const VkAccelerationStructureKHR tlas = rtScene_->tlas();
     if (tlas == VK_NULL_HANDLE) return false;   // the ray tracing scene has no triangle yet: the normal frame
-    if (!rtLit_) rtLit_ = std::make_unique<RtLit>(device_);
+    if (!rtLit_) rtLit_ = std::make_unique<RtLit>(device_, textures_->layout());
     if (!dlssPass_ || dlssPass_->swapchainFormat() != v.swapchain->format()) {
         vkQueueWaitIdle(device_.graphicsQueue());
         dlssPass_ = std::make_unique<DlssPass>(device_, v.swapchain->format(), kDepthFormat);
@@ -889,6 +889,8 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     fr.lighting = lighting;
     fr.options = options;
     fr.lights = rtLightsGpu_.get();
+    fr.records = rtScene_->recordBuffer();
+    fr.textures = textures_->set();
     bool ok = rtLit_->record(cmd, v.rt, d, fr);
     if (ok && rr) {   // 3. Ray Reconstruction: the radiance of the compose pass + the guides in, the denoised, upscaled picture out (d.output)
         gpu::DlssFrame df;

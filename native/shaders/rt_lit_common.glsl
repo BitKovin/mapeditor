@@ -39,7 +39,13 @@ layout(set = 0, binding = 12, std140) uniform Params {
     uvec4 gridDim;   // xyz = cells per axis
     uvec4 lightInfo; // x = lights, y = directional / sky lights (the first entries of the index list), z = 1 when direct light is traced
     vec4 look;       // x = lightmap texels per metre for the lightmap look (0 = off), y = shadow ray origin bias, z = far distance
+    vec4 gi;         // bounce light (R6): x = the bake's surface albedo, y = the gather range, z = 1 when bounces are on, w = longest update path (vertices)
+    uvec4 giB;       // x = the update samples one pixel of every giB.x * giB.x block
 } P;
+
+// The object records of render/rt_scene.h (RtRecord, 32 bytes = 2 uvec4 per instance slot = instanceCustomIndex): rec[2s] = (vertex address lo, hi, index address lo, hi),
+// rec[2s + 1] = (triangle count, flags: bit 0 raw mesh, bit 1 the object receives baked light, vertex count, 0).
+layout(set = 0, binding = 21, std430) readonly buffer Records { uvec4 rec[]; };
 
 // The instance masks of render/rt_scene.h: only objects of a class that blocks light (the game profile's blockLight, core::LightingClasses) are seen by the shadow, occlusion and light rays.
 const uint RT_MASK_SOLID = 1u;

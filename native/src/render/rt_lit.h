@@ -34,6 +34,16 @@ struct RtLitOptions {
     float meanBlend = 32.0f;           // N at which the running mean has replaced the filtered value completely
     float meanBlendRr = 64.0f;         // the same for the input of DLSS Ray Reconstruction under a still camera
     float lightmapTexelsPerMeter = 16.0f;   // the lightmap look: shading at the centres of a planar texel grid of this density, bilinearly weighted (the game base density); 0 = smooth
+    // Bounce light (R6): the SHaRC radiance cache of S = Db + I as the bake defines it. One cache per viewport; off without the device features (DeviceCaps::bounceCache).
+    bool bounces = true;
+    uint32_t giCacheLog2 = 21;         // entries of the cache: 2^n (80 MB at 21)
+    float giSceneScale = 16.0f;        // voxel size = distance to the camera / this (SHaRC sceneScale)
+    float giAlbedo = 0.7f;             // the bake's reflectance of every surface for bounces (LiveSettings::albedo)
+    float giRange = 10000.0f;          // the gather range (the bake's window radius)
+    uint32_t giPathLength = 4;         // vertices of one update path
+    uint32_t giBlock = 5;              // the update traces one pixel of every giBlock x giBlock block per frame
+    uint32_t giAccumFrames = 32;       // the cache's temporal window (frames)
+    uint32_t giStaleFrames = 64;       // frames without a sample before an entry is dropped
 };
 
 struct RtLitTargets {
@@ -47,6 +57,17 @@ struct RtLitTargets {
     Image normal[2], dist, hist[2], fil[2], sample, radiance, specAlbedo;   // radiance, specAlbedo: only with reconstruction
     Image histD[2], filD[2], sampleD;  // the direct light: history (rgb mean, mean of luminance^2), filtered value (rgb, variance of the mean), this frame sample
     bool specAlbedoReady = false;      // specAlbedo was cleared to black and is in SHADER_READ_ONLY
+    struct Cache {                     // the SHaRC buffers (R6)
+        VkBuffer buffer[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};   // hash entries, accumulation, resolved
+        VmaAllocation alloc[3] = {nullptr, nullptr, nullptr};
+        VkDeviceAddress address[3] = {0, 0, 0};
+        uint32_t capacity = 0;
+        bool clear = true;             // must be zeroed before the next use
+        bool havePrev = false;
+        float camPrev[3] = {0, 0, 0};
+        uint32_t frame = 0;
+        bool valid() const { return capacity != 0; }
+    } cache;
     VkBuffer counters = VK_NULL_HANDLE;
     VmaAllocation countersAlloc = nullptr;
     VkBuffer readback[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
@@ -81,11 +102,14 @@ struct RtLitFrame {
     RtLighting lighting;
     RtLitOptions options;
     const RtLightsGpu* lights = nullptr;   // the level lights (required; an empty set is fine)
+    VkBuffer records = VK_NULL_HANDLE;     // RtScene::recordBuffer (the objects a gather ray can hit)
+    VkDescriptorSet textures = VK_NULL_HANDLE;   // the renderer's texture table (set 2 of the trace kernels)
 };
 
 class RtLit {
 public:
-    explicit RtLit(const gpu::Device& device);
+    // `textureLayout`: the layout of the renderer's texture table (TextureTable::layout()), set 2 of the kernels that read the albedo of a gather hit.
+    RtLit(const gpu::Device& device, VkDescriptorSetLayout textureLayout);
     ~RtLit();
     RtLit(const RtLit&) = delete;
     RtLit& operator=(const RtLit&) = delete;
@@ -126,8 +150,10 @@ private:
     const gpu::Device& device_;
     VkSampler sampler_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE, tlasLayout_ = VK_NULL_HANDLE;
-    VkPipelineLayout aoLayout_ = VK_NULL_HANDLE, filterLayout_ = VK_NULL_HANDLE;
-    VkPipeline aoPipeline_ = VK_NULL_HANDLE, filterPipeline_ = VK_NULL_HANDLE, composePipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout aoLayout_ = VK_NULL_HANDLE, filterLayout_ = VK_NULL_HANDLE, resolveLayout_ = VK_NULL_HANDLE;
+    VkPipeline aoPipeline_ = VK_NULL_HANDLE, filterPipeline_ = VK_NULL_HANDLE, composePipeline_ = VK_NULL_HANDLE, updatePipeline_ = VK_NULL_HANDLE, resolvePipeline_ = VK_NULL_HANDLE;
+    bool ensureCache(RtLitTargets& t, const RtLitOptions& o) const;
+    void destroyCache(RtLitTargets& t) const;
 };
 
 } // namespace native::render

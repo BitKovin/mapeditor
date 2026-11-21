@@ -171,8 +171,21 @@ vec3 skySample(uint k, vec3 o, vec3 n, inout uint seed) {
 
 float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
-// The direct light (sun, sky, local lights) arriving at p (normal n): one unbiased sample of what the bake computes per lightmap texel.
-vec3 directSample(vec3 p, vec3 n, inout uint seed) {
+// The bake's bounce source weight of a light at p (core/lightbake.cpp bounceNearFactor): the light's `bounce` power, a point / spot light stops growing closer than 1 m.
+float bounceWeight(uint k, vec3 p) {
+    float w = lt[k * LREC + 6u].x;
+    int type = int(lt[k * LREC + 1u].w + 0.5);
+    if (type == 0 || type == 1) {
+        float dist = length(lt[k * LREC + 0u].xyz - p);
+        float dd = max(dist, MIN_DIST), db = max(dist, 1.0);
+        w *= (dd * dd) / (db * db);
+    }
+    return w;
+}
+
+// The direct light (sun, sky, local lights) arriving at p (normal n): one unbiased sample of what the bake computes per lightmap texel. `bounce`: every light weighted by its
+// bounce source weight (what the bake feeds into the bounces: Db).
+vec3 directSampleW(vec3 p, vec3 n, inout uint seed, bool bounce) {
     if (P.lightInfo.z == 0u) return vec3(0.0);
     vec3 o = p + n * P.look.y;
     vec3 sum = vec3(0.0);
@@ -180,12 +193,14 @@ vec3 directSample(vec3 p, vec3 n, inout uint seed) {
         uint k = lightIndex[g];
         int type = int(lt[k * LREC + 1u].w + 0.5);
         bool casts = lt[k * LREC + 5u].z > 0.5;
+        float bw = bounce ? bounceWeight(k, p) : 1.0;
+        if (bw == 0.0) continue;
         if (type == 4) {
-            sum += casts ? lt[k * LREC + 1u].rgb * skySample(k, o, n, seed) : evalLight(k, p, n);
+            sum += bw * (casts ? lt[k * LREC + 1u].rgb * skySample(k, o, n, seed) : evalLight(k, p, n));
         } else {
             vec3 v = evalLight(k, p, n);
             if (casts && (v.x != 0.0 || v.y != 0.0 || v.z != 0.0)) v *= visibilitySample(k, o, seed);
-            sum += v;
+            sum += v * bw;
         }
     }
     // the local lights of the grid cell
@@ -199,6 +214,7 @@ vec3 directSample(vec3 p, vec3 n, inout uint seed) {
     for (uint i = 0u; i < cell.y; ++i) {
         uint k = lightIndex[cell.x + i];
         vec3 v = evalLight(k, p, n);
+        if (bounce) v *= bounceWeight(k, p);
         if (v.x == 0.0 && v.y == 0.0 && v.z == 0.0) continue;
         if (lt[k * LREC + 5u].z < 0.5) {   // no shadow: exact
             sum += v;
@@ -215,3 +231,5 @@ vec3 directSample(vec3 p, vec3 n, inout uint seed) {
     if (sel != 0xFFFFFFFFu) sum += cSel * (visibilitySample(sel, o, seed) * wSum / wSel);
     return sum;
 }
+
+vec3 directSample(vec3 p, vec3 n, inout uint seed) { return directSampleW(p, n, seed, false); }

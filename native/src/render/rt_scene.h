@@ -33,7 +33,7 @@ struct RtRecord {
     uint64_t vertexAddress;     // first vertex of the object (scene::RenderVertex, 40 bytes, position first)
     uint64_t indexAddress;      // first index (uint32, relative to the first vertex)
     uint32_t triangleCount;
-    uint32_t flags;             // bit 0: drawn from the authored brush (no mesh yet)
+    uint32_t flags;             // bit 0: drawn from the authored brush (no mesh yet), bit 1: the object receives baked light (its class has lightmaps)
     uint32_t vertexCount;
     uint32_t pad;
 };

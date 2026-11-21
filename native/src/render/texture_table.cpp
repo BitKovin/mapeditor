@@ -88,7 +88,7 @@ TextureTable::TextureTable(gpu::Device& device) : device_(device) {
     b[0].binding = 0;
     b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     b[0].descriptorCount = kMax;
-    b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
     b[1].binding = 1;
     b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     b[1].descriptorCount = 1;

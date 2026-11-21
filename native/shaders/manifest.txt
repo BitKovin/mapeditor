@@ -26,3 +26,5 @@ rt_closest_hit_comp|rt_closest_hit.hlsl|vulkan1.3|cs_6_5
 rt_ao_comp|rt_ao.comp|vulkan1.3|
 rt_filter_comp|rt_filter.comp|vulkan1.3|
 rt_compose_comp|rt_compose.comp|vulkan1.3|
+rt_sharc_update_comp|rt_sharc_update.comp|vulkan1.3|
+rt_sharc_resolve_comp|rt_sharc_resolve.comp|vulkan1.3|

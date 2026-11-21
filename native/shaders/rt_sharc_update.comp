@@ -1,0 +1,83 @@
+#version 460
+// R6: the SHaRC update pass (third_party/sharc, NVIDIA RTX SDKs licence). One thread per giB.x * giB.x block of the render image takes one pixel of it (a different one every
+// frame) and follows a short path from that pixel's surface point. At every vertex the direct light Db (the bake's bounce source: every light weighted by its `bounce` power)
+// is estimated and handed to the cache; the segment to the next vertex is a cosine weighted ray whose throughput is albedo(hit) * albedo * window(length): that is exactly the
+// bake's gather, so the resolved radiance of a voxel is S = Db + I. A hit on a voxel that already holds a resolved value ends the path with that value (cache resampling).
+#extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+#define SHARC_ENABLE_GLSL 1
+#define SHARC_UPDATE 1
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "rt_lit_common.glsl"
+layout(set = 1, binding = 0) uniform accelerationStructureEXT tlas;
+
+const float PI = 3.14159265358979323846;
+uint pcg(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+float rand01(inout uint seed) {
+    seed = pcg(seed);
+    return float(seed >> 8u) * (1.0 / 16777216.0);
+}
+
+#include "rt_light.glsl"
+#include "rt_gi.glsl"
+#include "rt_sharc_common.glsl"
+
+void main() {
+    ivec2 sz = ivec2(P.size.xy);
+    uint block = max(P.giB.x, 1u);
+    ivec2 cell = ivec2(gl_GlobalInvocationID.xy);
+    uint seed = pcg(uint(cell.x) + pcg(uint(cell.y) * 7919u + pcg(P.u.x + 0x51ED270Bu)));
+    ivec2 p = cell * int(block) + ivec2(int(rand01(seed) * float(block)), int(rand01(seed) * float(block)));
+    if (p.x >= sz.x || p.y >= sz.y) return;
+    vec4 nrm = texelFetch(uNormal, p, 0);
+    if (nrm.w < 0.8) return;   // no surface, or one that takes no part
+    float dist = texelFetch(uDist, p, 0).r;
+    vec3 pos = worldOf(p, dist);
+    vec3 nGeo = normalize(nrm.xyz);
+    vec3 n = dot(nGeo, pos - P.eye.xyz) > 0.0 ? -nGeo : nGeo;
+
+    SharcParameters sp = sharcParameters();
+    SharcState st;
+    SharcInit(st);
+    uint maxDepth = uint(P.gi.w);
+    for (uint depth = 0u; depth < maxDepth; ++depth) {
+        // the cache accumulates unsigned integers: a dark light's negative bounce source is left out (the bake would subtract it)
+        vec3 db = max(directSampleW(pos, n, seed, true), vec3(0.0));
+        SharcHitData hd;
+        hd.positionWorld = pos;
+        hd.normalWorld = n;
+        if (!SharcUpdateHit(sp, st, hd, db, rand01(seed))) break;
+        if (depth + 1u == maxDepth) break;
+        vec3 dir = cosineDir(n, seed);
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, RT_MASK_SOLID, pos + n * P.look.y, 0.0, dir, P.gi.y);
+        while (rayQueryProceedEXT(rq)) {}
+        if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+            SharcUpdateMiss(sp, st, vec3(0.0));
+            break;
+        }
+        GiHit h = giHitOf(rq, dir);
+        if (!h.valid) {
+            SharcUpdateMiss(sp, st, vec3(0.0));
+            break;
+        }
+        SharcSetThroughput(st, h.albedo * (P.gi.x * window(h.t, P.gi.y)));
+        pos = h.pos;
+        n = h.n;
+    }
+}

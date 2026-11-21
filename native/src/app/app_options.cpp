@@ -83,6 +83,15 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
             }
             o.rtTexel = static_cast<float>(d);
         }
+        else if (a == "--rt-bounces") {
+            std::string v;
+            if (!value(v)) return r;
+            if (v != "0" && v != "1") {
+                r.error = "invalid --rt-bounces (0 or 1): " + v;
+                return r;
+            }
+            o.rtBounces = v == "1";
+        }
         else if (a == "--help" || a == "-h") o.help = true;
         else {
             r.error = "unknown option: " + a;

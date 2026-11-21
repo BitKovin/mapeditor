@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
     if (parsed.options.rtLit) {
         native::render::RtLitOptions rtOptions;
         rtOptions.lightmapTexelsPerMeter = parsed.options.rtTexel;
+        rtOptions.bounces = parsed.options.rtBounces;
         renderThread.setRtLit(true, rtOptions);
     }
 

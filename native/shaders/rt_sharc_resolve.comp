@@ -1,0 +1,27 @@
+#version 460
+// R6: the resolve pass of SHaRC (third_party/sharc, NVIDIA RTX SDKs licence): one thread per cache entry merges this frame's accumulation into the resolved radiance (temporal mean over
+// accumulFrames frames), evicts entries nobody has hit for staleMax frames, clears the accumulation for the next frame.
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_GOOGLE_include_directive : require
+
+#define SHARC_ENABLE_GLSL 1
+#include "rt_sharc_common.glsl"
+
+layout(local_size_x = 64) in;
+
+void main() {
+    SharcParameters sp = sharcParameters();
+    SharcResolveParameters rp;
+    rp.cameraPositionPrev = G.camPrev.xyz;
+    rp.accumulationFrameNum = G.accumFrames;
+    rp.responsiveFrameNum = 0u;
+    rp.staleFrameNumMax = G.staleMax;
+    rp.frameIndex = G.frame;
+    SharcResolveEntry(gl_GlobalInvocationID.x, sp, rp);
+}

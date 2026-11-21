@@ -8,6 +8,8 @@
 #include "native_shaders/rt_ao_comp.spv.h"
 #include "native_shaders/rt_compose_comp.spv.h"
 #include "native_shaders/rt_filter_comp.spv.h"
+#include "native_shaders/rt_sharc_resolve_comp.spv.h"
+#include "native_shaders/rt_sharc_update_comp.spv.h"
 #include "render/mesh_pass.h"
 
 namespace native::render {
@@ -23,8 +25,21 @@ struct Params {
     float gridOrigin[4];
     uint32_t gridDim[4], lightInfo[4];
     float look[4];
+    float gi[4];
+    uint32_t giB[4];
 };
-static_assert(sizeof(Params) == 304);
+static_assert(sizeof(Params) == 336);
+
+// Matches `SharcPush` of shaders/rt_sharc_common.glsl.
+struct SharcPush {
+    uint64_t hash, accum, resolved;
+    uint32_t capacity;
+    float radianceScale;
+    uint32_t accumFrames, staleMax, frame, pad;
+    float cam[4], camPrev[4];
+};
+static_assert(sizeof(SharcPush) == 80);
+constexpr float kRadianceScale = 1000.0f;
 
 constexpr uint32_t kFlagReset = 1, kFlagStill = 2, kFlagFilter = 4, kFlagRr = 8;
 
@@ -128,7 +143,7 @@ gpu::DlssImage describe(const RtLitTargets::Image& img, VkFormat format, VkExten
 
 } // namespace
 
-RtLit::RtLit(const gpu::Device& device) : device_(device) {
+RtLit::RtLit(const gpu::Device& device, VkDescriptorSetLayout textureLayout) : device_(device) {
     const VkDevice dev = device_.device();
     VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sci.magFilter = VK_FILTER_NEAREST;
@@ -137,12 +152,12 @@ RtLit::RtLit(const gpu::Device& device) : device_(device) {
     sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     vkCreateSampler(dev, &sci, nullptr, &sampler_);
 
-    VkDescriptorSetLayoutBinding b[20]{};
+    VkDescriptorSetLayoutBinding b[21]{};
     const VkShaderStageFlags cs = VK_SHADER_STAGE_COMPUTE_BIT;
     uint32_t n = 0;
     for (uint32_t i : {0u, 1u, 2u, 3u}) b[n++] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, cs, nullptr};
     for (uint32_t i : {4u, 5u, 7u, 8u, 9u, 10u, 13u, 14u, 15u, 19u, 20u}) b[n++] = {i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, cs, nullptr};
-    for (uint32_t i : {11u, 16u, 17u, 18u}) b[n++] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, cs, nullptr};
+    for (uint32_t i : {11u, 16u, 17u, 18u, 21u}) b[n++] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, cs, nullptr};
     b[n++] = {12, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, cs, nullptr};
     VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     lci.bindingCount = n;
@@ -154,11 +169,18 @@ RtLit::RtLit(const gpu::Device& device) : device_(device) {
     tci.pBindings = &tb;
     vkCreateDescriptorSetLayout(dev, &tci, nullptr, &tlasLayout_);
 
-    const VkDescriptorSetLayout both[2] = {setLayout_, tlasLayout_};
+    const VkDescriptorSetLayout three[3] = {setLayout_, tlasLayout_, textureLayout};
+    const VkPushConstantRange sharcRange{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SharcPush)};
     VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    pli.setLayoutCount = 2;
-    pli.pSetLayouts = both;
+    pli.setLayoutCount = textureLayout ? 3 : 2;
+    pli.pSetLayouts = three;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &sharcRange;
     vkCreatePipelineLayout(dev, &pli, nullptr, &aoLayout_);
+    VkPipelineLayoutCreateInfo rli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    rli.pushConstantRangeCount = 1;
+    rli.pPushConstantRanges = &sharcRange;
+    vkCreatePipelineLayout(dev, &rli, nullptr, &resolveLayout_);
     VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, 4};
     VkPipelineLayoutCreateInfo fli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     fli.setLayoutCount = 1;
@@ -170,12 +192,17 @@ RtLit::RtLit(const gpu::Device& device) : device_(device) {
     aoPipeline_ = makeCompute(dev, aoLayout_, native::shaders::k_rt_ao_comp_spv, sizeof(native::shaders::k_rt_ao_comp_spv), "rt_ao");
     filterPipeline_ = makeCompute(dev, filterLayout_, native::shaders::k_rt_filter_comp_spv, sizeof(native::shaders::k_rt_filter_comp_spv), "rt_filter");
     composePipeline_ = makeCompute(dev, filterLayout_, native::shaders::k_rt_compose_comp_spv, sizeof(native::shaders::k_rt_compose_comp_spv), "rt_compose");
+    if (device_.caps().bounceCache) {
+        updatePipeline_ = makeCompute(dev, aoLayout_, native::shaders::k_rt_sharc_update_comp_spv, sizeof(native::shaders::k_rt_sharc_update_comp_spv), "rt_sharc_update");
+        resolvePipeline_ = makeCompute(dev, resolveLayout_, native::shaders::k_rt_sharc_resolve_comp_spv, sizeof(native::shaders::k_rt_sharc_resolve_comp_spv), "rt_sharc_resolve");
+    }
 }
 
 RtLit::~RtLit() {
     const VkDevice dev = device_.device();
-    for (VkPipeline p : {aoPipeline_, filterPipeline_, composePipeline_})
+    for (VkPipeline p : {aoPipeline_, filterPipeline_, composePipeline_, updatePipeline_, resolvePipeline_})
         if (p) vkDestroyPipeline(dev, p, nullptr);
+    if (resolveLayout_) vkDestroyPipelineLayout(dev, resolveLayout_, nullptr);
     if (aoLayout_) vkDestroyPipelineLayout(dev, aoLayout_, nullptr);
     if (filterLayout_) vkDestroyPipelineLayout(dev, filterLayout_, nullptr);
     if (setLayout_) vkDestroyDescriptorSetLayout(dev, setLayout_, nullptr);
@@ -222,7 +249,7 @@ bool RtLit::createTargets(RtLitTargets& t, VkExtent2D render, bool reconstructio
         ok = ok && buffer(t.params[i], t.paramsAlloc[i], sizeof(Params), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true, &t.paramsPtr[i]);
     }
     if (ok) {
-        const VkDescriptorPoolSize sizes[5] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 24}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8},
+        const VkDescriptorPoolSize sizes[5] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 24}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 12},
                                                {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2}};
         VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pci.maxSets = 4;
@@ -250,7 +277,45 @@ bool RtLit::createTargets(RtLitTargets& t, VkExtent2D render, bool reconstructio
     return ok;
 }
 
+void RtLit::destroyCache(RtLitTargets& t) const {
+    for (int i = 0; i < 3; ++i)
+        if (t.cache.buffer[i]) vmaDestroyBuffer(device_.allocator(), t.cache.buffer[i], t.cache.alloc[i]);
+    t.cache = RtLitTargets::Cache{};
+}
+
+// The three SHaRC buffers of a viewport (all zero at the start). False when the device cannot run it or the allocation failed (bounces stay off).
+bool RtLit::ensureCache(RtLitTargets& t, const RtLitOptions& o) const {
+    if (!o.bounces || !updatePipeline_ || !resolvePipeline_) {
+        if (t.cache.valid()) destroyCache(t);
+        return false;
+    }
+    const uint32_t capacity = 1u << std::clamp(o.giCacheLog2, 16u, 24u);
+    if (t.cache.capacity == capacity) return true;
+    destroyCache(t);
+    const VkDeviceSize sizes[3] = {VkDeviceSize(capacity + 16) * 8, VkDeviceSize(capacity) * 16, VkDeviceSize(capacity) * 16};
+    for (int i = 0; i < 3; ++i) {
+        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bci.size = sizes[i];
+        bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        if (vmaCreateBuffer(device_.allocator(), &bci, &aci, &t.cache.buffer[i], &t.cache.alloc[i], nullptr) != VK_SUCCESS) {
+            base::logWarning("RtLit: the bounce cache could not be allocated; bounce light is off for this viewport");
+            destroyCache(t);
+            return false;
+        }
+        VkBufferDeviceAddressInfo ai{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        ai.buffer = t.cache.buffer[i];
+        t.cache.address[i] = vkGetBufferDeviceAddress(device_.device(), &ai);
+    }
+    t.cache.capacity = capacity;
+    t.cache.clear = true;
+    t.cache.havePrev = false;
+    return true;
+}
+
 void RtLit::destroyTargets(RtLitTargets& t) const {
+    destroyCache(t);
     if (t.pool) vkDestroyDescriptorPool(device_.device(), t.pool, nullptr);
     for (auto& i : t.normal) destroyImage(device_, i);
     for (auto& i : t.hist) destroyImage(device_, i);
@@ -355,6 +420,12 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
         p.look[0] = std::max(0.0f, f.options.lightmapTexelsPerMeter);
         p.look[1] = 0.01f;     // the bake shadow ray offset (light/passes.cpp)
         p.look[2] = 10000.f;   // the bake far distance
+        const bool gi = ensureCache(t, f.options) && f.records != VK_NULL_HANDLE && f.textures != VK_NULL_HANDLE;
+        p.gi[0] = f.options.giAlbedo;
+        p.gi[1] = std::max(1.0f, f.options.giRange);
+        p.gi[2] = gi ? 1.0f : 0.0f;
+        p.gi[3] = static_cast<float>(std::clamp(f.options.giPathLength, 2u, 8u));
+        p.giB[0] = std::clamp(f.options.giBlock, 1u, 16u);
         std::memcpy(t.paramsPtr[slot], &p, sizeof(p));
         vmaFlushAllocation(device_.allocator(), t.paramsAlloc[slot], 0, sizeof(p));
     }
@@ -380,12 +451,13 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
                                         {VK_NULL_HANDLE, t.filD[0].view, VK_IMAGE_LAYOUT_GENERAL},
                                         {VK_NULL_HANDLE, t.filD[1].view, VK_IMAGE_LAYOUT_GENERAL}};
     const VkDescriptorBufferInfo lightInfos[3] = {{f.lights->records(), 0, f.lights->recordsSize()}, {f.lights->cells(), 0, f.lights->cellsSize()}, {f.lights->index(), 0, f.lights->indexSize()}};
+    const VkDescriptorBufferInfo recordInfo{f.records != VK_NULL_HANDLE ? f.records : t.counters, 0, f.records != VK_NULL_HANDLE ? VK_WHOLE_SIZE : 8};
     const VkDescriptorBufferInfo counterInfo{t.counters, 0, 8};
     const VkDescriptorBufferInfo paramInfo{t.params[slot], 0, sizeof(Params)};
     VkWriteDescriptorSetAccelerationStructureKHR asw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
     asw.accelerationStructureCount = 1;
     asw.pAccelerationStructures = &f.tlas;
-    VkWriteDescriptorSet writes[24]{};
+    VkWriteDescriptorSet writes[26]{};
     uint32_t n = 0;
     const auto write = [&](uint32_t binding, VkDescriptorType type) -> VkWriteDescriptorSet& {
         VkWriteDescriptorSet& wr = writes[n++];
@@ -402,6 +474,7 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
     write(11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo = &counterInfo;
     write(12, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER).pBufferInfo = &paramInfo;
     for (uint32_t i = 0; i < 3; ++i) write(16 + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo = &lightInfos[i];
+    write(21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER).pBufferInfo = &recordInfo;
     {
         VkWriteDescriptorSet& wr = writes[n++];
         wr.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -419,9 +492,46 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
     memoryBarrier(cmd, kAll, kReadWrite, kAll, kReadWrite);
     const uint32_t gx = (w + 7) / 8, gy = (h + 7) / 8;
     if (!f.skipTrace) {
-        const VkDescriptorSet both[2] = {t.sets[slot], t.tlasSets[slot]};
+        const VkDescriptorSet sets3[3] = {t.sets[slot], t.tlasSets[slot], f.textures};
+        const bool gi = p.gi[2] > 0.5f;
+        SharcPush sp{};
+        if (gi) {   // bounce light: the cache is zeroed when it is new or the light changed, then update -> resolve; the trace kernel below only reads it
+            if (t.cache.clear || f.reset) {
+                for (int i = 0; i < 3; ++i) vkCmdFillBuffer(cmd, t.cache.buffer[i], 0, VK_WHOLE_SIZE, 0);
+                memoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, kAll, kReadWrite);
+                t.cache.clear = false;
+            }
+            sp.hash = t.cache.address[0];
+            sp.accum = t.cache.address[1];
+            sp.resolved = t.cache.address[2];
+            sp.capacity = t.cache.capacity;
+            sp.radianceScale = kRadianceScale;
+            sp.accumFrames = f.options.giAccumFrames;
+            sp.staleMax = f.options.giStaleFrames;
+            sp.frame = t.cache.frame++;
+            for (int i = 0; i < 3; ++i) {
+                sp.cam[i] = static_cast<float>(f.eye[i]);
+                sp.camPrev[i] = t.cache.havePrev ? t.cache.camPrev[i] : static_cast<float>(f.eye[i]);
+                t.cache.camPrev[i] = static_cast<float>(f.eye[i]);
+            }
+            sp.cam[3] = f.options.giSceneScale;
+            t.cache.havePrev = true;
+            const uint32_t block = std::clamp(f.options.giBlock, 1u, 16u);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, updatePipeline_);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, aoLayout_, 0, 3, sets3, 0, nullptr);
+            vkCmdPushConstants(cmd, aoLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(sp), &sp);
+            vkCmdDispatch(cmd, ((w + block - 1) / block + 7) / 8, ((h + block - 1) / block + 7) / 8, 1);
+            memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resolvePipeline_);
+            vkCmdPushConstants(cmd, resolveLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(sp), &sp);
+            vkCmdDispatch(cmd, (t.cache.capacity + 63) / 64, 1, 1);
+            memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                          VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        }
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, aoPipeline_);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, aoLayout_, 0, 2, both, 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, aoLayout_, 0, 3, sets3, 0, nullptr);
+        vkCmdPushConstants(cmd, aoLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(sp), &sp);
         vkCmdDispatch(cmd, gx, gy, 1);
         memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);

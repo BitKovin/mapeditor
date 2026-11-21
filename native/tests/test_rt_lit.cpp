@@ -250,6 +250,7 @@ render::RtLitOptions options(uint32_t target) {
     o.targetSamples = target;
     o.sampleCap = std::max(4096u, target + 8);
     o.lightmapTexelsPerMeter = 0;   // the smooth picture (the lightmap look has its own test)
+    o.bounces = false;              // the parity tests compare direct light and occlusion; the bounce test turns it on
     return o;
 }
 
@@ -840,7 +841,7 @@ std::string rtEnv(const char* name) {
 
 // A look at a real map, not a regression test: runs only when NATIVE_RTLOOK_ROOT (assets root) and NATIVE_RTLOOK_MAP are set. NATIVE_RTLOOK_EYE / _TARGET = "x,y,z",
 // NATIVE_RTLOOK_TEXEL = texels per metre of the lightmap look (default 16, 0 = smooth), NATIVE_RTLOOK_SIZE = "WxH" (default 1280x720), NATIVE_RTLOOK_DLSS = 0/1/2, NATIVE_RTLOOK_MODE = 0 unlit / 1 lit / 2 lighting only, NATIVE_RTLOOK_TIMEOUT = seconds per wait (default 120),
-// NATIVE_RTLOOK_OUT = the png name in native/build (default rt_lit_look.png). The lights come from the document through the producer, like in the editor.
+// NATIVE_RTLOOK_BOUNCE = 0 / 1 (default 1), NATIVE_RTLOOK_OUT = the png name in native/build (default rt_lit_look.png). The lights come from the document through the producer, like in the editor.
 TEST_CASE("RT Lit: look at a map" * doctest::test_suite("gpu") * doctest::skip(rtEnv("NATIVE_RTLOOK_ROOT").empty())) {
     const auto env = [](const char* name, const std::string& fallback) {
         const std::string v = rtEnv(name);
@@ -883,10 +884,15 @@ TEST_CASE("RT Lit: look at a map" * doctest::test_suite("gpu") * doctest::skip(r
         std::lock_guard<std::mutex> lock(mutex);
         REQUIRE(got);
         MESSAGE("lights " << got->lightCount << " (global " << got->globalCount << "), grid " << got->dim[0] << "x" << got->dim[1] << "x" << got->dim[2] << " of " << got->cell << " m");
+        for (uint32_t k = 0; k < got->lightCount; ++k) {
+            const float* r = &got->records[k * 32];
+            MESSAGE("  light " << k << ": type " << r[7] << " at " << r[0] << "," << r[1] << "," << r[2] << " radius " << r[3] << " colour*brightness " << r[4] << "," << r[5] << "," << r[6] << " bounce " << r[24]);
+        }
     }
     f.rt->setRtLighting(render::rtLightingOf(*f.snapshot->doc));
     render::RtLitOptions o = options(1024);
     o.lightmapTexelsPerMeter = static_cast<float>(std::atof(env("NATIVE_RTLOOK_TEXEL", "16").c_str()));
+    o.bounces = std::atoi(env("NATIVE_RTLOOK_BOUNCE", "1").c_str()) != 0;
     f.rt->setRtLit(true, o);
     REQUIRE(f.shot().width == f.w);
     // every wait is bounded (NATIVE_RTLOOK_TIMEOUT seconds, default 120): a stuck wait fails with a message instead of looking like a frozen run
@@ -1031,5 +1037,49 @@ TEST_CASE("RT Lit: an edit that leaves every shape as it was keeps the accumulat
     REQUIRE(waitFor([&] { return f.rt->sceneInfo().scene.uploads > uploadsMid && f.rt->sceneInfo().scene.queued == 0; }, 60000));
     f.shot();
     CHECK_FALSE(f.info().tracingSkipped);
+    CHECK(f.device->validationErrors() == 0);
+}
+
+TEST_CASE("RT Lit: bounce light (SHaRC cache of S = Db + I) brightens what the lights only reach indirectly, and is stable" * doctest::test_suite("gpu")) {
+    Fixture f;
+    if (!f.start(640, 400)) return;
+    if (!f.device->caps().bounceCache) {
+        MESSAGE("no bounce cache on this device: skipped");
+        return;
+    }
+    f.rt->setRtLights(render::makeRtLightData(directTestLights()));
+    render::RtLighting lighting;
+    lighting.ambient[0] = lighting.ambient[1] = lighting.ambient[2] = 0.0f;
+    f.rt->setRtLighting(lighting);
+    const auto run = [&](bool bounces) {
+        render::RtLitOptions o = options(256);
+        o.bounces = bounces;
+        f.rt->setRtLit(true, o);
+        REQUIRE(f.shot().width == f.w);
+        REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+        f.cut++;
+        f.shot();
+        REQUIRE(f.converge());
+        return f.shot();
+    };
+    const render::CapturedImage off = run(false);
+    const render::CapturedImage on = run(true);
+    const render::CapturedImage again = run(true);
+    savePng(off, "rt_lit_bounce_off.png");
+    savePng(on, "rt_lit_bounce_on.png");
+    double sumOff = 0, sumOn = 0;
+    size_t brighter = 0, darker = 0, pixels = off.rgba.size() / 4;
+    for (size_t i = 0; i < off.rgba.size(); i += 4) {
+        const double a = off.rgba[i] + off.rgba[i + 1] + off.rgba[i + 2], b = on.rgba[i] + on.rgba[i + 1] + on.rgba[i + 2];
+        sumOff += a;
+        sumOn += b;
+        brighter += b > a + 3;
+        darker += a - b > 30;   // noise of two converged runs on a textured floor
+    }
+    MESSAGE("mean sum of channels without / with bounces: " << sumOff / pixels << " / " << sumOn / pixels << ", brighter pixels " << brighter << " of " << pixels << ", clearly darker pixels " << darker);
+    CHECK(sumOn > sumOff * 1.02);              // light arrives where no light reaches directly
+    CHECK(darker < pixels / 1000);             // and (apart from noise) nothing gets darker
+    CHECK(brighter > pixels / 50);
+    CHECK(meanAbsDiff(on, again) < 3.0);       // converged pictures agree run to run
     CHECK(f.device->validationErrors() == 0);
 }

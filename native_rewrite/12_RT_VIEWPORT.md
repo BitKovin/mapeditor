@@ -113,6 +113,7 @@ viewport cannot drift apart.
   types map onto RTXDI's polymorphic light records with our own sampling (a disc point for sphere sources, a rect point, a cone direction).
 
 > **As built (lighting rules of the classes, after R3):** the Lit picture follows the game profile's classes like the bake does (`makeRtRules` in render/rt_lights.cpp): a class without lightmaps does not receive light (the G-buffer marks it with `normal.w = 0.6`; it is shown with the unlit look of the chunked Lit mode and nothing is traced for it), a class that does not block light (or an object without a casting surface) is in the TLAS with the receiver mask only, so shadow and AO rays pass it. The rules reach the GPU as per-object flags (`GpuScene::setRules`, draw `firstInstance`, `RtObject::flags`). Limit: faces textured with the sky material still block light (the rule is per object, not per triangle), glass / cutout transparency is not in the shadow rays yet.
+> **As built (R6):** see 08 R6; the cache is per viewport (SHaRC's levels follow the viewport's camera), cleared on a restart, and its value is the bake's S = Db + I with every update path vertex feeding Db and each segment's throughput = albedo(hit) * `albedo` * window.
 > **As built (R3):** see 08 R3. The reservoir is streamed per pixel and frame over the lights of the pixel's grid cell and is not kept between frames (reuse = R5); the history is the running mean of D, not of a reservoir.
 
 ## 5. Bounces: world-space radiance cache for S

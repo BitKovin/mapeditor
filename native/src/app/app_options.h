@@ -4,7 +4,7 @@
 //   mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
 //                        [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]
 //                        [--layout <1|2|4>] [--log-input] [--render-mode <unlit|lit|lightingOnly>]
-//                        [--no-streamline] [--gpu-crash-dumps] [--dlss <off|ultraPerformance|performance|balanced|quality|dlaa>] [--rt-lit] [--rt-texel <n>]
+//                        [--no-streamline] [--gpu-crash-dumps] [--dlss <off|ultraPerformance|performance|balanced|quality|dlaa>] [--rt-lit] [--rt-texel <n>] [--rt-bounces <0|1>]
 // --no-streamline creates the Vulkan device the normal way (no NVIDIA Streamline interposer: no Reflex, no DLSS), T6.7.
 // --dlss starts every perspective viewport with DLSS Super Resolution off / ultraPerformance / performance / balanced / quality / dlaa instead of its saved setting (T6.8).
 // --rt-lit shows the Lit and Lighting only modes of perspective viewports with the ray traced Lit path (R3: ambient, sun, sky, local lights with ray traced shadows; no bounces yet)
@@ -33,6 +33,7 @@ struct AppOptions {
     bool gpuCrashDumps = false;   // --gpu-crash-dumps
     bool rtLit = false;           // --rt-lit
     float rtTexel = 16.0f;        // --rt-texel: texels per metre of the lightmap look (0 = off)
+    bool rtBounces = true;        // --rt-bounces 0|1: bounce light (the SHaRC radiance cache) of the ray traced Lit path
     std::string logFile;          // --log
     std::string traceFile;        // --trace
     std::string screenshotPath;   // --screenshot

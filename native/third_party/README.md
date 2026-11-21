@@ -11,4 +11,6 @@ the folder with the new release and change the line below.
 
 | `streamline/` (not in git: `native/tools/fetch_streamline.ps1` downloads it, SHA-256 pinned) | NVIDIA Streamline SDK | 2.14.16 | NVIDIA RTX SDK licence (`streamline/license.txt`, `3rd-party-licenses.md`); private editor, NVIDIA code may be used and changed (user decision 2026-11-20), own rewrite if the editor is ever published | https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.16 (`streamline-sdk-v2.14.16.zip`, 276 MB) | Reflex + PCL (T6.7), DLSS Super Resolution (T6.8), DLSS Ray Reconstruction (R2). Only `include/` is compiled against; `sl.interposer.dll` and the plugins are loaded at run time and copied next to the exe by CMake. Optional: without it the editor builds and runs without NVIDIA features |
 
+| `sharc/` (headers only: `include/*.h`, `docs/Integration.md`; images dropped) | NVIDIA SHaRC (spatially hashed radiance cache) | 1.8.3 | NVIDIA RTX SDKs licence (`sharc/License.md`; NOT MIT: private editor, same terms as Streamline) | https://github.com/NVIDIA-RTX/Sharc | bounce light of the ray traced Lit path (R6): hash grid + update / resolve / query, used through its GLSL helpers (`shaders/rt_sharc_*.comp`). Downloaded 2026-11-21 with the user's yes |
+
 Vulkan API headers are not here: native code uses the Core's copy (`core/vendored/vulkan`, SDK 1.4.363 headers, T0.2).

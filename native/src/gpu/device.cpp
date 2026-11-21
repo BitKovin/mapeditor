@@ -162,6 +162,7 @@ std::vector<std::pair<std::string, std::string>> DeviceCaps::rows() const {
         {"type", discrete ? "discrete GPU" : "integrated / other"},
         {"acceleration structure", onOff(accelerationStructure)},
         {"ray query", onOff(rayQuery)},
+        {"bounce cache (SHaRC)", onOff(bounceCache)},
         {"ray tracing pipeline", onOff(rayTracingPipeline)},
         {"invocation reorder (SER)", onOff(invocationReorder)},
         {"opacity micromap", onOff(opacityMicromap)},
@@ -402,6 +403,7 @@ bool Device::init(const DeviceOptions& options, bool useStreamline, std::string*
                                   enableIf(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, supported.accel.accelerationStructure);
     if (caps_.accelerationStructure) enabled.insert(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     caps_.rayQuery = caps_.accelerationStructure && enableIf(VK_KHR_RAY_QUERY_EXTENSION_NAME, supported.rayQuery.rayQuery);
+    caps_.bounceCache = caps_.rayQuery && supported.f12.shaderBufferInt64Atomics && supported.f12.shaderFloat16 && supported.f2.features.shaderInt64;
     caps_.rayTracingPipeline = caps_.accelerationStructure && enableIf(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, supported.rtPipeline.rayTracingPipeline);
     caps_.invocationReorder = caps_.rayTracingPipeline && enableIf(VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME, supported.reorder.rayTracingInvocationReorder);
     caps_.opacityMicromap = caps_.accelerationStructure && enableIf(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME, supported.omm.micromap);
@@ -460,6 +462,7 @@ bool Device::init(const DeviceOptions& options, bool useStreamline, std::string*
     on.f12.storageBuffer8BitAccess = VK_TRUE;
     on.f12.shaderInt8 = supported.f12.shaderInt8;
     on.f12.shaderFloat16 = supported.f12.shaderFloat16;
+    on.f12.shaderBufferInt64Atomics = supported.f12.shaderBufferInt64Atomics;
     on.f12.hostQueryReset = supported.f12.hostQueryReset;
     on.f12.samplerFilterMinmax = supported.f12.samplerFilterMinmax;
     on.f13.dynamicRendering = VK_TRUE;

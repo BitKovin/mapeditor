@@ -9,6 +9,15 @@
 #extension GL_EXT_ray_query : require
 #extension GL_GOOGLE_include_directive : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_control_flow_attributes : require
+
+#define SHARC_ENABLE_GLSL 1
+#define SHARC_UPDATE 0
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -30,6 +39,8 @@ float rand01(inout uint seed) {
 }
 
 #include "rt_light.glsl"
+#include "rt_gi.glsl"
+#include "rt_sharc_common.glsl"
 
 // What the previous frame knew about the surface point seen here: h = (mean, mean of the square, N, distance) or N = 0; hd = the direct light's (mean rgb, mean of luminance^2).
 void reprojected(ivec2 p, vec3 world, vec3 n, float dist, bool still, bool reset, out vec4 h, out vec4 hd) {
@@ -123,16 +134,28 @@ void main() {
         float r = sqrt(u1), phi = 2.0 * PI * u2;
         vec3 dir = normalize(tu * (r * cos(phi)) + tv * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - u1)));
         x = 0.0;
-        if (P.ambient.w > 0.5 && P.ao.x > 0.0) {
+        vec3 gi = vec3(0.0);
+        bool needAo = P.ambient.w > 0.5 && P.ao.x > 0.0, needGi = P.gi.z > 0.5;
+        if (needAo || needGi) {   // one cosine ray serves both: the occlusion by its length, the bounce light by what it hits (the bake's gather)
             rayQueryEXT rq;
-            rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, RT_MASK_SOLID, ps + n * P.ao2.y, 0.0, dir, P.ao.x);
+            rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, RT_MASK_SOLID, ps + n * P.ao2.y, 0.0, dir, needGi ? max(P.gi.y, P.ao.x) : P.ao.x);
             while (rayQueryProceedEXT(rq)) {}
             if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                 float d = rayQueryGetIntersectionTEXT(rq, true);
-                if (d < P.ao.x) x = P.ao2.x == 1.0 ? 1.0 - d / P.ao.x : pow(1.0 - d / P.ao.x, P.ao2.x);
+                if (needAo && d < P.ao.x) x = P.ao2.x == 1.0 ? 1.0 - d / P.ao.x : pow(1.0 - d / P.ao.x, P.ao2.x);
+                if (needGi && d < P.gi.y) {
+                    GiHit h = giHitOf(rq, dir);
+                    if (h.valid) {
+                        SharcHitData hd;
+                        hd.positionWorld = h.pos;
+                        hd.normalWorld = h.n;
+                        vec3 s;
+                        if (SharcGetCachedRadiance(sharcParameters(), hd, s, false)) gi = s * h.albedo * (P.gi.x * window(h.t, P.gi.y));
+                    }
+                }
             }
         }
-        dx = directSample(ps, n, seed);
+        dx = directSample(ps, n, seed) + gi;
         float c = min(count + 1.0, float(P.u.z));
         mean += (x - mean) / c;
         m2 += (x * x - m2) / c;
