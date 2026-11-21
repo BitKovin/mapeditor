@@ -56,8 +56,7 @@ void oneTimeSubmit(gpu::Device& device, const std::function<void(VkCommandBuffer
     VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
     si.commandBufferInfoCount = 1;
     si.pCommandBufferInfos = &cbi;
-    vkQueueSubmit2(device.graphicsQueue(), 1, &si, VK_NULL_HANDLE);
-    vkQueueWaitIdle(device.graphicsQueue());
+    device.submitAndWait(device.graphicsQueue(), si, "texture upload");
     vkDestroyCommandPool(device.device(), pool, nullptr);
 }
 

@@ -93,6 +93,10 @@ const char* MainWindow::windowTitle() { return "Map Editor (native)"; }
 MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(parent), services_(services) {
     setWindowTitle(QString::fromLatin1(windowTitle()));
     resize(1280, 800);
+    if (services_.device)   // the handler runs on the thread that noticed the loss (render, compute): it only posts to the UI thread
+        services_.device->setLostHandler([this](const std::string& why) {
+            QMetaObject::invokeMethod(this, [this, text = QString::fromStdString(why)] { onDeviceLost(text); }, Qt::QueuedConnection);
+        });
 
     ads::CDockManager::setConfigFlag(ads::CDockManager::OpaqueSplitterResize, true);
     ads::CDockManager::setConfigFlag(ads::CDockManager::FocusHighlighting, false);
@@ -230,6 +234,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
 }
 
 MainWindow::~MainWindow() {
+    if (services_.device) services_.device->setLostHandler(nullptr);   // waits for a handler call in progress
     lighting_.reset();   // the bake thread reads the link and the device
     if (services_.renderThread) services_.renderThread->setLightLink(nullptr);
     lightLink_.reset();
@@ -272,6 +277,7 @@ std::string MainWindow::lightingText() const {
 
 void MainWindow::refreshStats() {
     auto rows = deviceRows_;
+    if (services_.device && services_.device->lost()) rows.emplace_back("GPU", "DEVICE LOST: " + services_.device->lostReason());
     rows.emplace_back("Lighting", lightingText());
     if (services_.device && services_.device->streamline()) {
         const gpu::StreamlineStatus sl = services_.device->streamline()->status();

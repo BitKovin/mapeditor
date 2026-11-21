@@ -119,7 +119,7 @@ bool Swapchain::create(uint32_t width, uint32_t height) {
 }
 
 VkResult Swapchain::acquire(VkSemaphore signalWhenReady, uint32_t* imageIndex) {
-    return vkAcquireNextImageKHR(device_.device(), swapchain_, UINT64_MAX, signalWhenReady, VK_NULL_HANDLE, imageIndex);
+    return vkAcquireNextImageKHR(device_.device(), swapchain_, 2'000'000'000ull, signalWhenReady, VK_NULL_HANDLE, imageIndex);
 }
 
 VkResult Swapchain::present(VkQueue queue, uint32_t imageIndex) {

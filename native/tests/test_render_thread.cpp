@@ -3,8 +3,10 @@
 // Pixels are checked: the clear colour, the grid and the test box really arrive on screen through the viewport's view.
 #include <doctest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -492,4 +494,55 @@ TEST_CASE("DLSS is ignored in an orthographic view and without Streamline" * doc
         vkDestroySurfaceKHR(plain.device->instance(), surface, nullptr);
         CHECK(plain.device->validationErrors() == 0);
     }
+}
+
+// A lost device (the driver reset the GPU): the render thread stops submitting and waiting, answers requests empty, and a resize or a removal still returns.
+TEST_CASE("a lost GPU device stops the viewport without hanging a resize or a removal" * doctest::test_suite("gpu")) {
+    GpuFixture gpuFx;
+    if (!gpuFx.device) return;
+    std::atomic<int> told{0};
+    std::string toldWhy;
+    std::mutex toldMutex;
+    gpuFx.device->setLostHandler([&](const std::string& why) {
+        std::lock_guard<std::mutex> lock(toldMutex);
+        toldWhy = why;
+        ++told;
+    });
+    {
+        TestWindow window(320, 240);
+        VkSurfaceKHR surface = gpuFx.makeSurface(window.hwnd());
+        {
+            render::RenderThread rt(*gpuFx.device);
+            const auto id = rt.addViewport(surface, 320, 240);
+            rt.setView(id, frontView(320, 240));
+            REQUIRE(rt.capture(id).ok());
+            CHECK_FALSE(gpuFx.device->lost());
+
+            gpuFx.device->noteResult(VK_ERROR_OUT_OF_DATE_KHR, "not a loss");   // other results are not a loss
+            CHECK_FALSE(gpuFx.device->lost());
+            gpuFx.device->noteResult(VK_ERROR_DEVICE_LOST, "unit test");
+            gpuFx.device->noteResult(VK_ERROR_DEVICE_LOST, "unit test again");
+            CHECK(gpuFx.device->lost());
+            CHECK(told == 1);   // said once
+            {
+                std::lock_guard<std::mutex> lock(toldMutex);
+                CHECK(toldWhy.find("unit test") != std::string::npos);
+            }
+            CHECK(gpuFx.device->lostReason().find("unit test") != std::string::npos);
+
+            // requests are answered, empty, and nothing is drawn any more
+            const uint64_t frames = rt.framesRendered(id);
+            rt.setView(id, frontView(320, 240));
+            const auto start = std::chrono::steady_clock::now();
+            CHECK_FALSE(rt.capture(id, 10000).ok());
+            window.resizeClient(400, 300);
+            rt.resizeViewport(id, 400, 300);
+            CHECK_FALSE(rt.capture(id, 10000).ok());
+            CHECK(rt.framesRendered(id) == frames);
+            rt.removeViewport(id);   // returns: the render thread still serves removals
+            CHECK(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() < 8.0);
+        }
+        vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);
+    }
+    gpuFx.device->setLostHandler(nullptr);
 }

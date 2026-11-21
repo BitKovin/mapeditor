@@ -96,3 +96,45 @@ TEST_CASE("the Lit mode of a window shows the bake of its own snapshots" * docte
     }
     CHECK(app.device->validationErrors() == 0);
 }
+
+// A lost GPU device: the window says so once (on the UI thread), lighting stops, the window keeps answering and closes.
+TEST_CASE("a lost GPU device is reported once and the window keeps working" * doctest::test_suite("gpu")) {
+    App app;
+    if (!app.ok) return;
+    const fs::path root = NATIVE_CORE_ASSETS_DIR;
+    if (!fs::exists(root / "maps/demo_lit.map.json")) return;
+    base::JobPool pool(8);
+    ui::Services sv = app.services();
+    sv.jobs = &pool;
+    sv.assetsRoot = root.generic_string();
+    {
+        ui::MainWindow window(sv);
+        int told = 0;
+        QString text;
+        window.setErrorHandler([&](const QString& message) {
+            ++told;
+            text = message;
+        });
+        window.resize(900, 600);
+        window.show();
+        REQUIRE(waitUntil([&] { return allReady(window); }));
+        window.openDocument("maps/demo_lit.map.json");
+        REQUIRE(waitUntil([&] { return window.sceneReady(); }, 30000));
+        window.viewports()[0].window->setRenderMode(render::RenderMode::Lit);
+        pumpFor(500);
+        CHECK(told == 0);
+
+        app.device->noteResult(VK_ERROR_DEVICE_LOST, "gui test");
+        app.device->noteResult(VK_ERROR_DEVICE_LOST, "gui test again");
+        CHECK(waitUntil([&] { return told > 0; }, 5000));
+        pumpFor(300);
+        CHECK(told == 1);
+        CHECK(text.contains(QStringLiteral("GPU device was lost")));
+        CHECK(text.contains(QStringLiteral("gui test")));
+        // the window still answers: a resize and a mode switch return, and the lighting reports why it stopped
+        window.resize(700, 500);
+        window.viewports()[0].window->setRenderMode(render::RenderMode::Unlit);
+        pumpFor(500);
+        CHECK(window.isVisible());
+    }
+}

@@ -33,7 +33,7 @@ bool submitOnce(gpu::Device& device, bool graphics, const std::function<void(VkC
         si.commandBufferInfoCount = 1;
         si.pCommandBufferInfos = &cbi;
         const VkQueue queue = graphics ? device.graphicsQueue() : device.computeQueue();
-        ok = vkQueueSubmit2(queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS && vkQueueWaitIdle(queue) == VK_SUCCESS;
+        ok = device.submitAndWait(queue, si, "page images");
     }
     vkDestroyCommandPool(device.device(), pool, nullptr);
     return ok;

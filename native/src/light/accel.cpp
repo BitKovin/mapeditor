@@ -437,7 +437,7 @@ bool Accel::update(const std::vector<AccelObject>& objects) {
         VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
         si.commandBufferInfoCount = 1;
         si.pCommandBufferInfos = &cbi;
-        ok = vkQueueSubmit2(device_.computeQueue(), 1, &si, VK_NULL_HANDLE) == VK_SUCCESS && vkQueueWaitIdle(device_.computeQueue()) == VK_SUCCESS;
+        ok = device_.submitAndWait(device_.computeQueue(), si, "acceleration structure build");
         vkDestroyCommandPool(device_.device(), pool, nullptr);
     }
 

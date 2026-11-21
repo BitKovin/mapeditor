@@ -610,7 +610,7 @@ Device::~Device() {
     if (instance_) vkDestroyInstance(instance_, nullptr);
 }
 
-std::string Device::writeCrashDump(const std::string& where) {
+std::string Device::writeCrashDump(const std::string& where) const {
     if (!caps_.diagnostics || !device_) return {};
     if (crashDumpWritten_.exchange(true)) return {};
     char stamp[32];
@@ -642,11 +642,49 @@ std::string Device::writeCrashDump(const std::string& where) {
     return path;
 }
 
-void Device::noteResult(VkResult result, const char* where) {
-    if (result != VK_ERROR_DEVICE_LOST) return;
-    logError(std::string("VK_ERROR_DEVICE_LOST at ") + where);
-    const std::string path = writeCrashDump(where);
+void Device::noteResult(VkResult result, const char* where) const {
+    if (result == VK_ERROR_DEVICE_LOST) markLost(std::string("VK_ERROR_DEVICE_LOST at ") + where);
+}
+
+void Device::markLost(const std::string& why) const {
+    if (lost_.exchange(true)) return;   // the first one reports
+    logError("GPU device lost: " + why);
+    const std::string path = writeCrashDump(why);
     if (!path.empty()) logError("GPU crash report written to " + path);
+    std::lock_guard<std::mutex> lock(lostMutex_);
+    lostReason_ = why;
+    if (lostHandler_) lostHandler_(why);
+}
+
+std::string Device::lostReason() const {
+    std::lock_guard<std::mutex> lock(lostMutex_);
+    return lostReason_;
+}
+
+void Device::setLostHandler(std::function<void(const std::string&)> handler) {
+    std::lock_guard<std::mutex> lock(lostMutex_);
+    lostHandler_ = std::move(handler);
+}
+
+bool Device::submitAndWait(VkQueue queue, const VkSubmitInfo2& si, const char* where) const {
+    if (lost_.load()) return false;
+    const VkResult sr = vkQueueSubmit2(queue, 1, &si, VK_NULL_HANDLE);
+    noteResult(sr, where);
+    if (sr != VK_SUCCESS) return false;
+    const VkResult wr = vkQueueWaitIdle(queue);
+    noteResult(wr, where);
+    return wr == VK_SUCCESS;
+}
+
+VkResult Device::waitTimeline(VkSemaphore semaphore, uint64_t value, uint64_t timeoutNs, const char* where) const {
+    if (lost_.load()) return VK_ERROR_DEVICE_LOST;
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1;
+    wi.pSemaphores = &semaphore;
+    wi.pValues = &value;
+    const VkResult r = vkWaitSemaphores(device_, &wi, timeoutNs);
+    noteResult(r, where);
+    return r;
 }
 
 uint64_t Device::validationErrors() const { return counts_ ? counts_->errors.load() : 0; }

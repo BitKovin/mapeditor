@@ -119,12 +119,7 @@ RenderThread::RenderThread(gpu::Device& device) : device_(device) {
     lightmapView_->update(display_->view());
     scatter_ = std::make_unique<light::Scatter>(device_);
     textures_->setGpuIdleWait([this] {
-        VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-        const uint64_t value = nextTimelineValue_.load();
-        wi.semaphoreCount = 1;
-        wi.pSemaphores = &renderTimeline_;
-        wi.pValues = &value;
-        vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+        device_.waitTimeline(renderTimeline_, nextTimelineValue_.load(), 5'000'000'000ull, "texture wait");
     });
     for (int i = 0; i < 2; ++i) {
         VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -906,11 +901,7 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
 void RenderThread::waitForFrames() {
     const uint64_t value = nextTimelineValue_.load();
     if (value == 0) return;
-    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-    wi.semaphoreCount = 1;
-    wi.pSemaphores = &renderTimeline_;
-    wi.pValues = &value;
-    vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+    device_.waitTimeline(renderTimeline_, value, 5'000'000'000ull, "frame wait");
 }
 
 // The lit modes' part of an upload iteration: a new epoch of the bake (new layout: the display pages are sized and emptied, the scene takes the lit meshes), then the
@@ -960,13 +951,7 @@ RenderThread::LightSubmit RenderThread::syncLighting(light::LightLink& link, VkC
     const uint64_t renderValue = ++mailboxRenderValue_;
     if (set && t.bakeValue >= set->firstBakeValue && t.entries > 0) {   // a mailbox of an older layout is dropped
         if (scatterUses_ >= 8) {
-            VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-            const uint64_t last = renderValue - 1;
-            wi.semaphoreCount = 1;
-            VkSemaphore s = mailbox.renderTimeline();
-            wi.pSemaphores = &s;
-            wi.pValues = &last;
-            vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+            device_.waitTimeline(mailbox.renderTimeline(), renderValue - 1, 5'000'000'000ull, "mailbox wait");
             scatter_->resetDescriptors();
             scatterUses_ = 0;
         }
@@ -1053,7 +1038,7 @@ void RenderThread::loop() {
                 return false;
             };
             // the ray tracing scene's idle upgrade is due at a time of its own
-            const auto rtDeadline = rtScene_ ? rtScene_->nextWake() : std::chrono::steady_clock::time_point::max();
+            const auto rtDeadline = rtScene_ && !device_.lost() ? rtScene_->nextWake() : std::chrono::steady_clock::time_point::max();
             if (rtDeadline == std::chrono::steady_clock::time_point::max()) wake_.wait(lock, ready);
             else wake_.wait_until(lock, rtDeadline, ready);
             rtDue = rtDeadline != std::chrono::steady_clock::time_point::max() && std::chrono::steady_clock::now() >= rtDeadline;
@@ -1087,6 +1072,11 @@ void RenderThread::loop() {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stop_) break;
         }
+        if (device_.lost()) {   // the GPU is gone: nothing is submitted or waited for any more, requests are answered empty; removals and the stop still work
+            for (Work& w : work)
+                if (w.capture) w.capture->set_value(CapturedImage{});
+            continue;
+        }
 
         // the iteration's upload ring slice and upload commands (scene geometry, textures), then every viewport's frame
         uint64_t lastValue = 0;
@@ -1094,20 +1084,14 @@ void RenderThread::loop() {
         const uint32_t slot = static_cast<uint32_t>(iteration_++ % 2);
         const bool active = !work.empty() || doUpload || rtDue;
         if (active) {
-            if (ringValue_[slot] > 0) {
-                VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-                wi.semaphoreCount = 1;
-                wi.pSemaphores = &renderTimeline_;
-                wi.pValues = &ringValue_[slot];
-                vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
-            }
-            while (!ring_->beginFrame(completedFrames())) {
-                VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-                const uint64_t value = nextTimelineValue_.load();
-                wi.semaphoreCount = 1;
-                wi.pSemaphores = &renderTimeline_;
-                wi.pValues = &value;
-                vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+            if (ringValue_[slot] > 0) device_.waitTimeline(renderTimeline_, ringValue_[slot], 5'000'000'000ull, "upload ring wait");
+            bool ringReady = true;
+            while (!(ringReady = ring_->beginFrame(completedFrames())) && !device_.lost())
+                device_.waitTimeline(renderTimeline_, nextTimelineValue_.load(), 5'000'000'000ull, "upload ring wait");
+            if (!ringReady) {   // the GPU is gone: nothing of this iteration can run, the requests are answered empty
+                for (Work& w : work)
+                    if (w.capture) w.capture->set_value(CapturedImage{});
+                continue;
             }
             vkResetCommandPool(device_.device(), uploadPool_[slot], 0);
             VkCommandBufferBeginInfo ubi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -1167,12 +1151,10 @@ void RenderThread::loop() {
             }
             // Use the size the swapchain really has: it may differ from the requested one during a drag-resize.
             Frame& f = v.frame[v.frameCounter++ % kFramesInFlight];
-            if (f.timelineValue > 0) {
-                VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-                wi.semaphoreCount = 1;
-                wi.pSemaphores = &renderTimeline_;
-                wi.pValues = &f.timelineValue;
-                vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+            if (f.timelineValue > 0) device_.waitTimeline(renderTimeline_, f.timelineValue, 5'000'000'000ull, "frame wait");
+            if (device_.lost()) {   // the wait above (or the last frame) found the device lost: give the request back empty
+                if (w.capture) w.capture->set_value(CapturedImage{});
+                continue;
             }
             gpu::Swapchain& sc = *v.swapchain;
             // NVIDIA Reflex / PCL (T6.7): one frame token per viewport frame; the sleep is the pacing point before the frame's CPU work.
@@ -1191,8 +1173,9 @@ void RenderThread::loop() {
                 if (w.capture) v.capture = w.capture;         // deliver the capture with the retried frame
                 continue;
             }
+            device_.noteResult(acq, "acquire");
             if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) {
-                base::logError("vkAcquireNextImageKHR failed (" + std::to_string(acq) + ")");
+                if (!device_.lost()) base::logError("vkAcquireNextImageKHR failed (" + std::to_string(acq) + ")" + (acq == VK_TIMEOUT ? ": no image came back in 2 s" : ""));
                 if (w.capture) w.capture->set_value(CapturedImage{});
                 continue;
             }
@@ -1416,11 +1399,11 @@ void RenderThread::loop() {
             if (w.capture) {
                 CapturedImage out;
                 if (doCapture) {
-                    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-                    wi.semaphoreCount = 1;
-                    wi.pSemaphores = &renderTimeline_;
-                    wi.pValues = &signalValue;
-                    vkWaitSemaphores(device_.device(), &wi, 5'000'000'000ull);
+                    if (device_.waitTimeline(renderTimeline_, signalValue, 5'000'000'000ull, "capture wait") != VK_SUCCESS) {
+                        w.capture->set_value(CapturedImage{});
+                        if (staging) vmaDestroyBuffer(device_.allocator(), staging, stagingAlloc);
+                        continue;
+                    }
                     vmaInvalidateAllocation(device_.allocator(), stagingAlloc, 0, VK_WHOLE_SIZE);
                     out.width = extent.width;
                     out.height = extent.height;

@@ -448,6 +448,8 @@ private:
     };
     ResolvedPath resolveAssetPath(const std::string& path) const;
     void reportError(const QString& message);
+    // The GPU device was lost (the driver reset it or hit an error): the viewports stop drawing, the map stays in memory. Said once, on the UI thread.
+    void onDeviceLost(const QString& why);
     void updateTitle();
     void addRecent(const std::string& absolutePath);
     // Runs `work` on the job pool and then `done` on the UI thread (both inline without a pool).
@@ -573,6 +575,7 @@ private:
     int pendingJobs_ = 0;
     uint64_t openSerial_ = 0;
     std::function<void(const QString&)> errorHandler_;
+    bool deviceLostShown_ = false;
     // Results of finished jobs, handed to the UI thread by a timer that runs only while jobs are pending.
     struct Completed {
         std::mutex mutex;

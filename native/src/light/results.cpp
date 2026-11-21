@@ -45,7 +45,7 @@ Results::Results(gpu::Device& device, uint32_t slotCapacity)
         VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
         si.commandBufferInfoCount = 1;
         si.pCommandBufferInfos = &cbi;
-        valid_ = vkQueueSubmit2(device.computeQueue(), 1, &si, VK_NULL_HANDLE) == VK_SUCCESS && vkQueueWaitIdle(device.computeQueue()) == VK_SUCCESS;
+        valid_ = device.submitAndWait(device.computeQueue(), si, "result buffers");
     }
     vkDestroyCommandPool(device.device(), pool, nullptr);
 }

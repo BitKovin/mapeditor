@@ -8,6 +8,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
 #include <QStringList>
@@ -66,6 +67,25 @@ void MainWindow::reportError(const QString& message) {
     statusBar()->showMessage(message, 8000);
     if (errorHandler_) errorHandler_(message);
     else QMessageBox::critical(this, QString::fromLatin1(windowTitle()), message);
+}
+
+void MainWindow::onDeviceLost(const QString& why) {
+    if (deviceLostShown_) return;
+    deviceLostShown_ = true;
+    refreshStats();
+    const QString text = QStringLiteral("The graphics driver reported an error and the GPU device was lost (%1).\n\n"
+                                        "The viewports have stopped drawing and lighting has stopped. The map is still open: save it, then restart the editor.").arg(why);
+    base::logError(text.toStdString());
+    statusBar()->showMessage(QStringLiteral("GPU device lost - save the map and restart the editor"), 0);
+    if (errorHandler_) {
+        errorHandler_(text);
+        return;
+    }
+    QMessageBox box(QMessageBox::Critical, QString::fromLatin1(windowTitle()), text, QMessageBox::Close, this);
+    QPushButton* save = box.addButton(QStringLiteral("Save map"), QMessageBox::AcceptRole);
+    save->setEnabled(document_ != nullptr);
+    box.exec();
+    if (box.clickedButton() == save) saveDocument();
 }
 
 void MainWindow::setAssetsRoot(const std::string& folder) {

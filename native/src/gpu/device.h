@@ -17,7 +17,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -121,9 +123,22 @@ public:
 
     // Writes gpu_crash_<time>.txt (device, where it happened, the last checkpoints of the graphics and compute queues) once per
     // process; returns the path, or empty when dumps are off or one was already written. Safe from any thread.
-    std::string writeCrashDump(const std::string& where);
-    // Call with a failing VkResult from a queue operation: a VK_ERROR_DEVICE_LOST writes the dump (when enabled) and is logged.
-    void noteResult(VkResult result, const char* where);
+    std::string writeCrashDump(const std::string& where) const;
+    // Call with the VkResult of every queue operation, present, acquire and wait: a VK_ERROR_DEVICE_LOST (the driver reset the GPU or hit an error in a shader) marks
+    // the device lost (below). Any thread.
+    void noteResult(VkResult result, const char* where) const;
+    // One-time submit of `si` on `queue` and a wait for the queue; false when either failed (both results go through noteResult).
+    bool submitAndWait(VkQueue queue, const VkSubmitInfo2& si, const char* where) const;
+    // vkWaitSemaphores on one timeline semaphore; the result goes through noteResult. VK_SUCCESS, VK_TIMEOUT, or an error (a lost device answers at once).
+    VkResult waitTimeline(VkSemaphore semaphore, uint64_t value, uint64_t timeoutNs, const char* where) const;
+
+    // Device loss. After it every call into the device fails, so everything that submits work must stop: it asks lost() before touching the GPU and gives up quietly.
+    // markLost is what noteResult calls (the first call writes the crash dump when enabled, logs, and calls the handler); the tests call it to simulate a loss.
+    bool lost() const { return lost_.load(); }
+    std::string lostReason() const;
+    void markLost(const std::string& why) const;
+    // Called once, on the thread that noticed the loss (render, compute or UI thread), while an internal lock is held: post to your thread and return. A null handler removes it.
+    void setLostHandler(std::function<void(const std::string&)> handler);
 
 private:
     Device() = default;
@@ -140,7 +155,11 @@ private:
     std::unique_ptr<MessageCounts> counts_;
     std::unique_ptr<Streamline> streamline_;   // before the device: shut down first, destroyed after nothing uses it
     std::string crashDumpDir_;
-    std::atomic<bool> crashDumpWritten_{false};
+    mutable std::atomic<bool> crashDumpWritten_{false};
+    mutable std::atomic<bool> lost_{false};
+    mutable std::mutex lostMutex_;
+    mutable std::string lostReason_;
+    std::function<void(const std::string&)> lostHandler_;
 };
 
 } // namespace native::gpu

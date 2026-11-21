@@ -75,7 +75,7 @@ public:
                 si.signalSemaphoreInfoCount = 1;
                 si.pSignalSemaphoreInfos = &sig;
             }
-            ok = vkQueueSubmit2(d_.computeQueue(), 1, &si, VK_NULL_HANDLE) == VK_SUCCESS && vkQueueWaitIdle(d_.computeQueue()) == VK_SUCCESS;
+            ok = d_.submitAndWait(d_.computeQueue(), si, "bake submit");
         }
         vkFreeCommandBuffers(d_.device(), pool_, 1, &cmd);
         return ok;
@@ -214,6 +214,17 @@ void LightingService::loop() {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             if (stop_) break;
+            if (device_.lost()) {   // nothing can be baked any more: the inputs are answered with the reason, the GPU resources go
+                hasPending_ = false;
+                status_.building = false;
+                status_.converged = false;
+                status_.error = "the GPU device was lost (" + device_.lostReason() + ")";
+                finishedInputs_ = submittedInputs_;
+                progress_.notify_all();
+                epoch.reset();
+                wake_.wait_for(lock, std::chrono::milliseconds(100));
+                continue;
+            }
             const bool work = epoch && !epoch->failed && link_.wanted() && needsWork(*epoch);
             if (!hasPending_ && !work) {
                 wake_.wait_for(lock, std::chrono::milliseconds(30));
