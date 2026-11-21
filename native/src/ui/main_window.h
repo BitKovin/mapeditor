@@ -114,6 +114,7 @@ class SurfacePanel;
 class TextureBrowserPanel;
 class FttWindow;
 class TexturePropsDialog;
+class TexGroupEditor;
 
 // The faces the Fast Texture Tool edits: some faces (all, when a whole brush is selected) of one brush.
 struct FttTarget {
@@ -465,6 +466,22 @@ public:
     TexturePropsDialog* openTextureProperties(const std::string& texture, bool show = true);
     TexturePropsDialog* propsDialog() const { return propsDialog_; }
 
+    // ---- texture groups (T11.4b): rule groups and texture sets in <assets>/<texGroupRoot>/<name>.texgroup.json ----
+    struct TexGroupStore {
+        std::function<std::vector<std::string>()> list;
+        std::function<std::optional<nlohmann::json>(const std::string&)> read;
+        std::function<std::string(const std::string&, const nlohmann::json&)> write;
+        std::function<std::string(const std::string&)> remove;
+    };
+    std::vector<std::string> texGroupList() const;
+    std::optional<nlohmann::json> texGroupRead(const std::string& name) const;
+    std::string texGroupWrite(const std::string& name, const nlohmann::json& group);   // "" = written; the scene is rebuilt (faces that use the group are laid out again)
+    std::string texGroupRemove(const std::string& name);
+    void setTexGroupStore(TexGroupStore store) { groupStore_ = std::move(store); }      // tests: no assets folder
+    bool applyTexGroup(const std::string& name);                                          // to the selected faces / brushes; one undo step
+    TexGroupEditor* openTexGroupEditor(const std::string& name, bool show = true);        // "" = a new group
+    TexGroupEditor* groupEditor() const { return groupEditor_; }
+
     // ---- delete, duplicate, group, clipboard, hide (T4.3) ----
     // Each is one undo step on the selection (prefab-internal and face selections are left alone); false when refused or nothing to do (the status bar says why).
     bool deleteSelected();
@@ -785,6 +802,8 @@ private:
     TexPropsRead propsRead_;
     TexPropsWrite propsWrite_;
     TexturePropsDialog* propsDialog_ = nullptr;
+    TexGroupStore groupStore_;
+    TexGroupEditor* groupEditor_ = nullptr;
     void rebuildTextureEnvironment();
     std::string originSel_;
     tools::HideState hide_;

@@ -72,6 +72,16 @@ struct RepeatPatch {
 };
 BrushEdit setFaceRepeat(const std::shared_ptr<const doc::DocumentVersion>& base, const std::vector<doc::SelRef>& sels, int axis, const RepeatPatch& patch);
 
+/// Texture groups (state/actions.ts applyTexGroup): the target faces are laid out by the group (`look.layout = {group}`); the face keeps its texture as the fallback, or takes
+/// `fallbackTexture` (the group's fallback slot). `wallsOnly` leaves out the roof / floor faces of whole brushes (a face picked by hand always gets the group).
+BrushEdit applyTexGroup(const std::shared_ptr<const doc::DocumentVersion>& base, const std::vector<doc::SelRef>& sels, const std::string& group, const std::string& fallbackTexture, bool wallsOnly);
+/// `change` on the layout JSON of every target face that has one (null / an empty object removes it); the other faces are left alone.
+BrushEdit editLayout(const std::shared_ptr<const doc::DocumentVersion>& base, const std::vector<doc::SelRef>& sels, const std::string& label, const std::function<nlohmann::json(const nlohmann::json&)>& change);
+/// Back to a plain face (the face keeps its texture).
+BrushEdit clearLayout(const std::shared_ptr<const doc::DocumentVersion>& base, const std::vector<doc::SelRef>& sels);
+/// The group name of a face's layout ("" = none).
+std::string layoutGroupOf(const core::BrushFace& f);
+
 /// The Radiant texture keys: Shift+arrows shift, Ctrl+Shift+arrows scale, Shift+PageUp/PageDown rotate; `fine` divides the step by 8.
 struct TexSteps {
     double shift = 0.125, rotate = 15, scale = 0.1;

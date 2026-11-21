@@ -5,6 +5,7 @@
 #include <cmath>
 #include <map>
 #include <set>
+#include <tuple>
 
 #include "doc/edit.h"
 #include "tools/texturing/flow.h"
@@ -174,6 +175,62 @@ BrushEdit applyTexture(const Base& base, const std::vector<SelRef>& sels, const 
         t.texture = texture;
         return t;
     });
+}
+
+BrushEdit applyTexGroup(const Base& base, const std::vector<SelRef>& sels, const std::string& group, const std::string& fallbackTexture, bool wallsOnly) {
+    if (!base) return refused("no document");
+    std::vector<FaceRef> targets = faceTargets(*base, sels);
+    if (wallsOnly) {   // a wall set on a whole brush leaves its roof and floor alone; a face picked by hand always gets it
+        std::set<std::tuple<std::string, std::string, uint32_t>> explicitFaces;
+        for (const SelRef& s : sels)
+            if (s.faceId) explicitFaces.insert({s.entityId, s.brushId, *s.faceId});
+        std::vector<FaceRef> kept;
+        for (const FaceRef& t : targets) {
+            if (explicitFaces.count({t.entityId, t.brushId, t.faceId})) {
+                kept.push_back(t);
+                continue;
+            }
+            const core::Brush* b = findBrushOf(*base, t);
+            const core::BrushFace* f = findFace(*base, t);
+            if (b && f && std::abs(tp::faceNormalOf(*b, *f)[1]) <= 0.5) kept.push_back(t);
+        }
+        targets = std::move(kept);
+    }
+    if (targets.empty()) return {};
+    BrushEdit r = mapFaces(base, targets, "Apply texture group", [&](const core::Brush&, const core::BrushFace& f) {
+        core::BrushFace nf = withLook(f, [&](json& look) { look["layout"] = json{{"group", group}}; });
+        if (!fallbackTexture.empty()) nf.texture = fallbackTexture;
+        return nf;
+    });
+    if (r.ok()) r.message = "Texture group applied to " + std::to_string(targets.size()) + (targets.size() == 1 ? " face" : " faces");
+    return r;
+}
+
+BrushEdit editLayout(const Base& base, const std::vector<SelRef>& sels, const std::string& label, const std::function<json(const json&)>& change) {
+    if (!base) return refused("no document");
+    const std::vector<FaceRef> targets = faceTargets(*base, sels);
+    if (targets.empty()) return {};
+    return mapFaces(base, targets, label, [&](const core::Brush&, const core::BrushFace& f) {
+        if (!f.look || !f.look->is_object() || !f.look->contains("layout") || !(*f.look)["layout"].is_object()) return f;
+        const json next = change((*f.look)["layout"]);
+        return withLook(f, [&](json& look) {
+            if (next.is_object() && !next.empty()) look["layout"] = next;
+            else look.erase("layout");
+        });
+    });
+}
+
+BrushEdit clearLayout(const Base& base, const std::vector<SelRef>& sels) {
+    if (!base) return refused("no document");
+    const std::vector<FaceRef> targets = faceTargets(*base, sels);
+    if (targets.empty()) return {};
+    return mapFaces(base, targets, "Clear layout", [](const core::Brush&, const core::BrushFace& f) { return withoutLayout(f); });
+}
+
+std::string layoutGroupOf(const core::BrushFace& f) {
+    if (!f.look || !f.look->is_object() || !f.look->contains("layout") || !(*f.look)["layout"].is_object()) return {};
+    const json& l = (*f.look)["layout"];
+    return l.contains("group") && l["group"].is_string() ? l["group"].get<std::string>() : std::string();
 }
 
 BrushEdit editProjection(const Base& base, const std::vector<SelRef>& sels, const std::string& label, const ProjectionFn& change, const InfoFn& info) {
