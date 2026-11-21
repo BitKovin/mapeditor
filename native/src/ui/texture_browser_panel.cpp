@@ -118,6 +118,7 @@ TextureBrowserPanel::TextureBrowserPanel(MainWindow& window, QWidget* parent) : 
         if (item) setFolder(item->data(kPath).toString().toStdString());
     });
     QObject::connect(grid_, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) { choose(item->data(kPath).toString().toStdString(), true); });
+    QObject::connect(grid_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) { win_.openTextureProperties(item->data(kPath).toString().toStdString()); });
     QObject::connect(grid_, &QListWidget::customContextMenuRequested, this, [this](const QPoint& p) {
         QListWidgetItem* item = grid_->itemAt(p);
         if (!item) return;
@@ -125,6 +126,7 @@ TextureBrowserPanel::TextureBrowserPanel(MainWindow& window, QWidget* parent) : 
         QMenu menu(this);
         menu.addAction(QStringLiteral("Apply to selection"), [this, path] { choose(path, true); });
         menu.addAction(QStringLiteral("Set as active texture"), [this, path] { choose(path, false); });
+        menu.addAction(QStringLiteral("Properties..."), [this, path] { win_.openTextureProperties(path); });
         menu.exec(grid_->viewport()->mapToGlobal(p));
     });
     QObject::connect(&win_, &MainWindow::entityDefinitionsChanged, this, [this] { reload(); });   // the game profile was (re)loaded

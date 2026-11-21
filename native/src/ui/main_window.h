@@ -8,6 +8,7 @@
 // Spec: 07_EDITOR_PORT.md group C (app/main_window), 10_UI_AND_INPUT.md, 05_RENDERER.md §3, 08_MILESTONES.md T1.4.
 #pragma once
 
+#include <QImage>
 #include <QMainWindow>
 #include <QPointF>
 #include <QString>
@@ -112,6 +113,7 @@ class DetailsPanel;
 class SurfacePanel;
 class TextureBrowserPanel;
 class FttWindow;
+class TexturePropsDialog;
 
 // The faces the Fast Texture Tool edits: some faces (all, when a whole brush is selected) of one brush.
 struct FttTarget {
@@ -453,6 +455,16 @@ public:
     void toggleFastTextureTool();
     FttWindow* fttWindow() const { return fttWindow_; }
 
+    // ---- texture properties (T11.4): the sidecar JSON next to a texture ----
+    using TexPropsRead = std::function<nlohmann::json(const std::string&)>;
+    using TexPropsWrite = std::function<std::string(const std::string&, const nlohmann::json&)>;
+    nlohmann::json textureProps(const std::string& texture) const;                              // as stored (an empty object without a sidecar)
+    std::string saveTextureProps(const std::string& texture, const nlohmann::json& props);    // "" = written; the scene is rebuilt with the new properties
+    void setTexturePropsStore(TexPropsRead read, TexPropsWrite write) { propsRead_ = std::move(read); propsWrite_ = std::move(write); }   // tests: no assets folder
+    QImage loadTextureImage(const std::string& texture) const;                                  // the texture picture (null when it cannot be read)
+    TexturePropsDialog* openTextureProperties(const std::string& texture, bool show = true);
+    TexturePropsDialog* propsDialog() const { return propsDialog_; }
+
     // ---- delete, duplicate, group, clipboard, hide (T4.3) ----
     // Each is one undo step on the selection (prefab-internal and face selections are left alone); false when refused or nothing to do (the status bar says why).
     bool deleteSelected();
@@ -770,6 +782,10 @@ private:
     };
     std::optional<FttDrag> fttDrag_;
     FttWindow* fttWindow_ = nullptr;
+    TexPropsRead propsRead_;
+    TexPropsWrite propsWrite_;
+    TexturePropsDialog* propsDialog_ = nullptr;
+    void rebuildTextureEnvironment();
     std::string originSel_;
     tools::HideState hide_;
     std::shared_ptr<const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>> hiddenSet_;

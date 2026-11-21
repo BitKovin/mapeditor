@@ -17,8 +17,6 @@
 #include <algorithm>
 #include <cmath>
 
-#include "core/albedo.h"
-#include "core/textures.h"
 #include "tools/texturing/face_edit.h"
 #include "ui/main_window.h"
 
@@ -92,13 +90,7 @@ void FttCanvas::refresh(bool fit) {
 
 const QImage* FttCanvas::textureImage(const std::string& path) {
     if (const auto it = images_.find(path); it != images_.end()) return it->second.isNull() ? nullptr : &it->second;
-    QImage img;
-    const auto profile = win_.gameProfile();
-    if (profile && !win_.assetsRoot().empty()) {
-        if (const auto file = core::readTexture(win_.assetsRoot(), *profile, path))
-            if (const auto d = core::decodeImage(file->bytes, file->ext); d && d->width > 0 && d->height > 0 && d->rgba.size() >= static_cast<size_t>(d->width) * d->height * 4)
-                img = QImage(d->rgba.data(), d->width, d->height, d->width * 4, QImage::Format_RGBA8888).copy();
-    }
+    QImage img = win_.loadTextureImage(path);
     return images_.emplace(path, std::move(img)).first->second.isNull() ? nullptr : &images_[path];
 }
 

@@ -152,6 +152,24 @@ void registerTextureActions(actions::Registry& r) {
         };
         r.add(std::move(d));
     }
+    {
+        ActionDef d;
+        d.id = "texture.properties";
+        d.label = "Texture properties...";
+        d.category = "Texture";
+        d.description = "Opens the properties of the active texture: pixels per metre, repetition, transparency and hotspots.";
+        d.menu = "&Texture";
+        d.menuSeparatorBefore = true;
+        d.contexts = {"area:viewport"};
+        d.enabled = [](const ActionEnv& env, const json&) {
+            MainWindow* w = windowOf(env);
+            return w && w->document() && !w->activeTexture().empty();
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) w->openTextureProperties(w->activeTexture());
+        };
+        r.add(std::move(d));
+    }
     addKey(r, "texture.shift", "Shift texture", "Moves the texture on the selected faces by one step (keys: Shift+arrows; Alt = fine).", "shift");
     addKey(r, "texture.scale", "Scale texture", "Scales the texture on the selected faces by one step (keys: Ctrl+Shift+arrows; Alt = fine).", "scale");
     addKey(r, "texture.rotate", "Rotate texture", "Rotates the texture on the selected faces by one step (keys: Shift+PageUp / PageDown; Alt = fine).", "rotate");

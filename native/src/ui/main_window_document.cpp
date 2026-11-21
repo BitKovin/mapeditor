@@ -487,13 +487,7 @@ void MainWindow::setupScene() {
             lightLink_.reset();
         }
     }
-    texEnv_ = std::make_shared<core::texplan::TexEnvironment>(root, profile);
-    scene::ReliefEnv env;
-    const auto e = texEnv_;
-    env.info = [e](const std::string& p) { return e->info(p); };
-    env.groups = [e](const std::string& n) { return e->group(n); };
-    env.revision = ++reliefRevision_;
-    builder_->setReliefEnv(env);
+    rebuildTextureEnvironment();
     services_.renderThread->setTextureSource(root, services_.jobs);
     // the game's entity definitions: class boxes (picking, drawing), colours
     entityDefs_ = std::make_shared<core::EntityDefinitions>(core::loadEntityDefinitions(root / profile.entityDefinitions));
@@ -502,6 +496,18 @@ void MainWindow::setupScene() {
     prefabRoot_ = profile.prefabRoot;
     refreshOverlays();
     emit entityDefinitionsChanged();
+}
+
+// A fresh texture environment (textures, their properties, texture groups are read again) for the scene builder: after the game profile or a texture's properties changed.
+void MainWindow::rebuildTextureEnvironment() {
+    if (!profile_ || assetsRoot_.empty()) return;
+    texEnv_ = std::make_shared<core::texplan::TexEnvironment>(std::filesystem::path(assetsRoot_), *profile_);
+    scene::ReliefEnv env;
+    const auto e = texEnv_;
+    env.info = [e](const std::string& p) { return e->info(p); };
+    env.groups = [e](const std::string& n) { return e->group(n); };
+    env.revision = ++reliefRevision_;
+    builder_->setReliefEnv(env);
 }
 
 void MainWindow::submitScene(const doc::ChangeSet& changes) {
