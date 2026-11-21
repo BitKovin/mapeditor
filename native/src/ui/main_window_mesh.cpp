@@ -14,6 +14,7 @@
 #include "render/viewport_window.h"
 #include "tools/box_tool.h"
 #include "tools/gizmo.h"
+#include "tools/mesh/cut.h"
 #include "tools/mesh/ops.h"
 #include "tools/mesh/pick.h"
 #include "ui/main_window.h"
@@ -90,6 +91,7 @@ bool MainWindow::enterMeshMode() {
 
 void MainWindow::leaveMeshMode() {
     if (!document_ || !meshMode()) return;
+    if (knife_) cancelKnife();
     selection_->setMode(*document_, doc::EditMode::Object);
     meshActive_.reset();
     emit toolChanged();
@@ -218,7 +220,7 @@ void MainWindow::meshPickInput(render::ViewportWindow* vp, const actions::InputE
     using Type = actions::InputEvent::Type;
     const QPointF p(e.x, e.y);
     if (e.type == Type::MousePress) {
-        meshDrag_ = {vp, p, p, false, (e.mods & actions::kShift) != 0, (e.mods & actions::kCtrl) != 0, (e.mods & actions::kAlt) != 0};
+        meshDrag_ = {vp, p, p, false, (e.mods & actions::kShift) != 0, (e.mods & actions::kCtrl) != 0, (e.mods & actions::kAlt) != 0, e.doubleClick};
         return;
     }
     if (meshDrag_.viewport != vp) return;
@@ -234,7 +236,7 @@ void MainWindow::meshPickInput(render::ViewportWindow* vp, const actions::InputE
         if (d.dragging) {
             vp->setRubberBand(false);
             meshBoxSelectIn(vp, d.start, p, d.shift);
-        } else if (!meshClickAt(vp, p, d.shift, d.ctrl, d.alt) && !d.shift) {
+        } else if (!meshClickAt(vp, p, d.shift, d.ctrl, d.alt || d.loop) && !d.shift) {
             setMeshSelection({});   // a click on nothing clears the selection
         }
     }
@@ -485,6 +487,116 @@ bool MainWindow::mirrorMesh(int axis) {
             for (uint32_t i = 0; i < b.vertices.size(); ++i) verts.push_back(i);
         return tm::mirrorVerts(b, verts, axis, true, info);
     });
+}
+
+// ---- knife ---------------------------------------------------------------------------------------------------------------------------------
+
+bool MainWindow::startKnife() {
+    const auto t = meshTarget();
+    if (!t || transform_ || knife_) return false;
+    knife_ = KnifeState{t->node, {}, std::nullopt};
+    statusBar()->showMessage(QStringLiteral("Knife: click points on edges or vertices (Ctrl = edge middle); Enter or right-click cuts, Esc cancels"), 8000);
+    setContextsFor(activeViewport());
+    refreshGizmos();
+    return true;
+}
+
+void MainWindow::addKnifePoint(const tm::KnifePoint& p) {
+    if (!knife_) return;
+    knife_->points.push_back(p);
+    statusBar()->showMessage(QString("Knife: %1 point(s); Enter or right-click cuts, Esc cancels").arg(knife_->points.size()), 8000);
+    refreshGizmos();
+}
+
+void MainWindow::cancelKnife(const QString& message) {
+    if (!knife_) return;
+    knife_.reset();
+    statusBar()->showMessage(message.isEmpty() ? QStringLiteral("Knife cancelled") : message, 4000);
+    setContextsFor(activeViewport());
+    refreshGizmos();
+}
+
+bool MainWindow::finishKnife() {
+    if (!knife_) return false;
+    const KnifeState k = *knife_;
+    knife_.reset();
+    refreshGizmos();
+    const auto t = meshTarget();
+    if (!t || t->node != k.node) {
+        statusBar()->showMessage(QStringLiteral("Knife cancelled: the brush changed while cutting"), 5000);
+        return false;
+    }
+    if (k.points.size() < 2) {
+        statusBar()->showMessage(QStringLiteral("Knife cancelled: click at least two points"), 5000);
+        return false;
+    }
+    const core::texplan::InfoFn info = texEnv_ ? texEnv_->infoFn() : core::texplan::InfoFn{};
+    const std::vector<tm::KnifePoint> points = k.points;
+    return applyMeshOperation("Knife", [points, info](const core::Brush& b, const tm::MeshSel&) { return tm::knifeCut(b, points, info); });
+}
+
+std::optional<tm::KnifePoint> MainWindow::knifePointAt(render::ViewportWindow* vp, QPointF p, bool ctrl) const {
+    const auto t = meshTarget();
+    if (!t || !vp) return std::nullopt;
+    const core::Brush& b = t->brush();
+    const render::ViewState view = vp->currentView();
+    const tm::Project project = projector(view, vp->size());
+    if (const auto v = tm::pickVertex(b, project, p.x(), p.y())) return tm::KnifePoint::at(*v);
+    const auto edge = tm::pickEdge(b, project, p.x(), p.y(), 10);
+    if (!edge) return std::nullopt;
+    if (ctrl) return tm::KnifePoint::onEdge(*edge, 0.5);
+    const core::Vec3 a = b.vertices[edge->a], c = b.vertices[edge->b];
+    const render::Vec3 d{c.x - a.x, c.y - a.y, c.z - a.z};
+    const double len = render::length(d);
+    double t01 = 0.5;
+    if (len > 1e-9) {
+        const render::Vec3 dir{d.x / len, d.y / len, d.z / len};
+        if (const auto along = tools::lineDistance(rayAt(view, vp->size(), p), {a.x, a.y, a.z}, dir)) t01 = std::min(0.98, std::max(0.02, *along / len));
+    }
+    return tm::KnifePoint::onEdge(*edge, t01);
+}
+
+bool MainWindow::knifeMouse(size_t index, const actions::InputEvent& e) {
+    using Type = actions::InputEvent::Type;
+    if (!knife_ || index >= panels_.size() || !panels_[index].window) return false;
+    render::ViewportWindow* vp = panels_[index].window;
+    const bool ctrl = (e.mods & actions::kCtrl) != 0;
+    if (e.type == Type::MouseMove) {
+        knife_->hover = knifePointAt(vp, QPointF(e.x, e.y), ctrl);
+        refreshGizmos();
+        return false;   // the camera and the rest still see the move
+    }
+    if ((e.type == Type::MousePress || e.type == Type::MouseRelease) && (e.button == 1 || e.button == 2)) {
+        if (e.type == Type::MousePress) {
+            if (e.button == 2) {
+                finishKnife();
+            } else if (const auto p = knifePointAt(vp, QPointF(e.x, e.y), ctrl)) {
+                addKnifePoint(*p);
+            }
+        }
+        return true;   // a knife in progress owns the clicks
+    }
+    return false;
+}
+
+std::vector<render::LineVertex> MainWindow::knifeLines(size_t index) const {
+    std::vector<render::LineVertex> out;
+    const auto t = meshTarget();
+    if (!knife_ || !t || t->node != knife_->node || index >= panels_.size() || !panels_[index].window) return out;
+    render::ViewportWindow* vp = panels_[index].window;
+    const core::Brush& b = t->brush();
+    std::vector<core::Vec3> pts;
+    for (const tm::KnifePoint& p : knife_->points) pts.push_back(tm::knifePos(b, p));
+    if (knife_->hover) pts.push_back(tm::knifePos(b, *knife_->hover));
+    const uint32_t color = render::packColor(1.0f, 0.85f, 0.2f, 1.0f);
+    for (size_t i = 1; i < pts.size(); ++i) addLine(out, pts[i - 1], pts[i], color);
+    const render::CameraBasis basis = vp->rig().active().basis();
+    for (const core::Vec3& p : pts) {   // a small cross per point
+        const double half = 5.0 * tools::metresPerPixelAt(vp->rig().active().distanceTo({p.x, p.y, p.z}), vp->rig().active().fovY, std::max(1, vp->height()));
+        addLine(out, {p.x - basis.right.x * half, p.y - basis.right.y * half, p.z - basis.right.z * half}, {p.x + basis.right.x * half, p.y + basis.right.y * half, p.z + basis.right.z * half}, color);
+        addLine(out, {p.x - basis.up.x * half, p.y - basis.up.y * half, p.z - basis.up.z * half}, {p.x + basis.up.x * half, p.y + basis.up.y * half, p.z + basis.up.z * half}, color);
+    }
+    return out;
 }
 
 } // namespace native::ui

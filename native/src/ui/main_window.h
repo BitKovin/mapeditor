@@ -38,6 +38,7 @@
 #include "tools/prefs.h"
 #include "tools/shapes.h"
 #include "exporting/launch.h"
+#include "tools/mesh/cut.h"
 #include "tools/mesh/session.h"
 #include "tools/mesh/select.h"
 #include "tools/visibility.h"
@@ -305,7 +306,8 @@ public:
     void refreshGizmos();
     void refreshGizmo(size_t panelIndex);
     // Press on a gizmo handle / the origin square of `viewport` at `p` (what the left button does before the pick); false when nothing was hit.
-    bool beginGizmoDrag(render::ViewportWindow* viewport, QPointF p);
+    // `extrude`: mesh mode, face element, Shift on the move arrow: the picked faces are extruded along the arrow instead of moved.
+    bool beginGizmoDrag(render::ViewportWindow* viewport, QPointF p, bool extrude = false);
 
     // ---- the box / shape tool (T4.2) ----
     enum class Tool { Select, Box };
@@ -356,6 +358,13 @@ public:
     bool startLoopCut(render::ViewportWindow* viewport);
     // Ctrl+M, then X / Y / Z: mirrors the picked vertices (all of them: the whole brush) about their centre; one undo step.
     bool mirrorMesh(int axis);
+    // ---- knife (K): click points on vertices / edges (Ctrl = the edge's middle), Enter or a right click cuts along them, Esc cancels ----
+    bool knifing() const { return knife_.has_value(); }
+    bool startKnife();
+    void addKnifePoint(const tools::mesh::KnifePoint& point);
+    bool finishKnife();
+    void cancelKnife(const QString& message = {});
+    std::vector<tools::mesh::KnifePoint> knifePoints() const { return knife_ ? knife_->points : std::vector<tools::mesh::KnifePoint>{}; }
     // The mesh.pick action: a click selects the element under the cursor (Shift toggles, Ctrl adds the path from the last one, Alt the loop, Ctrl+Alt the ring), a drag selects a box.
     void meshPickInput(render::ViewportWindow* viewport, const actions::InputEvent& event);
     // What a click at `p` (logical pixels of the viewport window) selects; false when nothing was under the cursor (the selection is left alone).
@@ -630,7 +639,17 @@ private:
         QPointF start, current;
         bool dragging = false;
         bool shift = false, ctrl = false, alt = false;
+        bool loop = false;   // a double click selects the loop, like Alt+click
     } meshDrag_;
+    struct KnifeState {
+        std::shared_ptr<const doc::BrushNode> node;   // the brush the cut began on: the cut is dropped when it is not the edited one any more
+        std::vector<tools::mesh::KnifePoint> points;
+        std::optional<tools::mesh::KnifePoint> hover;
+    };
+    std::optional<KnifeState> knife_;
+    bool knifeMouse(size_t panelIndex, const actions::InputEvent& e);
+    std::optional<tools::mesh::KnifePoint> knifePointAt(render::ViewportWindow* viewport, QPointF p, bool ctrl) const;
+    std::vector<render::LineVertex> knifeLines(size_t panelIndex) const;
     bool proportional_ = false;
     double propRadius_ = 1;
     std::optional<tools::mesh::ActiveElem> meshActive_;   // the element clicked last: where a Ctrl+click path starts

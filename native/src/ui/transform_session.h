@@ -34,6 +34,7 @@ struct MeshSession {
     bool proportional = false;
     double radius = 1;                                // metres
     std::vector<uint32_t> faces;                      // extrude / inset
+    bool extrudeDrag = false;                         // a gizmo drag that extrudes the faces along the arrow
     std::vector<tools::mesh::Edge> edges;             // bevel
     render::Vec3 dir{0, 0, 0};                        // extrude: the average normal
     double t0 = 0;                                    // extrude: where the pointer's ray met the normal line at the start

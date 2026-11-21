@@ -493,6 +493,7 @@ void MainWindow::setContextsFor(render::ViewportWindow* vp) {
         if (meshMode()) {   // the mesh bindings are more specific than the select tool's
             contexts.push_back("mode:mesh");
             contexts.push_back(meshElement() == tools::mesh::SelMode::Vertex ? "mode:mesh.vertex" : meshElement() == tools::mesh::SelMode::Edge ? "mode:mesh.edge" : "mode:mesh.face");
+            if (knife_) contexts.push_back("mesh:knife");   // Enter cuts, Esc cancels
         }
     }
     router_.contexts().set(contexts);
@@ -533,6 +534,7 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
     }
     if (!services_.verifyButtons) ev.buttonsKnown = false;
     if (boxMouse(index, ev)) return true;
+    if (knifeMouse(index, ev)) return true;
     if (transformMouse(index, ev)) return true;
     setContextsFor(vp);
     UiEnv ui{this, vp};

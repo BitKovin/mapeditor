@@ -136,6 +136,7 @@ actions::InputEvent fromMouseEvent(const QMouseEvent& e, QPointF delta) {
         default: ev.type = actions::InputEvent::Type::MouseMove; break;
     }
     ev.button = buttonFromQt(e.button());
+    ev.doubleClick = e.type() == QEvent::MouseButtonDblClick;
     ev.mods = modsFromQt(e.modifiers());
     ev.x = e.position().x();
     ev.y = e.position().y();

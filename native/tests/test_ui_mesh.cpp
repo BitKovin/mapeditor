@@ -60,6 +60,7 @@ struct Fixture {
         if (window.meshMode()) {
             contexts.push_back("mode:mesh");
             contexts.push_back("mode:mesh.vertex");
+            if (window.knifing()) contexts.push_back("mesh:knife");
         }
         window.router().contexts().set(contexts);
         ui::UiEnv env{&window, nullptr};
@@ -346,4 +347,39 @@ TEST_CASE("mesh mode: Mirror turns the whole brush about its centre as one undo 
     f.window.history().undo();
     CHECK(f.window.document() == before);
     CHECK_FALSE(f.window.mirrorMesh(3));
+}
+
+TEST_CASE("mesh mode: the knife cuts along the clicked points as one undo step; Esc, a single point and leaving the mode drop it") {
+    Fixture f;
+    CHECK_FALSE(f.window.runAction("mesh.knife"));   // not in mesh mode
+    REQUIRE(f.enter());
+    const auto before = f.window.document();
+    CHECK(f.key("K"));
+    REQUIRE(f.window.knifing());
+    CHECK_FALSE(f.window.runAction("mesh.knife"));   // already cutting
+    f.window.addKnifePoint(msh::KnifePoint::at(0));
+    f.window.addKnifePoint(msh::KnifePoint::at(2));
+    CHECK(f.window.knifePoints().size() == 2);
+    CHECK(f.key("Enter"));
+    CHECK_FALSE(f.window.knifing());
+    CHECK(f.brush().faces.size() == 7);
+    f.window.history().undo();
+    CHECK(f.window.document() == before);
+
+    CHECK(f.key("K"));
+    f.window.addKnifePoint(msh::KnifePoint::at(0));
+    CHECK(f.key("Escape"));
+    CHECK_FALSE(f.window.knifing());
+    CHECK(f.window.document() == before);
+
+    CHECK(f.key("K"));
+    f.window.addKnifePoint(msh::KnifePoint::at(0));
+    CHECK_FALSE(f.window.finishKnife());
+    CHECK(f.window.statusBar()->currentMessage().contains(QStringLiteral("at least two")));
+    CHECK(f.window.document() == before);
+
+    CHECK(f.key("K"));
+    CHECK(f.key("Tab"));   // Tab is not a knife key: it leaves the mode, which ends the cut
+    CHECK_FALSE(f.window.knifing());
+    CHECK_FALSE(f.window.meshMode());
 }

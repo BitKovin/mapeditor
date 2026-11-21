@@ -55,6 +55,7 @@ struct InputEvent {
     std::string key;           // canonical name of the key the active layout produced ("" if none)
     std::string scan;          // canonical name of the same physical key on a US layout ("Z" for the Cyrillic Я key)
     int button = 0;            // Mouse*: 1 LMB, 2 RMB, 3 MMB, 4 / 5
+    bool doubleClick = false;  // MousePress: the system's second click of a double click
     double x = 0, y = 0;       // pointer position in the viewport, pixels
     double dx = 0, dy = 0;     // MouseMove: motion since the last event
     double wheel = 0;          // Wheel: ~100 per notch, positive = towards the user (down), as the Shell

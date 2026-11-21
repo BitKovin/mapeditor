@@ -33,7 +33,7 @@ std::string readAsset(const char* relative) {
 // Contexts the application sets (see MainWindow::setContextsFor / viewportContexts): the only names a preset may use.
 const std::set<std::string> kKnownContexts = {"global",         "window:main",   "area:viewport",   "view:perspective", "view:fly",
                                               "view:orbit",     "view:ortho",    "hold:camera.fly",  "modal:transform", "tool:select", "tool:box",
-                                              "mode:mesh",      "mode:mesh.vertex", "mode:mesh.edge",  "mode:mesh.face"};
+                                              "mode:mesh",      "mode:mesh.vertex", "mode:mesh.edge",  "mode:mesh.face", "mesh:knife"};
 
 } // namespace
 
@@ -122,6 +122,11 @@ TEST_CASE("Qt mouse and wheel events become router events") {
     QMouseEvent press(QEvent::MouseButtonPress, local, local, Qt::RightButton, Qt::RightButton, Qt::ControlModifier);
     const InputEvent p = ui::fromMouseEvent(press);
     CHECK(p.type == InputEvent::Type::MousePress);
+    CHECK_FALSE(p.doubleClick);
+    QMouseEvent dbl(QEvent::MouseButtonDblClick, local, local, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    const InputEvent d = ui::fromMouseEvent(dbl);
+    CHECK(d.type == InputEvent::Type::MousePress);   // the second press of a double click
+    CHECK(d.doubleClick);
     CHECK(p.button == 2);
     CHECK(p.mods == kCtrl);
     CHECK(p.x == doctest::Approx(30));

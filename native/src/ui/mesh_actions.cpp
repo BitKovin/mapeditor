@@ -210,6 +210,59 @@ void registerMeshActions(actions::Registry& r) {
     }
     {
         ActionDef d;
+        d.id = "mesh.knife";
+        d.label = "Knife";
+        d.category = "Mesh";
+        d.description = "Cuts the brush along clicked points on its vertices and edges (Ctrl = the middle of an edge); Enter or a right click cuts, Esc cancels.";
+        d.menu = "&Mesh";
+        d.contexts = {"mode:mesh"};
+        d.enabled = [](const ActionEnv& env, const json&) {
+            const MainWindow* w = windowOf(env);
+            return w && w->meshMode() && !w->transforming() && !w->knifing();
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) w->startKnife();
+        };
+        r.add(std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "mesh.knife_finish";
+        d.label = "Knife: cut";
+        d.category = "Mesh";
+        d.description = "Makes the cut along the points clicked so far.";
+        d.kind = ActionKind::Modal;
+        d.contexts = {"mesh:knife"};
+        d.hint = "cut";
+        d.enabled = [](const ActionEnv& env, const json&) {
+            const MainWindow* w = windowOf(env);
+            return w && w->knifing();
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) w->finishKnife();
+        };
+        r.add(std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "mesh.knife_cancel";
+        d.label = "Knife: cancel";
+        d.category = "Mesh";
+        d.description = "Drops the points clicked so far.";
+        d.kind = ActionKind::Modal;
+        d.contexts = {"mesh:knife"};
+        d.hint = "cancel";
+        d.enabled = [](const ActionEnv& env, const json&) {
+            const MainWindow* w = windowOf(env);
+            return w && w->knifing();
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) w->cancelKnife();
+        };
+        r.add(std::move(d));
+    }
+    {
+        ActionDef d;
         d.id = "mesh.proportional";
         d.label = "Proportional editing";
         d.category = "Mesh";

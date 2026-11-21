@@ -71,7 +71,7 @@ size_t MainWindow::panelIndexOf(const render::ViewportWindow* vp) const {
 // ---- starting -------------------------------------------------------------------------------------------------------------------------
 
 bool MainWindow::startTransform(render::ViewportWindow* vp, tools::ModalKind kind, const std::optional<tools::mesh::Edge>& edge) {
-    if (transform_ || !document_ || !vp) return false;
+    if (transform_ || knife_ || !document_ || !vp) return false;
     if (meshMode()) return startMeshTransform(vp, kind, edge);
     if (kind != tools::ModalKind::Grab && kind != tools::ModalKind::Rotate && kind != tools::ModalKind::Scale) return false;
     const std::vector<doc::SelRef> sels = transformSelection();
@@ -103,7 +103,7 @@ bool MainWindow::startTransform(render::ViewportWindow* vp, tools::ModalKind kin
     return true;
 }
 
-bool MainWindow::beginGizmoDrag(render::ViewportWindow* vp, QPointF p) {
+bool MainWindow::beginGizmoDrag(render::ViewportWindow* vp, QPointF p, bool extrude) {
     if (transform_ || !document_ || !vp) return false;
     const size_t index = panelIndexOf(vp);
     if (index >= panels_.size()) return false;
@@ -124,9 +124,16 @@ bool MainWindow::beginGizmoDrag(render::ViewportWindow* vp, QPointF p) {
     t->pivot = g.pivot;
     t->axis = axis;
     if (meshMode() && !setupMeshSession(*t, t->kind, std::nullopt)) return false;
+    if (extrude) {   // Shift + the move arrow in face mode: Extrude along the arrow
+        if (!meshMode() || t->kind != tools::ModalKind::Grab || t->mesh.mode != tools::mesh::SelMode::Face || t->mesh.startSel.faces.empty()) return false;
+        t->mesh.faces = t->mesh.startSel.faces;
+        t->mesh.extrudeDrag = true;
+        t->mesh.proportional = false;
+        t->label = "Extrude";
+    }
     t->mouse0 = t->mouse = p;
     t->originEntity = g.originEntity;
-    t->label = g.originEntity.empty() ? labelOf(t->kind) : "Move origin";
+    t->label = t->mesh.extrudeDrag ? "Extrude" : g.originEntity.empty() ? labelOf(t->kind) : "Move origin";
     if (t->kind == tools::ModalKind::Rotate) {
         const auto a = tools::ringAngle(ray, t->pivot, axis);
         if (!a) return false;
@@ -270,8 +277,15 @@ void MainWindow::updateTransform() {
     } else {
         const render::Vec3 delta = tools::dragDelta(ray, t.pivot, t.axis, t.startT, render::snapStep(settings));
         t.value = render::length(delta);
-        if (!t.originEntity.empty()) after = tools::moveEntityOrigin(t.base, t.originEntity, asV3(delta));
-        else after = moved(tools::translateBy(asV3(delta)), false, 0);
+        if (!t.originEntity.empty()) {
+            after = tools::moveEntityOrigin(t.base, t.originEntity, asV3(delta));
+        } else if (t.mesh.extrudeDrag) {
+            const std::vector<uint32_t> faces = t.mesh.faces;
+            const core::Vec3 along{delta.x, delta.y, delta.z};
+            after = meshAfter(t, [faces, along, info](const core::Brush& b, const tools::mesh::MeshSel&) { return tools::mesh::extrudeFaces(b, faces, 0, along, info); });
+        } else {
+            after = moved(tools::translateBy(asV3(delta)), false, 0);
+        }
     }
     if (!after) return;   // an invalid result (a brush that would not be valid): the last good version stays
     if (after != document_) history_->commit({t.label, document_, after});
@@ -366,9 +380,10 @@ bool MainWindow::transformMouse(size_t index, const actions::InputEvent& e) {
         }
         return false;
     }
-    if (e.type == Type::MousePress && e.button == 1 && e.mods == 0) {
-        if (originHit(vp, QPointF(e.x, e.y))) return true;   // the square sits on the gizmo's pivot: it wins
-        if (beginGizmoDrag(vp, QPointF(e.x, e.y))) return true;
+    const bool shiftExtrude = e.mods == actions::kShift && meshMode() && meshElement() == tools::mesh::SelMode::Face && !meshSelection().faces.empty() && vp->rig().settings().gizmo == render::GizmoMode::Move;
+    if (e.type == Type::MousePress && e.button == 1 && (e.mods == 0 || shiftExtrude)) {
+        if (!shiftExtrude && originHit(vp, QPointF(e.x, e.y))) return true;   // the square sits on the gizmo's pivot: it wins
+        if (beginGizmoDrag(vp, QPointF(e.x, e.y), shiftExtrude)) return true;
         if (!originSel_.empty()) {   // a click that grabs neither the origin nor its gizmo ends the origin editing
             originSel_.clear();
             refreshGizmos();
@@ -381,7 +396,7 @@ bool MainWindow::transformMouse(size_t index, const actions::InputEvent& e) {
 
 MainWindow::GizmoTarget MainWindow::gizmoTarget(render::ViewportWindow* vp) {
     GizmoTarget g;
-    if (!document_ || transform_ || !vp || tool_ != Tool::Select || box_) return g;
+    if (!document_ || transform_ || !vp || tool_ != Tool::Select || box_ || knife_) return g;
     if (meshMode()) {   // the gizmo sits on the centre of the picked vertices
         const auto target = meshTarget();
         const tools::mesh::MeshSel sel = meshSelection();
@@ -454,6 +469,7 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesOnly(size_t index) {
     render::ViewportWindow* vp = panels_[index].window;
     if (!vp) return {};
     if (box_) return boxPreviewLines(index);   // the drawing in progress replaces the gizmo
+    if (knife_) return knifeLines(index);      // so does the knife
     if (transform_ && transform_->source == TransformSession::Source::Modal) return {};   // the modal operators show no gizmo
     GizmoTarget g;
     tools::Axis active = -1;
