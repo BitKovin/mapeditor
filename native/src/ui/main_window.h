@@ -544,6 +544,7 @@ private:
     std::unique_ptr<scene::SceneBuilder> builder_;
     std::shared_ptr<const core::GameProfile> profile_;     // the loaded game profile (the lighting service reads it)
     std::shared_ptr<light::LightLink> lightLink_;          // bake -> render hand-over (null without a lit-capable device)
+    std::shared_ptr<const render::ObjectRules> rtRules_;   // the last rules given to the render thread (a snapshot with the same rules does not restart the accumulation)
     std::unique_ptr<render::RtLightsProducer> rtLights_;   // the ray traced Lit path lights (null without --rt-lit); stopped before the render thread goes
     std::unique_ptr<light::LightingService> lighting_;     // the bake thread (stopped before the link and the render thread go)
     std::unique_ptr<render::Picker> picker_;

@@ -41,7 +41,7 @@ estimator and layout rules as the export) refined live on the GPU into the very 
 8. [08_MILESTONES.md](08_MILESTONES.md) — **the task list.** Work through it in order.
 9. [09_TESTING_AND_PERF.md](09_TESTING_AND_PERF.md) — test strategy, performance gates, parity checks.
 10. [10_UI_AND_INPUT.md](10_UI_AND_INPUT.md) — actions, rebindable keys, command palette, UI improvements.
-11. [11_NVIDIA_TECH.md](11_NVIDIA_TECH.md) — NVIDIA Streamline (DLSS Quality only, Ray Reconstruction, Reflex), Aftermath, other NVIDIA features; 100 fps target.
+11. [11_NVIDIA_TECH.md](11_NVIDIA_TECH.md) — NVIDIA Streamline (DLSS Super Resolution with every preset, Ray Reconstruction, Reflex), Aftermath, other NVIDIA features; 100 fps target.
 12. [12_RT_VIEWPORT.md](12_RT_VIEWPORT.md) — the Lit viewport: per-pixel ray tracing with temporal accumulation (ReSTIR DI / RTXDI, SHaRC, DLSS-RR), replaces the live lightmap bake of 06.
 
 Background that stays authoritative: `DESIGN.md` (behaviour of every feature), `REQUIREMENTS.md` (what the user asked for,

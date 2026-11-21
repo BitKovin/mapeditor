@@ -134,6 +134,8 @@ public:
     void setRtLighting(const RtLighting& lighting);
     // The level lights (R3, render/rt_lights.h), fed by the editor from every snapshot (RtLightsProducer). Restarts the accumulation of every ray traced viewport; null = no lights.
     void setRtLights(std::shared_ptr<const RtLightData> lights);
+    // Which objects receive baked light (shadows show on them) and which block light: render/rt_lights.h makeRtRules. Null = all objects do both.
+    void setObjectRules(std::shared_ptr<const ObjectRules> rules);
     struct RtLitInfo {
         bool active = false;                   // the last frame of the viewport was drawn by the ray traced path
         bool reconstruction = false;           // ... with DLSS Ray Reconstruction

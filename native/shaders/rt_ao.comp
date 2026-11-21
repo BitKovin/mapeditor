@@ -89,7 +89,7 @@ void main() {
     ivec2 sz = ivec2(P.size.xy);
     if (p.x >= sz.x || p.y >= sz.y) return;
     vec4 nrm = texelFetch(uNormal, p, 0);
-    if (nrm.w < 0.5) {
+    if (nrm.w < 0.8) {   // no surface, or a surface of a class that does not receive baked light (shown unlit by the compose pass): nothing is traced
         imageStore(uHist, p, vec4(0.0));
         imageStore(uHistD, p, vec4(0.0));
         imageStore(uSample, p, vec4(0.0));
@@ -125,7 +125,7 @@ void main() {
         x = 0.0;
         if (P.ambient.w > 0.5 && P.ao.x > 0.0) {
             rayQueryEXT rq;
-            rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFF, ps + n * P.ao2.y, 0.0, dir, P.ao.x);
+            rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, RT_MASK_SOLID, ps + n * P.ao2.y, 0.0, dir, P.ao.x);
             while (rayQueryProceedEXT(rq)) {}
             if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                 float d = rayQueryGetIntersectionTEXT(rq, true);

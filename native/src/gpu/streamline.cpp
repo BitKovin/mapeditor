@@ -246,7 +246,16 @@ void Streamline::marker(PclMarker marker) {
 
 namespace {
 
-sl::DLSSMode slMode(int mode) { return mode == 2 ? sl::DLSSMode::eDLAA : sl::DLSSMode::eMaxQuality; }
+// render::DlssMode as int: 1 Quality, 2 DLAA, 3 Ultra Performance, 4 Performance, 5 Balanced.
+sl::DLSSMode slMode(int mode) {
+    switch (mode) {
+        case 2: return sl::DLSSMode::eDLAA;
+        case 3: return sl::DLSSMode::eUltraPerformance;
+        case 4: return sl::DLSSMode::eMaxPerformance;
+        case 5: return sl::DLSSMode::eBalanced;
+        default: return sl::DLSSMode::eMaxQuality;
+    }
+}
 
 sl::DLSSOptions makeOptions(int mode, uint32_t outW, uint32_t outH) {
     sl::DLSSOptions o{};

@@ -554,6 +554,11 @@ void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot
             rtLights_ = std::make_unique<render::RtLightsProducer>([rt](std::shared_ptr<const render::RtLightData> d) { rt->setRtLights(std::move(d)); });
         }
         rtLights_->request({snapshot, profile_, assetsRoot_});
+        auto rules = render::makeRtRules(*snapshot, core::LightingClasses::fromProfile(*profile_));
+        if (!rtRules_ || *rtRules_ != *rules) {
+            rtRules_ = rules;
+            services_.renderThread->setObjectRules(std::move(rules));
+        }
     }
     if (lighting_ && profile_ && snapshot && snapshot->complete) {   // the lit modes' bake follows complete snapshots
         light::LightingInputs in;

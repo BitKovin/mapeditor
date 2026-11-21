@@ -113,7 +113,7 @@ void frameOf(vec3 n, out vec3 t, out vec3 b) {
 // 1 when the segment o + t * d, t in [0, tmax] meets no surface (all occluders are opaque for now), else 0.
 float transmit(vec3 o, vec3 d, float tmax) {
     rayQueryEXT rq;
-    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF, o, 0.0, d, tmax);
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, RT_MASK_SOLID, o, 0.0, d, tmax);
     while (rayQueryProceedEXT(rq)) {}
     return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? 0.0 : 1.0;
 }

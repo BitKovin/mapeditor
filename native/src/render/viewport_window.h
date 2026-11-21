@@ -53,6 +53,8 @@ public:
     void setRenderMode(RenderMode mode);
     // DLSS Super Resolution of this viewport (perspective views only; the render thread falls back to the normal frame when it is not available).
     void setDlssMode(DlssMode mode);
+    // The ground grid of this viewport (also in Settings > Editor for all of them).
+    void setShowGrid(bool on);
     // Called after every change made by user input (so the layout can be saved); UI thread.
     void setChangedCallback(std::function<void()> cb) { onChanged_ = std::move(cb); }
     // Called when a mouse button is pressed in this viewport (the UI marks it as the active one).

@@ -89,6 +89,14 @@ void ViewportWindow::setRenderMode(RenderMode mode) {
     viewChanged();
 }
 
+void ViewportWindow::setShowGrid(bool on) {
+    if (on == rig_.settings().showGrid) return;
+    ViewportSettings s = rig_.settings();
+    s.showGrid = on;
+    rig_.applySettings(s);
+    viewChanged();
+}
+
 void ViewportWindow::setDlssMode(DlssMode mode) {
     if (mode == rig_.settings().dlss) return;
     ViewportSettings s = rig_.settings();

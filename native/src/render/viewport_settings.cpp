@@ -3,6 +3,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cctype>
 #include <cmath>
 
 namespace native::render {
@@ -12,7 +13,7 @@ namespace {
 const char* const kCameraNames[] = {"fly", "orbit", "top", "front", "side"};
 const char* const kRenderNames[] = {"unlit", "lit", "wireframe", "lightingOnly"};
 const char* const kGizmoNames[] = {"move", "rotate", "scale"};
-const char* const kDlssNames[] = {"off", "quality", "dlaa"};
+const char* const kDlssNames[] = {"off", "quality", "dlaa", "ultraPerformance", "performance", "balanced"};
 
 template <size_t N>
 int indexOf(const char* const (&names)[N], const std::string& s, int fallback) {
@@ -52,8 +53,13 @@ const char* cameraModeName(CameraMode m) { return kCameraNames[static_cast<int>(
 const char* renderModeName(RenderMode m) { return kRenderNames[static_cast<int>(m)]; }
 const char* dlssModeName(DlssMode m) { return kDlssNames[static_cast<int>(m)]; }
 DlssMode dlssModeFromName(const std::string& name) {
-    for (int i = 0; i < 3; ++i)
-        if (name == kDlssNames[i]) return static_cast<DlssMode>(i);
+    std::string lower = name;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (int i = 0; i < kDlssModeCount; ++i) {
+        std::string n = kDlssNames[i];
+        for (char& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (lower == n) return static_cast<DlssMode>(i);
+    }
     return DlssMode::Quality;
 }
 

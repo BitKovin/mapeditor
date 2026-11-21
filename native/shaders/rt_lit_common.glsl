@@ -41,9 +41,14 @@ layout(set = 0, binding = 12, std140) uniform Params {
     vec4 look;       // x = lightmap texels per metre for the lightmap look (0 = off), y = shadow ray origin bias, z = far distance
 } P;
 
+// The instance masks of render/rt_scene.h: only objects of a class that blocks light (the game profile's blockLight, core::LightingClasses) are seen by the shadow, occlusion and light rays.
+const uint RT_MASK_SOLID = 1u;
+
 const uint F_RESET = 1u, F_STILL = 2u, F_FILTER = 4u, F_RR = 8u;
 
 bool hasSurface(ivec2 p) { return texelFetch(uNormal, p, 0).w > 0.5; }
+// A surface that receives baked light (its class has lightmaps): G-buffer normal alpha 1; 0.6 = a surface drawn unlit (doors, lifts: lit from light volumes in the game).
+bool receivesLight(ivec2 p) { return texelFetch(uNormal, p, 0).w > 0.8; }
 
 // The world position of the surface seen through pixel p at the distance `dist` (rasterised exactly, so no depth buffer quantisation).
 vec3 worldOf(ivec2 p, float dist) {

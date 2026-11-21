@@ -5,7 +5,7 @@
 // once nothing changed for two seconds). What is traced is what is drawn: the objects of GpuScene::rtObjects() (hidden objects and volumes are not in it).
 // Thread: the render thread, recorded into the upload command buffer of the frame loop (graphics queue) right after GpuScene::sync.
 // Spec: 12_RT_VIEWPORT.md §3, 08_MILESTONES.md R1. Deviations kept for later tasks: every BLAS geometry is opaque (the cutout / translucent test of `surfaceAt` is
-// R3), every instance has mask `kRtMaskSolid` (the class bits: casts shadows, receives light, sky, translucent come with the classes of R3), instances are
+// R3), the instance mask is `kRtMaskSolid` for objects of a class that blocks light and `kRtMaskReceiver` for the others (R3; sky, translucent come later), instances are
 // double sided.
 #pragma once
 
@@ -25,7 +25,8 @@
 
 namespace native::render {
 
-constexpr uint32_t kRtMaskSolid = 1;
+constexpr uint32_t kRtMaskSolid = 1;     // instances that block light: the shadow, occlusion and light rays use only this bit
+constexpr uint32_t kRtMaskReceiver = 2;  // instances that only receive light (their class does not block it)
 
 // What the kernels read per instance (`instanceCustomIndex` = slot): 32 bytes.
 struct RtRecord {

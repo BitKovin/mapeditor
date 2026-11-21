@@ -781,11 +781,12 @@ void registerAppActions(actions::Registry& r) {
         d.id = "view.dlss";
         d.label = "DLSS";
         d.category = "View";
-        d.description = "NVIDIA DLSS Super Resolution for the active perspective viewport: Quality renders at two thirds of the size and upscales, DLAA renders at full size and only removes the aliasing. There is no lower preset.";
+        d.description = "NVIDIA DLSS Super Resolution for the active perspective viewport: Ultra Performance, Performance, Balanced and Quality render at 1/3, 1/2, 0.58 and 2/3 of the size and upscale, DLAA renders at full size and only removes the aliasing.";
         d.kind = ActionKind::Toggle;
         d.menu = "&View/&DLSS (active viewport)";
         d.params = {{"mode", "off"}};
-        d.variants = {{"&Off", {{"mode", "off"}}}, {"&Quality", {{"mode", "quality"}}}, {"&DLAA", {{"mode", "dlaa"}}}};
+        d.variants = {{"&Off", {{"mode", "off"}}}, {"&Ultra Performance", {{"mode", "ultraPerformance"}}}, {"&Performance", {{"mode", "performance"}}}, {"&Balanced", {{"mode", "balanced"}}},
+                      {"&Quality", {{"mode", "quality"}}}, {"&DLAA", {{"mode", "dlaa"}}}};
         d.enabled = [](const ActionEnv& env, const json& p) {
             const UiEnv* u = env.as<UiEnv>();
             if (!u || !u->viewport) return false;
@@ -800,6 +801,28 @@ void registerAppActions(actions::Registry& r) {
             auto* vp = viewportOf(env);
             if (!vp) return;
             vp->setDlssMode(render::dlssModeFromName(inv.params.value("mode", "off")));
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "view.grid";
+        d.label = "Grid";
+        d.category = "View";
+        d.description = "Shows or hides the ground grid of the active viewport.";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&View/&Grid (active viewport)";
+        d.enabled = [](const ActionEnv& env, const json&) {
+            const UiEnv* u = env.as<UiEnv>();
+            return u && u->viewport;
+        };
+        d.checked = [](const ActionEnv& env, const json&) {
+            const auto* vp = viewportOf(env);
+            return vp && vp->rig().settings().showGrid;
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            auto* vp = viewportOf(env);
+            if (vp) vp->setShowGrid(!vp->rig().settings().showGrid);
         };
         add(r, std::move(d));
     }

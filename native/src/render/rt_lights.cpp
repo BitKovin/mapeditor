@@ -98,6 +98,25 @@ std::shared_ptr<const RtLightData> makeRtLightData(const std::vector<core::Light
     return out;
 }
 
+std::shared_ptr<const ObjectRules> makeRtRules(const scene::SceneSnapshot& snapshot, const core::LightingClasses& classes) {
+    auto rules = std::make_shared<ObjectRules>();
+    for (const auto& [key, p] : snapshot.objects) {
+        if (!p.surfaces || p.surfaces->empty()) continue;
+        const std::string& cls = p.surfaces->front().classname;
+        bool anyCasts = false;
+        for (const core::LightSurface& s : *p.surfaces)
+            if (s.castsShadow) {
+                anyCasts = true;
+                break;
+            }
+        uint32_t flags = 0;
+        if (classes.isLightmapped(cls)) flags |= kObjReceives;
+        if (classes.castsShadows(cls) && anyCasts) flags |= kObjCasts;
+        (*rules)[key] = flags;
+    }
+    return rules;
+}
+
 // ---- the producer ---------------------------------------------------------------------------------------------------------------
 
 RtLightsProducer::RtLightsProducer(std::function<void(std::shared_ptr<const RtLightData>)> done) : done_(std::move(done)) { thread_ = std::thread([this] { run(); }); }

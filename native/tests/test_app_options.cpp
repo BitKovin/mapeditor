@@ -44,7 +44,9 @@ TEST_CASE("bad command lines report an error") {
     CHECK_FALSE(parseArgs({"--layout", "3"}).error.empty());
     CHECK_FALSE(parseArgs({"--layout"}).error.empty());
     CHECK_FALSE(parseArgs({"--dlss"}).error.empty());
-    CHECK_FALSE(parseArgs({"--dlss", "balanced"}).error.empty());   // no lower preset
+    CHECK(parseArgs({"--dlss", "balanced"}).error.empty());
+    CHECK(parseArgs({"--dlss", "ultraPerformance"}).error.empty());
+    CHECK_FALSE(parseArgs({"--dlss", "turbo"}).error.empty());
     CHECK(parseArgs({"--dlss", "quality"}).error.empty());
     CHECK(parseArgs({}).options.dlss.empty());
     CHECK(parseArgs({"--help"}).options.help);

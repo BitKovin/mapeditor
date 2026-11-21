@@ -84,6 +84,12 @@ void GpuScene::setHidden(std::shared_ptr<const HiddenObjects> hidden) {
     hiddenPending_ = true;
 }
 
+void GpuScene::setRules(std::shared_ptr<const ObjectRules> rules) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pendingRules_ = std::move(rules);
+    rulesPending_ = true;
+}
+
 SceneStats GpuScene::stats() const {
     SceneStats s;
     s.objects = static_cast<uint32_t>(objects_.size());
@@ -196,6 +202,12 @@ bool GpuScene::sync(VkCommandBuffer cmd, gpu::UploadRing& ring, uint64_t complet
             hiddenPending_ = false;
             drawsDirty_ = true;
         }
+        if (rulesPending_) {
+            rules_ = std::move(pendingRules_);
+            pendingRules_.reset();
+            rulesPending_ = false;
+            drawsDirty_ = true;
+        }
     }
     if (next) current_ = next;
     if ((next || relit) && current_) {
@@ -292,17 +304,22 @@ void GpuScene::rebuildDraws() {
         if (o.raw) ++rawObjects_;
         if (o.indexCount == 0 || !o.bounds.valid()) continue;
         if (hidden_ && hidden_->count(key)) continue;
+        uint32_t flags = kObjReceives | kObjCasts;
+        if (rules_) {
+            const auto r = rules_->find(key);
+            if (r != rules_->end()) flags = r->second;
+        }
         Draw d{};
         d.cmd.indexCount = o.indexCount;
         d.cmd.instanceCount = 1;
         d.cmd.firstIndex = o.firstIndex;
         d.cmd.vertexOffset = o.vertexOffset;
-        d.cmd.firstInstance = 0;
+        d.cmd.firstInstance = flags;   // the vertex shader reads it as gl_InstanceIndex (the G-buffer marks the pixels of surfaces that do not receive light)
         d.bounds = o.bounds;
         d.volume = o.volume;
         d.textures = &o.textures;
         draws_.push_back(d);
-        if (!o.volume) rt_.push_back({o.serial, static_cast<uint32_t>(o.vertexOffset), o.firstIndex, o.indexCount, o.vertexCount, o.raw});
+        if (!o.volume) rt_.push_back({o.serial, flags, static_cast<uint32_t>(o.vertexOffset), o.firstIndex, o.indexCount, o.vertexCount, o.raw});
     }
     drawsDirty_ = false;
 }

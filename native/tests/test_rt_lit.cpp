@@ -902,3 +902,84 @@ TEST_CASE("RT Lit: look at a map" * doctest::test_suite("gpu") * doctest::skip(r
     savePng(img, env("NATIVE_RTLOOK_OUT", "rt_lit_look.png").c_str());
     MESSAGE("frames " << f.info().frames << ", render " << f.info().renderW << "x" << f.info().renderH << ", validation errors " << f.device->validationErrors());
 }
+
+TEST_CASE("RT Lit: the lighting rules of the classes: objects that do not block light cast no shadow, objects that do not receive it are shown unlit" * doctest::test_suite("gpu")) {
+    Fixture f;
+    if (!f.start(640, 400)) return;
+    std::vector<uint8_t> blended;
+    const core::OccluderMesh mesh = drawnTriangles(*f.snapshot, &blended);
+    const core::TriangleBvh bvh(mesh);
+    const std::vector<core::Light> lights = directTestLights();
+    render::RtLighting lighting;
+    lighting.ambient[0] = lighting.ambient[1] = lighting.ambient[2] = 0.1f;
+    f.rt->setRtLighting(lighting);
+    f.rt->setRtLights(render::makeRtLightData(lights));
+    f.rt->setRtLit(true, options(1024));
+    REQUIRE(f.shot().width == f.w);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+    const auto rulesOf = [&](uint32_t flags) {
+        auto rules = std::make_shared<render::ObjectRules>();
+        for (const auto& [key, p] : f.snapshot->objects) (*rules)[key] = flags;
+        return rules;
+    };
+    const auto settle = [&] {
+        f.cut++;
+        f.shot();
+        REQUIRE(f.converge());
+        return f.shot();
+    };
+    const render::CapturedImage normal = settle();
+    REQUIRE(normal.ok());
+
+    // classes that do not block light: nothing is in the way, the picture is brighter and equals the unshadowed light
+    f.rt->setObjectRules(rulesOf(render::kObjReceives));
+    const render::CapturedImage open = settle();
+    savePng(open, "rt_lit_rules_no_casters.png");
+    double sumNormal = 0, sumOpen = 0;
+    for (size_t i = 0; i < normal.rgba.size(); i += 4) {
+        sumNormal += normal.rgba[i + 1];
+        sumOpen += open.rgba[i + 1];
+    }
+    MESSAGE("mean green without / with shadows: " << sumOpen / (normal.rgba.size() / 4) << " / " << sumNormal / (normal.rgba.size() / 4));
+    CHECK(sumOpen > sumNormal * 1.02);
+
+    // classes that do not receive light: the unlit look of the chunked Lit mode (lighting only: 0.35 * (0.7 + 0.3 |n.l|)), whatever the lights
+    f.rt->setObjectRules(rulesOf(render::kObjCasts));
+    const render::CapturedImage flat = settle();
+    savePng(flat, "rt_lit_rules_no_receivers.png");
+    double lo = 1, hi = 0;
+    size_t surface = 0;
+    {   // the pixels whose first hit is a drawn solid (not the background, not a blended surface)
+        const render::ViewState vs = f.view();
+        const render::Mat4 inv = render::mat4Invert(vs.viewProj);
+        const auto unproject = [&](double nx, double ny, double nz) {
+            double q[4];
+            const double v[4] = {nx, ny, nz, 1.0};
+            for (int r = 0; r < 4; ++r) q[r] = inv[0 * 4 + r] * v[0] + inv[1 * 4 + r] * v[1] + inv[2 * 4 + r] * v[2] + inv[3 * 4 + r] * v[3];
+            return core::Vec3{q[0] / q[3], q[1] / q[3], q[2] / q[3]};
+        };
+        const core::Vec3 eye{vs.eye[0], vs.eye[1], vs.eye[2]};
+        for (uint32_t y = 4; y + 4 < f.h; y += 4)
+            for (uint32_t x = 4; x + 4 < f.w; x += 4) {
+                const double nx = (x + 0.5) / f.w * 2.0 - 1.0, ny = (y + 0.5) / f.h * 2.0 - 1.0;
+                const core::Vec3 dir = (unproject(nx, ny, 1.0) - unproject(nx, ny, 0.0)).normalized();
+                const auto hit = bvh.closestHit(eye, dir, 1000.0);
+                if (hit.t < 0 || blended[hit.triangle]) continue;
+                const double g = flat.rgba[(static_cast<size_t>(y) * f.w + x) * 4 + 1] / 255.0;
+                ++surface;
+                lo = std::min(lo, g);
+                hi = std::max(hi, g);
+            }
+    }
+    MESSAGE("unlit surfaces: " << surface << " pixels, values " << lo << " .. " << hi);
+    CHECK(surface > 5000);
+    CHECK(hi <= 0.35 + 1.0 / 255.0);        // never brighter than 0.35 * (0.7 + 0.3)
+    CHECK(lo >= 0.35 * 0.7 - 1.0 / 255.0);  // never darker than 0.35 * 0.7
+    CHECK(f.info().tracedPixels == 0);      // nothing is traced for them
+
+    // the default (no rules) is the first picture again
+    f.rt->setObjectRules(nullptr);
+    const render::CapturedImage again = settle();
+    CHECK(meanAbsDiff(normal, again) < 2.0);   // the noise of two converged runs
+    CHECK(f.device->validationErrors() == 0);
+}

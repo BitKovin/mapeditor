@@ -435,6 +435,14 @@ void RenderThread::setRtLit(bool on, const RtLitOptions& options) {
     wake_.notify_all();
 }
 
+void RenderThread::setObjectRules(std::shared_ptr<const ObjectRules> rules) {
+    scene_->setRules(std::move(rules));
+    std::lock_guard<std::mutex> lock(mutex_);
+    workPending_ = true;
+    for (auto& kv : viewports_) kv.second->dirty = true;
+    wake_.notify_all();
+}
+
 void RenderThread::setRtLights(std::shared_ptr<const RtLightData> lights) {
     std::lock_guard<std::mutex> lock(mutex_);
     rtLightData_ = std::move(lights);

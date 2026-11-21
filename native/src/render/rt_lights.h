@@ -23,8 +23,10 @@
 #include <thread>
 #include <vector>
 
+#include "core/lighting_classes.h"
 #include "core/lighting_inputs.h"
 #include "gpu/device.h"
+#include "render/gpu_scene.h"
 #include "scene/snapshot.h"
 
 namespace native::render {
@@ -43,6 +45,10 @@ struct RtLightData {
 
 // The lights of one style layer (style 0): the local lights (point, spot, rect) are entered into the grid cells their range touches.
 std::shared_ptr<const RtLightData> makeRtLightData(const std::vector<core::Light>& lights);
+
+// The lighting rules of the snapshot's objects (the game profile's classes): receives = the class has lightmaps, casts = the class blocks light and the object has a surface that
+// does. Objects whose surfaces are not built yet are left out (they have both until they are). The same rules as the bake's accel (light/accel.cpp) and layout.
+std::shared_ptr<const ObjectRules> makeRtRules(const scene::SceneSnapshot& snapshot, const core::LightingClasses& classes);
 
 // Turns scene snapshots into RtLightData off the UI thread: the newest request is the one that gets built; `done` receives only data that differs from the previous result
 // (an edit that does not change a light does not restart the accumulation).

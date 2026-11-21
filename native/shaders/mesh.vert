@@ -22,6 +22,7 @@ layout(location = 3) flat out uint vFlags;
 layout(location = 4) out vec3 vDir;
 layout(location = 5) out vec2 vLm;
 layout(location = 6) flat out uint vPage;
+layout(location = 7) flat out uint vObj;   // the draw's firstInstance: the lighting rules of the object (bit 0 = receives light)
 
 vec3 octDecode(uint p) {
     vec2 e = vec2(float(int(p << 16) >> 16), float(int(p) >> 16)) / 32767.0;
@@ -36,6 +37,7 @@ void main() {
     vUv = aUv;
     vTex = aTex;
     vFlags = aPageFlags >> 16;
+    vObj = uint(gl_InstanceIndex);
     vLm = aLm;
     vPage = aPageFlags & 0xffffu;
     vDir = aPos - pc.eye.xyz;

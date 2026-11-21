@@ -15,8 +15,17 @@
 
 namespace native::render {
 
-// Quality renders at 2/3 of the output size in each direction (NVIDIA's "Quality" scale 0.667), DLAA at the full size.
-inline double dlssScale(DlssMode m) { return m == DlssMode::Quality ? 2.0 / 3.0 : 1.0; }
+// The render scale of a preset in each direction (NVIDIA's: Quality 0.667, Balanced 0.58, Performance 0.5, Ultra Performance 0.333; DLAA the full size). The sizes the upscaler
+// is really given come from Streamline (slDLSSGetOptimalSettings); this is what the maths and the tests use.
+inline double dlssScale(DlssMode m) {
+    switch (m) {
+        case DlssMode::Quality: return 2.0 / 3.0;
+        case DlssMode::Balanced: return 0.58;
+        case DlssMode::Performance: return 0.5;
+        case DlssMode::UltraPerformance: return 1.0 / 3.0;
+        default: return 1.0;
+    }
+}
 
 inline void dlssRenderSize(DlssMode m, uint32_t outW, uint32_t outH, uint32_t* renderW, uint32_t* renderH) {
     const double s = dlssScale(m);

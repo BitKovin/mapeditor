@@ -60,8 +60,13 @@ struct SceneStats {
 
 // One drawn solid object as the ray tracing scene (render/rt_scene) sees it: where its triangles sit in the arenas. `serial` identifies the uploaded content (a new
 // mesh = a new serial), so a changed object is one that has a serial the RT scene does not know.
+// The lighting rules of an object (the game profile's classes, core::LightingClasses): bit 0 = receives baked light (shows shadows), bit 1 = blocks light (casts shadows).
+// Objects without an entry in the rules have both. The draw's firstInstance carries the bits to the shaders.
+constexpr uint32_t kObjReceives = 1, kObjCasts = 2;
+
 struct RtObject {
     uint64_t serial = 0;
+    uint32_t flags = kObjReceives | kObjCasts;
     uint32_t vertexOffset = 0;      // in vertices, from the start of the vertex arena
     uint32_t firstIndex = 0;        // in indices, from the start of the index arena (indices are relative to vertexOffset)
     uint32_t indexCount = 0;
@@ -70,6 +75,7 @@ struct RtObject {
 };
 
 using HiddenObjects = std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>;
+using ObjectRules = std::unordered_map<scene::ObjectKey, uint32_t, scene::ObjectKey::Hash>;
 
 class GpuScene {
 public:
@@ -83,6 +89,8 @@ public:
     void setSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);
     // The objects that are not drawn (Hide); null = none. Takes effect at the next sync.
     void setHidden(std::shared_ptr<const HiddenObjects> hidden);
+    // The lighting rules per object (kObjReceives / kObjCasts); null = every object has both. Takes effect at the next sync.
+    void setRules(std::shared_ptr<const ObjectRules> rules);
     // The lit copies of the objects' meshes (light/lit_mesh), made for the live layout; an object whose mesh is not the one its copy was made from keeps its plain
     // mesh. null = none. Takes effect at the next sync.
     void setLit(std::shared_ptr<const light::LitSet> lit);
@@ -142,6 +150,8 @@ private:
     std::shared_ptr<const HiddenObjects> pendingHidden_;
     bool hiddenPending_ = false;
     std::shared_ptr<const HiddenObjects> hidden_;
+    std::shared_ptr<const ObjectRules> pendingRules_, rules_;
+    bool rulesPending_ = false;
     std::shared_ptr<const light::LitSet> pendingLit_, lit_;
     bool litPending_ = false;
 

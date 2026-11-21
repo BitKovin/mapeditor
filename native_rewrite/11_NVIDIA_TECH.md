@@ -56,8 +56,9 @@ Reflex state and the measured render latency (PCL stats).
 Why: four viewports at 1440p with the Lit view (bicubic lightmap sampling, per-pixel shading, selection outline) cost the most when many
 viewports show large levels; DLSS-SR lets a viewport render at 67 % scale (the Quality preset) and reconstruct. Rules:
 - **Only perspective viewports** (the ortho views are line-art on flat colour; DLSS does badly on thin lines and they are cheap). Setting per
-  viewport: **Off / Quality** (`DLSSMode::eMaxQuality`; DLAA, `eDLAA`, may be added as a third entry: native resolution, better than Quality). No lower
-  preset exists in the UI or in the settings file (an unknown value read from a file is clamped to Quality). Default **Off** until the user turns it on in
+  viewport: **Off / Ultra Performance / Performance / Balanced / Quality / DLAA** (`eUltraPerformance`, `eMaxPerformance`, `eBalanced`, `eMaxQuality`, `eDLAA`; render scale
+  1/3, 1/2, 0.58, 2/3, 1). The user can choose every preset (menu View > DLSS, settings file key `dlss`, `--dlss`; an unknown value read from a file is Quality); only the
+  performance measurements in this document are made with Quality and DLAA. Default **Off** until the user turns it on in
   Settings > Editor (an upscaler changes how the picture looks; the user decides). It is a tool to reach 100 fps where the plain renderer cannot, not a
   default.
 - Resources tagged per frame with `slSetTagForFrame`: colour in (render resolution, linear HDR before tone mapping), depth, **motion
@@ -86,7 +87,7 @@ viewports show large levels; DLSS-SR lets a viewport render at 67 % scale (the Q
 > The overlays are drawn after the resolve at the output size; the resolve writes the (nearest) render-size depth to the output-size depth buffer so they depth-test.
 > **Measured gate (RTX 4070 Ti, 143 Hz display, lvl2, 4 x 3840x2160):** Quality 85.4 fps per viewport, DLAA 79.7, Off 140.1, Quality 1440p 141 (Off and 1440p are capped by the
 > display refresh). The DLSS evaluate costs about 1.2 ms per 4K viewport on this GPU (without it the same run is at the display cap), so the gate (100 fps) is not met with four
-> 4K viewports; no lower preset was added. See 08 T6.8.
+> 4K viewports (the measurements use Quality and DLAA only; the lower presets are there for the user). See 08 T6.8.
 >
 > **As built (R2, Ray Reconstruction):** `sl.dlss_d.dll` + `nvngx_dlssd.dll` are copied next to the exe, `kFeatureDLSS_RR` (1001) is requested in `slInit`, `slDLSSDGetOptimalSettings` / `slDLSSDSetOptions` come through
 > `slGetFeatureFunction`. Options (set every frame: they carry `worldToCameraView` / `cameraViewToWorld`): mode Quality / DLAA, `colorBuffersHDR = eFalse`, `normalRoughnessMode = ePacked`. Tags: `kBufferTypeScalingInputColor`

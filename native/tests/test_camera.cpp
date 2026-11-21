@@ -360,17 +360,31 @@ TEST_CASE("DLSS setting: off by default, saved by name, an unknown name means Qu
     s.dlss = DlssMode::Off;
     CHECK(settingsFromJson(settingsToJson(s)).dlss == DlssMode::Off);
     CHECK(settingsFromJson(R"({"cameraMode":"orbit"})").dlss == DlssMode::Off);                   // missing: the default
-    CHECK(settingsFromJson(R"({"dlss":"balanced"})").dlss == DlssMode::Quality);                  // no lower preset exists: clamped to Quality
-    CHECK(settingsFromJson(R"({"dlss":"performance"})").dlss == DlssMode::Quality);
-    CHECK(settingsFromJson(R"({"dlss":"ultraPerformance"})").dlss == DlssMode::Quality);
+    CHECK(settingsFromJson(R"({"dlss":"balanced"})").dlss == DlssMode::Balanced);
+    CHECK(settingsFromJson(R"({"dlss":"performance"})").dlss == DlssMode::Performance);
+    CHECK(settingsFromJson(R"({"dlss":"ultraPerformance"})").dlss == DlssMode::UltraPerformance);
+    CHECK(settingsFromJson(R"({"dlss":"turbo"})").dlss == DlssMode::Quality);                     // an unknown name is Quality
+    for (int i = 0; i < kDlssModeCount; ++i) {
+        s.dlss = static_cast<DlssMode>(i);
+        CHECK(settingsFromJson(settingsToJson(s)).dlss == s.dlss);
+    }
     CHECK(settingsFromJson(R"({"dlss":7})").dlss == DlssMode::Off);                               // not a string: ignored
     CHECK(std::string(dlssModeName(DlssMode::Dlaa)) == "dlaa");
     CHECK(dlssModeFromName("off") == DlssMode::Off);
     CHECK(dlssModeFromName("dlaa") == DlssMode::Dlaa);
 }
 
-TEST_CASE("DLSS render size: Quality is two thirds, DLAA the full size") {
+TEST_CASE("DLSS render size: Quality is two thirds, DLAA the full size, the other presets 0.58, 0.5 and 1/3") {
     uint32_t w = 0, h = 0;
+    dlssRenderSize(DlssMode::Balanced, 3840, 2160, &w, &h);
+    CHECK(w == 2227);
+    CHECK(h == 1253);
+    dlssRenderSize(DlssMode::Performance, 3840, 2160, &w, &h);
+    CHECK(w == 1920);
+    CHECK(h == 1080);
+    dlssRenderSize(DlssMode::UltraPerformance, 3840, 2160, &w, &h);
+    CHECK(w == 1280);
+    CHECK(h == 720);
     dlssRenderSize(DlssMode::Quality, 3840, 2160, &w, &h);
     CHECK(w == 2560);
     CHECK(h == 1440);

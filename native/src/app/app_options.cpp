@@ -1,6 +1,7 @@
 // app/app_options -- see app_options.h.
 #include "app/app_options.h"
 
+#include <cctype>
 #include <cstdlib>
 
 namespace native::app {
@@ -58,8 +59,10 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
         }
         else if (a == "--dlss") {
             if (!value(o.dlss)) return r;
-            if (o.dlss != "off" && o.dlss != "quality" && o.dlss != "dlaa") {
-                r.error = "invalid DLSS mode (use off, quality or dlaa): " + o.dlss;
+            std::string lower = o.dlss;
+            for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (lower != "off" && lower != "quality" && lower != "dlaa" && lower != "ultraperformance" && lower != "performance" && lower != "balanced") {
+                r.error = "invalid DLSS mode (use off, ultraPerformance, performance, balanced, quality or dlaa): " + o.dlss;
                 return r;
             }
         }

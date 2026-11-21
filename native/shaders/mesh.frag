@@ -23,6 +23,7 @@ layout(location = 3) flat in uint vFlags;
 layout(location = 4) in vec3 vDir;
 layout(location = 5) in vec2 vLm;
 layout(location = 6) flat in uint vPage;
+layout(location = 7) flat in uint vObj;
 layout(location = 0) out vec4 outColor;
 #ifdef GBUFFER
 // The G-buffer of the ray traced Lit path (R2): outColor = the albedo (the texture's own colour, sky faces and the background show the sky), outNormal = world
@@ -104,7 +105,7 @@ void main() {
     }
 #ifdef GBUFFER
     outColor = vec4(t.rgb, 1.0);
-    outNormal = vec4(n, 1.0);
+    outNormal = vec4(n, (vObj & 1u) != 0u ? 1.0 : 0.6);   // 1 = receives light, 0.6 = a surface of a class without lightmaps (shown unlit, like the chunked path)
     outDepth = 1.0 / gl_FragCoord.w;
     return;
 #endif

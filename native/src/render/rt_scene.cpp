@@ -296,7 +296,14 @@ bool RtScene::update(VkCommandBuffer cmd, uint64_t completed, uint64_t submitted
         std::vector<const RtObject*> toBuild;
         for (const RtObject& o : objects) {
             live.insert(o.serial);
-            if (o.indexCount >= 3 && o.vertexCount > 0 && !entries_.count(o.serial)) toBuild.push_back(&o);
+            const auto known = entries_.find(o.serial);
+            if (known == entries_.end()) {
+                if (o.indexCount >= 3 && o.vertexCount > 0) toBuild.push_back(&o);
+            } else if (known->second.object.flags != o.flags) {   // the lighting rules changed: only the instance mask differs
+                known->second.object.flags = o.flags;
+                tlasDirty_ = true;
+                changedScene = true;
+            }
         }
         for (auto it = entries_.begin(); it != entries_.end();) {
             if (live.count(it->first)) { ++it; continue; }
@@ -407,7 +414,7 @@ bool RtScene::update(VkCommandBuffer cmd, uint64_t completed, uint64_t submitted
             VkAccelerationStructureInstanceKHR inst{};
             inst.transform.matrix[0][0] = inst.transform.matrix[1][1] = inst.transform.matrix[2][2] = 1.f;
             inst.instanceCustomIndex = e.slot;
-            inst.mask = kRtMaskSolid;
+            inst.mask = (o.flags & kObjCasts) != 0 ? kRtMaskSolid : kRtMaskReceiver;
             inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;   // double sided
             inst.accelerationStructureReference = e.blas.address;
             instances.push_back(inst);

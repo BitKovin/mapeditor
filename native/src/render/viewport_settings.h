@@ -13,8 +13,10 @@ namespace native::render {
 enum class CameraMode { Fly, Orbit, Top, Front, Side };
 enum class RenderMode { Unlit, Lit, Wireframe, LightingOnly };
 enum class GizmoMode { Move, Rotate, Scale };
-// DLSS Super Resolution of a perspective viewport (11_NVIDIA_TECH.md §2.2). Quality and DLAA are the only presets: no lower one anywhere.
-enum class DlssMode : int { Off = 0, Quality = 1, Dlaa = 2 };
+// DLSS Super Resolution of a perspective viewport (11_NVIDIA_TECH.md §2.2): every preset NVIDIA offers (render scale 1/3, 1/2, 0.58, 2/3, 1). The values are stored in ints
+// (ViewState::dlss), the first three keep their numbers. Performance measurements are made with Quality and DLAA only; the user can choose any.
+enum class DlssMode : int { Off = 0, Quality = 1, Dlaa = 2, UltraPerformance = 3, Performance = 4, Balanced = 5 };
+constexpr int kDlssModeCount = 6;
 
 constexpr double kFlySpeedMin = 0.05, kFlySpeedMax = 500, kWheelSpeedFactor = 1.2;
 
@@ -50,8 +52,8 @@ inline double scaleSnapStep(const ViewportSettings& s) { return s.snapEnabled ? 
 
 const char* cameraModeName(CameraMode m);
 const char* renderModeName(RenderMode m);
-const char* dlssModeName(DlssMode m);   // "off", "quality", "dlaa"
-// Text -> mode for files and the command line: "off" / "quality" / "dlaa"; anything else (a preset that does not exist here, such as "balanced") is Quality.
+const char* dlssModeName(DlssMode m);   // "off", "quality", "dlaa", "ultraPerformance", "performance", "balanced"
+// Text -> mode for files and the command line (case does not matter): the names above; anything else is Quality.
 DlssMode dlssModeFromName(const std::string& name);
 
 // JSON text; unknown / missing fields keep their defaults, bad values are clamped or ignored.
