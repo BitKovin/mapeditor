@@ -19,6 +19,7 @@
 #include "ui/outliner_panel.h"
 #include "ui/place_panel.h"
 #include "ui/surface_panel.h"
+#include "ui/texture_browser_panel.h"
 
 namespace native::ui {
 
@@ -40,6 +41,8 @@ void MainWindow::createToolDocks() {
     detailsDock_ = make("Details", "detailsDock", details_);
     surface_ = new SurfacePanel(*this);
     surfaceDock_ = make("Surface", "surfaceDock", surface_);
+    textureBrowser_ = new TextureBrowserPanel(*this);
+    texturesDock_ = make("Textures", "texturesDock", textureBrowser_);
     place_ = new PlacePanel(*this);
     placeDock_ = make("Place", "placeDock", place_);
 }

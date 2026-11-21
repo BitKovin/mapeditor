@@ -882,7 +882,8 @@ void registerAppActions(actions::Registry& r) {
         static const Panel panels[] = {{"view.place.toggle", "Place", &MainWindow::placeDock},
                                        {"view.outliner.toggle", "Outliner", &MainWindow::outlinerDock},
                                        {"view.details.toggle", "Details", &MainWindow::detailsDock},
-                                       {"view.surface.toggle", "Surface", &MainWindow::surfaceDock}};
+                                       {"view.surface.toggle", "Surface", &MainWindow::surfaceDock},
+                                       {"view.textures.toggle", "Textures", &MainWindow::texturesDock}};
         bool first = true;
         for (const Panel& p : panels) {
             ActionDef d;

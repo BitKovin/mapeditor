@@ -16,6 +16,8 @@
 #include "ui/app_actions.h"
 #include "ui/main_window.h"
 #include "ui/surface_panel.h"
+#include "ui/texture_browser_panel.h"
+#include "tools/texturing/browser.h"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -268,4 +270,31 @@ TEST_CASE("surface panel: shows the values of the selected face and every edit i
     panel->refreshNow();
     CHECK(panel->fields().faceCount == 6);
     CHECK(panel->fields().mixedTexture);
+}
+
+TEST_CASE("texture browser: folders and search filter the list, a click makes the texture active and applies it") {
+    Fixture f;
+    ui::TextureBrowserPanel* b = f.window.textureBrowser();
+    REQUIRE(b);
+    b->setTextures({"base/wall01", "base/wall02", "floor/tile", "env/sky_cube"});
+    CHECK(b->shown().size() == 4);
+    CHECK(b->folders() == std::vector<std::string>{"", std::string(tools::tex::kSkyFolder), "base", "env", "floor"});
+    b->setFolder("base");
+    CHECK(b->shown() == std::vector<std::string>{"base/wall01", "base/wall02"});
+    b->setQuery("02");
+    CHECK(b->shown() == std::vector<std::string>{"base/wall02"});
+    b->setQuery("");
+    b->setFolder(tools::tex::kSkyFolder);
+    CHECK(b->shown() == std::vector<std::string>{"env/sky_cube"});
+    // choosing: active texture, and on the selection
+    f.window.selection().select(SelRef::brush("w", "a"));
+    CHECK(b->choose("floor/tile", false));
+    CHECK(f.window.activeTexture() == "floor/tile");
+    for (const auto& face : f.brush("a")->faces) CHECK(face.texture == "dev/grey");
+    CHECK(b->choose("base/wall01", true));
+    for (const auto& face : f.brush("a")->faces) CHECK(face.texture == "base/wall01");
+    // a rescan that drops the folder returns to All
+    b->setTextures({"floor/tile"});
+    CHECK(b->folder().empty());
+    CHECK(b->shown().size() == 1);
 }

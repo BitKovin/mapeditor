@@ -109,6 +109,7 @@ class RegistryMenus;
 class OutlinerPanel;
 class DetailsPanel;
 class SurfacePanel;
+class TextureBrowserPanel;
 class PlacePanel;
 class StatusFields;
 class KeyHelpOverlay;
@@ -455,6 +456,9 @@ public:
     ads::CDockWidget* detailsDock() const { return detailsDock_; }
     ads::CDockWidget* surfaceDock() const { return surfaceDock_; }
     SurfacePanel* surface() const { return surface_; }
+    ads::CDockWidget* texturesDock() const { return texturesDock_; }
+    TextureBrowserPanel* textureBrowser() const { return textureBrowser_; }
+    std::shared_ptr<const core::GameProfile> gameProfile() const { return profile_; }
     OutlinerPanel* outliner() const { return outliner_; }
     DetailsPanel* details() const { return details_; }
     PlacePanel* place() const { return place_; }
@@ -646,8 +650,9 @@ private:
     ads::CDockManager* dockManager_ = nullptr;
     ads::CDockWidget* statsDock_ = nullptr;
     StatsPanel* stats_ = nullptr;
-    ads::CDockWidget *placeDock_ = nullptr, *outlinerDock_ = nullptr, *detailsDock_ = nullptr, *surfaceDock_ = nullptr;
+    ads::CDockWidget *placeDock_ = nullptr, *outlinerDock_ = nullptr, *detailsDock_ = nullptr, *surfaceDock_ = nullptr, *texturesDock_ = nullptr;
     SurfacePanel* surface_ = nullptr;
+    TextureBrowserPanel* textureBrowser_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;
     DetailsPanel* details_ = nullptr;
     PlacePanel* place_ = nullptr;
