@@ -1,6 +1,8 @@
 // scene/point_box -- see point_box.h.
 #include "scene/point_box.h"
 
+#include "scene/model_entity.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -94,7 +96,9 @@ Box decalLocalBox(const core::Entity& e) {
 }
 
 OrientedBox pointBox(const core::Entity& e, const BoxOf& boxOf) {
-    const Box local = e.classname == "decal" ? decalLocalBox(e) : boxOf(e.classname);
+    // a decal shows its projector volume, an entity with a loaded model the model's box, everything else its class box
+    const std::optional<Box> model = e.classname == "decal" ? std::nullopt : entityModelBox(e);
+    const Box local = e.classname == "decal" ? decalLocalBox(e) : model ? *model : boxOf(e.classname);
     OrientedBox b;
     b.origin = {e.origin.x, e.origin.y, e.origin.z};
     b.rot = rotationFromAngles({e.angles.x, e.angles.y, e.angles.z});

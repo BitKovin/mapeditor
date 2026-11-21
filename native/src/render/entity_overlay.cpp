@@ -7,6 +7,7 @@
 #include "doc/document.h"
 #include "scene/arrows.h"
 #include "scene/light_gizmo.h"
+#include "scene/model_entity.h"
 #include "scene/point_box.h"
 
 namespace native::render {
@@ -90,16 +91,20 @@ EntityOverlay buildEntityOverlay(const scene::SceneSnapshot& snap, const std::ve
         const std::array<float, 3> col = picked ? kPicked : classColor(e.classname);
         const scene::OrientedBox ob = scene::pointBox(e, boxOf);
         if (opt.boxes && scene::drawsBox(e)) {
+            // an entity that shows a model: the model is drawn, its box only outlines it while it is picked (a filled box would hide it)
+            const bool showsModel = scene::entityModelBox(e).has_value();
             const auto corners = scene::worldCorners(ob);
             const uint32_t line = packColor(col[0], col[1], col[2], 1.0f);
-            for (size_t i = 0; i < scene::kBoxEdges.size(); i += 2) {
-                out.lines.push_back(vertex(corners[static_cast<size_t>(scene::kBoxEdges[i])], line));
-                out.lines.push_back(vertex(corners[static_cast<size_t>(scene::kBoxEdges[i + 1])], line));
-            }
+            if (!showsModel || picked)
+                for (size_t i = 0; i < scene::kBoxEdges.size(); i += 2) {
+                    out.lines.push_back(vertex(corners[static_cast<size_t>(scene::kBoxEdges[i])], line));
+                    out.lines.push_back(vertex(corners[static_cast<size_t>(scene::kBoxEdges[i + 1])], line));
+                }
             const uint32_t fill = packColor(col[0], col[1], col[2], kEntityFillAlpha);
             static const int quads[6][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {0, 1, 5, 4}, {3, 2, 6, 7}, {0, 3, 7, 4}, {1, 2, 6, 5}};
-            for (const auto& q : quads)
-                for (const int k : {0, 1, 2, 0, 2, 3}) out.fills.push_back(vertex(corners[static_cast<size_t>(q[k])], fill));
+            if (!showsModel)
+                for (const auto& q : quads)
+                    for (const int k : {0, 1, 2, 0, 2, 3}) out.fills.push_back(vertex(corners[static_cast<size_t>(q[k])], fill));
         }
         if (opt.boxes) {
             const scene::V3 centre = scene::toWorld(ob, {(ob.min[0] + ob.max[0]) / 2, (ob.min[1] + ob.max[1]) / 2, (ob.min[2] + ob.max[2]) / 2});
