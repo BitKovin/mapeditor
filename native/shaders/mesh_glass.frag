@@ -109,8 +109,12 @@ vec3 bounceLight(vec3 p, vec3 n) {
         float r = sqrt(u1), phi = 2.0 * PI * u2;
         vec3 dir = normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(0.0, 1.0 - u1)));
         rayQueryEXT rq;
-        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, RT_MASK_SOLID, p + n * P.look.y, 0.0, dir, P.gi.y);
-        while (rayQueryProceedEXT(rq)) {}
+        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, RT_MASK_SOLID, p + n * P.look.y, 0.0, dir, P.gi.y);
+        while (rayQueryProceedEXT(rq)) {   // the holes of cutout textures are not surfaces (the Core's closestHit)
+            if (rayQueryGetIntersectionTypeEXT(rq, false) != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+            vec3 tm;
+            if (candidateSurface(rq, dir, tm) >= 0) rayQueryConfirmIntersectionEXT(rq);
+        }
         if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) continue;
         GiHit hit = giHitOf(rq, dir);
         if (!hit.valid || hit.t >= P.gi.y) continue;

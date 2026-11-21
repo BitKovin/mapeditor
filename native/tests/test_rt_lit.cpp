@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <memory>
@@ -272,30 +273,12 @@ render::RtLitOptions options(uint32_t target) {
 
 } // namespace
 
-TEST_CASE("RT Lit: the converged ambient occlusion equals the CPU reference at 2000 pixels, and tracing stops" * doctest::test_suite("gpu")) {
-    Fixture f;
-    if (!f.start(640, 400)) return;
-    std::vector<uint8_t> blended;
-    const core::OccluderMesh mesh = drawnTriangles(*f.snapshot, &blended);
-    REQUIRE(mesh.triangleCount() > 100);
-    const core::TriangleBvh bvh(mesh);
-    const render::RtLighting light = testLighting();
-    f.rt->setRtLighting(light);
-    f.rt->setRtLit(true, options(4096));
-    // the textures decode in the background and each new texture changes the scene: wait until a still view stays converged
-    REQUIRE(f.shot().width == f.w);
-    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
-    f.cut++;
-    f.shot();
-    REQUIRE(f.converge());
-    const auto info = f.info();
-    MESSAGE("converged after " << info.frames << " frames, " << info.resets << " resets, render " << info.renderW << "x" << info.renderH);
-    CHECK(info.active);
-    CHECK(info.stillFrames >= 4097);
-    const render::CapturedImage img = f.shot();
-    REQUIRE(img.ok());
-    savePng(img, "rt_lit_ao_converged.png");
+namespace {
 
+// The converged occlusion picture `img` of the fixture's view against the CPU reference (core::TriangleBvh at the surface point of up to `want` pixels, the bake's occlusion model,
+// cosine rays against `mesh`: holes of cutout textures do not occlude when the mesh has its alpha attached). Checks the agreement; returns the number of pixels compared.
+size_t checkOcclusionParity(Fixture& f, const core::OccluderMesh& mesh, const std::vector<uint8_t>& blended, const render::RtLighting& light, const render::CapturedImage& img, size_t want) {
+    const core::TriangleBvh bvh(mesh);
     // the CPU reference
     const render::ViewState vs = f.view();
     const render::Mat4 inv = render::mat4Invert(vs.viewProj);
@@ -318,7 +301,7 @@ TEST_CASE("RT Lit: the converged ambient occlusion equals the CPU reference at 2
     std::vector<Sample> samples;
     std::mt19937 rng(7);
     const auto hitOf = [&](uint32_t x, uint32_t y) { return bvh.closestHit(eye, rayOf(x, y), 1000.0); };
-    for (int tries = 0; tries < 40000 && samples.size() < 2000; ++tries) {
+    for (int tries = 0; tries < 40000 && samples.size() < want; ++tries) {
         const uint32_t x = 3 + rng() % (f.w - 6), y = 3 + rng() % (f.h - 6);
         const auto hit = hitOf(x, y);
         if (hit.t < 0 || blended[hit.triangle]) continue;
@@ -336,7 +319,7 @@ TEST_CASE("RT Lit: the converged ambient occlusion equals the CPU reference at 2
         if (n.dot(d) > 0) n = n * -1.0;
         samples.push_back({x, y, eye + d * hit.t, n});
     }
-    REQUIRE(samples.size() >= 1000);
+    REQUIRE(samples.size() >= want / 2);
 
     const int kRays = 4096;
     std::vector<double> expected(samples.size());
@@ -368,12 +351,12 @@ TEST_CASE("RT Lit: the converged ambient occlusion equals the CPU reference at 2
     double sumRel = 0, lo = 1, hi = 0;
     const Shot shot{img};
     for (size_t i = 0; i < samples.size(); ++i) {
-        const double got = shot.at(samples[i].x, samples[i].y), want = expected[i];
-        const double r = std::abs(got - want) / std::max(want, 1.0 / 255.0);
+        const double got = shot.at(samples[i].x, samples[i].y), ref = expected[i];
+        const double r = std::abs(got - ref) / std::max(ref, 1.0 / 255.0);
         rel.push_back(r);
         sumRel += r;
-        lo = std::min(lo, want);
-        hi = std::max(hi, want);
+        lo = std::min(lo, ref);
+        hi = std::max(hi, ref);
     }
     std::sort(rel.begin(), rel.end());
     const double mean = sumRel / static_cast<double>(rel.size()), p99 = rel[static_cast<size_t>(0.99 * static_cast<double>(rel.size() - 1))];
@@ -381,6 +364,40 @@ TEST_CASE("RT Lit: the converged ambient occlusion equals the CPU reference at 2
     CHECK(hi - lo > 0.1);   // the occlusion shows: the picture is not flat
     CHECK(mean < 0.01);
     CHECK(p99 < 0.05);
+    return samples.size();
+}
+
+} // namespace
+
+TEST_CASE("RT Lit: the converged ambient occlusion equals the CPU reference at 2000 pixels, and tracing stops" * doctest::test_suite("gpu")) {
+    Fixture f;
+    if (!f.start(640, 400)) return;
+    std::vector<uint8_t> blended;
+    core::OccluderMesh mesh = drawnTriangles(*f.snapshot, &blended);
+    REQUIRE(mesh.triangleCount() > 100);
+    {   // the occlusion rays pass the holes of cutout textures and the clear texels of translucent ones, like the bake's (the Core's nearestHit)
+        auto lib = std::make_shared<core::AlbedoLibrary>(f.root, core::loadProfile(f.root));
+        core::attachAlbedo(mesh, [lib](const std::string& name) { return lib->get(name); });
+    }
+    REQUIRE(mesh.hasTransparency());   // the scene has such surfaces, or the test would not show the difference
+    const render::RtLighting light = testLighting();
+    f.rt->setRtLighting(light);
+    f.rt->setRtLit(true, options(4096));
+    // the textures decode in the background and each new texture changes the scene: wait until a still view stays converged
+    REQUIRE(f.shot().width == f.w);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+    f.cut++;
+    f.shot();
+    REQUIRE(f.converge());
+    const auto info = f.info();
+    MESSAGE("converged after " << info.frames << " frames, " << info.resets << " resets, render " << info.renderW << "x" << info.renderH);
+    CHECK(info.active);
+    CHECK(info.stillFrames >= 4097);
+    const render::CapturedImage img = f.shot();
+    REQUIRE(img.ok());
+    savePng(img, "rt_lit_ao_converged.png");
+
+    checkOcclusionParity(f, mesh, blended, light, img, 2000);
 
     // tracing stopped: the picture stays as it is, frames are only made on demand, the counters show no traced pixel
     const uint64_t frames = f.rt->framesRendered(f.id);
@@ -669,6 +686,75 @@ struct SurfaceSample {
 };
 
 } // namespace
+
+namespace {
+
+std::string boxBrushJson(const char* id, const double lo[3], const double hi[3], const char* texture) {
+    const double v[8][3] = {{lo[0], lo[1], lo[2]}, {hi[0], lo[1], lo[2]}, {hi[0], hi[1], lo[2]}, {lo[0], hi[1], lo[2]},
+                            {lo[0], lo[1], hi[2]}, {hi[0], lo[1], hi[2]}, {hi[0], hi[1], hi[2]}, {lo[0], hi[1], hi[2]}};
+    const int loops[6][4] = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 4, 7, 3}, {1, 2, 6, 5}, {0, 1, 5, 4}, {3, 7, 6, 2}};
+    const int axes[6][2] = {{0, 1}, {0, 1}, {2, 1}, {2, 1}, {0, 2}, {0, 2}};
+    std::ostringstream o;
+    o << "{\"id\":\"" << id << "\",\"op\":\"add\",\"vertices\":[";
+    for (int i = 0; i < 8; ++i) o << (i ? "," : "") << "[" << v[i][0] << "," << v[i][1] << "," << v[i][2] << "]";
+    o << "],\"faces\":[";
+    for (int f = 0; f < 6; ++f) {
+        o << (f ? "," : "") << "{\"id\":" << f << ",\"loop\":[" << loops[f][0] << "," << loops[f][1] << "," << loops[f][2] << "," << loops[f][3] << "],\"uvs\":[";
+        for (int k = 0; k < 4; ++k) o << (k ? "," : "") << "[" << v[loops[f][k]][axes[f][0]] / 2.0 << "," << v[loops[f][k]][axes[f][1]] / 2.0 << "]";
+        o << "],\"texture\":\"" << texture << "\"}";
+    }
+    o << "]}";
+    return o.str();
+}
+
+} // namespace
+
+TEST_CASE("RT Lit: a cutout panel a few millimetres in front of a wall occludes it only where its texels are solid (the bake's occlusion rays), not as an opaque surface" * doctest::test_suite("gpu")) {
+    // a map of its own in a temporary asset root: a wall, a floor and a grate (cutout texture, more than half of its texels are holes) 3 mm in front of the wall, like a decal slab
+    const fs::path root = fs::temp_directory_path() / "native_rt_cutout_panel";
+    struct Cleanup {
+        fs::path dir;
+        ~Cleanup() { std::error_code ec; fs::remove_all(dir, ec); }
+    } cleanup{root};
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "textures" / "dev");
+    fs::create_directories(root / "maps");
+    const fs::path assets = NATIVE_CORE_ASSETS_DIR;
+    fs::copy_file(assets / "game_profile.json", root / "game_profile.json");
+    for (const char* name : {"wall.png", "floor.png", "grate.png"}) fs::copy_file(assets / "textures" / "dev" / name, root / "textures" / "dev" / name);
+    {
+        const double floorLo[3] = {-4, -0.2, -4}, floorHi[3] = {4, 0, 4}, wallLo[3] = {0, 0, -3}, wallHi[3] = {0.2, 3, 3}, panelLo[3] = {-0.013, 0.4, -1.6}, panelHi[3] = {-0.003, 2.6, 1.6};
+        std::ofstream map(root / "maps" / "panel.map.json", std::ios::binary);
+        map << "{\"schemaVersion\":\"0.2\",\"prefabInstances\":[],\"entities\":[{\"id\":\"e_worldspawn\",\"classname\":\"worldspawn\",\"keyvalues\":{},\"origin\":[0,0,0],\"angles\":[0,0,0],\"brushes\":["
+            << boxBrushJson("b_floor", floorLo, floorHi, "dev/floor") << "," << boxBrushJson("b_wall", wallLo, wallHi, "dev/wall") << "," << boxBrushJson("b_panel", panelLo, panelHi, "dev/grate") << "]}]}";
+    }
+    Fixture f;
+    f.root = root;
+    f.mapName = "maps/panel.map.json";
+    if (!f.start(480, 300)) return;
+    f.rig.fly().lookAt({-1.7, 1.5, 0.0}, {0.0, 1.5, 0.0});
+    std::vector<uint8_t> blended;
+    core::OccluderMesh mesh = drawnTriangles(*f.snapshot, &blended);
+    {
+        auto lib = std::make_shared<core::AlbedoLibrary>(f.root, core::loadProfile(f.root));
+        core::attachAlbedo(mesh, [lib](const std::string& name) { return lib->get(name); });
+    }
+    REQUIRE(mesh.hasTransparency());
+    const render::RtLighting light = testLighting();
+    f.rt->setRtLighting(light);
+    f.rt->setRtLit(true, options(2048));
+    REQUIRE(f.shot().width == f.w);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+    f.cut++;
+    f.shot();
+    REQUIRE(f.converge());
+    const render::CapturedImage img = f.shot();
+    REQUIRE(img.ok());
+    savePng(img, "rt_lit_ao_cutout_panel.png");
+    CHECK(checkOcclusionParity(f, mesh, blended, light, img, 1500) >= 400);
+    CHECK(f.device->validationErrors() == 0);
+}
 
 TEST_CASE("RT Lit: point, spot, sun and sky light with ray traced shadows equal the CPU reference of the bake's light model, and the lightmap look is the bilinear texel mean" * doctest::test_suite("gpu")) {
     Fixture f;
@@ -1630,8 +1716,9 @@ TEST_CASE("RT bench: frames and GPU time per pass of one ray traced Lit viewport
     f.dlss = dlssName == "off" ? 0 : dlssName == "dlaa" ? 2 : 1;
     if (!f.start(static_cast<uint32_t>(size[0]), static_cast<uint32_t>(size[1]), f.dlss != 0)) return;
     const std::vector<double> eye = numbers(env("NATIVE_BENCH_EYE", "30,1.2,-14")), target = numbers(env("NATIVE_BENCH_TARGET", "26.5,1.0,-23.5"));
-    const bool unlit = scenario == "unlit";   // the baseline of G-rt-still: the same camera flight in the Unlit mode, no ray tracing
-    f.mode = unlit ? 0 : 1;
+    const int modeEnv = std::atoi(env("NATIVE_BENCH_MODE", "-1").c_str());   // 0 Unlit, 1 Lit, 2 Lighting only
+    const bool unlit = scenario == "unlit" || modeEnv == 0;   // the baseline of G-rt-still: the same camera flight in the Unlit mode, no ray tracing
+    f.mode = unlit ? 0 : (modeEnv > 0 ? modeEnv : 1);
     f.rig.fly().lookAt({eye[0], eye[1], eye[2]}, {target[0], target[1], target[2]});
     const auto profile = std::make_shared<core::GameProfile>(core::loadProfile(f.root));
 
@@ -1703,7 +1790,7 @@ TEST_CASE("RT bench: frames and GPU time per pass of one ray traced Lit viewport
     };
     if (scenario == "still") {
         f.shot();
-        REQUIRE(f.converge(300000));
+        if (!unlit) REQUIRE(f.converge(300000));   // the Unlit mode has no converged stop
     }
     run(3.0);   // warm up: the history, DLSS, the cache (still: the settling frames, then the repaints reuse the converged picture)
     const uint64_t before = f.rt->framesRendered(f.id);
@@ -1724,6 +1811,10 @@ TEST_CASE("RT bench: frames and GPU time per pass of one ray traced Lit viewport
     MESSAGE("G-rt " << scenario << " " << f.mapName << " " << size[0] << "x" << size[1] << " DLSS " << dlssName << " bounces " << o.bounces << ": " << frames / elapsed << " fps over " << elapsed
                     << " s, GPU " << total << " ms per frame (" << (total > 0 ? 1000.0 / total : 0.0) << " fps from the GPU time), render " << info.renderW << "x" << info.renderH
                     << ", tracing skipped " << info.tracingSkipped << ", resets " << info.resets << pr.str());
+    if (const std::string out = rtEnv("NATIVE_BENCH_OUT"); !out.empty()) {   // the last picture, for looking at what the numbers are about
+        const render::CapturedImage img = f.shot();
+        if (img.ok()) savePng(img, out.c_str());
+    }
     CHECK(f.device->validationErrors() == 0);
 }
 

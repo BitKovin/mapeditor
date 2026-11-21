@@ -66,8 +66,12 @@ void main() {
         if (depth + 1u == maxDepth) break;
         vec3 dir = cosineDir(n, seed);
         rayQueryEXT rq;
-        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, RT_MASK_SOLID, pos + n * P.look.y, 0.0, dir, P.gi.y);
-        while (rayQueryProceedEXT(rq)) {}
+        rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, RT_MASK_SOLID, pos + n * P.look.y, 0.0, dir, P.gi.y);
+        while (rayQueryProceedEXT(rq)) {   // the holes of cutout textures are not surfaces (the Core's closestHit)
+            if (rayQueryGetIntersectionTypeEXT(rq, false) != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+            vec3 tm;
+            if (candidateSurface(rq, dir, tm) >= 0) rayQueryConfirmIntersectionEXT(rq);
+        }
         if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
             SharcUpdateMiss(sp, st, vec3(0.0));
             break;

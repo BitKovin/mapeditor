@@ -150,8 +150,13 @@ void main() {
         bool needAo = P.ambient.w > 0.5 && P.ao.x > 0.0, needGi = P.gi.z > 0.5;
         if (needAo || needGi) {   // one cosine ray serves both: the occlusion by its length, the bounce light by what it hits (the bake's gather)
             rayQueryEXT rq;
-            rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, RT_MASK_SOLID, ps + n * P.ao2.y, 0.0, dir, needGi ? max(P.gi.y, P.ao.x) : P.ao.x);
-            while (rayQueryProceedEXT(rq)) {}
+            // like the bake's occlusion rays (lightmap_ao.comp, the Core's nearestHit / closestHit): the holes of a cutout texture and the clear texels of a translucent one are not surfaces
+            rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, RT_MASK_SOLID, ps + n * P.ao2.y, 0.0, dir, needGi ? max(P.gi.y, P.ao.x) : P.ao.x);
+            while (rayQueryProceedEXT(rq)) {
+                if (rayQueryGetIntersectionTypeEXT(rq, false) != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+                vec3 tm;
+                if (candidateSurface(rq, dir, tm) >= 0) rayQueryConfirmIntersectionEXT(rq);
+            }
             if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
                 float d = rayQueryGetIntersectionTEXT(rq, true);
                 if (needAo && d < P.ao.x) x = P.ao2.x == 1.0 ? 1.0 - d / P.ao.x : pow(1.0 - d / P.ao.x, P.ao2.x);
