@@ -759,7 +759,7 @@ void registerAppActions(actions::Registry& r) {
         d.enabled = [](const ActionEnv& env, const json& p) {
             const UiEnv* u = env.as<UiEnv>();
             if (!u || !u->viewport) return false;
-            return p.value("mode", "unlit") == "unlit" || (u->window && u->window->lightingAvailable());
+            return p.value("mode", "unlit") == "unlit" || (u->window && u->window->litModesAvailable());
         };
         d.checked = [](const ActionEnv& env, const json& p) {
             const auto* vp = viewportOf(env);

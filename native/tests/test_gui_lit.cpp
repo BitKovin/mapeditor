@@ -138,3 +138,18 @@ TEST_CASE("a lost GPU device is reported once and the window keeps working" * do
         CHECK(window.isVisible());
     }
 }
+
+TEST_CASE("with --rt-lit the Lit and Lighting only modes can be chosen although the chunked bake does not run" * doctest::test_suite("gpu")) {
+    App app;
+    if (!app.ok) return;
+    base::JobPool pool(4);
+    ui::Services sv = app.services();
+    sv.jobs = &pool;
+    sv.rtLit = true;
+    ui::MainWindow window(sv);
+    window.resize(900, 600);
+    window.show();
+    REQUIRE(waitUntil([&] { return allReady(window); }));
+    CHECK_FALSE(window.lightingAvailable());   // no bake in this mode
+    CHECK(window.litModesAvailable() == app.device->caps().lit());
+}

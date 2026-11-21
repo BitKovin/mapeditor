@@ -55,7 +55,11 @@ vec3 skyColor(uint base, float kind, vec3 dir) {
     if (ma > 0.0) { u = (sc / ma + 1.0) * 0.5; v = (tc / ma + 1.0) * 0.5; }
     if (face == 2u) { float t = u; u = v; v = 1.0 - t; }          // _up is turned 90 degrees clockwise on load
     else if (face == 3u) { float t = u; u = 1.0 - v; v = t; }     // _dn counter-clockwise
-    return textureLod(textures[nonuniformEXT(base + face)], vec2(u, v), 0.0).rgb;
+    // the textures share the tiling sampler (repeat): bilinear filtering at a face edge would blend in the opposite edge of the same face (a thin line along the cube's edges),
+    // so the lookup stays inside the face's texel centres
+    vec2 edge = 0.5 / vec2(textureSize(textures[nonuniformEXT(base + face)], 0));
+    vec2 uv = clamp(vec2(u, v), edge, 1.0 - edge);
+    return textureLod(textures[nonuniformEXT(base + face)], uv, 0.0).rgb;
 }
 
 // Bicubic B-spline lookup from 4 bilinear fetches (GPU Gems 2, ch. 20): smooth across texel borders, where bilinear's slope jumps and soft shadows show

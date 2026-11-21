@@ -175,6 +175,8 @@ public:
     std::string assetsRoot() const { return assetsRoot_; }
     // Whether the lit render modes can work: the device has ray queries and a second queue, and the lighting service runs.
     bool lightingAvailable() const;
+    // The Lit / Lighting only modes can be chosen: the chunked bake runs, or the ray traced Lit path (--rt-lit) is on.
+    bool litModesAvailable() const;
     // Whether DLSS Super Resolution can run on this device (Streamline loaded, RTX GPU, plugin present).
     bool dlssAvailable() const;
     // Whether the bake of the latest snapshot finished (true without a service); --screenshot waits for it in the lit modes.

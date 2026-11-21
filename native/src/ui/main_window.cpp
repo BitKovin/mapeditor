@@ -251,6 +251,7 @@ render::ViewportWindow* MainWindow::activeViewport() const {
 }
 
 bool MainWindow::lightingAvailable() const { return lighting_ && lighting_->valid(); }
+bool MainWindow::litModesAvailable() const { return lightingAvailable() || (services_.rtLit && services_.renderThread && services_.device && services_.device->caps().lit()); }
 
 bool MainWindow::dlssAvailable() const { return services_.device && services_.device->caps().dlss; }
 
