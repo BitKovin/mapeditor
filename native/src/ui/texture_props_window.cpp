@@ -21,6 +21,7 @@
 
 #include "tools/texturing/props_edit.h"
 #include "ui/main_window.h"
+#include "ui/relief_editor.h"
 
 namespace native::ui {
 
@@ -310,10 +311,25 @@ void TexturePropsDialog::build() {
     revert->setObjectName(QStringLiteral("btn:revert"));
     revert->setFocusPolicy(Qt::NoFocus);
     QObject::connect(revert, &QPushButton::clicked, this, [this] { setProps(original_); });
+    auto* reliefBtn = new QPushButton(QStringLiteral("Relief..."), this);
+    reliefBtn->setObjectName(QStringLiteral("btn:relief"));
+    reliefBtn->setFocusPolicy(Qt::NoFocus);
+    reliefBtn->setToolTip(QStringLiteral("Edits the relief mesh of this texture (bumps and recesses)"));
+    QObject::connect(reliefBtn, &QPushButton::clicked, this, [this] {
+        flush();
+        if (ReliefEditor* ed = win_.openReliefEditor(texture_))
+            QObject::connect(ed, &ReliefEditor::saved, this, [this] {   // the relief is written by that editor: this dialog keeps the stored value, not its old copy
+                const nlohmann::json now = win_.textureProps(texture_);
+                const nlohmann::json relief = now.is_object() && now.contains("relief") ? now["relief"] : nlohmann::json(nullptr);
+                draft_["relief"] = relief;
+                original_["relief"] = relief;
+            });
+    });
     auto* close = new QPushButton(QStringLiteral("Close"), this);
     close->setObjectName(QStringLiteral("btn:close"));
     QObject::connect(close, &QPushButton::clicked, this, &QDialog::accept);
     bottom->addWidget(revert);
+    bottom->addWidget(reliefBtn);
     bottom->addStretch(1);
     bottom->addWidget(close);
     left->addLayout(bottom);

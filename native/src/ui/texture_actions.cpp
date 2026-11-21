@@ -172,6 +172,23 @@ void registerTextureActions(actions::Registry& r) {
     }
     {
         ActionDef d;
+        d.id = "texture.relief";
+        d.label = "Relief editor...";
+        d.category = "Texture";
+        d.description = "Opens the relief editor on the active texture: a small mesh of bumps and recesses that is drawn with the texture.";
+        d.menu = "&Texture";
+        d.contexts = {"area:viewport"};
+        d.enabled = [](const ActionEnv& env, const json&) {
+            MainWindow* w = windowOf(env);
+            return w && w->document() && !w->activeTexture().empty();
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) w->openReliefEditor(w->activeTexture());
+        };
+        r.add(std::move(d));
+    }
+    {
+        ActionDef d;
         d.id = "texture.group.new";
         d.label = "New texture group...";
         d.category = "Texture";

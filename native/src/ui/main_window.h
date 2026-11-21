@@ -118,6 +118,7 @@ class TexturePropsDialog;
 class TexGroupEditor;
 class GroupsPanel;
 class TileSetEditor;
+class ReliefEditor;
 
 // The faces the Fast Texture Tool edits: some faces (all, when a whole brush is selected) of one brush.
 struct FttTarget {
@@ -486,6 +487,8 @@ public:
     TexGroupEditor* groupEditor() const { return groupEditor_; }
     TileSetEditor* openTileSetEditor(const std::string& name, tools::tex::KitKind kind = tools::tex::KitKind::Wall, bool show = true);   // "" = a new set of `kind`
     TileSetEditor* tileSetEditor() const { return tileSetEditor_; }
+    ReliefEditor* openReliefEditor(const std::string& texture, bool show = true);   // the relief of a texture (a fresh editor each time)
+    ReliefEditor* reliefEditor() const { return reliefEditor_; }
 
     // ---- delete, duplicate, group, clipboard, hide (T4.3) ----
     // Each is one undo step on the selection (prefab-internal and face selections are left alone); false when refused or nothing to do (the status bar says why).
@@ -815,6 +818,7 @@ private:
     TexGroupStore groupStore_;
     TexGroupEditor* groupEditor_ = nullptr;
     TileSetEditor* tileSetEditor_ = nullptr;
+    ReliefEditor* reliefEditor_ = nullptr;
     void rebuildTextureEnvironment();
     std::string originSel_;
     tools::HideState hide_;

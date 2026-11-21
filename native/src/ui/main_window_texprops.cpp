@@ -6,6 +6,7 @@
 #include "core/textures.h"
 #include "tools/texturing/props_edit.h"
 #include "ui/main_window.h"
+#include "ui/relief_editor.h"
 #include "ui/texture_props_window.h"
 
 namespace native::ui {
@@ -64,6 +65,24 @@ TexturePropsDialog* MainWindow::openTextureProperties(const std::string& texture
         propsDialog_->raise();
     }
     return propsDialog_;
+}
+
+ReliefEditor* MainWindow::openReliefEditor(const std::string& texture, bool show) {
+    if (texture.empty()) return nullptr;
+    if (reliefEditor_) {
+        reliefEditor_->discard();
+        reliefEditor_->deleteLater();
+        reliefEditor_ = nullptr;
+    }
+    reliefEditor_ = new ReliefEditor(*this, texture);
+    QObject::connect(reliefEditor_, &QObject::destroyed, this, [this](QObject* o) {
+        if (o == reliefEditor_) reliefEditor_ = nullptr;
+    });
+    if (show) {
+        reliefEditor_->show();
+        reliefEditor_->raise();
+    }
+    return reliefEditor_;
 }
 
 } // namespace native::ui
