@@ -186,9 +186,12 @@ native_module(ui     SOURCES src/ui/main_window_export.cpp src/ui/module_info.cp
                      src/ui/registry_menus.cpp src/ui/registry_menus.h src/ui/glyph_atlas_qt.cpp src/ui/glyph_atlas_qt.h
                      DEPENDS native_tools native_actions native_exporting Qt6::Widgets ads::qtadvanceddocking)
 
+# The automation socket (T9.4): JSON lines on 127.0.0.1 for outside scripts; off unless --automation-port is given.
+native_module(automation SOURCES src/automation/server.cpp src/automation/server.h DEPENDS native_ui Qt6::Network)
+
 # ---- the application ----------------------------------------------------------------------------------------------------
 add_executable(mapeditor_native WIN32 src/app/main.cpp src/app/app_options.cpp src/app/app_options.h)
-target_link_libraries(mapeditor_native PRIVATE native_ui Qt6::Widgets)
+target_link_libraries(mapeditor_native PRIVATE native_automation native_ui Qt6::Widgets)
 native_warnings(mapeditor_native)
 # Shipped keymap presets next to the exe (<exe dir>/keymaps/default.json).
 add_custom_command(TARGET mapeditor_native POST_BUILD
@@ -197,7 +200,7 @@ add_custom_command(TARGET mapeditor_native POST_BUILD
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_exporting.cpp tests/test_ui_export.cpp tests/test_scene_relief.cpp tests/test_picking.cpp tests/test_scene_overlays.cpp tests/test_tools_transform.cpp tests/test_tools_modal.cpp tests/test_tools_gizmo.cpp tests/test_tools_box.cpp tests/test_tools_clipboard.cpp tests/test_tools_visibility.cpp tests/test_tools_properties.cpp tests/test_tools_outliner.cpp tests/test_tools_details.cpp tests/test_tools_settings.cpp tests/test_keymap_edit.cpp tests/test_palette.cpp tests/test_light_layout.cpp tests/test_light_images.cpp tests/test_light_samples.cpp tests/test_light_accel.cpp tests/test_rt_scene.cpp tests/test_rt_lit.cpp tests/test_light_bake.cpp tests/test_light_compose.cpp tests/test_light_service.cpp tests/test_lit_view.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_exporting.cpp tests/test_ui_export.cpp tests/test_automation.cpp tests/test_scene_relief.cpp tests/test_picking.cpp tests/test_scene_overlays.cpp tests/test_tools_transform.cpp tests/test_tools_modal.cpp tests/test_tools_gizmo.cpp tests/test_tools_box.cpp tests/test_tools_clipboard.cpp tests/test_tools_visibility.cpp tests/test_tools_properties.cpp tests/test_tools_outliner.cpp tests/test_tools_details.cpp tests/test_tools_settings.cpp tests/test_keymap_edit.cpp tests/test_palette.cpp tests/test_light_layout.cpp tests/test_light_images.cpp tests/test_light_samples.cpp tests/test_light_accel.cpp tests/test_rt_scene.cpp tests/test_rt_lit.cpp tests/test_light_bake.cpp tests/test_light_compose.cpp tests/test_light_service.cpp tests/test_lit_view.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src "${NATIVE_SHADER_GEN_DIR}")
 add_dependencies(native_tests native_shaders)
 target_compile_definitions(native_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
@@ -207,7 +210,7 @@ if(MSVC)
   set_source_files_properties(tests/test_exporting.cpp PROPERTIES COMPILE_OPTIONS /wd4828)
   set_source_files_properties(tests/test_ui_export.cpp PROPERTIES COMPILE_OPTIONS /wd4828)
 endif()
-target_link_libraries(native_tests PRIVATE native_ui Qt6::Widgets Qt6::Test)
+target_link_libraries(native_tests PRIVATE native_automation native_ui Qt6::Widgets Qt6::Network Qt6::Test)
 native_warnings(native_tests)
 
 # Tests that need real windows and the GPU (Qt "windows" platform): viewports in docks, re-docking, resizing.

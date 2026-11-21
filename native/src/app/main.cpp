@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "app/app_options.h"
+#include "automation/server.h"
 #include "base/jobs.h"
 #include "base/log.h"
 #include "base/trace.h"
@@ -120,6 +121,14 @@ int main(int argc, char** argv) {
         for (const native::ui::ViewportPanel& panel : window.viewports()) panel.window->setDlssMode(mode);
     }
     if (!parsed.options.map.empty()) window.openDocument(parsed.options.map);
+    std::unique_ptr<native::automation::Server> automation;   // outside scripts (T9.4); only when asked for, on 127.0.0.1
+    if (parsed.options.automationPort > 0) {
+        automation = std::make_unique<native::automation::Server>(window);
+        if (!automation->listen(parsed.options.automationPort)) {
+            QMessageBox::critical(nullptr, QStringLiteral("Map Editor (native)"), QStringLiteral("Cannot listen on 127.0.0.1:%1: %2").arg(parsed.options.automationPort).arg(QString::fromStdString(automation->error())));
+            return 3;
+        }
+    }
 
     int shotResult = 0;
     if (!parsed.options.screenshotPath.empty()) {
