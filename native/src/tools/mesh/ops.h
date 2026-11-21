@@ -77,4 +77,22 @@ struct LoopsClosed {
 // Adds a face for every closed chain of open edges (edges walked by one face only) whose vertices all satisfy `include`.
 LoopsClosed closeOpenLoops(const core::Brush& b, const std::function<bool(uint32_t)>& include, uint32_t firstId, const core::BrushFace* tmpl = nullptr);
 
+// ---- bevel, loop cut, bridge (ops_loop.cpp) ----
+inline constexpr int kMaxBevelSegments = 32;
+// Chamfers the selected edges by `width` (each side of the edge, measured in the adjacent faces); `segments` > 1 turns the chamfer into a circular arc. Vertices where two or
+// more selected edges meet, or a single one ends, are handled; a corner whose bevelled edges separate more than two faces on one side is refused. New faces get new ids.
+OpResult bevelEdges(const core::Brush& b, const std::vector<Edge>& edges, double width, int segments = 1, const tp::InfoFn& info = {});
+
+struct LoopCutInfo {
+    std::vector<std::pair<uint32_t, uint32_t>> ring;   // the rails (p, q), kept consistent along the ring
+    bool closed = false;
+};
+// The ring of parallel edges the cut through `edge` would cross: from the edge, step across each quad to its opposite edge, both ways, stopping at a non-quad face or when it closes.
+std::optional<LoopCutInfo> edgeRing(const core::Brush& b, const Edge& edge);
+// Inserts an edge loop across the ring of `edge` at parameter `param` (0..1) measured along the ring's rails.
+OpResult loopCut(const core::Brush& b, const Edge& edge, double param, const tp::InfoFn& info = {});
+// Bridge Edge Loops (REQUIREMENTS section 36 W2): face mode removes the selected faces first and bridges the outlines of the two holes (a tunnel through a brush); edge mode
+// bridges two closed loops of open edges. The loops need the same corner count; the pairing with the shortest total length wins.
+OpResult bridgeLoops(const core::Brush& b, const MeshSel& sel, SelMode mode, const tp::InfoFn& info = {});
+
 } // namespace native::tools::mesh
