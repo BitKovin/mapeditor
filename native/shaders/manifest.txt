@@ -1,4 +1,4 @@
-# Shaders of the native editor. One per line:  name | source file | glslang --target-env | preprocessor defines (comma separated)
+# Shaders of the native editor. One per line:  name | source file | --target-env | preprocessor defines (comma separated); for an .hlsl file (DXC) the 4th field is the profile, e.g. cs_6_5
 # Compiled with glslangValidator at build time, validated with spirv-val, embedded as native::shaders::k_<name>_spv
 # (include "native_shaders/<name>.spv.h"). No SPIR-V is checked in: the Vulkan SDK is a prerequisite (02_BUILD_AND_TOOLING.md).
 viewport_grid_vert|viewport_grid.vert|vulkan1.3|
@@ -21,3 +21,4 @@ scatter_comp|scatter.comp|vulkan1.3|
 dlss_mvec_comp|dlss_mvec.comp|vulkan1.3|
 dlss_resolve_vert|dlss_resolve.vert|vulkan1.3|
 dlss_resolve_frag|dlss_resolve.frag|vulkan1.3|
+rt_closest_hit_comp|rt_closest_hit.hlsl|vulkan1.3|cs_6_5

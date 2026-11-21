@@ -58,6 +58,17 @@ struct SceneStats {
     uint32_t litObjects = 0;          // objects of the snapshot drawn from a lit mesh (lightmap coordinates) of the bake
 };
 
+// One drawn solid object as the ray tracing scene (render/rt_scene) sees it: where its triangles sit in the arenas. `serial` identifies the uploaded content (a new
+// mesh = a new serial), so a changed object is one that has a serial the RT scene does not know.
+struct RtObject {
+    uint64_t serial = 0;
+    uint32_t vertexOffset = 0;      // in vertices, from the start of the vertex arena
+    uint32_t firstIndex = 0;        // in indices, from the start of the index arena (indices are relative to vertexOffset)
+    uint32_t indexCount = 0;
+    uint32_t vertexCount = 0;
+    bool raw = false;               // drawn from the authored brush (no mesh yet)
+};
+
 using HiddenObjects = std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>;
 
 class GpuScene {
@@ -85,6 +96,10 @@ public:
 
     VkBuffer vertexBuffer() const { return vertices_.buffer(); }
     VkBuffer indexBuffer() const { return indices_.buffer(); }
+    VkDeviceAddress vertexAddress() const { return vertices_.deviceAddress(); }
+    VkDeviceAddress indexAddress() const { return indices_.deviceAddress(); }
+    // The solid objects that are drawn (not hidden, not volumes) with a mesh in the arenas: what the ray tracing scene holds. Valid until the next sync().
+    const std::vector<RtObject>& rtObjects() const { return rt_; }
     bool hasObjects() const { return !draws_.empty(); }
     // Grows whenever what is drawn changed (an object uploaded, removed, hidden or shown): the DLSS history is not valid across such a change.
     uint64_t changeSerial() const { return changes_; }
@@ -97,6 +112,8 @@ private:
         const scene::RenderMesh* meshPtr = nullptr;
         std::vector<uint32_t> textures;                  // global texture indices the mesh uses
         gpu::Arena::Block vb, ib;
+        uint64_t serial = 0;                             // changes with every upload of this object
+        uint32_t vertexCount = 0;
         int32_t vertexOffset = 0;                        // in vertices
         uint32_t firstIndex = 0, indexCount = 0;
         doc::Box bounds;
@@ -141,6 +158,8 @@ private:
         const std::vector<uint32_t>* textures;
     };
     std::vector<Draw> draws_;
+    std::vector<RtObject> rt_;
+    uint64_t serials_ = 0;
     std::vector<VkDrawIndexedIndirectCommand> scratchSolid_, scratchTranslucent_, scratchVolume_;
     uint32_t rawObjects_ = 0;
     uint64_t uploads_ = 0;

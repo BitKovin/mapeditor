@@ -32,6 +32,7 @@
 #include "render/gpu_scene.h"
 #include "render/entity_overlay.h"
 #include "render/dlss_pass.h"
+#include "render/rt_scene.h"
 #include "render/glyph_atlas.h"
 #include "render/line_vertex.h"
 #include "render/mesh_pass.h"
@@ -112,6 +113,18 @@ public:
     };
     DlssInfo dlssInfo(ViewportId id) const;
 
+    // The ray tracing scene (R1): off by default; while on, the render thread keeps one BLAS per drawn solid object and a TLAS in step with the scene. Needs a device
+    // with ray queries (DeviceCaps::lit()); without one it stays off.
+    void setRayTracing(bool on, const RtOptions& options = {});
+    struct RtInfo {
+        bool enabled = false, valid = false;
+        uint64_t generation = 0;                    // +1 whenever `tlas` changed
+        VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;   // only to be used while the render thread is idle (tests); null until the first object
+        VkBuffer records = VK_NULL_HANDLE;
+        RtScene::Stats stats;
+    };
+    RtInfo rtInfo() const;
+
     // Renders the next frame of this viewport and returns its pixels. Blocks the caller (not the render thread's other
     // viewports) up to timeoutMs; returns an empty image on timeout or when the viewport has no surface area.
     CapturedImage capture(ViewportId id, int timeoutMs = 4000);
@@ -133,6 +146,7 @@ private:
     bool recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState& view, VkExtent2D extent, const DrawLists& lists, const float clear[3], LitParams lit,
                     gpu::Streamline& sl);
     void releaseDlss(Viewport& v);
+    bool syncRayTracing(VkCommandBuffer cmd);
 
     gpu::Device& device_;
     VkSemaphore renderTimeline_ = VK_NULL_HANDLE;
@@ -141,6 +155,10 @@ private:
     std::unique_ptr<gpu::UploadRing> ring_;
     std::unique_ptr<TextureTable> textures_;
     std::unique_ptr<GpuScene> scene_;
+    std::unique_ptr<RtScene> rtScene_;    // render thread only; made while ray tracing is on (declared after scene_: it goes first)
+    std::atomic<bool> rtEnabled_{false};
+    RtOptions rtOptions_;                 // guarded by mutex_; read when the RT scene is made
+    RtInfo rtInfo_;                       // guarded by mutex_
     std::unique_ptr<ScenePass> pass_;     // render thread only
     std::unique_ptr<MeshPass> mesh_;      // render thread only
     std::unique_ptr<MeshPass> meshHdr_;   // the scene at the DLSS render size (RGBA16F), made on first use

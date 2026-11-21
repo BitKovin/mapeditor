@@ -64,13 +64,14 @@ if(DEFINED ENV{VULKAN_SDK})
 endif()
 find_program(GLSLANG_VALIDATOR NAMES glslangValidator HINTS ${_sdk_hints})
 find_program(SPIRV_VAL NAMES spirv-val HINTS ${_sdk_hints})
+find_program(DXC NAMES dxc HINTS ${_sdk_hints})   # HLSL kernels (R1): `.hlsl` entries of the manifest are compiled with DXC to SPIR-V
 if(NOT GLSLANG_VALIDATOR)
   message(FATAL_ERROR "glslangValidator not found: install the Vulkan SDK and set VULKAN_SDK")
 endif()
 set(NATIVE_SHADER_GEN_DIR "${CMAKE_BINARY_DIR}/shaders")
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/manifest.txt" _native_manifest)
 set(_native_shader_headers)
-file(GLOB _native_glsl "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.glsl")
+file(GLOB _native_glsl "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.glsl" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.hlsli")
 foreach(_line IN LISTS _native_manifest)
   string(STRIP "${_line}" _line)
   if(_line STREQUAL "" OR _line MATCHES "^#")
@@ -99,10 +100,20 @@ foreach(_line IN LISTS _native_manifest)
   if(SPIRV_VAL)
     set(_validate COMMAND "${SPIRV_VAL}" --target-env ${_env} "${_spv}")
   endif()
+  # GLSL: glslangValidator, the 4th field = preprocessor defines. HLSL (.hlsl): DXC, the 4th field = the target profile (cs_6_5), entry point `main`.
+  if(_source MATCHES "\.hlsl$")
+    if(NOT DXC)
+      message(FATAL_ERROR "dxc not found (needed for ${_source}): install the Vulkan SDK and set VULKAN_SDK")
+    endif()
+    set(_compile COMMAND "${DXC}" -spirv -fspv-target-env=${_env} -T ${_defs} -E main -fspv-extension=SPV_KHR_ray_query
+                 -I "${CMAKE_CURRENT_SOURCE_DIR}/shaders" "${_src}" -Fo "${_spv}")
+  else()
+    set(_compile COMMAND "${GLSLANG_VALIDATOR}" -V --target-env ${_env} ${_def_args} "${_src}" -o "${_spv}")
+  endif()
   add_custom_command(
     OUTPUT "${_hdr}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${NATIVE_SHADER_GEN_DIR}/native_shaders"
-    COMMAND "${GLSLANG_VALIDATOR}" -V --target-env ${_env} ${_def_args} "${_src}" -o "${_spv}"
+    ${_compile}
     ${_validate}
     COMMAND "${CMAKE_COMMAND}" "-DSPV=${_spv}" "-DOUT=${_hdr}" "-DNAME=${_name}" "-DNS=native::shaders"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/../core/tools/spv_to_header.cmake"
@@ -153,7 +164,7 @@ native_module(light  SOURCES src/light/module_info.cpp src/light/page_allocator.
                      DEPENDS native_scene native_gpu)
 add_dependencies(native_light native_shaders)
 target_include_directories(native_light PRIVATE "${NATIVE_SHADER_GEN_DIR}")
-native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp src/render/dlss_pass.cpp src/render/dlss_math.h src/render/picking.cpp src/render/picking.h src/render/selection_outline.cpp src/render/selection_outline.h src/render/line_vertex.h
+native_module(render SOURCES src/render/module_info.cpp src/render/render_thread.cpp src/render/scene_pass.cpp src/render/texture_table.cpp src/render/gpu_scene.cpp src/render/mesh_pass.cpp src/render/dlss_pass.cpp src/render/rt_scene.cpp src/render/rt_scene.h src/render/dlss_math.h src/render/picking.cpp src/render/picking.h src/render/selection_outline.cpp src/render/selection_outline.h src/render/line_vertex.h
                      src/render/viewport_window.cpp src/render/viewport_window.h src/render/lightmap_view.cpp src/render/lightmap_view.h
                      src/render/entity_overlay.cpp src/render/entity_overlay.h src/render/glyph_atlas.cpp src/render/glyph_atlas.h
                      src/render/camera.cpp src/render/camera_rig.cpp src/render/viewport_settings.cpp
@@ -182,7 +193,7 @@ add_custom_command(TARGET mapeditor_native POST_BUILD
 
 # ---- tests (headless; everything below ui) ------------------------------------------------------------------------------
 # Qt6::Test is not used for assertions (doctest is), but the offscreen platform lets the UI tests build real widgets.
-add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_scene_relief.cpp tests/test_picking.cpp tests/test_scene_overlays.cpp tests/test_tools_transform.cpp tests/test_tools_modal.cpp tests/test_tools_gizmo.cpp tests/test_tools_box.cpp tests/test_tools_clipboard.cpp tests/test_tools_visibility.cpp tests/test_tools_properties.cpp tests/test_tools_outliner.cpp tests/test_tools_details.cpp tests/test_tools_settings.cpp tests/test_keymap_edit.cpp tests/test_palette.cpp tests/test_light_layout.cpp tests/test_light_images.cpp tests/test_light_samples.cpp tests/test_light_accel.cpp tests/test_light_bake.cpp tests/test_light_compose.cpp tests/test_light_service.cpp tests/test_lit_view.cpp src/app/app_options.cpp)
+add_executable(native_tests tests/test_main.cpp tests/test_modules.cpp tests/test_app_options.cpp tests/test_base.cpp tests/test_gpu_device.cpp tests/test_render_thread.cpp tests/test_camera.cpp tests/test_gpu_memory.cpp tests/test_actions.cpp tests/test_input_adapter.cpp tests/test_doc_io.cpp tests/test_doc_json_write.cpp tests/test_doc_history.cpp tests/test_doc_selection.cpp tests/test_doc_prefabs.cpp tests/test_scene_builder.cpp tests/test_scene_relief.cpp tests/test_picking.cpp tests/test_scene_overlays.cpp tests/test_tools_transform.cpp tests/test_tools_modal.cpp tests/test_tools_gizmo.cpp tests/test_tools_box.cpp tests/test_tools_clipboard.cpp tests/test_tools_visibility.cpp tests/test_tools_properties.cpp tests/test_tools_outliner.cpp tests/test_tools_details.cpp tests/test_tools_settings.cpp tests/test_keymap_edit.cpp tests/test_palette.cpp tests/test_light_layout.cpp tests/test_light_images.cpp tests/test_light_samples.cpp tests/test_light_accel.cpp tests/test_rt_scene.cpp tests/test_light_bake.cpp tests/test_light_compose.cpp tests/test_light_service.cpp tests/test_lit_view.cpp src/app/app_options.cpp)
 target_include_directories(native_tests PRIVATE src "${NATIVE_SHADER_GEN_DIR}")
 add_dependencies(native_tests native_shaders)
 target_compile_definitions(native_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"

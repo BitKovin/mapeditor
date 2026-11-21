@@ -144,6 +144,7 @@ RenderThread::~RenderThread() {
     scatter_.reset();
     display_.reset();
     lightmapView_.reset();
+    rtScene_.reset();
     scene_.reset();
     textures_.reset();
     ring_.reset();
@@ -404,6 +405,21 @@ uint64_t RenderThread::framesRendered(ViewportId id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = viewports_.find(id);
     return it == viewports_.end() ? 0 : it->second->frames;
+}
+
+void RenderThread::setRayTracing(bool on, const RtOptions& options) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    rtOptions_ = options;
+    rtEnabled_.store(on && device_.caps().lit());
+    workPending_ = true;
+    wake_.notify_all();
+}
+
+RenderThread::RtInfo RenderThread::rtInfo() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    RtInfo i = rtInfo_;
+    i.enabled = rtEnabled_.load();
+    return i;
 }
 
 RenderThread::DlssInfo RenderThread::dlssInfo(ViewportId id) const {
@@ -687,6 +703,41 @@ RenderThread::LightSubmit RenderThread::syncLighting(light::LightLink& link, VkC
     return out;
 }
 
+// R1: keeps the ray tracing scene in step with the GpuScene while ray tracing is on (render thread, in the upload command buffer after the scene's own uploads).
+bool RenderThread::syncRayTracing(VkCommandBuffer cmd) {
+    if (!rtEnabled_.load()) {
+        if (rtScene_) {
+            vkQueueWaitIdle(device_.graphicsQueue());
+            rtScene_.reset();
+            std::lock_guard<std::mutex> lock(mutex_);
+            rtInfo_ = RtInfo{};
+        }
+        return false;
+    }
+    if (!rtScene_) {
+        RtOptions options;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            options = rtOptions_;
+        }
+        rtScene_ = std::make_unique<RtScene>(device_, *scene_, options);
+        if (!rtScene_->valid()) {
+            base::logWarning("ray tracing scene: could not be created, ray tracing stays off");
+            rtScene_.reset();
+            rtEnabled_.store(false);
+            return false;
+        }
+    }
+    const bool more = rtScene_->update(cmd, completedFrames(), nextTimelineValue_.load());
+    std::lock_guard<std::mutex> lock(mutex_);
+    rtInfo_.valid = true;
+    rtInfo_.generation = rtScene_->generation();
+    rtInfo_.tlas = rtScene_->tlas();
+    rtInfo_.records = rtScene_->recordBuffer();
+    rtInfo_.stats = rtScene_->stats();
+    return more;
+}
+
 void RenderThread::loop() {
     base::traceSetThreadName("render");
     for (;;) {
@@ -704,6 +755,7 @@ void RenderThread::loop() {
         };
         std::vector<Work> work;
         bool doUpload = false;
+        bool rtDue = false;
         std::string skyName;
         std::shared_ptr<const EntityOverlay> overlay;
         std::shared_ptr<const GlyphAtlas> atlas;
@@ -711,12 +763,17 @@ void RenderThread::loop() {
         std::vector<std::shared_ptr<Viewport>> toRelease;
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            wake_.wait(lock, [&] {
+            const auto ready = [&] {
                 if (stop_ || workPending_) return true;
                 for (auto& kv : viewports_)
                     if (kv.second->removing || kv.second->dirty || kv.second->capture) return true;
                 return false;
-            });
+            };
+            // the ray tracing scene's idle upgrade is due at a time of its own
+            const auto rtDeadline = rtScene_ ? rtScene_->nextWake() : std::chrono::steady_clock::time_point::max();
+            if (rtDeadline == std::chrono::steady_clock::time_point::max()) wake_.wait(lock, ready);
+            else wake_.wait_until(lock, rtDeadline, ready);
+            rtDue = rtDeadline != std::chrono::steady_clock::time_point::max() && std::chrono::steady_clock::now() >= rtDeadline;
             doUpload = workPending_;
             workPending_ = false;
             skyName = skyName_;
@@ -752,7 +809,7 @@ void RenderThread::loop() {
         uint64_t lastValue = 0;
         LightSubmit lightSubmit;
         const uint32_t slot = static_cast<uint32_t>(iteration_++ % 2);
-        const bool active = !work.empty() || doUpload;
+        const bool active = !work.empty() || doUpload || rtDue;
         if (active) {
             if (ringValue_[slot] > 0) {
                 VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
@@ -781,6 +838,7 @@ void RenderThread::loop() {
             skyIndex_ = skyName.empty() ? 0 : textures_->skyIndex(skyName);
             bool more = scene_->sync(uploadCmd_[slot], *ring_, completedFrames(), nextTimelineValue_.load());
             more = textures_->upload(uploadCmd_[slot], *ring_) || more;
+            more = syncRayTracing(uploadCmd_[slot]) || more;
             vkEndCommandBuffer(uploadCmd_[slot]);
             const uint64_t value = ++nextTimelineValue_;
             VkSemaphoreSubmitInfo sigs[2]{{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};

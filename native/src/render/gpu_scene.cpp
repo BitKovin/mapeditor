@@ -51,11 +51,19 @@ bool boxInFrustum(const Plane planes[6], const doc::Box& b) {
 
 } // namespace
 
+namespace {
+// The arenas are also the inputs of the ray tracing scene's BLASes and, later, read by the shading kernels (R1): addressable and readable as storage.
+VkBufferUsageFlags rtUsage(const gpu::Device& d) {
+    return d.caps().lit() ? (VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
+                            : 0;
+}
+} // namespace
+
 GpuScene::GpuScene(gpu::Device& device, TextureTable& textures)
     : device_(device),
       textures_(textures),
-      vertices_(device, kVertexArenaBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, "scene vertices"),
-      indices_(device, kIndexArenaBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, "scene indices") {}
+      vertices_(device, kVertexArenaBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | rtUsage(device), "scene vertices"),
+      indices_(device, kIndexArenaBytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | rtUsage(device), "scene indices") {}
 
 GpuScene::~GpuScene() = default;
 
@@ -147,6 +155,8 @@ bool GpuScene::upload(VkCommandBuffer cmd, gpu::UploadRing& ring, const Work& w)
         barrierNeeded_ = true;
         fresh.vb = vb;
         fresh.ib = ib;
+        fresh.serial = ++serials_;
+        fresh.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
         fresh.vertexOffset = static_cast<int32_t>(start / kVertexSize);
         fresh.firstIndex = static_cast<uint32_t>(ib.offset / sizeof(uint32_t));
         fresh.indexCount = static_cast<uint32_t>(mesh.indices.size());
@@ -275,6 +285,7 @@ bool GpuScene::sync(VkCommandBuffer cmd, gpu::UploadRing& ring, uint64_t complet
 void GpuScene::rebuildDraws() {
     ++changes_;
     draws_.clear();
+    rt_.clear();
     draws_.reserve(objects_.size());
     rawObjects_ = 0;
     for (const auto& [key, o] : objects_) {
@@ -291,6 +302,7 @@ void GpuScene::rebuildDraws() {
         d.volume = o.volume;
         d.textures = &o.textures;
         draws_.push_back(d);
+        if (!o.volume) rt_.push_back({o.serial, static_cast<uint32_t>(o.vertexOffset), o.firstIndex, o.indexCount, o.vertexCount, o.raw});
     }
     drawsDirty_ = false;
 }
