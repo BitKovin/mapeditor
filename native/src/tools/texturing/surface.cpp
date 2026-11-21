@@ -224,6 +224,15 @@ Projection bottomLeft(const core::Brush& b, const core::BrushFace& f, const Proj
     return justify(b, f, justify(b, f, p, JustifyEdge::Left), JustifyEdge::Bottom);
 }
 
+Projection fitProjection(const core::Brush& b, const core::BrushFace& f, const Projection& p) {
+    const Bounds bd = faceBounds(b, f, p);
+    const double sa = std::max(bd.max[0] - bd.min[0], 1e-6), sb = std::max(bd.max[1] - bd.min[1], 1e-6);
+    Projection out = p;
+    out.scale = {sa, sb};
+    out.shift = {-bd.min[0] / sa, -bd.min[1] / sb};
+    return out;
+}
+
 Projection fitAxis(const core::Brush& b, const core::BrushFace& f, const Projection& p, int axis, double count) {
     const size_t a = static_cast<size_t>(axis);
     const Bounds bd = faceBounds(b, f, p);

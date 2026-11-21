@@ -63,6 +63,8 @@ Bounds faceBounds(const core::Brush& b, const core::BrushFace& f, const Projecti
 Projection justify(const core::Brush& b, const core::BrushFace& f, const Projection& p, JustifyEdge edge);
 /// Moves the texture so its bottom-left corner touches the face's bottom-left corner (stretch and rotation kept).
 Projection bottomLeft(const core::Brush& b, const core::BrushFace& f, const Projection& p);
+/// Scale / shift so the texture covers the face exactly once (rotation kept).
+Projection fitProjection(const core::Brush& b, const core::BrushFace& f, const Projection& p);
 /// Width / Height / Fit: stretches the texture so `count` repeats cover the face along the axis (other axis and rotation kept); a fractional count leaves the partial repeat
 /// at the top / right.
 Projection fitAxis(const core::Brush& b, const core::BrushFace& f, const Projection& p, int axis, double count = 1);
