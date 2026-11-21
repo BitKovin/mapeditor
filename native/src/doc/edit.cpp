@@ -121,6 +121,18 @@ bool VersionEditor::setBrushKey(const std::string& entityId, const std::string& 
     return true;
 }
 
+bool VersionEditor::setEntityKey(const std::string& entityId, const std::string& key, const Json& value) {
+    if (!working_) return false;
+    auto e = entityIndex_.find(entityId);
+    if (e == entityIndex_.end()) return fail("no entity " + entityId);
+    EntityNode& node = mutableEntity(e->second);
+    if (!node.raw.is_object()) node.raw = Json::object();
+    if (value.is_null()) node.raw.erase(key);
+    else node.raw[key] = value;
+    changed_ = true;
+    return true;
+}
+
 bool VersionEditor::removeBrush(const std::string& entityId, const std::string& brushId) {
     if (!working_) return false;
     auto e = entityIndex_.find(entityId);
