@@ -289,7 +289,9 @@ public:
     // ---- transform tools (T4.1) ----
     // G / R / S on the selection in `viewport` (the pointer then moves the selection; typed digits, X / Y / Z constrain; confirm / cancel end it): one undo step.
     // False when nothing transformable is selected or one is running.
-    bool startTransform(render::ViewportWindow* viewport, tools::ModalKind kind);
+    // In mesh mode the same G / R / S move the picked vertices, and E / I / Ctrl+B (Extrude, Inset, Bevel) and Ctrl+R (LoopCut, `edge` = the edge whose ring is cut) work on
+    // the picked faces / edges; see MeshSession.
+    bool startTransform(render::ViewportWindow* viewport, tools::ModalKind kind, const std::optional<tools::mesh::Edge>& edge = std::nullopt);
     bool transforming() const { return transform_ != nullptr; }
     bool canStartTransform() const;
     void confirmTransform() { endTransform(true); }
@@ -343,6 +345,17 @@ public:
     bool runMeshTool(const std::string& id, double param = 1);
     // Runs a mesh operation on the edited brush as one undo step (a concave result moves into func_detail). The mesh selection becomes the operation's.
     bool applyMeshOperation(const std::string& label, const tools::mesh::MeshOpFn& op);
+    // Proportional editing (O): unselected vertices within the radius follow G / R / S with a smooth falloff; the mouse wheel changes the radius while a transform runs.
+    bool meshProportional() const { return proportional_; }
+    void setMeshProportional(bool on);
+    double meshProportionalRadius() const { return propRadius_; }
+    // The mouse wheel during a running transform: the proportional radius (mesh G / R / S with proportional editing on) or the bevel's segment count. False = not used.
+    bool transformWheel(double dy);
+    bool transformUsesWheel() const;
+    // Ctrl+R: the loop cut through the edge under the pointer of `viewport` (nothing happens, with a hint, when there is none).
+    bool startLoopCut(render::ViewportWindow* viewport);
+    // Ctrl+M, then X / Y / Z: mirrors the picked vertices (all of them: the whole brush) about their centre; one undo step.
+    bool mirrorMesh(int axis);
     // The mesh.pick action: a click selects the element under the cursor (Shift toggles, Ctrl adds the path from the last one, Alt the loop, Ctrl+Alt the ring), a drag selects a box.
     void meshPickInput(render::ViewportWindow* viewport, const actions::InputEvent& event);
     // What a click at `p` (logical pixels of the viewport window) selects; false when nothing was under the cursor (the selection is left alone).
@@ -530,6 +543,13 @@ private:
         render::GizmoMode mode{};
         std::string originEntity;
     };
+    bool startMeshTransform(render::ViewportWindow* viewport, tools::ModalKind kind, const std::optional<tools::mesh::Edge>& edge);
+    // The version a mesh session gets from `op` (applied to the brush of the base version with the starting selection); null when it is refused (the last good one stays).
+    std::shared_ptr<const doc::DocumentVersion> meshAfter(TransformSession& t, const tools::mesh::MeshOpFn& op);
+    void meshApplied(const TransformSession& t);   // after a commit: the mesh selection the operation produced
+    // Fills t.mesh for a session of `kind` on the picked elements (false, with a hint in the status bar, when they do not fit the tool).
+    bool setupMeshSession(TransformSession& t, tools::ModalKind kind, const std::optional<tools::mesh::Edge>& edge);
+    std::vector<render::LineVertex> gizmoLinesOnly(size_t panelIndex);
     std::vector<doc::SelRef> transformSelection() const;
     size_t panelIndexOf(const render::ViewportWindow* vp) const;
     GizmoTarget gizmoTarget(render::ViewportWindow* vp);
@@ -611,6 +631,8 @@ private:
         bool dragging = false;
         bool shift = false, ctrl = false, alt = false;
     } meshDrag_;
+    bool proportional_ = false;
+    double propRadius_ = 1;
     std::optional<tools::mesh::ActiveElem> meshActive_;   // the element clicked last: where a Ctrl+click path starts
     std::unique_ptr<TransformSession> transform_;
     std::unique_ptr<BoxDrawing> box_;

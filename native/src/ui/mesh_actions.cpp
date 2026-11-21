@@ -157,6 +157,113 @@ void registerMeshActions(actions::Registry& r) {
         };
         r.add(std::move(d));
     }
+    {
+        struct Modal {
+            const char* id;
+            const char* label;
+            const char* description;
+            tools::ModalKind kind;
+        };
+        const Modal modals[] = {
+            {"mesh.extrude", "Extrude", "Pushes the picked faces out along their normal with the pointer (typed digits give metres); one undo step.", tools::ModalKind::Extrude},
+            {"mesh.inset", "Inset", "Insets each picked face by the pointer distance (typed digits give metres).", tools::ModalKind::Inset},
+            {"mesh.bevel", "Bevel", "Chamfers the picked edges by the pointer distance; the mouse wheel adds or removes segments.", tools::ModalKind::Bevel},
+        };
+        for (const Modal& m : modals) {
+            ActionDef d;
+            d.id = m.id;
+            d.label = m.label;
+            d.category = "Mesh";
+            d.description = m.description;
+            d.menu = "&Mesh";
+            d.menuSeparatorBefore = m.kind == tools::ModalKind::Extrude;
+            d.contexts = {"mode:mesh"};
+            d.enabled = [](const ActionEnv& env, const json&) {
+                const UiEnv* u = env.as<UiEnv>();
+                return u && u->window && u->viewport && u->window->meshMode() && !u->window->transforming();
+            };
+            const tools::ModalKind kind = m.kind;
+            d.run = [kind](ActionEnv& env, const Invocation&) {
+                const UiEnv* u = env.as<UiEnv>();
+                if (u && u->window && u->viewport) u->window->startTransform(u->viewport, kind);
+            };
+            r.add(std::move(d));
+        }
+    }
+    {
+        ActionDef d;
+        d.id = "mesh.loopcut";
+        d.label = "Loop cut";
+        d.category = "Mesh";
+        d.description = "Cuts a loop across the faces around the edge under the pointer; move the pointer along the edge to place it (typed digits give 0..1), click to confirm.";
+        d.menu = "&Mesh";
+        d.contexts = {"mode:mesh"};
+        d.enabled = [](const ActionEnv& env, const json&) {
+            const UiEnv* u = env.as<UiEnv>();
+            return u && u->window && u->viewport && u->window->meshMode() && !u->window->transforming();
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            const UiEnv* u = env.as<UiEnv>();
+            if (u && u->window && u->viewport) u->window->startLoopCut(u->viewport);
+        };
+        r.add(std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "mesh.proportional";
+        d.label = "Proportional editing";
+        d.category = "Mesh";
+        d.description = "Vertices near the picked ones follow G / R / S with a smooth falloff; the mouse wheel changes the radius while the tool runs.";
+        d.kind = ActionKind::Toggle;
+        d.menu = "&Mesh";
+        d.contexts = {"mode:mesh"};
+        d.enabled = inMeshMode;
+        d.checked = [](const ActionEnv& env, const json&) {
+            const MainWindow* w = windowOf(env);
+            return w && w->meshProportional();
+        };
+        d.hint = "proportional";
+        d.run = [](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) w->setMeshProportional(!w->meshProportional());
+        };
+        r.add(std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "mesh.mirror";
+        d.label = "Mirror";
+        d.category = "Mesh";
+        d.description = "Mirrors the picked vertices about their centre (all of them: the whole brush, turned inside out and back); X, Y or Z is the plane normal.";
+        d.menu = "&Mesh/&Mirror";
+        d.contexts = {"mode:mesh"};
+        d.params = json{{"axis", 0}};
+        d.variants = {{"&X", {{"axis", 0}}}, {"&Y", {{"axis", 1}}}, {"&Z", {{"axis", 2}}}};
+        d.enabled = [](const ActionEnv& env, const json&) {
+            const MainWindow* w = windowOf(env);
+            return w && w->meshMode() && !w->transforming();
+        };
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            if (auto* w = windowOf(env)) w->mirrorMesh(inv.params.is_object() ? inv.params.value("axis", 0) : 0);
+        };
+        r.add(std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "transform.wheel";
+        d.label = "Transform wheel";
+        d.category = "Transform";
+        d.description = "The mouse wheel during a mesh tool: the proportional radius of G / R / S, the segment count of a bevel.";
+        d.kind = ActionKind::Axis;
+        d.contexts = {"modal:transform"};
+        d.enabled = [](const ActionEnv& env, const json&) {
+            const MainWindow* w = windowOf(env);
+            return w && w->transformUsesWheel();
+        };
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            if (auto* w = windowOf(env)) w->transformWheel(inv.event.wheel);
+        };
+        r.add(std::move(d));
+    }
     const ToolDef selectTools[] = {
         {"select_all", "selectall", "Select all", "Selects every element of the brush.", "&Mesh/&Select", true},
         {"select_none", "selectnone", "Select none", "Clears the element selection.", "&Mesh/&Select", false},

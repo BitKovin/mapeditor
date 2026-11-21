@@ -90,7 +90,7 @@ MeshApply refuse(const std::string& label, const std::string& error) {
 } // namespace
 
 MeshApply applyMeshOp(const std::shared_ptr<const doc::DocumentVersion>& base, const doc::SelRef& target, const std::string& label, const MeshOpFn& op, const MeshSel& sel,
-                      bool autoDetail, const std::string& detailId) {
+                      bool autoDetail, const std::string& detailId, bool keepUnchanged) {
     if (!base) return refuse(label, "no document");
     const std::optional<MeshTarget> t = meshTarget(*base, target);
     if (!t) return refuse(label, "Select a brush first (click it), then switch to mesh mode to edit its mesh");
@@ -128,7 +128,12 @@ MeshApply applyMeshOp(const std::shared_ptr<const doc::DocumentVersion>& base, c
         out.message = "The brush is concave, so it moved into a new func_detail entity";
         return out;
     }
-    if (sameGeometry(r.brush, t->brush())) return refuse(label, "");   // nothing changed
+    if (sameGeometry(r.brush, t->brush())) {   // nothing changed
+        if (!keepUnchanged) return refuse(label, "");
+        out.version = base;
+        out.select = doc::SelRef::brush(t->entityId, t->brushId);
+        return out;
+    }
     doc::VersionEditor ed(base);
     ed.replaceBrush(t->entityId, r.brush);
     out.version = ed.finish();

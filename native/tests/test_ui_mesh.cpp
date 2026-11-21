@@ -2,10 +2,14 @@
 // the menu. Offscreen platform, the window is never shown, no GPU (the picking in a viewport needs one and is covered by the pure tests of tools/mesh/pick).
 #include <doctest.h>
 
+#include <algorithm>
+#include <cmath>
+
 #include <QApplication>
 #include <QMenuBar>
 #include <QStatusBar>
 
+#include "doc/commands.h"
 #include "doc/edit.h"
 #include "doc/io.h"
 #include "doc/selection.h"
@@ -280,4 +284,66 @@ TEST_CASE("mesh mode: the Mesh menu lists the tools with their keys") {
     CHECK(all.contains(QStringLiteral("Dissolve")));
     CHECK(f.window.keymap().displayText("mesh.connect") == "J");
     CHECK(f.window.keymap().displayText("mesh.toggle") == "Tab");
+}
+
+TEST_CASE("mesh mode: modal tools and proportional editing have keys and menu entries") {
+    Fixture f;
+    CHECK(f.window.keymap().displayText("mesh.extrude") == "E");
+    CHECK(f.window.keymap().displayText("mesh.inset") == "I");
+    CHECK(f.window.keymap().displayText("mesh.bevel") == "Ctrl+B");
+    CHECK(f.window.keymap().displayText("mesh.loopcut") == "Ctrl+R");
+    CHECK(f.window.keymap().displayText("mesh.proportional") == "O");
+    // G / R / S need picked vertices in mesh mode
+    REQUIRE(f.enter());
+    CHECK_FALSE(f.window.canStartTransform());
+    msh::MeshSel s;
+    s.verts = {0, 1};
+    f.window.setMeshSelection(s);
+    CHECK(f.window.canStartTransform());
+    // without a viewport nothing starts, and nothing is left running
+    CHECK_FALSE(f.window.startTransform(nullptr, tools::ModalKind::Extrude));
+    CHECK_FALSE(f.window.transforming());
+    CHECK_FALSE(f.window.transformUsesWheel());
+    CHECK_FALSE(f.window.transformWheel(100));
+    // the O key toggles proportional editing
+    CHECK_FALSE(f.window.meshProportional());
+    CHECK(f.key("O"));
+    CHECK(f.window.meshProportional());
+    CHECK(f.window.statusBar()->currentMessage().contains(QStringLiteral("Proportional editing on")));
+    CHECK(f.key("O"));
+    CHECK_FALSE(f.window.meshProportional());
+}
+
+TEST_CASE("mesh mode: Mirror turns the whole brush about its centre as one undo step") {
+    Fixture f;
+    REQUIRE(f.enter());
+    // make it lopsided first: widen the +X side of the top (a trapezoid, still convex)
+    CHECK(f.window.applyMeshOperation("Move", [](const core::Brush& b, const msh::MeshSel&) {
+        std::vector<uint32_t> top;
+        for (uint32_t i = 0; i < b.vertices.size(); ++i)
+            if (b.vertices[i].y > 1 && b.vertices[i].x > 1) top.push_back(i);
+        return msh::transformVerts(b, top, [](const core::Vec3& p, uint32_t) { return core::Vec3{p.x + 0.5, p.y, p.z}; });
+    }));
+    f.window.setMeshSelection({});
+    const auto before = f.window.document();
+    const core::Brush was = f.brush();
+    CHECK(f.window.mirrorMesh(0));   // nothing picked = every vertex
+    CHECK(f.window.document() != before);
+    const core::Brush now = f.brush();
+    CHECK(now.faces.size() == was.faces.size());
+    const auto xs = [](const core::Brush& b) {
+        std::vector<double> v;
+        for (const core::Vec3& p : b.vertices) v.push_back(p.x);
+        std::sort(v.begin(), v.end());
+        return v;
+    };
+    const std::vector<double> a = xs(was), c = xs(now);
+    REQUIRE(a.size() == c.size());
+    bool moved = false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (std::fabs(a[i] - c[i]) > 1e-6) moved = true;
+    CHECK(moved);
+    f.window.history().undo();
+    CHECK(f.window.document() == before);
+    CHECK_FALSE(f.window.mirrorMesh(3));
 }

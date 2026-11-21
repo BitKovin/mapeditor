@@ -16,6 +16,7 @@
 #include "render/render_thread.h"
 #include "render/viewport_window.h"
 #include "tools/gizmo_overlay.h"
+#include "tools/mesh/ops.h"
 #include "tools/transform.h"
 #include "ui/main_window.h"
 #include "ui/transform_session.h"
@@ -31,7 +32,18 @@ constexpr double kOriginHitPx = 8;   // the origin square of a brush entity
 render::Vec3 asVec(const tools::V3& v) { return {v[0], v[1], v[2]}; }
 tools::V3 asV3(const render::Vec3& v) { return {v.x, v.y, v.z}; }
 
-const char* labelOf(tools::ModalKind k) { return k == tools::ModalKind::Grab ? "Move" : (k == tools::ModalKind::Rotate ? "Rotate" : "Scale"); }
+const char* labelOf(tools::ModalKind k) {
+    switch (k) {
+        case tools::ModalKind::Grab: return "Move";
+        case tools::ModalKind::Rotate: return "Rotate";
+        case tools::ModalKind::Scale: return "Scale";
+        case tools::ModalKind::Extrude: return "Extrude";
+        case tools::ModalKind::Inset: return "Inset";
+        case tools::ModalKind::Bevel: return "Bevel";
+        case tools::ModalKind::LoopCut: return "Loop cut";
+    }
+    return "Edit";
+}
 
 } // namespace
 
@@ -46,7 +58,8 @@ std::vector<doc::SelRef> MainWindow::transformSelection() const {
 }
 
 bool MainWindow::canStartTransform() const {
-    return !transform_ && document_ && !meshMode() && !transformSelection().empty() && tools::gizmoPivot(*document_, transformSelection()).has_value();
+    if (meshMode()) return !transform_ && meshTarget() && !meshSelection().verts.empty();
+    return !transform_ && document_ && !transformSelection().empty() && tools::gizmoPivot(*document_, transformSelection()).has_value();
 }
 
 size_t MainWindow::panelIndexOf(const render::ViewportWindow* vp) const {
@@ -57,8 +70,9 @@ size_t MainWindow::panelIndexOf(const render::ViewportWindow* vp) const {
 
 // ---- starting -------------------------------------------------------------------------------------------------------------------------
 
-bool MainWindow::startTransform(render::ViewportWindow* vp, tools::ModalKind kind) {
+bool MainWindow::startTransform(render::ViewportWindow* vp, tools::ModalKind kind, const std::optional<tools::mesh::Edge>& edge) {
     if (transform_ || !document_ || !vp) return false;
+    if (meshMode()) return startMeshTransform(vp, kind, edge);
     if (kind != tools::ModalKind::Grab && kind != tools::ModalKind::Rotate && kind != tools::ModalKind::Scale) return false;
     const std::vector<doc::SelRef> sels = transformSelection();
     if (sels.empty()) return false;
@@ -109,6 +123,7 @@ bool MainWindow::beginGizmoDrag(render::ViewportWindow* vp, QPointF p) {
     t->selection = transformSelection();
     t->pivot = g.pivot;
     t->axis = axis;
+    if (meshMode() && !setupMeshSession(*t, t->kind, std::nullopt)) return false;
     t->mouse0 = t->mouse = p;
     t->originEntity = g.originEntity;
     t->label = g.originEntity.empty() ? labelOf(t->kind) : "Move origin";
@@ -143,6 +158,62 @@ void MainWindow::updateTransform() {
     double yawDeg = 0;
     std::shared_ptr<const doc::DocumentVersion> after;
     const std::optional<double> typed = tools::typedValue(t.typed);
+    // the document version a point map gives: the selection's objects, or the picked vertices of the edited brush (with proportional editing when it is on)
+    const core::texplan::InfoFn info = texEnv_ ? texEnv_->infoFn() : core::texplan::InfoFn{};
+    const auto moved = [&](const tools::Affine& m, bool flipIt, double yaw) -> std::shared_ptr<const doc::DocumentVersion> {
+        if (!t.mesh.active) return tools::transformSelections(t.base, t.selection, m, flipIt, yaw, true);
+        const tools::mesh::PointFn fn = [m](const core::Vec3& p, uint32_t) {
+            const tools::V3 q = m({p.x, p.y, p.z});
+            return core::Vec3{q[0], q[1], q[2]};
+        };
+        const bool prop = t.mesh.proportional;
+        const double radius = t.mesh.radius;
+        return meshAfter(t, [fn, prop, radius, info](const core::Brush& b, const tools::mesh::MeshSel& s) {
+            return prop ? tools::mesh::proportionalVerts(b, s.verts, fn, radius, true, info) : tools::mesh::transformVerts(b, s.verts, fn, true, info);
+        });
+    };
+
+    if (t.mesh.active && (t.kind == tools::ModalKind::Extrude || t.kind == tools::ModalKind::Inset || t.kind == tools::ModalKind::Bevel || t.kind == tools::ModalKind::LoopCut)) {
+        MeshSession& m = t.mesh;
+        const double step = render::snapStep(settings);
+        tools::mesh::MeshOpFn op;
+        if (t.kind == tools::ModalKind::LoopCut) {
+            double frac = t.value;
+            if (typed) frac = *typed;
+            else if (const auto along = tools::lineDistance(ray, m.railFrom, m.railDir); along && m.railLength > 1e-9) frac = *along / m.railLength;
+            m.fraction = std::min(0.999, std::max(0.001, frac));
+            t.value = m.fraction;
+            const tools::mesh::Edge edge = m.edge;
+            const double f = m.fraction;
+            op = [edge, f, info](const core::Brush& b, const tools::mesh::MeshSel&) { return tools::mesh::loopCut(b, edge, f, info); };
+        } else {
+            double dist = t.value;
+            if (typed) {
+                dist = *typed;
+            } else if (t.kind == tools::ModalKind::Extrude) {
+                if (const auto along = tools::lineDistance(ray, t.pivot, m.dir)) dist = step > 0 ? std::round((*along - m.t0) / step) * step : *along - m.t0;
+            } else {
+                dist = tools::widthFromMouse({t.mouse0.x(), t.mouse0.y()}, {t.mouse.x(), t.mouse.y()}, m.metresPerPixel, step > 0 ? step / 2 : 0);
+            }
+            t.value = dist;
+            const std::vector<uint32_t> faces = m.faces;
+            const std::vector<tools::mesh::Edge> edges = m.edges;
+            const int segments = m.segments;
+            const tools::ModalKind kind = t.kind;
+            op = [kind, faces, edges, dist, segments, info](const core::Brush& b, const tools::mesh::MeshSel& s) {
+                if (kind == tools::ModalKind::Extrude) return tools::mesh::extrudeFaces(b, faces, dist, std::nullopt, info);
+                if (kind == tools::ModalKind::Inset) return tools::mesh::insetFaces(b, faces, dist, info);
+                return tools::mesh::bevelEdges(b, s.edges.empty() ? edges : s.edges, dist, segments, info);
+            };
+        }
+        after = meshAfter(t, op);
+        if (!after) return;
+        if (after != document_) history_->commit({t.label, document_, after});
+        meshApplied(t);
+        refreshGizmos();
+        showTransformStatus();
+        return;
+    }
 
     if (t.source == TransformSession::Source::Modal) {
         const render::Vec3 toward = t.forward * -1.0;
@@ -174,7 +245,7 @@ void MainWindow::updateTransform() {
                 break;
             }
         }
-        after = tools::transformSelections(t.base, t.selection, map, flip, yawDeg, true);
+        after = moved(map, flip, yawDeg);
     } else if (t.kind == tools::ModalKind::Rotate) {
         const auto a = tools::ringAngle(ray, t.pivot, t.axis);
         if (!a) return;
@@ -184,7 +255,7 @@ void MainWindow::updateTransform() {
         t.value = delta;
         map = tools::rotateAbout(pivot, asV3(tools::axisDir(t.axis)), delta);
         yawDeg = t.axis == 1 ? delta * 180.0 / kPi : 0;
-        after = tools::transformSelections(t.base, t.selection, map, false, yawDeg, true);
+        after = moved(map, false, yawDeg);
     } else if (t.kind == tools::ModalKind::Scale) {
         const auto d = tools::axisDistance(ray, t.pivot, t.axis);
         if (!d || std::fabs(t.startT) < 1e-6) return;
@@ -195,15 +266,16 @@ void MainWindow::updateTransform() {
         t.value = f;
         tools::V3 vec{1, 1, 1};
         vec[static_cast<size_t>(t.axis)] = f;
-        after = tools::transformSelections(t.base, t.selection, tools::scaleAbout(pivot, vec), f < 0, 0, true);
+        after = moved(tools::scaleAbout(pivot, vec), f < 0, 0);
     } else {
         const render::Vec3 delta = tools::dragDelta(ray, t.pivot, t.axis, t.startT, render::snapStep(settings));
         t.value = render::length(delta);
         if (!t.originEntity.empty()) after = tools::moveEntityOrigin(t.base, t.originEntity, asV3(delta));
-        else after = tools::transformSelections(t.base, t.selection, tools::translateBy(asV3(delta)), false, 0, true);
+        else after = moved(tools::translateBy(asV3(delta)), false, 0);
     }
     if (!after) return;   // an invalid result (a brush that would not be valid): the last good version stays
     if (after != document_) history_->commit({t.label, document_, after});
+    if (t.mesh.active) meshApplied(t);
     refreshGizmos();
     showTransformStatus();
 }
@@ -212,7 +284,7 @@ void MainWindow::showTransformStatus() {
     if (!transform_) return;
     const TransformSession& t = *transform_;
     if (t.source == TransformSession::Source::Modal) {
-        statusBar()->showMessage(QString::fromUtf8(tools::describeModal(t.kind, t.value, t.axis, t.typed).c_str()));
+        statusBar()->showMessage(QString::fromUtf8(tools::describeModal(t.kind, t.value, t.axis, t.typed, t.kind == tools::ModalKind::Bevel ? t.mesh.segments : -1).c_str()));
         return;
     }
     char buf[96];
@@ -228,7 +300,12 @@ void MainWindow::endTransform(bool confirm) {
     if (!confirm && document_ != base) history_->commit({transform_->label, document_, base});   // back to where it began: the interaction then pushes nothing
     history_->endInteraction();
     const std::string label = transform_->label;
+    const MeshSession mesh = transform_->mesh;
     transform_.reset();
+    if (mesh.active && !confirm) {   // the picked elements as they were
+        if (!selection_->primary() || selection_->primary()->entityId != mesh.entityId || selection_->primary()->brushId != mesh.brushId) selection_->select(doc::SelRef::brush(mesh.entityId, mesh.brushId));
+        if (const auto target = meshTarget()) selection_->setMesh(tools::mesh::toDocSel(target->brush(), mesh.startSel));
+    }
     statusBar()->showMessage(confirm ? QString::fromStdString(label) : QStringLiteral("Cancelled"), 3000);
     refreshGizmos();
     emit transformChanged();
@@ -304,7 +381,18 @@ bool MainWindow::transformMouse(size_t index, const actions::InputEvent& e) {
 
 MainWindow::GizmoTarget MainWindow::gizmoTarget(render::ViewportWindow* vp) {
     GizmoTarget g;
-    if (!document_ || transform_ || !vp || tool_ != Tool::Select || box_ || meshMode()) return g;   // mesh mode: the gizmo is for the elements (T11.1g)
+    if (!document_ || transform_ || !vp || tool_ != Tool::Select || box_) return g;
+    if (meshMode()) {   // the gizmo sits on the centre of the picked vertices
+        const auto target = meshTarget();
+        const tools::mesh::MeshSel sel = meshSelection();
+        if (!target || sel.verts.empty()) return g;
+        const core::Vec3 c = tools::mesh::centroid(target->brush(), sel.verts);
+        g.pivot = {c.x, c.y, c.z};
+        g.mode = vp->rig().settings().gizmo;
+        g.length = tools::gizmoLength(vp->rig().active().distanceTo(g.pivot));
+        g.valid = true;
+        return g;
+    }
     const std::vector<doc::SelRef> sels = transformSelection();
     if (sels.empty()) return g;
     if (!originSel_.empty()) {
@@ -353,11 +441,19 @@ void MainWindow::leaveOrigin() {
 }
 
 std::vector<render::LineVertex> MainWindow::gizmoLinesFor(size_t index) {
+    std::vector<render::LineVertex> lines = gizmoLinesOnly(index);
+    if (meshMode() && !box_) {   // the vertex markers of mesh mode are drawn with the gizmo
+        const std::vector<render::LineVertex> verts = meshVertexLines(index);
+        lines.insert(lines.end(), verts.begin(), verts.end());
+    }
+    return lines;
+}
+
+std::vector<render::LineVertex> MainWindow::gizmoLinesOnly(size_t index) {
     if (index >= panels_.size()) return {};
     render::ViewportWindow* vp = panels_[index].window;
     if (!vp) return {};
     if (box_) return boxPreviewLines(index);   // the drawing in progress replaces the gizmo
-    if (meshMode()) return meshVertexLines(index);
     if (transform_ && transform_->source == TransformSession::Source::Modal) return {};   // the modal operators show no gizmo
     GizmoTarget g;
     tools::Axis active = -1;
@@ -371,7 +467,15 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesFor(size_t index) {
         active = t.axis;
         if (g.mode == render::GizmoMode::Move) {
             // moving: the pivot is where the selection now is
-            const auto now = !t.originEntity.empty() ? std::optional<tools::V3>{} : tools::gizmoPivot(*document_, t.selection);
+            std::optional<tools::V3> now = !t.originEntity.empty() || t.mesh.active ? std::optional<tools::V3>{} : tools::gizmoPivot(*document_, t.selection);
+            if (t.mesh.active) {   // the picked vertices are where they are now
+                const auto target = meshTarget();
+                const tools::mesh::MeshSel sel = meshSelection();
+                if (target && !sel.verts.empty()) {
+                    const core::Vec3 c = tools::mesh::centroid(target->brush(), sel.verts);
+                    now = tools::V3{c.x, c.y, c.z};
+                }
+            }
             if (now) g.pivot = asVec(*now);
             else if (!t.originEntity.empty()) {
                 const int ei = document_->findEntity(t.originEntity);

@@ -109,6 +109,11 @@ TEST_CASE("mesh session: an operation that changes nothing is not an edit; a ref
     const MeshApply same = applyMeshOp(d, SelRef::brush("w", "b"), "Extrude", [](const Brush& b, const MeshSel& s) { return extrudeFaces(b, s.faces, 0.0); }, sel);
     CHECK_FALSE(same.ok());
     CHECK(same.error.empty());
+    // a drag that came back to where it began keeps the base version (and says which brush), so the interaction can end without an edit
+    const MeshApply kept = applyMeshOp(d, SelRef::brush("w", "b"), "Extrude", [](const Brush& b, const MeshSel& s) { return extrudeFaces(b, s.faces, 0.0); }, sel, true, {}, true);
+    CHECK(kept.ok());
+    CHECK(kept.version == d);
+    CHECK(kept.select == SelRef::brush("w", "b"));
     const MeshApply bad = applyMeshOp(d, SelRef::brush("w", "b"), "Dissolve", [](const Brush& b, const MeshSel& s) { return runMeshTool("dissolve", b, s, SelMode::Face); }, MeshSel{});
     CHECK_FALSE(bad.ok());
     const MeshApply nothing = applyMeshOp(d, SelRef::brush("w", "missing"), "X", pit, sel);

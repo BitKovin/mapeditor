@@ -8,12 +8,16 @@
 #include <cmath>
 #include <set>
 
+#include "doc/commands.h"
 #include "doc/selection.h"
 #include "render/line_vertex.h"
 #include "render/viewport_window.h"
+#include "tools/box_tool.h"
 #include "tools/gizmo.h"
+#include "tools/mesh/ops.h"
 #include "tools/mesh/pick.h"
 #include "ui/main_window.h"
+#include "ui/transform_session.h"
 #include "ui/view_helpers.h"
 
 namespace native::ui {
@@ -280,6 +284,207 @@ std::vector<render::LineVertex> MainWindow::meshVertexLines(size_t index) const 
         addLine(out, {v.x - u.x, v.y - u.y, v.z - u.z}, {v.x + u.x, v.y + u.y, v.z + u.z}, color);
     }
     return out;
+}
+
+// ---- modal tools: G / R / S, E, I, Ctrl+B, Ctrl+R on the elements (T11.1g) --------------------------------------------------------------
+
+namespace {
+
+core::Vec3 unit(const core::Vec3& v) {
+    const double l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    return l < 1e-12 ? core::Vec3{0, 0, 0} : core::Vec3{v.x / l, v.y / l, v.z / l};
+}
+
+} // namespace
+
+bool MainWindow::setupMeshSession(TransformSession& t, tools::ModalKind kind, const std::optional<tm::Edge>& edge) {
+    const auto target = meshTarget();
+    if (!target || !t.viewport) return false;
+    const core::Brush& b = target->brush();
+    const tm::MeshSel sel = meshSelection();
+    const tm::SelMode mode = meshElement();
+    const auto hint = [this](const char* text) {
+        statusBar()->showMessage(QString::fromUtf8(text), 5000);
+        return false;
+    };
+    MeshSession& m = t.mesh;
+    m = MeshSession{};
+    m.entityId = target->entityId;
+    m.brushId = target->brushId;
+    m.detailId = tools::newId("e");
+    m.mode = mode;
+    m.startSel = sel;
+    m.radius = propRadius_;
+    if (kind != tools::ModalKind::LoopCut && sel.verts.empty()) return hint("Select something first");
+    if (!sel.verts.empty()) {
+        const core::Vec3 c = tm::centroid(b, sel.verts);
+        t.pivot = {c.x, c.y, c.z};
+    }
+    const render::ViewState view = t.viewport->currentView();
+    const QSizeF size = t.viewport->size();
+    const double mpp = tools::metresPerPixelAt(t.viewport->rig().active().distanceTo(t.pivot), t.viewport->rig().active().fovY, std::max(1, t.viewport->height()));
+    switch (kind) {
+        case tools::ModalKind::Grab:
+        case tools::ModalKind::Rotate:
+        case tools::ModalKind::Scale:
+            m.proportional = proportional_;
+            break;
+        case tools::ModalKind::Extrude:
+        case tools::ModalKind::Inset: {
+            if (mode != tm::SelMode::Face || sel.faces.empty())
+                return hint(kind == tools::ModalKind::Extrude ? "Extrude works on selected faces: press 3, select a face, then E" : "Inset works on selected faces: press 3, select a face, then I");
+            m.faces = sel.faces;
+            if (kind == tools::ModalKind::Extrude) {
+                std::vector<const core::BrushFace*> faces;
+                for (uint32_t id : sel.faces)
+                    if (const core::BrushFace* f = tm::faceById(b, id)) faces.push_back(f);
+                const core::Vec3 n = unit(tm::averageNormal(b, faces));
+                if (n.x == 0 && n.y == 0 && n.z == 0) return hint("These faces have no common direction to extrude along");
+                m.dir = {n.x, n.y, n.z};
+                const auto along = tools::lineDistance(rayAt(view, size, t.mouse0), t.pivot, m.dir);
+                m.t0 = along.value_or(0);
+            } else {
+                m.metresPerPixel = mpp;
+            }
+            break;
+        }
+        case tools::ModalKind::Bevel:
+            if (sel.edges.empty()) return hint("Bevel works on edges (or faces): press 2 or 3, select, then Ctrl+B");
+            m.edges = sel.edges;
+            m.segments = 1;
+            m.metresPerPixel = mpp;
+            break;
+        case tools::ModalKind::LoopCut: {
+            if (!edge) return hint("Loop cut needs an edge: hover one, then Ctrl+R");
+            const auto ring = tm::edgeRing(b, *edge);
+            if (!ring || ring->ring.empty()) return hint("No loop passes through this edge (it needs quad faces around it)");
+            const core::Vec3 p = b.vertices[ring->ring[0].first], q = b.vertices[ring->ring[0].second];
+            const core::Vec3 d{q.x - p.x, q.y - p.y, q.z - p.z};
+            m.edge = *edge;
+            m.railFrom = {p.x, p.y, p.z};
+            m.railLength = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+            const core::Vec3 u = unit(d);
+            m.railDir = {u.x, u.y, u.z};
+            m.fraction = 0.5;
+            t.value = 0.5;
+            t.pivot = {(p.x + q.x) / 2, (p.y + q.y) / 2, (p.z + q.z) / 2};
+            break;
+        }
+    }
+    m.active = true;
+    return true;
+}
+
+bool MainWindow::startMeshTransform(render::ViewportWindow* vp, tools::ModalKind kind, const std::optional<tm::Edge>& edge) {
+    if (!document_ || transform_ || !vp || !meshTarget()) return false;
+    const size_t index = panelIndexOf(vp);
+    if (index >= panels_.size()) return false;
+    auto t = std::make_unique<TransformSession>();
+    t->source = TransformSession::Source::Modal;
+    t->kind = kind;
+    t->viewport = vp;
+    t->panelIndex = index;
+    t->base = document_;
+    t->mouse0 = t->mouse = vp->lastMousePos();
+    switch (kind) {
+        case tools::ModalKind::Grab: t->label = "Move"; break;
+        case tools::ModalKind::Rotate: t->label = "Rotate"; break;
+        case tools::ModalKind::Scale: t->label = "Scale"; break;
+        case tools::ModalKind::Extrude: t->label = "Extrude"; break;
+        case tools::ModalKind::Inset: t->label = "Inset"; break;
+        case tools::ModalKind::Bevel: t->label = "Bevel"; break;
+        case tools::ModalKind::LoopCut: t->label = "Loop cut"; break;
+    }
+    if (!setupMeshSession(*t, kind, edge)) return false;
+    const render::ViewState view = vp->currentView();
+    const QSizeF size = vp->size();
+    t->forward = render::rayThrough(view.viewProj, 0, 0).dir;
+    t->startPoint = tools::planePoint(rayAt(view, size, t->mouse0), t->pivot, t->forward).value_or(t->pivot);
+    t->screenPivot = screenOf(view, size, t->pivot);
+    history_->beginInteraction(t->label);
+    transform_ = std::move(t);
+    refreshGizmos();
+    updateTransform();   // a loop cut shows at the pointer at once
+    showTransformStatus();
+    emit transformChanged();
+    return true;
+}
+
+std::shared_ptr<const doc::DocumentVersion> MainWindow::meshAfter(TransformSession& t, const tm::MeshOpFn& op) {
+    MeshSession& m = t.mesh;
+    const tm::MeshApply r = tm::applyMeshOp(t.base, doc::SelRef::brush(m.entityId, m.brushId), t.label, op, m.startSel, true, m.detailId, true);
+    if (!r.ok()) {
+        if (!r.error.empty()) statusBar()->showMessage(qs(r.error), 4000);
+        return nullptr;
+    }
+    m.select = r.select;
+    m.resultSel = r.sel;
+    m.haveResult = true;
+    return r.version;
+}
+
+void MainWindow::meshApplied(const TransformSession& t) {
+    const MeshSession& m = t.mesh;
+    if (!m.haveResult) return;
+    if (!selection_->primary() || *selection_->primary() != m.select) selection_->select(m.select);
+    if (const auto target = tm::meshTarget(*document_, m.select)) selection_->setMesh(tm::toDocSel(target->brush(), m.resultSel));
+}
+
+void MainWindow::setMeshProportional(bool on) {
+    proportional_ = on;
+    char buf[160];
+    if (on) std::snprintf(buf, sizeof buf, "Proportional editing on (radius %.2f m; the mouse wheel during G / R / S changes it)", propRadius_);
+    else std::snprintf(buf, sizeof buf, "Proportional editing off");
+    statusBar()->showMessage(QString::fromUtf8(buf), 4000);
+}
+
+bool MainWindow::transformUsesWheel() const {
+    if (!transform_ || !transform_->mesh.active) return false;
+    if (transform_->kind == tools::ModalKind::Bevel) return true;
+    const bool plain = transform_->kind == tools::ModalKind::Grab || transform_->kind == tools::ModalKind::Rotate || transform_->kind == tools::ModalKind::Scale;
+    return plain && transform_->mesh.proportional;
+}
+
+bool MainWindow::transformWheel(double dy) {
+    if (!transformUsesWheel()) return false;
+    MeshSession& m = transform_->mesh;
+    if (transform_->kind == tools::ModalKind::Bevel) {
+        m.segments = tools::stepSegments(m.segments, dy, tm::kMaxBevelSegments);
+    } else {
+        propRadius_ = std::min(1000.0, std::max(0.01, propRadius_ * (dy < 0 ? 1.2 : 1.0 / 1.2)));
+        m.radius = propRadius_;
+        char buf[64];
+        std::snprintf(buf, sizeof buf, "Proportional radius %.2f m", propRadius_);
+        statusBar()->showMessage(QString::fromUtf8(buf), 3000);
+    }
+    updateTransform();
+    return true;
+}
+
+bool MainWindow::startLoopCut(render::ViewportWindow* vp) {
+    const auto t = meshTarget();
+    if (!t || !vp || transform_) return false;
+    const QPointF p = vp->lastMousePos();
+    const auto edge = tm::pickEdge(t->brush(), projector(vp->currentView(), vp->size()), p.x(), p.y(), 14);
+    if (!edge) {
+        statusBar()->showMessage(QStringLiteral("Hover an edge, then Ctrl+R: the loop cut goes across the faces around it"), 5000);
+        return false;
+    }
+    return startTransform(vp, tools::ModalKind::LoopCut, edge);
+}
+
+bool MainWindow::mirrorMesh(int axis) {
+    if (axis < 0 || axis > 2) return false;
+    const auto t = meshTarget();
+    if (!t) return false;
+    const core::texplan::InfoFn info = texEnv_ ? texEnv_->infoFn() : core::texplan::InfoFn{};
+    static const char* const names[] = {"Mirror X", "Mirror Y", "Mirror Z"};
+    return applyMeshOperation(names[axis], [axis, info](const core::Brush& b, const tm::MeshSel& s) {
+        std::vector<uint32_t> verts = s.verts;
+        if (verts.empty())
+            for (uint32_t i = 0; i < b.vertices.size(); ++i) verts.push_back(i);
+        return tm::mirrorVerts(b, verts, axis, true, info);
+    });
 }
 
 } // namespace native::ui

@@ -43,9 +43,10 @@ struct MeshApply {
 };
 using MeshOpFn = std::function<OpResult(const core::Brush&, const MeshSel&)>;
 // Runs `op` on the brush as one edit. A result the entity's class refuses because it is concave goes into a func_detail entity (`detailId`: the entity to use, created when it
-// does not exist; empty = a fresh id) when `autoDetail`, else it is refused. `target` is the primary selection.
+// does not exist; empty = a fresh id) when `autoDetail`, else it is refused. `target` is the primary selection. A result that changes nothing is no edit (version null, no error)
+// unless `keepUnchanged` (a drag that came back to where it began): then the version is `base` itself.
 MeshApply applyMeshOp(const std::shared_ptr<const doc::DocumentVersion>& base, const doc::SelRef& target, const std::string& label, const MeshOpFn& op, const MeshSel& sel,
-                      bool autoDetail = true, const std::string& detailId = {});
+                      bool autoDetail = true, const std::string& detailId = {}, bool keepUnchanged = false);
 
 // ---- the instant tools (keys and the panel run them by id) ----
 // Ids: "connect" J, "merge" M, "fill" F, "dissolve" X, "delete", "flip" Alt+N, "recalc" Shift+N, "bridge", "smooth", "sharp", "subdivide" (`param` = cuts).
