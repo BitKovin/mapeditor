@@ -67,6 +67,11 @@ void RegistryMenus::build() {
             entries_.push_back(std::move(e));
         }
     }
+    // Help stays the last menu whatever order the features registered theirs in.
+    if (QMenu* help = menu("&Help")) {
+        bar_->removeAction(help->menuAction());
+        bar_->addAction(help->menuAction());
+    }
     refresh();
 }
 

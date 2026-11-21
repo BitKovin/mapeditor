@@ -7,6 +7,8 @@
 #include <QLabel>
 #include <QToolButton>
 
+#include <QPixmap>
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -128,4 +130,17 @@ TEST_CASE("settings lighting: without a game folder the page is off and nothing 
     CHECK_FALSE(dialog.findChild<QWidget*>("settings:lightingNote")->parentWidget()->isEnabled());
     CHECK_FALSE(dialog.dirty());
     CHECK(dialog.applyAll().isEmpty());
+}
+
+// A picture of the page for a look by eye: NATIVE_SHOT=<png path> saves it (an offscreen grab, no window is shown); without it the case does nothing.
+TEST_CASE("settings lighting: a picture of the page (NATIVE_SHOT)") {
+    const QByteArray out = qgetenv("NATIVE_SHOT");
+    if (out.isEmpty()) return;
+    Game g;
+    g.put(R"({"texelsPerMeter": 16, "useGpu": false, "denoiseQuality": 2})");
+    ui::MainWindow window(services(g.root.generic_string()));
+    ui::SettingsDialog dialog(window);
+    dialog.showPage(ui::SettingsDialog::Lighting);
+    dialog.resize(900, 760);
+    CHECK(dialog.grab().save(QString::fromLocal8Bit(out)));
 }

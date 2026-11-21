@@ -77,7 +77,12 @@ TEST_CASE("menus are generated from the registry and show the keymap's keys") {
     // The menu bar shows the generated menus in registration order.
     QStringList titles;
     for (QAction* a : window.menuBar()->actions()) titles << a->text();
-    CHECK(titles == QStringList({QStringLiteral("&File"), QStringLiteral("&Edit"), QStringLiteral("&View"), QStringLiteral("&Tools"), QStringLiteral("&Help")}));
+    // (the tool menus -- Brush, Mesh, Texture -- came with their features: the check is the frame and the order of the first ones)
+    REQUIRE(titles.size() >= 5);
+    CHECK(titles.mid(0, 3) == QStringList({QStringLiteral("&File"), QStringLiteral("&Edit"), QStringLiteral("&View")}));
+    for (const QString& t : {QStringLiteral("&Tools"), QStringLiteral("&Brush"), QStringLiteral("&Mesh"), QStringLiteral("&Texture")}) CHECK(titles.contains(t));
+    INFO("menus: " << titles.join(" ").toStdString());
+    CHECK(titles.last() == QStringLiteral("&Help"));
 }
 
 TEST_CASE("layout and camera menu entries act on the window and the active viewport" * doctest::test_suite("gpu")) {

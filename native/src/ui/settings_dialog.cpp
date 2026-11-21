@@ -536,9 +536,12 @@ void SettingsDialog::buildLighting(QWidget* page) {
             reset->setAutoRaise(true);
             QObject::connect(reset, &QToolButton::clicked, this, [this, key = k.key] { resetLighting(key); });
             auto* row = new QHBoxLayout;
-            row->addWidget(edit, 1);
+            edit->setFixedWidth(180);   // the same column in every group
+            row->addWidget(edit);
             row->addWidget(reset);
+            row->addStretch(1);
             auto* label = new QLabel(qs(k.label), body);
+            label->setFixedWidth(300);   // one label column for every group
             label->setToolTip(qs(k.hint));
             form->addRow(label, row);
         }
