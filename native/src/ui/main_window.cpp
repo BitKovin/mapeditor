@@ -490,6 +490,10 @@ void MainWindow::setContextsFor(render::ViewportWindow* vp) {
         const std::vector<std::string> v = viewportContexts(*vp);
         contexts.insert(contexts.end(), v.begin(), v.end());
         contexts.push_back(modeContext() == "tool:box" ? "tool:box" : "tool:select");
+        if (meshMode()) {   // the mesh bindings are more specific than the select tool's
+            contexts.push_back("mode:mesh");
+            contexts.push_back(meshElement() == tools::mesh::SelMode::Vertex ? "mode:mesh.vertex" : meshElement() == tools::mesh::SelMode::Edge ? "mode:mesh.edge" : "mode:mesh.face");
+        }
     }
     router_.contexts().set(contexts);
 }
@@ -575,7 +579,8 @@ void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot
 void MainWindow::refreshOutline() {
     if (!services_.renderThread) return;
     std::vector<render::LineVertex> lines;
-    if (picker_ && picker_->snapshot()) lines = render::selectionOutline(*picker_->snapshot(), selection_->items());
+    if (meshMode() && meshTarget()) lines = meshEdgeLines();   // mesh mode shows the edges of the edited brush instead of the plain outline
+    else if (picker_ && picker_->snapshot()) lines = render::selectionOutline(*picker_->snapshot(), selection_->items());
     services_.renderThread->setSelectionLines(lines.empty() ? nullptr : std::make_shared<const std::vector<render::LineVertex>>(std::move(lines)));
     refreshOverlays();
 }

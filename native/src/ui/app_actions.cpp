@@ -7,6 +7,7 @@
 
 #include "render/viewport_window.h"
 #include "ui/main_window.h"
+#include "ui/mesh_actions.h"
 
 namespace native::ui {
 
@@ -987,6 +988,7 @@ void registerAppActions(actions::Registry& r) {
         add(r, std::move(d));
     }
     helpActions(r);
+    registerMeshActions(r);
 }
 
 } // namespace native::ui

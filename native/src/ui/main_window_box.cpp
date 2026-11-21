@@ -31,6 +31,7 @@ bool shiftHeld() { return QGuiApplication::queryKeyboardModifiers().testFlag(Qt:
 void MainWindow::setTool(Tool tool) {
     if (tool_ == tool) return;
     if (tool != Tool::Box) cancelBox();
+    if (tool == Tool::Box && meshMode()) leaveMeshMode();   // drawing a new solid ends the mesh editing of the brush
     tool_ = tool;
     refreshGizmos();
     emit toolChanged();

@@ -34,6 +34,7 @@ void MainWindow::setPaletteRecent(const std::vector<actions::Recent>& list) {
 
 std::string MainWindow::modeContext() const {
     if (transform_ && transform_->source == TransformSession::Source::Modal) return "modal:transform";
+    if (meshMode()) return "mode:mesh";
     return tool_ == Tool::Box ? "tool:box" : "tool:select";
 }
 

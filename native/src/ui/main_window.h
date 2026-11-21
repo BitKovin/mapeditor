@@ -38,6 +38,8 @@
 #include "tools/prefs.h"
 #include "tools/shapes.h"
 #include "exporting/launch.h"
+#include "tools/mesh/session.h"
+#include "tools/mesh/select.h"
 #include "tools/visibility.h"
 #include "ui/app_actions.h"
 #include "ui/input_probe.h"
@@ -323,6 +325,34 @@ public:
     // The lines of the drawing in progress for a viewport (the rectangle, then the shape); empty when it is drawn elsewhere.
     std::vector<render::LineVertex> boxPreviewLines(size_t panelIndex) const;
 
+    // ---- mesh mode (T11.1f, ui/main_window_mesh.cpp) ----
+    // Edit mode "mesh": the vertices / edges / faces of the primary selection's brush are selected and edited (Tab, then 1 2 3 for the element kind). The operations are
+    // tools/mesh/session on the document; each is one undo step. The selection (mode, element kind, picked elements) lives in doc::Selection.
+    bool meshMode() const;
+    bool enterMeshMode();     // false (with a status message) when no single brush is selected
+    void leaveMeshMode();
+    bool toggleMeshMode();
+    tools::mesh::SelMode meshElement() const;
+    bool setMeshElement(tools::mesh::SelMode element);   // the picked elements are converted by Blender's rules (edges -> the faces they enclose ...)
+    // The brush being edited (null outside mesh mode).
+    std::optional<tools::mesh::MeshTarget> meshTarget() const;
+    tools::mesh::MeshSel meshSelection() const;
+    void setMeshSelection(const tools::mesh::MeshSel& sel);
+    // An instant tool by id (tools/mesh/session: "connect", "merge", "fill", "dissolve", "delete", "flip", "recalc", "bridge", "smooth", "sharp", "subdivide"; the selection tools
+    // "selectall", "selectnone", "invert", "grow", "shrink"). `param`: subdivide's cuts. False when it did nothing (the status bar says why).
+    bool runMeshTool(const std::string& id, double param = 1);
+    // Runs a mesh operation on the edited brush as one undo step (a concave result moves into func_detail). The mesh selection becomes the operation's.
+    bool applyMeshOperation(const std::string& label, const tools::mesh::MeshOpFn& op);
+    // The mesh.pick action: a click selects the element under the cursor (Shift toggles, Ctrl adds the path from the last one, Alt the loop, Ctrl+Alt the ring), a drag selects a box.
+    void meshPickInput(render::ViewportWindow* viewport, const actions::InputEvent& event);
+    // What a click at `p` (logical pixels of the viewport window) selects; false when nothing was under the cursor (the selection is left alone).
+    bool meshClickAt(render::ViewportWindow* viewport, QPointF p, bool shift, bool ctrl, bool alt);
+    void meshBoxSelectIn(render::ViewportWindow* viewport, QPointF a, QPointF b, bool shift);
+    // The edges of the edited brush as world-space lines (pale blue; smooth edges green; selected ones orange), drawn with the selection outline; empty outside mesh mode.
+    std::vector<render::LineVertex> meshEdgeLines() const;
+    // The vertex markers of a viewport (a few pixels wide, so they are made per viewport); empty outside mesh mode.
+    std::vector<render::LineVertex> meshVertexLines(size_t panelIndex) const;
+
     // ---- delete, duplicate, group, clipboard, hide (T4.3) ----
     // Each is one undo step on the selection (prefab-internal and face selections are left alone); false when refused or nothing to do (the status bar says why).
     bool deleteSelected();
@@ -575,6 +605,13 @@ private:
         QPointF start, current;
         bool dragging = false;
     } pickDrag_;
+    struct MeshDrag {
+        render::ViewportWindow* viewport = nullptr;
+        QPointF start, current;
+        bool dragging = false;
+        bool shift = false, ctrl = false, alt = false;
+    } meshDrag_;
+    std::optional<tools::mesh::ActiveElem> meshActive_;   // the element clicked last: where a Ctrl+click path starts
     std::unique_ptr<TransformSession> transform_;
     std::unique_ptr<BoxDrawing> box_;
     Tool tool_ = Tool::Select;

@@ -46,7 +46,7 @@ std::vector<doc::SelRef> MainWindow::transformSelection() const {
 }
 
 bool MainWindow::canStartTransform() const {
-    return !transform_ && document_ && !transformSelection().empty() && tools::gizmoPivot(*document_, transformSelection()).has_value();
+    return !transform_ && document_ && !meshMode() && !transformSelection().empty() && tools::gizmoPivot(*document_, transformSelection()).has_value();
 }
 
 size_t MainWindow::panelIndexOf(const render::ViewportWindow* vp) const {
@@ -304,7 +304,7 @@ bool MainWindow::transformMouse(size_t index, const actions::InputEvent& e) {
 
 MainWindow::GizmoTarget MainWindow::gizmoTarget(render::ViewportWindow* vp) {
     GizmoTarget g;
-    if (!document_ || transform_ || !vp || tool_ != Tool::Select || box_) return g;
+    if (!document_ || transform_ || !vp || tool_ != Tool::Select || box_ || meshMode()) return g;   // mesh mode: the gizmo is for the elements (T11.1g)
     const std::vector<doc::SelRef> sels = transformSelection();
     if (sels.empty()) return g;
     if (!originSel_.empty()) {
@@ -357,6 +357,7 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesFor(size_t index) {
     render::ViewportWindow* vp = panels_[index].window;
     if (!vp) return {};
     if (box_) return boxPreviewLines(index);   // the drawing in progress replaces the gizmo
+    if (meshMode()) return meshVertexLines(index);
     if (transform_ && transform_->source == TransformSession::Source::Modal) return {};   // the modal operators show no gizmo
     GizmoTarget g;
     tools::Axis active = -1;
