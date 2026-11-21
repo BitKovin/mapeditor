@@ -13,6 +13,8 @@
 #include "doc/selection.h"
 #include "ui/app_actions.h"
 #include "ui/main_window.h"
+#include "ui/place_panel.h"
+#include <QListWidget>
 
 using namespace native;
 namespace fs = std::filesystem;
@@ -128,4 +130,30 @@ TEST_CASE("turn into prefab: a bad name, no game folder or nothing selected chan
     CHECK_FALSE(f.window.turnIntoPrefab("crate"));
     CHECK_FALSE(f.window.runAction("edit.prefabize"));   // disabled without a selection
     CHECK(f.asked == 0);
+}
+
+TEST_CASE("place panel: prefabs get a picture and a size, one prefab that cannot be read says why") {
+    Fixture f;
+    REQUIRE(f.window.turnIntoPrefab("crate"));   // the file appears: the Place panel scans again
+    fs::create_directories(f.file("prefabs"));
+    std::ofstream(f.file("prefabs/broken.map.json")) << "{ not json";
+    ui::PlacePanel* place = f.window.place();
+    REQUIRE(place);
+    place->rescanPrefabs();
+    CHECK(place->prefabFiles().size() == 2);
+    CHECK(place->pendingPrefabIcons() == 2);
+    CHECK(place->renderPrefabIcons() == 2);
+    CHECK(place->pendingPrefabIcons() == 0);
+    QListWidget* list = place->prefabList();
+    REQUIRE(list->count() == 2);
+    for (int i = 0; i < list->count(); ++i) {
+        const QString file = list->item(i)->data(Qt::UserRole).toString();
+        if (file.endsWith(QStringLiteral("crate.map.json"))) {
+            CHECK_FALSE(list->item(i)->icon().isNull());
+            CHECK(list->item(i)->toolTip().contains(QStringLiteral("2 x 2 x 2 m")));
+        } else {
+            CHECK(list->item(i)->icon().isNull());
+            CHECK(list->item(i)->toolTip().contains(QStringLiteral("No picture")));
+        }
+    }
 }

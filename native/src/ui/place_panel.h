@@ -5,9 +5,13 @@
 // Spec: 08_MILESTONES.md T4.4.
 #pragma once
 
+#include <QIcon>
+#include <QTimer>
 #include <QWidget>
 
+#include <deque>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,8 +24,11 @@ class QLineEdit;
 class QListWidget;
 class QSpinBox;
 class QTabWidget;
-class QTimer;
 class QToolButton;
+
+namespace native::tools {
+class PrefabPreviews;
+}
 
 namespace native::ui {
 
@@ -42,6 +49,11 @@ public:
     void rebuildClasses();
     // The prefab files found (assets-relative, sorted).
     const std::vector<std::string>& prefabFiles() const { return prefabFiles_; }
+    // The prefab pictures (T11.7b): one prefab is read and drawn per timer tick after the list was filled, so a long list never blocks the window; a prefab that cannot be
+    // read shows why in its tooltip. `renderPrefabIcons` does the waiting ones now (tests); -1 = all, else at most that many; returns how many it did.
+    int renderPrefabIcons(int limit = -1);
+    int pendingPrefabIcons() const { return static_cast<int>(iconQueue_.size()); }
+    QIcon prefabIcon(const std::string& file) const;
     // The panel's shape widgets follow the window (the tool or its parameters changed).
     void syncShape();
     // The shape buttons and the orientation box name their key from the keymap ("Cylinder (C): drag ..."); follows a rebinding.
@@ -52,6 +64,8 @@ private:
     void buildShapes(QWidget* page);
     void fillEntityList(QListWidget* list, const std::vector<std::string>& classes, const QString& filter);
     void drawPrefabs();
+    void makeNextIcon();
+    void applyIcon(const std::string& file);
     void applyParams();
 
     MainWindow& win_;
@@ -68,6 +82,11 @@ private:
     QLabel* shapeHint_ = nullptr;
     QWidget* paramRows_[8] = {};
     std::vector<std::string> prefabFiles_;
+    std::unique_ptr<tools::PrefabPreviews> previews_;
+    std::map<std::string, QIcon> icons_;          // a prefab with a null icon could not be read
+    std::map<std::string, QString> iconTips_;     // its size, or why it has no picture
+    std::deque<std::string> iconQueue_;
+    QTimer iconTimer_;
     std::vector<std::string> entityClasses_, lightClasses_;
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> keyvalues_;   // extra keyvalues a starter entity is added with
     bool syncing_ = false;

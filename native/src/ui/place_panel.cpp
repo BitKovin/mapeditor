@@ -12,7 +12,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPainter>
 #include <QPixmap>
+#include <QPolygonF>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -24,6 +26,7 @@
 
 #include "core/entdef.h"
 #include "scene/point_box.h"
+#include "tools/prefab_preview.h"
 #include "ui/main_window.h"
 
 namespace native::ui {
@@ -139,6 +142,13 @@ PlacePanel::PlacePanel(MainWindow& window, QWidget* parent) : QWidget(parent), w
     QObject::connect(entityFilter_, &QLineEdit::textChanged, this, [this](const QString& t) { fillEntityList(entities_, entityClasses_, t); });
     QObject::connect(prefabFilter_, &QLineEdit::textChanged, this, [this] { drawPrefabs(); });
     QObject::connect(refresh, &QPushButton::clicked, this, [this] { rescanPrefabs(); });
+    prefabs_->setIconSize(QSize(40, 40));
+    iconTimer_.setSingleShot(true);
+    iconTimer_.setInterval(0);
+    QObject::connect(&iconTimer_, &QTimer::timeout, this, [this] {
+        makeNextIcon();
+        if (!iconQueue_.empty()) iconTimer_.start();
+    });
     QObject::connect(&win_, &MainWindow::entityDefinitionsChanged, this, [this] {
         rebuildClasses();
         rescanPrefabs();
@@ -153,6 +163,83 @@ PlacePanel::PlacePanel(MainWindow& window, QWidget* parent) : QWidget(parent), w
 }
 
 PlacePanel::~PlacePanel() = default;
+
+// ---- prefab pictures -----------------------------------------------------------------------------------------------------------------
+
+QIcon PlacePanel::prefabIcon(const std::string& file) const {
+    const auto it = icons_.find(file);
+    return it == icons_.end() ? QIcon() : it->second;
+}
+
+void PlacePanel::applyIcon(const std::string& file) {
+    const auto icon = icons_.find(file);
+    if (icon == icons_.end()) return;
+    for (int i = 0; i < prefabs_->count(); ++i) {
+        QListWidgetItem* it = prefabs_->item(i);
+        if (it->data(Qt::UserRole).toString().toStdString() != file) continue;
+        it->setIcon(icon->second);
+        const auto tip = iconTips_.find(file);
+        it->setToolTip(qs(file) + (tip == iconTips_.end() || tip->second.isEmpty() ? QString() : QStringLiteral("\n") + tip->second) + QStringLiteral("\nClick to add an instance"));
+    }
+}
+
+void PlacePanel::makeNextIcon() {
+    while (!iconQueue_.empty()) {
+        const std::string file = iconQueue_.front();
+        iconQueue_.pop_front();
+        if (icons_.count(file)) continue;
+        if (!previews_) previews_ = std::make_unique<tools::PrefabPreviews>(win_.assetsRoot());
+        const tools::PreviewContent content = previews_->get(file);
+        const core::EntityDefinitions* defs = win_.entityDefinitions();
+        const scene::BoxOf boxOf = scene::classBoxes(defs);
+        const tools::ColorOf colorOf = [defs](const std::string& name) -> std::optional<std::array<double, 3>> {
+            const core::EntClass* c = defs ? defs->find(name) : nullptr;
+            if (!c) return std::nullopt;
+            return std::array<double, 3>{c->color[0], c->color[1], c->color[2]};
+        };
+        constexpr int kPx = 64;
+        QIcon icon;
+        QString tip;
+        if (content.entities) {
+            const tools::IconModel m = tools::iconOf(*content.entities, boxOf, colorOf, kPx, 3);
+            if (!m.polys.empty()) {
+                QPixmap pm(kPx, kPx);
+                pm.fill(QColor(33, 37, 45));
+                QPainter p(&pm);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                for (const tools::IconPoly& poly : m.polys) {
+                    QPolygonF shape;
+                    for (const auto& q : poly.points) shape << QPointF(q[0], q[1]);
+                    const QColor fill = QColor::fromRgbF(poly.color[0], poly.color[1], poly.color[2]);
+                    p.setPen(QPen(fill.darker(160), 0.8));
+                    p.setBrush(fill);
+                    p.drawPolygon(shape);
+                }
+                p.end();
+                icon = QIcon(pm);
+                tip = QStringLiteral("%1 x %2 x %3 m (width x depth x height)")
+                          .arg(m.bounds.max[0] - m.bounds.min[0], 0, 'g', 3)
+                          .arg(m.bounds.max[2] - m.bounds.min[2], 0, 'g', 3)
+                          .arg(m.bounds.max[1] - m.bounds.min[1], 0, 'g', 3);
+            }
+        } else {
+            tip = QStringLiteral("No picture: ") + qs(content.error);
+        }
+        icons_[file] = icon;
+        iconTips_[file] = tip;
+        applyIcon(file);
+        return;
+    }
+}
+
+int PlacePanel::renderPrefabIcons(int limit) {
+    int done = 0;
+    while (!iconQueue_.empty() && (limit < 0 || done < limit)) {
+        makeNextIcon();
+        ++done;
+    }
+    return done;
+}
 
 // ---- shapes --------------------------------------------------------------------------------------------------------------------------
 
@@ -358,6 +445,10 @@ void PlacePanel::fillEntityList(QListWidget* list, const std::vector<std::string
 
 void PlacePanel::rescanPrefabs() {
     prefabFiles_.clear();
+    icons_.clear();   // the files may have changed: every picture is made again
+    iconTips_.clear();
+    iconQueue_.clear();
+    previews_.reset();
     const std::string root = win_.assetsRoot();
     const std::string prefabRoot = win_.prefabRoot();
     if (!root.empty()) {
@@ -388,7 +479,10 @@ void PlacePanel::drawPrefabs() {
         it->setData(Qt::UserRole, qs(f));
         it->setToolTip(qs(f) + QStringLiteral("\nClick to add an instance"));
         prefabs_->addItem(it);
+        if (icons_.count(f)) applyIcon(f);
+        else if (std::find(iconQueue_.begin(), iconQueue_.end(), f) == iconQueue_.end()) iconQueue_.push_back(f);
     }
+    if (!iconQueue_.empty()) iconTimer_.start();
     prefabInfo_->setText(prefabFiles_.empty() ? QStringLiteral("No *.map.json files under '%1'.").arg(qs(root)) : QString());
 }
 
