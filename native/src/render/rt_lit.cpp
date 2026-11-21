@@ -539,6 +539,8 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
     vkUpdateDescriptorSets(device_.device(), n, writes, 0, nullptr);
 
     // ---- passes
+    const auto stamp = [&](const char* name) { if (f.timer) f.timer->stamp(cmd, f.timerSlot, name); };
+    stamp("rt setup");
     if (f.reconstruction) imageBarrier(cmd, t.radiance.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, kAll, 0, kAll, kReadWrite);
     vkCmdFillBuffer(cmd, t.counters, 0, 8, 0);
     memoryBarrier(cmd, kAll, kReadWrite, kAll, kReadWrite);
@@ -580,6 +582,7 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
             vkCmdDispatch(cmd, (t.cache.capacity + 63) / 64, 1, 1);
             memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+            stamp("rt cache");
         }
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, aoPipeline_);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, aoLayout_, 0, 3, sets3, 0, nullptr);
@@ -588,6 +591,7 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
         memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         t.latest = histCur;
+        stamp("rt trace");
     }
     uint32_t finalFil = 0;
     if ((p.u[1] & kFlagFilter) != 0) {
@@ -600,12 +604,14 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
             finalFil = it & 1u;
         }
+        stamp("rt filter");
     }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, composePipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, filterLayout_, 0, 1, &t.sets[slot], 0, nullptr);
     vkCmdPushConstants(cmd, filterLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &finalFil);
     vkCmdDispatch(cmd, gx, gy, 1);
     memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, kAll, kReadWrite);
+    stamp("rt compose");
 
     // ---- the counters of this frame come back to the host (read when the slot is used again)
     VkBufferCopy copy{0, 0, 8};

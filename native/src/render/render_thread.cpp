@@ -2,6 +2,8 @@
 #include "render/render_thread.h"
 
 #include <algorithm>
+#include <array>
+#include <cstdlib>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -102,12 +104,20 @@ struct RenderThread::Viewport {
     uint32_t rtStill = 0;                 // consecutive frames of a still camera so far
     uint32_t rtFrameNumber = 0;           // the random sequence's position
     bool rtMore = false;                  // the last ray traced frame still traced (it asks for another one)
+    uint32_t rtDeferred = 0;              // iterations this viewport's ray traced frame was held back by the budget (R8)
+    bool rtOutputReady = false;           // the output image holds a finished ray traced frame (a converged repaint reuses it)
+    float rtOutStyleW[4] = {1.f, 1.f, 1.f, 1.f};   // the style values that frame was made with
+    std::array<uint64_t, 5> rtOutKey{};   // scene, acceleration structure, textures, sky, lights it was made with
+    uint32_t rtOutSame = 0;               // full frames in a row whose inputs equalled their predecessor's
     bool rtRr = false;                    // the ray traced Lit targets were made for DLSS Ray Reconstruction
     int rtRrFailedMode = 0;               // Streamline refused Ray Reconstruction in this DLSS mode: the filter is used until the mode changes
     RtLighting rtLighting;
     uint64_t lastLightSerial = 0;         // the lights the accumulation was made with
     uint64_t rtSlotFrame[2] = {0, 0};
     RtLitInfo rtInfo;
+    std::unique_ptr<gpu::GpuTimer> timer;   // R8: render thread only
+    std::vector<PassTime> gpuPasses;        // guarded by RenderThread::mutex_: the smoothed pass times
+    uint64_t gpuPassFrames = 0;
 };
 
 RenderThread::RenderThread(gpu::Device& device) : device_(device) {
@@ -310,6 +320,7 @@ void RenderThread::setView(ViewportId id, const ViewState& view) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = viewports_.find(id);
         if (it == viewports_.end()) return;
+        if (it->second->view.viewProj != view.viewProj || it->second->view.cut != view.cut) activeViewport_ = id;   // the viewport whose camera moves is the one being worked in
         it->second->view = view;
         it->second->dirty = true;
         if (link_) {
@@ -491,6 +502,14 @@ RenderThread::RtLitInfo RenderThread::rtLitInfo(ViewportId id) const {
     return it == viewports_.end() ? RtLitInfo{} : it->second->rtInfo;
 }
 
+std::vector<RenderThread::PassTime> RenderThread::gpuPassTimes(ViewportId id, uint64_t* frames) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = viewports_.find(id);
+    if (it == viewports_.end()) return {};
+    if (frames) *frames = it->second->gpuPassFrames;
+    return it->second->gpuPasses;
+}
+
 RenderThread::RtInfo RenderThread::rtInfo() const {
     std::lock_guard<std::mutex> lock(mutex_);
     RtInfo i = rtInfo_;
@@ -548,6 +567,7 @@ void RenderThread::releaseDlss(Viewport& v) {
     v.dlssOwner = 0;
     v.rtStill = 0;
     v.rtMore = false;
+    v.rtOutputReady = false;
     v.dlssMode = 0;
     v.havePrev = false;
     v.dlssSettle = 0;
@@ -825,6 +845,25 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
                          rtLightsUploaded_ != v.lastLightSerial;
     const bool still = !moved && !reset;
     const bool skip = still && v.rtStill >= options.targetSamples + 1;
+    // A repaint of a converged picture (an overlay changed, the window was exposed) costs nothing: the output of the last full frame is still right when nothing that shapes it changed
+    // (camera, scene, lights, the animated style values) and the upscaler had its settling frames. G-rt-still (12 §9: no more than Unlit + 0.5 ms).
+    float styleNowW[4] = {1.f, 1.f, 1.f, 1.f};
+    if (lightData) lightData->layerWeights(styleNow(), styleNowW);
+    // everything the picture depends on besides the camera and the traced light: the shapes and materials, the textures that arrived, the sky, the acceleration structure, the display
+    // settings of the compose pass (exposure), the style values
+    const std::array<uint64_t, 5> outKey = {scene_->changeSerial(), rtScene_->generation(), (static_cast<uint64_t>(textures_->assigned()) << 32) | skyIndex_,
+                                            textures_->pending() == 0 ? 1ull : 0ull, rtLightsUploaded_};
+    const bool sameInputs = outKey == v.rtOutKey && lighting == v.rtLighting && std::equal(styleNowW, styleNowW + 4, v.rtOutStyleW);
+    const uint32_t settledAfter = options.targetSamples + 1 + (rr ? dlssPhaseCount(render.width, extent.width) + 6 : 1);
+    if (still && !created && v.rtOutputReady && v.rtStill >= settledAfter && sameInputs && v.rtOutSame >= 2 && outKey[3] == 1) {
+        ++v.rtStill;
+        v.rtMore = false;
+        std::lock_guard<std::mutex> lock(mutex_);
+        v.rtInfo.active = true;
+        v.rtInfo.stillFrames = v.rtStill;
+        v.rtInfo.tracingSkipped = true;
+        return true;
+    }
     const Mat4 prevVP = v.havePrev ? v.prevViewProj : view.viewProj;
     double jx = 0, jy = 0;
     uint32_t phases = 1;
@@ -890,10 +929,13 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     for (int i = 0; i < 16; ++i) rep[i] = static_cast<float>(reproject[static_cast<size_t>(i)]);
     dlssPass_->endSceneAndMotion(cmd, d, rep, static_cast<float>(jx), static_cast<float>(jy));
     rtLit_->endGBuffer(cmd, v.rt);
+    if (v.timer) v.timer->stamp(cmd, slot, "raster");
 
     // ---- 2. the light of every pixel
     dlssPass_->beforeUpscale(cmd, d);
     RtLitFrame fr;
+    fr.timer = v.timer.get();
+    fr.timerSlot = slot;
     fr.slot = slot;
     fr.frameNumber = v.rtFrameNumber++;
     fr.reset = reset;
@@ -943,6 +985,11 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
         }
     }
     dlssPass_->afterUpscale(cmd, d);
+    if (v.timer) v.timer->stamp(cmd, slot, "upscale");
+    v.rtOutputReady = ok;
+    v.rtOutSame = sameInputs ? v.rtOutSame + 1 : 0;   // the upscaler / filter needs a second frame on unchanged inputs before the picture is settled
+    v.rtOutKey = outKey;
+    std::copy(fr.styleW, fr.styleW + 4, v.rtOutStyleW);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         v.rtSlotFrame[slot & 1u] = v.rtInfo.frames + 1;
@@ -1132,6 +1179,35 @@ void RenderThread::loop() {
                     v.capture.reset();
                     v.dirty = false;
                 }
+                // R8 ray budget: with several ray traced viewports in one iteration the active one draws first and the others are held back one iteration when the GPU time of
+                // the iteration would exceed the budget (a held-back viewport is drawn at the next iteration whatever the budget says: nothing starves)
+                if (rtLitEnabled_.load() && rtLitOptions_.frameBudgetMs > 0.0f && work.size() > 1) {
+                    const auto isRt = [&](const Work& w) { return w.view.perspective && (w.view.renderMode == 1 || w.view.renderMode == 2) && !w.v->rtFailed && !w.capture; };
+                    const auto cost = [&](const Work& w) {
+                        double ms = 0;
+                        for (const PassTime& t : w.v->gpuPasses) ms += t.ms;
+                        return ms > 0 ? ms : 2.0;   // no measurement yet
+                    };
+                    const ViewportId activeId = activeViewport_.load();
+                    std::stable_sort(work.begin(), work.end(), [&](const Work& a, const Work& b) { return (a.v->id == activeId) > (b.v->id == activeId); });
+                    double spent = 0;
+                    bool any = false;
+                    for (size_t i = 0; i < work.size();) {
+                        Work& w = work[i];
+                        if (!isRt(w)) { ++i; continue; }
+                        const double c = cost(w);
+                        if (any && w.v->rtDeferred < 1 && spent + c > rtLitOptions_.frameBudgetMs) {
+                            ++w.v->rtDeferred;
+                            w.v->dirty = true;
+                            work.erase(work.begin() + static_cast<std::ptrdiff_t>(i));
+                            continue;
+                        }
+                        w.v->rtDeferred = 0;
+                        spent += c;
+                        any = true;
+                        ++i;
+                    }
+                }
             }
         }
         for (auto& v : toRelease) {
@@ -1229,6 +1305,30 @@ void RenderThread::loop() {
                 continue;
             }
             gpu::Swapchain& sc = *v.swapchain;
+            const uint32_t timerSlot = static_cast<uint32_t>((v.frameCounter - 1) % kFramesInFlight);
+            static const bool timing = [] {
+                char* value = nullptr;
+                size_t len = 0;
+                const bool off = _dupenv_s(&value, &len, "NATIVE_NO_GPU_TIMER") == 0 && value != nullptr;
+                std::free(value);
+                return !off;
+            }();
+            if (timing && !v.timer) v.timer = std::make_unique<gpu::GpuTimer>(device_, kFramesInFlight);
+            if (v.timer) {   // the GPU time of the frame this slot drew last time, now that it finished
+                std::vector<gpu::GpuTimer::Interval> iv;
+                if (f.timelineValue > 0 && v.timer->collect(timerSlot, iv)) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    for (const auto& i : iv) {
+                        auto p = std::find_if(v.gpuPasses.begin(), v.gpuPasses.end(), [&](const PassTime& t) { return t.name == i.name; });
+                        if (p == v.gpuPasses.end()) v.gpuPasses.push_back({i.name, i.ms});
+                        else p->ms += (i.ms - p->ms) * 0.1;
+                    }
+                    // a pass that was not in this frame decays towards zero (a frame without ray tracing has only "display")
+                    for (auto& t : v.gpuPasses)
+                        if (std::none_of(iv.begin(), iv.end(), [&](const gpu::GpuTimer::Interval& i) { return i.name == t.name; })) t.ms *= 0.9;
+                    ++v.gpuPassFrames;
+                }
+            }
             // NVIDIA Reflex / PCL (T6.7): one frame token per viewport frame; the sleep is the pacing point before the frame's CPU work.
             gpu::Streamline* sl = device_.streamline();
             if (sl) {
@@ -1259,9 +1359,11 @@ void RenderThread::loop() {
             const VkExtent2D extent = sc.extent();
             const bool doCapture = w.capture != nullptr && sc.canCapture();
             vkResetCommandPool(device_.device(), f.pool, 0);
+            if (v.timer) v.timer->begin(timerSlot);   // after the command buffer that used the slot's queries was reset
             VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             vkBeginCommandBuffer(f.cmd, &bi);
+            if (v.timer) v.timer->stamp(f.cmd, timerSlot, "start");
             const VkImage image = sc.image(imageIndex);
             imageBarrier(f.cmd, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                          VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1394,6 +1496,7 @@ void RenderThread::loop() {
             }
             if (pass_) pass_->record(f.cmd, extent, w.view, !scene_->hasObjects());
             vkCmdEndRendering(f.cmd);
+            if (v.timer) v.timer->stamp(f.cmd, timerSlot, "display");
 
             VmaAllocation stagingAlloc = nullptr;
             VkBuffer staging = VK_NULL_HANDLE;

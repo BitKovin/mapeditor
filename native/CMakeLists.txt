@@ -136,7 +136,7 @@ add_library(native_vk STATIC third_party/volk/volk.c src/gpu/vma_impl.cpp)
 target_include_directories(native_vk SYSTEM PUBLIC third_party/volk third_party/vma)
 target_compile_definitions(native_vk PUBLIC VK_NO_PROTOTYPES VK_USE_PLATFORM_WIN32_KHR)
 target_link_libraries(native_vk PUBLIC vendored)   # the Core's copy of the Vulkan headers (one copy, T0.2)
-native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/streamline.cpp src/gpu/swapchain.cpp src/gpu/upload_ring.cpp src/gpu/arena.cpp DEPENDS native_base native_vk)
+native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/streamline.cpp src/gpu/swapchain.cpp src/gpu/upload_ring.cpp src/gpu/arena.cpp src/gpu/gpu_timer.cpp DEPENDS native_base native_vk)
 # NVIDIA Streamline (T6.7, 11_NVIDIA_TECH.md): optional. native/tools/fetch_streamline.ps1 unpacks the SDK into third_party/streamline
 # (git-ignored). Without it gpu/streamline.cpp is a stub and the editor runs as before; with it the headers are used (the DLL is loaded
 # at run time, never linked) and the interposer + plugins are copied next to the exe.

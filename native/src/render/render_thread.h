@@ -151,6 +151,14 @@ public:
     };
     RtLitInfo rtLitInfo(ViewportId id) const;
 
+    // R8: GPU time per pass of this viewport's frames (timestamp queries, smoothed over the last frames; "raster", "rt setup", "rt cache", "rt trace", "rt filter", "rt compose", "upscale",
+    // "display"; a frame that is not ray traced has only "display" = the whole frame). `frames` counts the frames folded in so far. Empty before the first frame came back.
+    struct PassTime {
+        std::string name;
+        double ms = 0;
+    };
+    std::vector<PassTime> gpuPassTimes(ViewportId id, uint64_t* frames = nullptr) const;
+
     // Renders the next frame of this viewport and returns its pixels. Blocks the caller (not the render thread's other
     // viewports) up to timeoutMs; returns an empty image on timeout or when the viewport has no surface area.
     CapturedImage capture(ViewportId id, int timeoutMs = 4000);
@@ -190,6 +198,7 @@ private:
     std::atomic<double> styleClock_{-1.0};
     double styleNow() const;
     RtLitOptions rtLitOptions_;           // guarded by mutex_
+    std::atomic<ViewportId> activeViewport_{0};   // the viewport whose camera moved last (the ray budget serves it first)
     RtLighting rtLighting_;               // guarded by mutex_
     std::shared_ptr<const RtLightData> rtLightData_;   // guarded by mutex_
     uint64_t rtLightSerial_ = 1;          // guarded by mutex_; grows with every setRtLights

@@ -1597,3 +1597,184 @@ TEST_CASE("RT Lit: the glass of a level is lit by the lights, the sun's shadow r
     CHECK(bounceLuma >= litLuma - 1.0);
     CHECK(f.device->validationErrors() == 0);
 }
+
+// ---- R8: the perf gates of the ray traced Lit viewport (12_RT_VIEWPORT.md section 9) ---------------------------------------------------------------------------------------------------------
+// A measurement, not a regression test: runs only with NATIVE_BENCH_ROOT (assets root) and NATIVE_BENCH_MAP set, e.g.
+//   NATIVE_BENCH_ROOT=F:/Git/SdlWasmEngine/source/Games/ShooterGame/GameData NATIVE_BENCH_MAP=maps/lvl2.map.json NATIVE_BENCH_SCENARIO=orbit native_tests -tc=*bench*
+// NATIVE_BENCH_SCENARIO: orbit (the camera turns every frame: G-rt-move), still (a converged view: G-rt-still), light_drag (the camera is still, one local light moves every frame: G-rt-edit),
+// sun_turn (the same with the sun), open (seconds to the first picture, the loaded scene and the converged picture), unlit (orbit in the Unlit mode: the baseline of G-rt-still); NATIVE_BENCH_SIZE (WxH, default 2560x1440), NATIVE_BENCH_DLSS (off | quality | dlaa, default quality), NATIVE_BENCH_SECONDS (default 6),
+// NATIVE_BENCH_BOUNCES (0 / 1, default 1), NATIVE_BENCH_EYE / NATIVE_BENCH_TARGET. The window is hidden: the frames are paced by the GPU and the presentation engine, so the report gives the GPU time of
+// every pass (timestamp queries, render/render_thread.h gpuPassTimes) next to the frames per second.
+TEST_CASE("RT bench: frames and GPU time per pass of one ray traced Lit viewport" * doctest::test_suite("bench") * doctest::skip(rtEnv("NATIVE_BENCH_ROOT").empty())) {
+    const auto env = [](const char* name, const std::string& fallback) {
+        const std::string v = rtEnv(name);
+        return v.empty() ? fallback : v;
+    };
+    const auto numbers = [](std::string text) {
+        for (char& c : text)
+            if (c == ',' || c == 'x') c = ' ';
+        std::istringstream in(text);
+        std::vector<double> out;
+        double d = 0;
+        while (in >> d) out.push_back(d);
+        out.resize(3, 0.0);
+        return out;
+    };
+    const std::vector<double> size = numbers(env("NATIVE_BENCH_SIZE", "2560x1440"));
+    const std::string scenario = env("NATIVE_BENCH_SCENARIO", "orbit");
+    const std::string dlssName = env("NATIVE_BENCH_DLSS", "quality");
+    const double seconds = std::atof(env("NATIVE_BENCH_SECONDS", "6").c_str());
+    Fixture f;
+    f.root = env("NATIVE_BENCH_ROOT", "");
+    f.mapName = env("NATIVE_BENCH_MAP", "maps/lvl2.map.json");
+    f.dlss = dlssName == "off" ? 0 : dlssName == "dlaa" ? 2 : 1;
+    if (!f.start(static_cast<uint32_t>(size[0]), static_cast<uint32_t>(size[1]), f.dlss != 0)) return;
+    const std::vector<double> eye = numbers(env("NATIVE_BENCH_EYE", "30,1.2,-14")), target = numbers(env("NATIVE_BENCH_TARGET", "26.5,1.0,-23.5"));
+    const bool unlit = scenario == "unlit";   // the baseline of G-rt-still: the same camera flight in the Unlit mode, no ray tracing
+    f.mode = unlit ? 0 : 1;
+    f.rig.fly().lookAt({eye[0], eye[1], eye[2]}, {target[0], target[1], target[2]});
+    const auto profile = std::make_shared<core::GameProfile>(core::loadProfile(f.root));
+
+    // the level's lights (all styles), the way the editor feeds them
+    core::Scene cscene{std::filesystem::path(f.root)};
+    cscene.loadGameProfile();
+    cscene.openDocument(f.mapName);
+    std::vector<core::Light> lights = cscene.lightScene().lights;
+    const core::LightStyleTable styles = core::LightStyleTable::fromProfile(*profile);
+    const auto lightsOf = [&] { return render::makeRtLightData(lights, &styles); };
+    f.rt->setRtLighting(render::rtLightingOf(*f.snapshot->doc));
+    f.rt->setObjectRules(render::makeRtRules(*f.snapshot, core::LightingClasses::fromProfile(*profile)));
+    f.rt->setRtLights(lightsOf());
+    render::RtLitOptions o = options(1024);
+    o.lightmapTexelsPerMeter = 16.0f;
+    o.bounces = env("NATIVE_BENCH_BOUNCES", "1") != "0";
+    const auto tOpen = std::chrono::steady_clock::now();
+    f.rt->setRtLit(!unlit, o);
+    f.shot();
+    const double tFirst = std::chrono::duration<double>(std::chrono::steady_clock::now() - tOpen).count();
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 300000));
+    if (scenario == "open") {   // the level just opened in a Lit viewport: the first picture, the loaded scene, the converged picture
+        const double tLoaded = std::chrono::duration<double>(std::chrono::steady_clock::now() - tOpen).count();
+        f.cut++;
+        f.shot();
+        REQUIRE(f.converge(600000));
+        const double tConverged = std::chrono::duration<double>(std::chrono::steady_clock::now() - tOpen).count();
+        MESSAGE("G-rt open " << f.mapName << " " << size[0] << "x" << size[1] << " DLSS " << dlssName << ": first picture " << tFirst << " s, textures and scene loaded " << tLoaded << " s, converged "
+                             << tConverged << " s after the Lit switch, " << f.info().frames << " frames");
+        CHECK(f.device->validationErrors() == 0);
+        return;
+    }
+
+    // which light moves: the first local light of style 0 that casts shadows / the first sun
+    int moving = -1;
+    for (size_t i = 0; i < lights.size() && moving < 0; ++i) {
+        const bool local = lights[i].type == core::LightType::Point || lights[i].type == core::LightType::Spot;
+        if (scenario == "light_drag" ? local : lights[i].type == core::LightType::Directional) moving = static_cast<int>(i);
+    }
+    if (scenario == "light_drag" || scenario == "sun_turn") REQUIRE_MESSAGE(moving >= 0, "the level has no light to move for this scenario");
+    const core::Light home = moving >= 0 ? lights[static_cast<size_t>(moving)] : core::Light{};
+
+    double phase = 0;
+    const auto step = [&] {
+        phase += 0.05;
+        if (scenario == "orbit" || scenario == "unlit") {
+            const double r = 10.0, a = phase * 0.4;
+            f.rig.fly().lookAt({eye[0], eye[1], eye[2]}, {eye[0] + std::cos(a) * r, eye[1] - 0.05 * r, eye[2] + std::sin(a) * r});
+            f.cut += 0;   // the camera motion alone invalidates nothing; the history is reprojected
+        } else if (scenario == "light_drag" && moving >= 0) {
+            core::Light& l = lights[static_cast<size_t>(moving)];
+            l.position = home.position + core::Vec3{std::sin(phase) * 3.0, 0.0, std::cos(phase) * 3.0};
+            f.rt->setRtLights(lightsOf());
+        } else if (scenario == "sun_turn" && moving >= 0) {
+            core::Light& l = lights[static_cast<size_t>(moving)];
+            const double a = phase * 0.5;
+            l.forward = core::Vec3{std::cos(a) * 0.6, -0.8, std::sin(a) * 0.6}.normalized();
+            f.rt->setRtLights(lightsOf());
+        }
+        f.rt->setView(f.id, f.view());
+    };
+    const auto run =[&](double secs) {
+        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int>(secs * 1000));
+        while (std::chrono::steady_clock::now() < end) {
+            if (scenario != "still") step();
+            else f.rt->markDirty(f.id);   // a converged picture repainted every frame (an overlay changed): the cost of G-rt-still
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    };
+    if (scenario == "still") {
+        f.shot();
+        REQUIRE(f.converge(300000));
+    }
+    run(3.0);   // warm up: the history, DLSS, the cache (still: the settling frames, then the repaints reuse the converged picture)
+    const uint64_t before = f.rt->framesRendered(f.id);
+    const auto t0 = std::chrono::steady_clock::now();
+    run(seconds);
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const uint64_t frames = f.rt->framesRendered(f.id) - before;
+    uint64_t folded = 0;
+    const auto passes = f.rt->gpuPassTimes(f.id, &folded);
+    double total = 0;
+    std::ostringstream pr;
+    pr << std::fixed << std::setprecision(2);
+    for (const auto& p : passes) {
+        total += p.ms;
+        pr << "\n   " << std::setw(10) << std::left << p.name << " " << p.ms << " ms";
+    }
+    const auto info = f.info();
+    MESSAGE("G-rt " << scenario << " " << f.mapName << " " << size[0] << "x" << size[1] << " DLSS " << dlssName << " bounces " << o.bounces << ": " << frames / elapsed << " fps over " << elapsed
+                    << " s, GPU " << total << " ms per frame (" << (total > 0 ? 1000.0 / total : 0.0) << " fps from the GPU time), render " << info.renderW << "x" << info.renderH
+                    << ", tracing skipped " << info.tracingSkipped << ", resets " << info.resets << pr.str());
+    CHECK(f.device->validationErrors() == 0);
+}
+
+// ---- R8: the ray budget across viewports (12_RT_VIEWPORT.md section 9) -----------------------------------------------------------------------------------------------------------------------
+TEST_CASE("RT Lit: the ray budget serves the viewport being worked in first, the other waits an iteration and never starves" * doctest::test_suite("gpu")) {
+    Fixture f;
+    if (!f.start(320, 200)) return;
+    HWND hwnd2 = makeWindow(320, 200);
+    VkSurfaceKHR surface2 = VK_NULL_HANDLE;
+    VkWin32SurfaceCreateInfoKHR ci{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
+    ci.hinstance = GetModuleHandleW(nullptr);
+    ci.hwnd = hwnd2;
+    REQUIRE(vkCreateWin32SurfaceKHR(f.device->instance(), &ci, nullptr, &surface2) == VK_SUCCESS);
+    const render::ViewportId id2 = f.rt->addViewport(surface2, 320, 200);
+    f.rt->setRtLighting(testLighting());
+    render::RtLitOptions o = options(1u << 20);   // never converges within the test: both viewports keep asking for frames
+    o.frameBudgetMs = 0.001f;                     // every iteration is over budget
+    f.rt->setRtLit(true, o);
+    REQUIRE(f.shot().width == f.w);
+    render::ViewState other = f.view();
+    f.rt->setView(id2, other);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+
+    const auto run = [&](double secs, uint64_t* a, uint64_t* b) {
+        const uint64_t a0 = f.rt->framesRendered(f.id), b0 = f.rt->framesRendered(id2);
+        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int>(secs * 1000));
+        double phase = 0;
+        while (std::chrono::steady_clock::now() < end) {
+            phase += 0.05;   // the camera of the first viewport moves, the second one's view is only asked to draw again
+            f.rig.fly().lookAt({3.55, 1.6, 2.5}, {-0.5 + std::sin(phase), 1.2, -3.5});
+            f.rt->setView(f.id, f.view());
+            f.rt->markDirty(id2);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        *a = f.rt->framesRendered(f.id) - a0;
+        *b = f.rt->framesRendered(id2) - b0;
+    };
+    uint64_t a = 0, b = 0;
+    run(2.0, &a, &b);
+    MESSAGE("over budget: the viewport in use drew " << a << " frames, the other " << b);
+    CHECK(b > 0);                                                    // never starves
+    CHECK(static_cast<double>(a) > 1.3 * static_cast<double>(b));    // the active one goes first
+
+    o.frameBudgetMs = 0.0f;                                          // no limit: both draw every iteration
+    f.rt->setRtLit(true, o);
+    run(2.0, &a, &b);
+    MESSAGE("no limit: " << a << " frames and " << b);
+    CHECK(static_cast<double>(b) > 0.7 * static_cast<double>(a));
+    CHECK(f.device->validationErrors() == 0);
+
+    f.rt->removeViewport(id2);
+    vkDestroySurfaceKHR(f.device->instance(), surface2, nullptr);
+    DestroyWindow(hwnd2);
+}

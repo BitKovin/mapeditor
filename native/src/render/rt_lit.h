@@ -17,6 +17,7 @@
 #include <cstdint>
 
 #include "gpu/device.h"
+#include "gpu/gpu_timer.h"
 #include "render/dlss_pass.h"
 #include "render/math3d.h"
 #include "render/rt_lighting.h"
@@ -33,6 +34,7 @@ struct RtLitOptions {
     bool filter = true;                // the fallback denoiser (it never runs while DLSS Ray Reconstruction does)
     float meanBlend = 32.0f;           // N at which the running mean has replaced the filtered value completely
     float meanBlendRr = 64.0f;         // the same for the input of DLSS Ray Reconstruction under a still camera
+    float frameBudgetMs = 8.0f;        // R8: GPU ms of ray traced viewports per render iteration; the active viewport (the one whose camera moved last) draws first, the others wait one iteration when the sum would exceed it; 0 = no limit
     float lightmapTexelsPerMeter = 16.0f;   // the lightmap look: shading at the centres of a planar texel grid of this density, bilinearly weighted (the game base density); 0 = smooth
     // Bounce light (R6): the SHaRC radiance cache of S = Db + I as the bake defines it. One cache per viewport; off without the device features (DeviceCaps::bounceCache).
     bool bounces = true;
@@ -90,6 +92,8 @@ struct RtLitTargets {
 
 // What one frame's compute passes need to know.
 struct RtLitFrame {
+    gpu::GpuTimer* timer = nullptr;    // R8: the passes of the frame stamp their end here (null = no timing)
+    uint32_t timerSlot = 0;
     uint32_t slot = 0;                 // frame in flight: picks the descriptor sets and the read-back
     uint32_t frameNumber = 0;          // the random sequence's position
     bool reset = false;                // every history restarts
