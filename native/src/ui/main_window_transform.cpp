@@ -180,6 +180,14 @@ void MainWindow::updateTransform() {
         });
     };
 
+    if (t.face.active) {
+        updateFaceDrag(t);
+        return;
+    }
+    if (t.resize.active) {
+        updateResize(t);
+        return;
+    }
     if (t.mesh.active && (t.kind == tools::ModalKind::Extrude || t.kind == tools::ModalKind::Inset || t.kind == tools::ModalKind::Bevel || t.kind == tools::ModalKind::LoopCut)) {
         MeshSession& m = t.mesh;
         const double step = render::snapStep(settings);
@@ -302,6 +310,16 @@ void MainWindow::showTransformStatus() {
         return;
     }
     char buf[96];
+    if (t.face.active) {
+        std::snprintf(buf, sizeof buf, "Drag face: %.3f m", t.value);
+        statusBar()->showMessage(QString::fromUtf8(buf));
+        return;
+    }
+    if (t.resize.active) {
+        std::snprintf(buf, sizeof buf, "Resize: %.3f Ã %.3f m", t.resize.width, t.resize.height);
+        statusBar()->showMessage(QString::fromUtf8(buf));
+        return;
+    }
     if (t.kind == tools::ModalKind::Rotate) std::snprintf(buf, sizeof buf, "Rotate %c: %.1f\xC2\xB0", "XYZ"[t.axis], t.value * 180.0 / kPi);
     else if (t.kind == tools::ModalKind::Scale) std::snprintf(buf, sizeof buf, "Scale %c: \xC3\x97%.2f", "XYZ"[t.axis], t.value);
     else std::snprintf(buf, sizeof buf, "%s %c: %.3f m", t.label.c_str(), "XYZ"[t.axis], t.value);
@@ -380,9 +398,12 @@ bool MainWindow::transformMouse(size_t index, const actions::InputEvent& e) {
         }
         return false;
     }
+    if (e.type == Type::MousePress && e.button == 1 && e.mods == actions::kAlt && beginFaceDrag(vp, QPointF(e.x, e.y), true)) return true;
     const bool shiftExtrude = e.mods == actions::kShift && meshMode() && meshElement() == tools::mesh::SelMode::Face && !meshSelection().faces.empty() && vp->rig().settings().gizmo == render::GizmoMode::Move;
     if (e.type == Type::MousePress && e.button == 1 && (e.mods == 0 || shiftExtrude)) {
         if (!shiftExtrude && originHit(vp, QPointF(e.x, e.y))) return true;   // the square sits on the gizmo's pivot: it wins
+        if (!shiftExtrude && beginResizeDrag(vp, QPointF(e.x, e.y))) return true;   // the 2D resize handles and the arrow of a selected face come before the gizmo
+        if (!shiftExtrude && beginFaceDrag(vp, QPointF(e.x, e.y), false)) return true;
         if (beginGizmoDrag(vp, QPointF(e.x, e.y), shiftExtrude)) return true;
         if (!originSel_.empty()) {   // a click that grabs neither the origin nor its gizmo ends the origin editing
             originSel_.clear();
@@ -472,6 +493,7 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesOnly(size_t index) {
     if (knife_) return knifeLines(index);      // so does the knife
     if (clip_) return clipperLines(index);     // and the clipper
     if (transform_ && transform_->source == TransformSession::Source::Modal) return {};   // the modal operators show no gizmo
+    if (transform_ && (transform_->face.active || transform_->resize.active)) return faceDragLines(index);   // a face drag / 2D resize shows its handles
     GizmoTarget g;
     tools::Axis active = -1;
     if (transform_) {   // a gizmo drag: the gizmo follows the pivot, the dragged handle is highlighted
@@ -511,6 +533,8 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesOnly(size_t index) {
             const double half = 5.0 * tools::metresPerPixelAt(d, vp->rig().active().fovY, std::max(1, vp->height()));
             handle = tools::originHandleLines(*origin, b.right, b.up, half, !originSel_.empty());
         }
+        const std::vector<render::LineVertex> extra = faceDragLines(index);   // the arrow of the selected face / the 2D resize handles
+        handle.insert(handle.end(), extra.begin(), extra.end());
         g = gizmoTarget(vp);
         if (!g.valid) return handle;
         if (gizmoHover_.panel == index) active = gizmoHover_.axis;

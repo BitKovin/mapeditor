@@ -12,6 +12,7 @@
 #include "doc/io.h"
 #include "doc/selection.h"
 #include "tools/brush_edit.h"
+#include "tools/resize2d.h"
 #include "ui/app_actions.h"
 #include "ui/main_window.h"
 
@@ -245,4 +246,112 @@ TEST_CASE("brush operations: keys and menu") {
     // the clipper is off while mesh mode owns the brush
     CHECK(f.window.enterMeshMode());
     CHECK_FALSE(f.window.startClipper());
+}
+
+// ---- T11.2c: face drag and 2D resize -----------------------------------------------------------------------------------------------------
+
+namespace {
+double maxCoord(const core::Brush* b, int axis) {
+    double m = -1e300;
+    for (const core::Vec3& v : b->vertices) m = std::max(m, axis == 0 ? v.x : axis == 1 ? v.y : v.z);
+    return m;
+}
+double minCoord(const core::Brush* b, int axis) {
+    double m = 1e300;
+    for (const core::Vec3& v : b->vertices) m = std::min(m, axis == 0 ? v.x : axis == 1 ? v.y : v.z);
+    return m;
+}
+} // namespace
+
+TEST_CASE("face handle: one selected face in object mode has an arrow along its outward normal from its centre") {
+    Fixture f;
+    CHECK_FALSE(f.window.faceHandle());
+    f.window.selection().select(SelRef::brush("w", "room"));
+    CHECK_FALSE(f.window.faceHandle());   // a whole brush has the gizmo, not the face arrow
+    f.window.selection().select(SelRef::face("w", "room", 3));   // +X
+    const auto h = f.window.faceHandle();
+    REQUIRE(h);
+    CHECK(h->brushId == "room");
+    CHECK(h->faceId == 3);
+    CHECK(h->pivot.x == doctest::Approx(10));
+    CHECK(h->pivot.y == doctest::Approx(5));
+    CHECK(h->pivot.z == doctest::Approx(5));
+    CHECK(h->dir.x == doctest::Approx(1));
+    CHECK(std::abs(h->dir.y) + std::abs(h->dir.z) < 1e-9);
+    f.window.selection().select(SelRef::face("w", "room", 4));   // -Y
+    REQUIRE(f.window.faceHandle());
+    CHECK(f.window.faceHandle()->dir.y == doctest::Approx(-1));
+    // two faces: no arrow; mesh mode, clipper and the box tool own the pointer
+    f.window.selection().selectMany(*f.window.document(), {SelRef::face("w", "room", 3), SelRef::face("w", "room", 4)});
+    CHECK_FALSE(f.window.faceHandle());
+    f.window.selection().select(SelRef::face("w", "room", 3));
+    f.window.setTool(ui::MainWindow::Tool::Box);
+    CHECK_FALSE(f.window.faceHandle());
+    f.window.setTool(ui::MainWindow::Tool::Select);
+    CHECK(f.window.faceHandle());
+    // without a viewport there is nothing to press on
+    CHECK_FALSE(f.window.beginFaceDrag(nullptr, QPointF(1, 1), true));
+    CHECK_FALSE(f.window.beginFaceDrag(nullptr, QPointF(1, 1), false));
+    CHECK_FALSE(f.window.beginResizeDrag(nullptr, QPointF(1, 1)));
+    CHECK_FALSE(f.window.resizeInfo(nullptr));
+}
+
+TEST_CASE("face drag on the document: the face moves along its normal, a collapse is refused, the base version is untouched") {
+    Fixture f;
+    const auto base = f.window.document();
+    const tools::FaceDragEdit r = tools::dragFaceEdit(base, "w", "room", 3, 2.0);
+    REQUIRE(r.version);
+    const core::Brush* room = nullptr;
+    for (const auto& n : r.version->entities[0]->brushes)
+        if (n->brush.id == "room") room = &n->brush;
+    REQUIRE(room);
+    CHECK(maxCoord(room, 0) == doctest::Approx(12));
+    CHECK(minCoord(room, 0) == doctest::Approx(0));
+    CHECK(maxCoord(room, 1) == doctest::Approx(10));
+    CHECK_FALSE(room->checkConvexSolid());
+    CHECK(maxCoord(f.brush("room"), 0) == doctest::Approx(10));   // the document itself did not change
+    // pulling the +X face past the -X face: refused with a reason
+    const tools::FaceDragEdit bad = tools::dragFaceEdit(base, "w", "room", 3, -20.0);
+    CHECK_FALSE(bad.version);
+    CHECK_FALSE(bad.error.empty());
+    CHECK_FALSE(tools::dragFaceEdit(base, "w", "nope", 3, 1.0).version);
+    CHECK_FALSE(tools::dragFaceEdit(base, "w", "room", 99, 1.0).version);
+    // dragging back to 0 gives the same shape
+    const tools::FaceDragEdit zero = tools::dragFaceEdit(base, "w", "room", 3, 0.0);
+    REQUIRE(zero.version);
+    CHECK(zero.version->entities[0]->brushes[0]->brush.vertices.size() == 8);
+}
+
+TEST_CASE("2D resize on the document: the dragged side moves, the opposite side stays, the selection's bounds follow") {
+    Fixture f;
+    const std::vector<SelRef> sel = {SelRef::brush("w", "room"), SelRef::brush("w", "in1")};
+    tools::V3 lo, hi;
+    REQUIRE(tools::selectionBounds(*f.window.document(), sel, lo, hi));
+    CHECK(lo[0] == doctest::Approx(0));
+    CHECK(hi[0] == doctest::Approx(10));
+    tools::V3 none0, none1;
+    CHECK_FALSE(tools::selectionBounds(*f.window.document(), {}, none0, none1));
+    // the Front view: screen right = +X, up = +Y; the right-hand handle (h = 1, v = 0) dragged 2 m
+    const tools::ScreenAxis right{0, 1}, up{1, 1};
+    const tools::Affine map = tools::resizeMap(lo, hi, right, up, 1, 0, 2.0, 0.0, 0.25);
+    const auto after = tools::transformSelections(f.window.document(), {SelRef::brush("w", "room")}, map, false, 0, true);
+    REQUIRE(after);
+    const core::Brush* room = nullptr;
+    for (const auto& n : after->entities[0]->brushes)
+        if (n->brush.id == "room") room = &n->brush;
+    REQUIRE(room);
+    CHECK(minCoord(room, 0) == doctest::Approx(0));
+    CHECK(maxCoord(room, 0) == doctest::Approx(12));
+    CHECK(maxCoord(room, 1) == doctest::Approx(10));   // nothing outside the dragged axis changes
+    CHECK(maxCoord(room, 2) == doctest::Approx(10));
+    CHECK_FALSE(room->checkConvexSolid());
+    // the left-hand handle dragged right shrinks it from the left
+    const tools::Affine left = tools::resizeMap(lo, hi, right, up, -1, 0, 3.0, 0.0, 0.25);
+    const auto shrunk = tools::transformSelections(f.window.document(), {SelRef::brush("w", "room")}, left, false, 0, true);
+    REQUIRE(shrunk);
+    for (const auto& n : shrunk->entities[0]->brushes)
+        if (n->brush.id == "room") {
+            CHECK(minCoord(&n->brush, 0) == doctest::Approx(3));
+            CHECK(maxCoord(&n->brush, 0) == doctest::Approx(10));
+        }
 }

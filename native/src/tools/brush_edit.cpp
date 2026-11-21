@@ -1,6 +1,7 @@
 // tools/brush_edit -- see brush_edit.h.
 #include "tools/brush_edit.h"
 
+#include <algorithm>
 #include <set>
 
 #include "doc/edit.h"
@@ -164,6 +165,43 @@ BrushEdit snapSelection(const Base& base, const std::vector<SelRef>& sels, doubl
     if (!r.version) return refused(ed.error());
     r.message = failed ? "Snapped " + std::to_string(snapped) + "; " + std::to_string(failed) + " brush(es) would break and were left alone" : "Snapped " + plural(snapped, "brush", "brushes");
     return r;
+}
+
+FaceDragEdit dragFaceEdit(const Base& base, const std::string& entityId, const std::string& brushId, uint32_t faceId, double dist) {
+    FaceDragEdit out;
+    if (!base) {
+        out.error = "no document";
+        return out;
+    }
+    const int bi = base->findBrush(entityId, brushId);
+    const int ei = base->findEntity(entityId);
+    if (bi < 0 || ei < 0) {
+        out.error = "the brush is gone";
+        return out;
+    }
+    const DragResult r = dragFace(base->entities[static_cast<size_t>(ei)]->brushes[static_cast<size_t>(bi)]->brush, faceId, dist);
+    if (!r.ok()) {
+        out.error = r.error;
+        return out;
+    }
+    doc::VersionEditor ed(base);
+    ed.replaceBrush(entityId, r.brush);
+    out.version = ed.finish();
+    if (!out.version) out.error = ed.error();
+    return out;
+}
+
+bool selectionBounds(const doc::DocumentVersion& d, const std::vector<SelRef>& sels, V3& lo, V3& hi) {
+    lo = {1e300, 1e300, 1e300};
+    hi = {-1e300, -1e300, -1e300};
+    bool any = false;
+    for (const SelectedBrush& sb : selectedBrushes(d, sels))
+        for (const core::Vec3& v : sb.brush().vertices) {
+            any = true;
+            lo = {std::min(lo[0], v.x), std::min(lo[1], v.y), std::min(lo[2], v.z)};
+            hi = {std::max(hi[0], v.x), std::max(hi[1], v.y), std::max(hi[2], v.z)};
+        }
+    return any;
 }
 
 VolumeSelect selectByVolume(const doc::DocumentVersion& d, const std::vector<SelRef>& sels, VolumeMode mode) {

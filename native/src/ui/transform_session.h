@@ -17,6 +17,7 @@
 #include "doc/selection.h"
 #include "render/math3d.h"
 #include "tools/mesh/topology.h"
+#include "tools/resize2d.h"
 #include "tools/modal.h"
 
 namespace native::render { class ViewportWindow; }
@@ -50,6 +51,25 @@ struct MeshSession {
     bool haveResult = false;
 };
 
+// A drag of one face along its normal (T11.2c): the handle of the selected face, or Alt + drag on any face. Every update drags the face of the base brush by the
+// pointer's distance along the normal line (snapped), so the whole drag is one undo step.
+struct FaceDragSession {
+    bool active = false;
+    std::string entityId, brushId;
+    uint32_t faceId = 0;
+    render::Vec3 dir{0, 0, 0};     // the face's outward normal at the start
+};
+
+// A 2D resize in an orthographic view (T11.2c): one of the eight handles of the selection's bounding rectangle.
+struct ResizeSession {
+    bool active = false;
+    tools::V3 min{0, 0, 0}, max{0, 0, 0};
+    tools::ScreenAxis right, up;
+    int h = 0, v = 0;               // the handle
+    double metresPerPixel = 0;
+    double width = 0, height = 0;   // the size along the screen axes now, for the status line
+};
+
 struct TransformSession {
     enum class Source { Modal, Gizmo };
     Source source = Source::Modal;
@@ -70,6 +90,8 @@ struct TransformSession {
     double value = 0;                 // the current parameter (metres, radians or factor), for the status line
     std::string label;
     MeshSession mesh;
+    FaceDragSession face;
+    ResizeSession resize;
 };
 
 } // namespace native::ui

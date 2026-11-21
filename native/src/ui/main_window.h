@@ -32,6 +32,8 @@
 #include "render/rt_lights.h"
 #include "scene/snapshot.h"
 #include "tools/details.h"
+#include "tools/face_drag.h"
+#include "tools/resize2d.h"
 #include "tools/edit_ops.h"
 #include "tools/gizmo.h"
 #include "tools/modal.h"
@@ -310,6 +312,27 @@ public:
     // `extrude`: mesh mode, face element, Shift on the move arrow: the picked faces are extruded along the arrow instead of moved.
     bool beginGizmoDrag(render::ViewportWindow* viewport, QPointF p, bool extrude = false);
 
+    // ---- face drag and 2D resize (T11.2c) ----
+    // The handle of the one selected face (object mode, select tool): an arrow along the face's outward normal from the centre of the face.
+    struct FaceHandle {
+        std::string entityId, brushId;
+        uint32_t faceId = 0;
+        render::Vec3 pivot, dir;
+    };
+    std::optional<FaceHandle> faceHandle() const;
+    // The eight handles on the bounding rectangle of the selected brushes in an orthographic view (select tool, no face handle); none elsewhere.
+    struct ResizeInfo {
+        tools::V3 min, max;
+        tools::ScreenAxis right, up;
+        double metresPerPixel = 0;
+    };
+    std::optional<ResizeInfo> resizeInfo(const render::ViewportWindow* viewport) const;
+    // The face of the brush under `p` is selected and dragged along its normal (Alt + left button), or the arrow of the selected face is dragged (`alt` false). False when
+    // nothing was hit.
+    bool beginFaceDrag(render::ViewportWindow* viewport, QPointF p, bool alt);
+    // A press on a handle of the 2D resize of `viewport`.
+    bool beginResizeDrag(render::ViewportWindow* viewport, QPointF p);
+
     // ---- the box / shape tool (T4.2) ----
     enum class Tool { Select, Box };
     Tool tool() const { return tool_; }
@@ -578,6 +601,9 @@ private:
     tools::Axis gizmoAxisAt(render::ViewportWindow* vp, const GizmoTarget& g, QPointF p);
     bool originHit(render::ViewportWindow* vp, QPointF p);
     std::optional<render::Vec3> originHandle() const;
+    void updateFaceDrag(TransformSession& t);     // main_window_facedrag.cpp
+    void updateResize(TransformSession& t);
+    std::vector<render::LineVertex> faceDragLines(size_t panelIndex) const;
     void updateTransform();
     void showTransformStatus();
     void endTransform(bool confirm);

@@ -11,6 +11,8 @@
 #include "doc/document.h"
 #include "doc/selection.h"
 #include "tools/brush_ops.h"
+#include "tools/face_drag.h"
+#include "tools/transform.h"
 
 namespace native::tools {
 
@@ -38,6 +40,16 @@ BrushEdit hollowSelection(const std::shared_ptr<const doc::DocumentVersion>& bas
 BrushEdit mergeSelection(const std::shared_ptr<const doc::DocumentVersion>& base, const std::vector<doc::SelRef>& sels);
 // Snaps the vertices of the selected brushes to the grid; brushes that would break are left alone and counted in the message.
 BrushEdit snapSelection(const std::shared_ptr<const doc::DocumentVersion>& base, const std::vector<doc::SelRef>& sels, double step);
+
+// Face drag: the version where face `faceId` of the brush is moved `dist` metres along its normal (tools/face_drag: dragFace). `version` is null with `error` set when the
+// brush or face is missing or the result would be invalid. Always computed from `base`, so a drag recomputes from the version it began on.
+struct FaceDragEdit {
+    std::shared_ptr<const doc::DocumentVersion> version;
+    std::string error;
+};
+FaceDragEdit dragFaceEdit(const std::shared_ptr<const doc::DocumentVersion>& base, const std::string& entityId, const std::string& brushId, uint32_t faceId, double dist);
+// The bounding box of the brushes the selection covers; false when there are none.
+bool selectionBounds(const doc::DocumentVersion& doc, const std::vector<doc::SelRef>& sels, V3& lo, V3& hi);
 
 enum class VolumeMode { Inside, Touching };
 struct VolumeSelect {
