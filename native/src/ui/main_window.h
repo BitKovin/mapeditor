@@ -38,6 +38,7 @@
 #include "tools/gizmo.h"
 #include "tools/modal.h"
 #include "tools/prefs.h"
+#include "tools/texturing/face_edit.h"
 #include "tools/shapes.h"
 #include "exporting/launch.h"
 #include "tools/brush_edit.h"
@@ -411,6 +412,23 @@ public:
     // The vertex markers of a viewport (a few pixels wide, so they are made per viewport); empty outside mesh mode.
     std::vector<render::LineVertex> meshVertexLines(size_t panelIndex) const;
 
+    // ---- texturing (T11.3d) ----
+    // One texturing command on the selection (a selected face; else all faces of the selected brushes / entities), one undo step. `op` and `params`:
+    //   apply {texture?}  lift  copyUv  pasteUv  flow  nudge {mode: shift|scale|rotate, key: left|right|up|down|rotcw|rotccw, fine?}  reset  fit  hotspot
+    //   justify {edge: left|right|top|bottom|center}  fitAxis {axis, count}  ortho  axial  cam  mirror {axis}  shear {value}  rotate {value degrees}
+    //   shift {axis, value texels}  stretch {axis, value multiple of natural}  matchGrid {grid?}  lightmap {factor | value}  repeat {axis, mode?, edge?}
+    // False when nothing was done (the status bar says why).
+    bool textureCommand(const std::string& op, const nlohmann::json& params = {});
+    tools::tex::InfoFn textureInfo() const;   // the texture environment's sizes / properties (empty without an assets folder)
+    tools::tex::HotspotFn hotspotSource() const;
+    void setTextureInfo(tools::tex::InfoFn info) { textureInfo_ = std::move(info); }       // tests: textures without an assets folder
+    void setHotspotSource(tools::tex::HotspotFn fn) { hotspotOverride_ = std::move(fn); }  // tests
+    std::optional<tools::tex::FaceRef> selectedFaceRef() const;   // the only selected face
+    bool textureTargetsExist() const;                              // texture edits have faces to work on
+    std::optional<tools::tex::FaceRef> copiedFace() const { return copiedFace_; }
+    const tools::tex::TexSteps& textureSteps() const { return texSteps_; }
+    void setTextureSteps(const tools::tex::TexSteps& s) { texSteps_ = s; }
+
     // ---- delete, duplicate, group, clipboard, hide (T4.3) ----
     // Each is one undo step on the selection (prefab-internal and face selections are left alone); false when refused or nothing to do (the status bar says why).
     bool deleteSelected();
@@ -711,6 +729,10 @@ private:
     tools::ShapeId shape_ = tools::ShapeId::Box;
     tools::ShapeParams shapeParams_;
     std::string activeTexture_ = "dev/grey";
+    tools::tex::InfoFn textureInfo_;
+    tools::tex::HotspotFn hotspotOverride_;
+    std::optional<tools::tex::FaceRef> copiedFace_;   // Copy UV
+    tools::tex::TexSteps texSteps_;
     std::string originSel_;
     tools::HideState hide_;
     std::shared_ptr<const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>> hiddenSet_;
