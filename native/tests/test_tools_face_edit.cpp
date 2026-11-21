@@ -8,6 +8,7 @@
 #include "doc/edit.h"
 #include "doc/io.h"
 #include "tools/texturing/face_edit.h"
+#include "tools/texturing/inspector.h"
 
 using namespace native;
 using namespace native::tools::tex;
@@ -329,4 +330,45 @@ TEST_CASE("hotspot action: applies the best-fitting hotspot of the texture; says
     CHECK(u1 - u0 == doctest::Approx(hs.w).epsilon(0.05));
     CHECK(v1 - v0 == doctest::Approx(hs.h).epsilon(0.05));
     CHECK(applyHotspot(d, {}, have).message.find("Select") != std::string::npos);
+}
+
+TEST_CASE("surface fields: the values of the first target face, the mixed flags, the repeat overrides and the lightmap density") {
+    auto d = makeDoc();
+    CHECK_FALSE(surfaceFields(*d, {}, kLoaded).valid);
+    // a face without a projection shows the texture's natural size, no shift, no rotation
+    SurfaceFields f = surfaceFields(*d, faceSel("b1", 1), kLoaded);
+    REQUIRE(f.valid);
+    CHECK(f.faceCount == 1);
+    CHECK(f.texture == "dev/wall");
+    CHECK(f.texels[0] == doctest::Approx(256));
+    CHECK(f.stretch[0] == doctest::Approx(1));
+    CHECK(f.rotate == doctest::Approx(0));
+    CHECK(f.lightmap == doctest::Approx(1));
+    CHECK(f.repeatMode[0].empty());
+    // after edits the fields follow
+    BrushEdit e = nudgeTexture(d, brushSel("b1"), NudgeMode::Shift, TexKey::Right, false, TexSteps{}, kLoaded);
+    REQUIRE(e.ok());
+    d = e.version;
+    e = editLightmapScale(d, faceSel("b1", 1), "x", [](double v) { return v * 2; });
+    REQUIRE(e.ok());
+    d = e.version;
+    e = setFaceRepeat(d, faceSel("b1", 1), 0, RepeatPatch{true, true, "mirror", "clamp"});
+    REQUIRE(e.ok());
+    d = e.version;
+    f = surfaceFields(*d, faceSel("b1", 1), kLoaded);
+    CHECK(f.shift[0] != doctest::Approx(0));
+    CHECK(f.lightmap == doctest::Approx(2));
+    CHECK(f.repeatMode[0] == "mirror");
+    CHECK(f.edge[0] == "clamp");
+    CHECK(f.repeatMode[1].empty());
+    // a brush: every face is a target, the others differ in the lightmap density
+    f = surfaceFields(*d, brushSel("b1"), kLoaded);
+    CHECK(f.faceCount == 6);
+    CHECK(f.mixedLightmap);
+    // two brushes with different textures
+    f = surfaceFields(*d, {SelRef::brush("w", "b1"), SelRef::brush("w", "b2")}, kLoaded);
+    CHECK(f.faceCount == 12);
+    CHECK(f.mixedTexture);
+    // an unloaded texture has no density readout
+    CHECK(surfaceFields(*d, faceSel("b1", 1), kNone).density.empty());
 }

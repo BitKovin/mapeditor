@@ -15,6 +15,12 @@
 #include "tools/texturing/face_edit.h"
 #include "ui/app_actions.h"
 #include "ui/main_window.h"
+#include "ui/surface_panel.h"
+
+#include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QLineEdit>
+#include <QPushButton>
 
 using namespace native;
 using doc::SelRef;
@@ -209,4 +215,57 @@ TEST_CASE("the texture actions are disabled without faces to work on, during mes
     CHECK(shift->enabled(ae, shift->params));
     CHECK(f.window.registry().find("texture.paste_uv"));
     CHECK(f.window.registry().find("texture.project"));
+}
+
+TEST_CASE("surface panel: shows the values of the selected face and every edit is a texture command") {
+    Fixture f;
+    ui::SurfacePanel* panel = f.window.surface();
+    REQUIRE(panel);
+    panel->refreshNow();
+    CHECK_FALSE(panel->fields().valid);
+    f.window.selection().select(SelRef::face("w", "a", 0));
+    panel->refreshNow();
+    REQUIRE(panel->fields().valid);
+    CHECK(panel->fields().texture == "dev/grey");
+    CHECK(static_cast<QLineEdit*>(panel->part("texture"))->text() == "dev/grey");
+    // a field edit
+    CHECK(panel->setField("shiftU", 16));
+    panel->refreshNow();
+    CHECK(panel->fields().shift[0] == doctest::Approx(16));
+    CHECK(static_cast<QDoubleSpinBox*>(panel->part("shiftU"))->value() == doctest::Approx(16));
+    CHECK(panel->setField("rotate", 30));
+    panel->refreshNow();
+    CHECK(panel->fields().rotate == doctest::Approx(30));
+    CHECK(panel->setField("stretchV", 2));
+    panel->refreshNow();
+    CHECK(panel->fields().stretch[1] == doctest::Approx(2));
+    CHECK_FALSE(panel->setField("stretchU", 0));   // a zero stretch is refused
+    // a spin box edit goes the same way
+    static_cast<QDoubleSpinBox*>(panel->part("shear"))->setValue(0.5);
+    panel->refreshNow();
+    CHECK(panel->fields().shear == doctest::Approx(0.5));
+    // buttons
+    static_cast<QPushButton*>(panel->part("btn:reset"))->click();
+    panel->refreshNow();
+    CHECK(panel->fields().rotate == doctest::Approx(0));
+    CHECK(panel->fields().shift[0] != doctest::Approx(16));   // the bottom-left corner of the face, not what was typed
+    static_cast<QPushButton*>(panel->part("btn:lightmap:x2"))->click();
+    panel->refreshNow();
+    CHECK(panel->fields().lightmap == doctest::Approx(2));
+    CHECK(static_cast<QDoubleSpinBox*>(panel->part("lightmap"))->value() == doctest::Approx(2));
+    // the repeat combos
+    static_cast<QComboBox*>(panel->part("modeU"))->setCurrentIndex(2);
+    emit static_cast<QComboBox*>(panel->part("modeU"))->activated(2);
+    panel->refreshNow();
+    CHECK(panel->fields().repeatMode[0] == "mirror");
+    // the texture field applies on Return / the Apply button
+    CHECK(panel->setTexture("wall/brick"));
+    panel->refreshNow();
+    CHECK(panel->fields().texture == "wall/brick");
+    CHECK(f.window.activeTexture() == "wall/brick");
+    // the whole brush: many faces
+    f.window.selection().select(SelRef::brush("w", "a"));
+    panel->refreshNow();
+    CHECK(panel->fields().faceCount == 6);
+    CHECK(panel->fields().mixedTexture);
 }

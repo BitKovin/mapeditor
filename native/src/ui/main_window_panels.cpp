@@ -18,6 +18,7 @@
 #include "ui/main_window.h"
 #include "ui/outliner_panel.h"
 #include "ui/place_panel.h"
+#include "ui/surface_panel.h"
 
 namespace native::ui {
 
@@ -37,6 +38,8 @@ void MainWindow::createToolDocks() {
     outlinerDock_ = make("Outliner", "outlinerDock", outliner_);
     details_ = new DetailsPanel(*this);
     detailsDock_ = make("Details", "detailsDock", details_);
+    surface_ = new SurfacePanel(*this);
+    surfaceDock_ = make("Surface", "surfaceDock", surface_);
     place_ = new PlacePanel(*this);
     placeDock_ = make("Place", "placeDock", place_);
 }
@@ -45,6 +48,7 @@ void MainWindow::createToolDocks() {
 void MainWindow::layoutToolDocks(ads::CDockAreaWidget* statsArea) {
     detailsDock_->setAsCurrentTab();
     ads::CDockAreaWidget* detailsArea = dockManager_->addDockWidget(ads::CenterDockWidgetArea, detailsDock_, statsArea);
+    dockManager_->addDockWidget(ads::CenterDockWidgetArea, surfaceDock_, detailsArea);
     detailsDock_->setAsCurrentTab();
     ads::CDockAreaWidget* outlinerArea = dockManager_->addDockWidget(ads::TopDockWidgetArea, outlinerDock_, detailsArea);
     dockManager_->setSplitterSizes(outlinerArea, {360, 440});

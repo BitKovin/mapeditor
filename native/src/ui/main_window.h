@@ -108,6 +108,7 @@ class StatsPanel;
 class RegistryMenus;
 class OutlinerPanel;
 class DetailsPanel;
+class SurfacePanel;
 class PlacePanel;
 class StatusFields;
 class KeyHelpOverlay;
@@ -452,6 +453,8 @@ public:
     ads::CDockWidget* placeDock() const { return placeDock_; }
     ads::CDockWidget* outlinerDock() const { return outlinerDock_; }
     ads::CDockWidget* detailsDock() const { return detailsDock_; }
+    ads::CDockWidget* surfaceDock() const { return surfaceDock_; }
+    SurfacePanel* surface() const { return surface_; }
     OutlinerPanel* outliner() const { return outliner_; }
     DetailsPanel* details() const { return details_; }
     PlacePanel* place() const { return place_; }
@@ -643,7 +646,8 @@ private:
     ads::CDockManager* dockManager_ = nullptr;
     ads::CDockWidget* statsDock_ = nullptr;
     StatsPanel* stats_ = nullptr;
-    ads::CDockWidget *placeDock_ = nullptr, *outlinerDock_ = nullptr, *detailsDock_ = nullptr;
+    ads::CDockWidget *placeDock_ = nullptr, *outlinerDock_ = nullptr, *detailsDock_ = nullptr, *surfaceDock_ = nullptr;
+    SurfacePanel* surface_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;
     DetailsPanel* details_ = nullptr;
     PlacePanel* place_ = nullptr;

@@ -147,6 +147,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, placeDock_);
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, outlinerDock_);
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, detailsDock_);
+        dockManager_->addDockWidget(ads::CenterDockWidgetArea, surfaceDock_);
     }
     // Documents: the assets root (--assets, else the saved one), the recent list, the job results timer.
     assetsRoot_ = services_.assetsRoot;
@@ -421,6 +422,7 @@ void MainWindow::setLayoutPreset(LayoutPreset preset) {
     dockManager_->removeDockWidget(placeDock_);
     dockManager_->removeDockWidget(outlinerDock_);
     dockManager_->removeDockWidget(detailsDock_);
+    dockManager_->removeDockWidget(surfaceDock_);
     destroyViewports();
     buildViewports(preset, saved);
     if (menus_) menus_->refresh();
