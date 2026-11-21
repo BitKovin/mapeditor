@@ -1145,8 +1145,14 @@ TEST_CASE("Compare: the baked Lit view against the ray traced Lit view" * doctes
 
     // ---- the ray traced view
     std::mutex mutex;
+    const bool noStyles = env("NATIVE_CMP_NOSTYLES", "0") != "0";   // the styled lights switched off: the bake shows style 0 only
     render::RtLightsProducer producer([&](std::shared_ptr<const render::RtLightData> d) {
         std::lock_guard<std::mutex> lock(mutex);
+        if (noStyles && d) {
+            auto copy = std::make_shared<render::RtLightData>(*d);
+            for (size_t i = 1; i < copy->styles.patterns.size(); ++i) copy->styles.patterns[i] = "a";
+            d = copy;
+        }
         f.rt->setRtLights(d);
     });
     producer.request({f.snapshot, profile, f.root});
