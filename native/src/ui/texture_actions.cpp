@@ -134,6 +134,24 @@ void registerTextureActions(actions::Registry& r) {
         };
         r.add(std::move(d));
     }
+    {
+        ActionDef d;
+        d.id = "texture.ftt";
+        d.label = "Fast Texture Tool";
+        d.category = "Texture";
+        d.description = "Opens (or closes) the window that edits the UV island of the selected faces by direct manipulation.";
+        d.menu = "&Texture";
+        d.menuSeparatorBefore = true;
+        d.contexts = {"area:viewport"};
+        d.enabled = [](const ActionEnv& env, const json&) {
+            MainWindow* w = windowOf(env);
+            return w && w->document() && !w->meshMode() && !w->transforming();
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) w->toggleFastTextureTool();
+        };
+        r.add(std::move(d));
+    }
     addKey(r, "texture.shift", "Shift texture", "Moves the texture on the selected faces by one step (keys: Shift+arrows; Alt = fine).", "shift");
     addKey(r, "texture.scale", "Scale texture", "Scales the texture on the selected faces by one step (keys: Ctrl+Shift+arrows; Alt = fine).", "scale");
     addKey(r, "texture.rotate", "Rotate texture", "Rotates the texture on the selected faces by one step (keys: Shift+PageUp / PageDown; Alt = fine).", "rotate");

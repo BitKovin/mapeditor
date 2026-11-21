@@ -39,6 +39,7 @@
 #include "tools/modal.h"
 #include "tools/prefs.h"
 #include "tools/texturing/face_edit.h"
+#include "tools/texturing/ftt.h"
 #include "tools/shapes.h"
 #include "exporting/launch.h"
 #include "tools/brush_edit.h"
@@ -110,6 +111,13 @@ class OutlinerPanel;
 class DetailsPanel;
 class SurfacePanel;
 class TextureBrowserPanel;
+class FttWindow;
+
+// The faces the Fast Texture Tool edits: some faces (all, when a whole brush is selected) of one brush.
+struct FttTarget {
+    std::string entityId, brushId;
+    std::vector<uint32_t> faceIds;
+};
 class PlacePanel;
 class StatusFields;
 class KeyHelpOverlay;
@@ -431,6 +439,20 @@ public:
     const tools::tex::TexSteps& textureSteps() const { return texSteps_; }
     void setTextureSteps(const tools::tex::TexSteps& s) { texSteps_ = s; }
 
+    // ---- Fast Texture Tool (T11.3g): the UV island of the selected faces, edited as one piece ----
+    std::optional<FttTarget> fttTarget() const;                       // the selected faces of one brush (a selected brush: all its faces)
+    const core::Brush* fttBrush(const FttTarget& target) const;
+    bool fttApply(const std::string& label, const tools::tex::Xform& xform);   // one undo step
+    size_t fttUnwrap(tools::tex::UnwrapMode mode);                    // the number of faces that changed
+    // A drag: begin, any number of fttDragTo (each is the transform from the start), end (keep = false puts everything back). One undo step.
+    bool fttBeginDrag(const std::string& label);
+    bool fttDragTo(const FttTarget& target, const tools::tex::Xform& xform);
+    void fttEndDrag(bool keep);
+    bool fttDragging() const { return fttDrag_.has_value(); }
+    void openFastTextureTool();
+    void toggleFastTextureTool();
+    FttWindow* fttWindow() const { return fttWindow_; }
+
     // ---- delete, duplicate, group, clipboard, hide (T4.3) ----
     // Each is one undo step on the selection (prefab-internal and face selections are left alone); false when refused or nothing to do (the status bar says why).
     bool deleteSelected();
@@ -742,6 +764,12 @@ private:
     tools::tex::HotspotFn hotspotOverride_;
     std::optional<tools::tex::FaceRef> copiedFace_;   // Copy UV
     tools::tex::TexSteps texSteps_;
+    struct FttDrag {
+        std::shared_ptr<const doc::DocumentVersion> base;
+        std::string label;
+    };
+    std::optional<FttDrag> fttDrag_;
+    FttWindow* fttWindow_ = nullptr;
     std::string originSel_;
     tools::HideState hide_;
     std::shared_ptr<const std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>> hiddenSet_;

@@ -316,7 +316,7 @@ void MainWindow::showTransformStatus() {
         return;
     }
     if (t.resize.active) {
-        std::snprintf(buf, sizeof buf, "Resize: %.3f Ã %.3f m", t.resize.width, t.resize.height);
+        std::snprintf(buf, sizeof buf, "Resize: %.3f × %.3f m", t.resize.width, t.resize.height);
         statusBar()->showMessage(QString::fromUtf8(buf));
         return;
     }

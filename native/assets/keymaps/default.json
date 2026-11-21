@@ -51,6 +51,8 @@
     { "action": "texture.rotate", "context": "area:viewport", "input": "Alt+Shift+PageUp", "params": { "key": "rotccw", "fine": true } },
     { "action": "texture.rotate", "context": "area:viewport", "input": "Alt+Shift+PageDown", "params": { "key": "rotcw", "fine": true } },
 
+    { "action": "texture.ftt", "context": "area:viewport", "input": "Shift+Q" },
+
     { "action": "grid.smaller", "context": "area:viewport", "input": "[" },
     { "action": "grid.larger",  "context": "area:viewport", "input": "]" },
 
