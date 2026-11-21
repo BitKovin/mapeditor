@@ -37,6 +37,7 @@
 #include "tools/modal.h"
 #include "tools/prefs.h"
 #include "tools/shapes.h"
+#include "exporting/launch.h"
 #include "tools/visibility.h"
 #include "ui/app_actions.h"
 #include "ui/input_probe.h"
@@ -88,6 +89,8 @@ class ViewportWindow;
 } // namespace native::render
 
 namespace native::doc { struct SelRef; }
+namespace native::exporting { class ExportJob; }
+namespace core { struct BspExportResult; }
 namespace native::render { struct LineVertex; enum class GizmoMode; struct PickOptions; }
 
 namespace native::ui {
@@ -228,6 +231,25 @@ public:
     bool busy() const { return pendingJobs_ > 0; }
     // Absolute paths of the maps opened or saved last, newest first (at most 10).
     std::vector<std::string> recentFiles() const { return recent_; }
+
+    // ---- File > Export / Play map / Import Quake Map (T9.3, ui/main_window_export.cpp) ----
+    // An export (of the map as it is now, in the game folder's format) runs on its own thread; the status bar shows its progress. Only one at a time.
+    bool exporting() const;
+    // Asks where to put the main file (assets relative, with the exporter's extension) and starts the export.
+    void exportWithDialog();
+    // Starts an export to `path` (assets relative or absolute inside the game folder); `play` starts the game with the file once it is written. False when it did not start (the reason is reported).
+    bool startExport(const std::string& path, bool play, bool bake = true);
+    // Export next to the map file, then start the game of Settings > General > Run game with it.
+    void playMap();
+    void cancelExport();
+    // The result of the export that finished last (null before the first).
+    std::shared_ptr<const core::BspExportResult> lastExport() const { return lastExport_; }
+    // The game's start line (per game folder, kept in the settings).
+    exporting::LaunchSettings launchSettings() const;
+    void setLaunchSettings(const exporting::LaunchSettings& s);
+    // Replaces the open map with a converted Quake .map file (a new, unsaved map); warnings go to the log.
+    void importQuakeMapWithDialog();
+    bool importQuakeMap(const std::string& file);
     // Where problems are shown; the default is a message box. Tests install a recorder.
     void setErrorHandler(std::function<void(const QString&)> handler) { errorHandler_ = std::move(handler); }
 
@@ -571,6 +593,13 @@ private:
     std::shared_ptr<core::EntityDefinitions> entityDefs_;   // the game profile's entity definitions (class boxes, colours, keys)
     uint64_t reliefRevision_ = 0;
     QTimer prefabTimer_;
+    void finishExport();
+    void launchGame(const std::string& bspRelative);
+    std::shared_ptr<exporting::ExportJob> exportJob_;   // shared_ptr: main_window.cpp does not see the type (it pulls in Core headers)
+    QTimer* exportTimer_ = nullptr;
+    bool playAfterExport_ = false;
+    std::string exportOut_;
+    std::shared_ptr<const core::BspExportResult> lastExport_;
     uint64_t expandSerial_ = 0;
     bool prefabPolling_ = false;
     int backgroundJobs_ = 0;

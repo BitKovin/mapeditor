@@ -6,6 +6,7 @@
     { "action": "file.save",    "context": "global", "input": "Ctrl+S" },
     { "action": "file.save_as", "context": "global", "input": "Ctrl+Shift+S" },
     { "action": "file.settings", "context": "global", "input": "Ctrl+," },
+    { "action": "file.play",   "context": "global", "input": "F5" },
     { "action": "file.exit",    "context": "global", "input": "Ctrl+Q" },
     { "action": "view.command_palette", "context": "global", "input": "F3" },
     { "action": "view.command_palette", "context": "global", "input": "Ctrl+Shift+P" },

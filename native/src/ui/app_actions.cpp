@@ -643,6 +643,50 @@ void registerAppActions(actions::Registry& r) {
     }
     {
         ActionDef d;
+        d.id = "file.export";
+        d.label = "Export...";
+        d.category = "File";
+        d.description = "Bakes the final lighting and writes the map in the game's format (game_profile.json \"exporter\"); runs on its own thread, progress in the status bar. While an export runs this cancels it.";
+        d.menu = "&File";
+        d.menuSeparatorBefore = true;
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { auto* w = windowOf(env); return w && w->document() && !w->busy(); };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->exportWithDialog(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "file.cancel_export";
+        d.label = "Cancel export";
+        d.category = "File";
+        d.menu = "&File";
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { auto* w = windowOf(env); return w && w->exporting(); };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->cancelExport(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "file.play";
+        d.label = "Play map";
+        d.category = "File";
+        d.description = "Exports the map next to its file and starts the game set in Settings > General > Run game with it.";
+        d.menu = "&File";
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { auto* w = windowOf(env); return w && w->document() && !w->busy() && !w->exporting(); };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->playMap(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "file.import_quake_map";
+        d.label = "Import Quake map...";
+        d.category = "File";
+        d.description = "Converts a Quake family .map file (planes, Valve 220, brush primitives, patches) to a new map.";
+        d.menu = "&File";
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { auto* w = windowOf(env); return w && !w->busy(); };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->importQuakeMapWithDialog(); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
         d.id = "file.set_assets_root";
         d.label = "Assets folder...";
         d.category = "File";

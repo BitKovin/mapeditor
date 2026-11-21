@@ -10,6 +10,7 @@
 
 #include <QDialog>
 
+#include "exporting/launch.h"
 #include "tools/prefs.h"
 #include "tools/profile_form.h"
 
@@ -72,6 +73,8 @@ private:
     QLineEdit* root_ = nullptr;
     QLabel* rootInfo_ = nullptr;
     QLabel* files_ = nullptr;
+    QLineEdit *gameExe_ = nullptr, *gameArgs_ = nullptr, *gameDir_ = nullptr;
+    exporting::LaunchSettings launchOf() const;
     // Game profile
     QWidget* profilePage_ = nullptr;
     QLabel* profileNote_ = nullptr;

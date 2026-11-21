@@ -164,11 +164,50 @@ void SettingsDialog::buildGeneral(QWidget* page) {
     files_ = note({}, page);
     files_->setObjectName(QStringLiteral("settings:files"));
     v->addWidget(files_);
+    v->addWidget(section(QStringLiteral("Run game (File > Play map)"), page));
+    v->addWidget(note(QStringLiteral("Play map exports the map next to its file and starts this program. In the arguments and the working folder: {map} = the exported file "
+                                     "relative to the game folder, {mapname} = its name without folder and extension, {bsp} = its absolute path, {game} = the game folder. "
+                                     "An empty working folder means the program's folder."),
+                      page));
+    auto* exeRow = new QHBoxLayout;
+    gameExe_ = new QLineEdit(page);
+    gameExe_->setObjectName(QStringLiteral("settings:game:exe"));
+    gameExe_->setPlaceholderText(QStringLiteral("C:/Games/MyGame/game.exe"));
+    auto* browseExe = new QPushButton(QStringLiteral("Browse..."), page);
+    QObject::connect(browseExe, &QPushButton::clicked, this, [this] {
+        const QString f = QFileDialog::getOpenFileName(this, QStringLiteral("Game executable"), gameExe_->text(), QStringLiteral("Programs (*.exe);;All files (*)"));
+        if (!f.isEmpty()) gameExe_->setText(f);
+    });
+    exeRow->addWidget(gameExe_, 1);
+    exeRow->addWidget(browseExe);
+    auto* gameForm = new QFormLayout;
+    gameForm->addRow(QStringLiteral("Program"), exeRow);
+    gameArgs_ = new QLineEdit(page);
+    gameArgs_->setObjectName(QStringLiteral("settings:game:args"));
+    gameForm->addRow(QStringLiteral("Arguments"), gameArgs_);
+    gameDir_ = new QLineEdit(page);
+    gameDir_->setObjectName(QStringLiteral("settings:game:workingDir"));
+    gameForm->addRow(QStringLiteral("Working folder"), gameDir_);
+    v->addLayout(gameForm);
     v->addStretch(1);
+}
+
+exporting::LaunchSettings SettingsDialog::launchOf() const {
+    exporting::LaunchSettings s;
+    s.exe = str(gameExe_->text().trimmed());
+    s.args = str(gameArgs_->text());
+    s.workingDir = str(gameDir_->text().trimmed());
+    return s;
 }
 
 void SettingsDialog::reloadGeneral() {
     root_->setText(qs(win_.assetsRoot()));
+    {
+        const exporting::LaunchSettings g = win_.launchSettings();
+        gameExe_->setText(qs(g.exe));
+        gameArgs_->setText(qs(g.args));
+        gameDir_->setText(qs(g.workingDir));
+    }
     QString info;
     if (win_.assetsRoot().empty()) {
         info = QStringLiteral("No game folder chosen yet.");
@@ -200,7 +239,11 @@ void SettingsDialog::browseRoot() {
 
 QString SettingsDialog::applyGeneral() {
     const QString wanted = cleanFolder(root_->text());
-    if (wanted == cleanFolder(qs(win_.assetsRoot()))) return {};
+    if (wanted == cleanFolder(qs(win_.assetsRoot()))) {
+        const exporting::LaunchSettings g = launchOf(), old = win_.launchSettings();
+        if (g.exe != old.exe || g.args != old.args || g.workingDir != old.workingDir) win_.setLaunchSettings(g);
+        return {};
+    }
     if (!wanted.isEmpty() && !QFileInfo(wanted).isDir()) return QStringLiteral("Game folder: \"%1\" is not a folder.").arg(wanted);
     if (win_.isDirty() &&
         !win_.confirm(QStringLiteral("Unsaved changes"),
@@ -420,6 +463,10 @@ QString SettingsDialog::applyEditor() {
 
 bool SettingsDialog::dirty() const {
     if (cleanFolder(root_->text()) != cleanFolder(qs(win_.assetsRoot()))) return true;
+    {
+        const exporting::LaunchSettings g = launchOf(), old = win_.launchSettings();
+        if (g.exe != old.exe || g.args != old.args || g.workingDir != old.workingDir) return true;
+    }
     if (profileLoaded_ && readProfileForm() != profileOriginal_) return true;
     return readEditorPrefs() != win_.editorPrefs();
 }

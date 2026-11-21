@@ -522,7 +522,7 @@ Each needs a measurement before and after in the commit message.
 | T8.5 | frozen (live lightmap bake) | |
 | T9.1 | | |
 | T9.2 | | |
-| T9.3 | | |
+| T9.3 | yes, without T9.1/T9.2 (deferred, see `exporting/export_job.h`): the request is the Core's own `core::ExportRequest` (document as JSON, built by `makeExportRequest` from the profile's exporter and `lighting.json`) and the Core's exporter runs on its own thread with its own device. **File > Export** (save dialog in the profile's format; path outside the game folder refused; one at a time; progress and cancel in the status bar), **Play map (F5)** (needs a saved map and Settings > General > Run game: executable, arguments with {map} {mapname} {bsp} {game}, working directory, kept per game folder; exports next to the map, then starts the game detached; missing executable reported), **File > Import Quake map** (Core importer on the job pool, result opens as a new unsaved map, counts and warnings in the status line). Tests (offscreen, never shown): `test_exporting` (3: request, launch command, import) and `test_ui_export` (2: export/play/settings flows, import incl. a bad file). Acceptance: geometry export of demo_lit matches what `bsp_export_tool` writes (geometry only; lit bake not re-run here); launching a real game not run | `native: T9.3` |
 | T9.4 | | |
 | T10.1–T10.3 | | |
 | M11 (T11.1–T11.11) | | |
