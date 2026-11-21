@@ -38,6 +38,7 @@
 #include "tools/prefs.h"
 #include "tools/shapes.h"
 #include "exporting/launch.h"
+#include "tools/brush_edit.h"
 #include "tools/mesh/cut.h"
 #include "tools/mesh/session.h"
 #include "tools/mesh/select.h"
@@ -358,6 +359,18 @@ public:
     bool startLoopCut(render::ViewportWindow* viewport);
     // Ctrl+M, then X / Y / Z: mirrors the picked vertices (all of them: the whole brush) about their centre; one undo step.
     bool mirrorMesh(int axis);
+    // ---- brush operations (T11.2): Hollow, Merge, Snap, Select inside / touching, the clipper ----
+    bool hollowSelected(double thickness);
+    bool mergeSelected();
+    bool snapSelected();
+    bool selectByVolume(tools::VolumeMode mode);
+    // Clipper (X): click up to three points (two = a plane along the view); Enter keeps the back side, Shift+Enter splits, Ctrl+Enter keeps the front, Esc cancels.
+    bool clipperActive() const { return clip_.has_value(); }
+    bool startClipper();
+    void stopClipper(const QString& message = {});
+    void addClipperPoint(const core::Vec3& point, const render::Vec3& viewDir);
+    std::vector<core::Vec3> clipperPoints() const;
+    bool clipperApply(tools::Keep keep);   // cuts the selected brushes along the plane of the points
     // ---- knife (K): click points on vertices / edges (Ctrl = the edge's middle), Enter or a right click cuts along them, Esc cancels ----
     bool knifing() const { return knife_.has_value(); }
     bool startKnife();
@@ -641,6 +654,19 @@ private:
         bool shift = false, ctrl = false, alt = false;
         bool loop = false;   // a double click selects the loop, like Alt+click
     } meshDrag_;
+    struct ClipPoint {
+        core::Vec3 p;
+        render::Vec3 dir;   // the view direction it was placed with (two points: the plane contains it)
+    };
+    struct ClipState {
+        std::vector<ClipPoint> pts;
+        std::optional<size_t> drag;   // the point being dragged with the left button
+    };
+    std::optional<ClipState> clip_;
+    bool applyBrushEdit(const tools::BrushEdit& edit);
+    std::optional<tools::Plane> clipperPlane() const;
+    bool clipperMouse(size_t panelIndex, const actions::InputEvent& e);
+    std::vector<render::LineVertex> clipperLines(size_t panelIndex) const;
     struct KnifeState {
         std::shared_ptr<const doc::BrushNode> node;   // the brush the cut began on: the cut is dropped when it is not the edited one any more
         std::vector<tools::mesh::KnifePoint> points;

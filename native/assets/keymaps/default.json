@@ -40,6 +40,13 @@
     { "action": "box.draw",   "context": "tool:box",      "input": "Shift+LMB drag" },
     { "action": "box.cancel", "context": "tool:box",      "input": "Escape" },
 
+    { "action": "brush.clipper",   "context": "area:viewport", "input": "X" },
+    { "action": "brush.clip_back",  "context": "brush:clipper", "input": "Enter" },
+    { "action": "brush.clip_back",  "context": "brush:clipper", "input": "Numpad Enter" },
+    { "action": "brush.clip_both",  "context": "brush:clipper", "input": "Shift+Enter" },
+    { "action": "brush.clip_front", "context": "brush:clipper", "input": "Ctrl+Enter" },
+    { "action": "brush.clip_cancel", "context": "brush:clipper", "input": "Escape" },
+
     { "action": "mesh.toggle",  "context": "area:viewport", "input": "Tab" },
     { "action": "mesh.element", "context": "mode:mesh", "input": "1", "params": { "element": "vertex" } },
     { "action": "mesh.element", "context": "mode:mesh", "input": "2", "params": { "element": "edge" } },

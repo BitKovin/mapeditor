@@ -71,7 +71,7 @@ size_t MainWindow::panelIndexOf(const render::ViewportWindow* vp) const {
 // ---- starting -------------------------------------------------------------------------------------------------------------------------
 
 bool MainWindow::startTransform(render::ViewportWindow* vp, tools::ModalKind kind, const std::optional<tools::mesh::Edge>& edge) {
-    if (transform_ || knife_ || !document_ || !vp) return false;
+    if (transform_ || knife_ || clip_ || !document_ || !vp) return false;
     if (meshMode()) return startMeshTransform(vp, kind, edge);
     if (kind != tools::ModalKind::Grab && kind != tools::ModalKind::Rotate && kind != tools::ModalKind::Scale) return false;
     const std::vector<doc::SelRef> sels = transformSelection();
@@ -396,7 +396,7 @@ bool MainWindow::transformMouse(size_t index, const actions::InputEvent& e) {
 
 MainWindow::GizmoTarget MainWindow::gizmoTarget(render::ViewportWindow* vp) {
     GizmoTarget g;
-    if (!document_ || transform_ || !vp || tool_ != Tool::Select || box_ || knife_) return g;
+    if (!document_ || transform_ || !vp || tool_ != Tool::Select || box_ || knife_ || clip_) return g;
     if (meshMode()) {   // the gizmo sits on the centre of the picked vertices
         const auto target = meshTarget();
         const tools::mesh::MeshSel sel = meshSelection();
@@ -470,6 +470,7 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesOnly(size_t index) {
     if (!vp) return {};
     if (box_) return boxPreviewLines(index);   // the drawing in progress replaces the gizmo
     if (knife_) return knifeLines(index);      // so does the knife
+    if (clip_) return clipperLines(index);     // and the clipper
     if (transform_ && transform_->source == TransformSession::Source::Modal) return {};   // the modal operators show no gizmo
     GizmoTarget g;
     tools::Axis active = -1;

@@ -7,6 +7,7 @@
 
 #include "render/viewport_window.h"
 #include "ui/main_window.h"
+#include "ui/brush_actions.h"
 #include "ui/mesh_actions.h"
 
 namespace native::ui {
@@ -989,6 +990,7 @@ void registerAppActions(actions::Registry& r) {
     }
     helpActions(r);
     registerMeshActions(r);
+    registerBrushActions(r);
 }
 
 } // namespace native::ui
