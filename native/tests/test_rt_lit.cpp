@@ -46,7 +46,11 @@
 #include "scene/render_mesh.h"
 
 #include <core/profile.h>
+#include <core/albedo.h>
+#include <core/lightbake.h>
+#include <core/lightmap_uv.h>
 #include <core/raytrace.h>
+#include <core/scene.h>
 #include <core/texplan.h>
 
 using namespace native;
@@ -1201,6 +1205,97 @@ TEST_CASE("Compare: the baked Lit view against the ray traced Lit view" * doctes
             std::sort(hits.begin(), hits.end());
             for (size_t i = 0; i < hits.size() && i < 6; ++i) MESSAGE("probe hit t=" << hits[i].first << ": " << hits[i].second);
         }
+    }
+    if (!env("NATIVE_CMP_CORE", "").empty()) {
+        // NATIVE_CMP_CORE = bounces of the Core's bake (offline bakeLightmaps, the old editor's light): its bounce share (bake with bounces / bake without) at the
+        // visible texels against the ray traced bounce share (view with bounces / view without) at the pixels of the same texels, per region.
+        render::CapturedImage rtOther;
+        o.bounces = !o.bounces;
+        f.rt->setRtLit(true, o);
+        f.cut++;
+        f.shot();
+        f.cut++;
+        f.shot();
+        REQUIRE_MESSAGE(f.converge(limitMs), "the second accumulation did not converge in time");
+        rtOther = f.shot();
+        REQUIRE(rtOther.ok());
+        const render::CapturedImage& rtOn = o.bounces ? rtOther : rt;
+        const render::CapturedImage& rtOff = o.bounces ? rt : rtOther;
+
+        core::Scene cscene{std::filesystem::path(f.root)};
+        cscene.loadGameProfile();
+        cscene.openDocument(f.mapName);
+        const auto surfaces = cscene.lightSurfaces();
+        core::LightScene clights = cscene.lightScene();
+        core::LightmapSettings lcfg;
+        lcfg.playable = clights.playable;
+        lcfg.lod = clights.level.lod;
+        lcfg.texelsPerMeter = 16.0;
+        const core::LightmapLayout layout = core::buildLightmapLayout(surfaces, cscene.lightingClasses(), lcfg);
+        core::BakeOptions bo;
+        bo.solids = cscene.lightSolids();
+        bo.classes = cscene.lightingClasses();
+        bo.albedo = 0.7;
+        bo.giSamples = 64;
+        auto lib = std::make_shared<core::AlbedoLibrary>(cscene.assetsRoot(), cscene.profile());
+        bo.albedoLoader = [lib](const std::string& name) { return lib->get(name); };
+        bo.bounces = 0;
+        const core::LightmapPages direct = core::bakeLightmaps(layout, surfaces, clights, bo);
+        bo.bounces = std::max(1, std::atoi(env("NATIVE_CMP_CORE", "8").c_str()));
+        core::BakeStats cst;
+        const core::LightmapPages full = core::bakeLightmaps(layout, surfaces, clights, bo, &cst);
+        MESSAGE("Core bake: " << bo.bounces << " bounces, " << cst.texels << " texels, " << cst.seconds << " s, device " << cst.device);
+        const core::TexelSamples samples = core::buildTexelSamples(layout, surfaces, bo.solids.get());
+        const core::OccluderMesh mesh = core::buildOccluders(surfaces, bo.classes);
+        const core::TriangleBvh bvh(mesh);
+        const render::ViewState vs = f.view();
+        const core::Vec3 eyeP{vs.eye[0], vs.eye[1], vs.eye[2]};
+        const auto lum = [](const core::Vec3& v) { return 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z; };
+        const double shownBrightness = clights.level.brightness * 255.0;
+        MESSAGE("level: exposure " << clights.level.exposure << ", brightness " << clights.level.brightness << ", ambient " << clights.ambient.x << " " << clights.ambient.y << " " << clights.ambient.z);
+        double bd[17] = {}, bf[17] = {}, rOff[17] = {}, rOn[17] = {};
+        size_t cnt[17] = {};
+        const size_t atlas = static_cast<size_t>(samples.atlas);
+        for (size_t i = 0; i < samples.count(); ++i) {
+            const core::Vec3 p{samples.pos[i * 4], samples.pos[i * 4 + 1], samples.pos[i * 4 + 2]}, n{samples.nrm[i * 4], samples.nrm[i * 4 + 1], samples.nrm[i * 4 + 2]};
+            const core::Vec3 d = p - eyeP;
+            const double len = d.length();
+            if (len < 1e-6 || n.x * d.x + n.y * d.y + n.z * d.z >= 0) continue;   // facing away
+            double q[4];
+            const double v[4] = {p.x, p.y, p.z, 1.0};
+            for (int r = 0; r < 4; ++r) q[r] = vs.viewProj[0 * 4 + r] * v[0] + vs.viewProj[1 * 4 + r] * v[1] + vs.viewProj[2 * 4 + r] * v[2] + vs.viewProj[3 * 4 + r] * v[3];
+            if (q[3] <= 1e-6) continue;
+            const double nx = q[0] / q[3], ny = q[1] / q[3], nz = q[2] / q[3];
+            if (nx < -1 || nx >= 1 || ny < -1 || ny >= 1 || nz < 0 || nz > 1) continue;
+            const double hit = bvh.nearestHit(eyeP, d, 1.0);
+            if (hit >= 0 && hit < 1.0 - 0.03 / len) continue;                      // hidden behind something
+            const uint32_t px = std::min<uint32_t>(rt.width - 1, static_cast<uint32_t>((nx * 0.5 + 0.5) * rt.width));
+            const uint32_t py = std::min<uint32_t>(rt.height - 1, static_cast<uint32_t>((ny * 0.5 + 0.5) * rt.height));
+            const size_t pi = (static_cast<size_t>(py) * rt.width + px) * 4;
+            {   // only where the two views agree on the direct light (the translucent cube is drawn unlit by the ray traced view)
+                const double lb = 0.2126 * baked.rgba[pi] + 0.7152 * baked.rgba[pi + 1] + 0.0722 * baked.rgba[pi + 2];
+                const double lr = 0.2126 * rtOff.rgba[pi] + 0.7152 * rtOff.rgba[pi + 1] + 0.0722 * rtOff.rgba[pi + 2];
+                if (std::abs(lr - lb) > 0.3 * std::max(lb, lr) + 3.0) continue;
+                const double ln = 0.2126 * rtOn.rgba[pi] + 0.7152 * rtOn.rgba[pi + 1] + 0.0722 * rtOn.rgba[pi + 2];
+                if (lr > 20.0 && ln == lr) continue;   // a bright pixel that bounces do not change at all: shown unlit (a surface that does not receive light)
+            }
+            const uint32_t t = samples.texel[i];
+            const int page = static_cast<int>(t / (atlas * atlas)), tx = static_cast<int>((t % (atlas * atlas)) % atlas), ty = static_cast<int>((t % (atlas * atlas)) / atlas);
+            const size_t c = (py * 4 / rt.height) * 4 + (px * 4 / rt.width);
+            for (const size_t k : {c, size_t{16}}) {
+                bd[k] += lum(direct.at(page, tx, ty));
+                bf[k] += lum(full.at(page, tx, ty));
+                rOff[k] += std::max(0.0, 0.2126 * rtOff.rgba[pi] + 0.7152 * rtOff.rgba[pi + 1] + 0.0722 * rtOff.rgba[pi + 2] - shownBrightness);   // the display adds the level's brightness
+                rOn[k] += std::max(0.0, 0.2126 * rtOn.rgba[pi] + 0.7152 * rtOn.rgba[pi + 1] + 0.0722 * rtOn.rgba[pi + 2] - shownBrightness);
+                ++cnt[k];
+            }
+        }
+        std::ostringstream g;
+        g << std::fixed << std::setprecision(2);
+        for (int c = 0; c < 16; ++c) g << (c % 4 == 0 ? "\n   " : " ") << (cnt[c] > 50 && bd[c] > 1e-6 && rOff[c] > 1e-6 ? (rOn[c] / rOff[c]) / (bf[c] / bd[c]) : 0.0);
+        MESSAGE("bounce share, ray traced (on/off) over Core bake (with/without): all visible texels (" << cnt[16] << "): ray traced " << rOn[16] / rOff[16] << ", Core " << bf[16] / bd[16]
+                                                                                                         << ", ratio " << (rOn[16] / rOff[16]) / (bf[16] / bd[16]) << "; per region (ray traced / Core):" << g.str());
+        o.bounces = !o.bounces;   // back to what the first image used
     }
     const auto luma = [](const render::CapturedImage& im, size_t i) { return 0.2126 * im.rgba[i] + 0.7152 * im.rgba[i + 1] + 0.0722 * im.rgba[i + 2]; };
     double sumB = 0, sumR = 0;
