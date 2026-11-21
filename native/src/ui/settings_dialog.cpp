@@ -15,11 +15,15 @@
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
+#include <filesystem>
 
 #include <core/entdef.h>
 
@@ -80,7 +84,7 @@ SettingsDialog::SettingsDialog(MainWindow& window, QWidget* parent) : QDialog(pa
     stack_->setObjectName(QStringLiteral("settings:stack"));
 
     const std::pair<const char*, void (SettingsDialog::*)(QWidget*)> pages[] = {
-        {"General", &SettingsDialog::buildGeneral}, {"Game profile", &SettingsDialog::buildProfile}, {"Editor", &SettingsDialog::buildEditor}};
+        {"General", &SettingsDialog::buildGeneral}, {"Game profile", &SettingsDialog::buildProfile}, {"Editor", &SettingsDialog::buildEditor}, {"Lighting", &SettingsDialog::buildLighting}};
     for (const auto& [title, build] : pages) {
         pages_->addItem(QString::fromLatin1(title));
         auto* page = new QWidget(stack_);
@@ -138,6 +142,7 @@ void SettingsDialog::reload() {
     reloadGeneral();
     reloadProfile();
     reloadEditor();
+    reloadLighting();
 }
 
 // ---- General ---------------------------------------------------------------------------------------------------------------------
@@ -459,6 +464,152 @@ QString SettingsDialog::applyEditor() {
     return {};
 }
 
+// ---- Lighting --------------------------------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr const char* kDenoiseQuality = "denoiseQuality";
+
+bool sameNumber(double a, double b) { return std::fabs(a - b) <= 1e-6 * std::max(1.0, std::fabs(b)); }
+
+} // namespace
+
+void SettingsDialog::buildLighting(QWidget* page) {
+    lightingPage_ = page;
+    auto* v = new QVBoxLayout(page);
+    lightingNote_ = note({}, page);
+    lightingNote_->setObjectName(QStringLiteral("settings:lightingNote"));
+    v->addWidget(lightingNote_);
+
+    auto* scroll = new QScrollArea(page);
+    scroll->setObjectName(QStringLiteral("settings:lighting:scroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto* body = new QWidget(scroll);
+    auto* bv = new QVBoxLayout(body);
+    scroll->setWidget(body);
+    v->addWidget(scroll, 1);
+
+    // the kind of each key (boolean / whole number / fractional) comes from the Core's own defaults
+    const tools::LightingConfig base = tools::readLightingConfig(std::filesystem::path("?no such lighting file?"));
+    std::vector<tools::LightingGroup> groups = tools::lightingGroups();
+    {
+        tools::LightingGroup other{"Other", {}};
+        for (const auto& [key, value] : base.values.items()) {
+            bool known = false;
+            for (const tools::LightingGroup& g : groups)
+                for (const tools::LightingKey& k : g.keys) known = known || k.key == key;
+            if (!known) other.keys.push_back({key, key, ""});
+        }
+        if (!other.keys.empty()) groups.push_back(other);
+    }
+    lightingEdits_.clear();
+    for (const tools::LightingGroup& g : groups) {
+        bv->addWidget(section(qs(g.title), body));
+        auto* form = new QFormLayout;
+        for (const tools::LightingKey& k : g.keys) {
+            if (!base.values.contains(k.key)) continue;
+            const nlohmann::json& dflt = base.values[k.key];
+            QWidget* edit = nullptr;
+            if (dflt.is_boolean()) {
+                edit = new QCheckBox(body);
+            } else if (k.key == kDenoiseQuality) {
+                auto* c = new QComboBox(body);
+                const char* const names[] = {"Fast", "Balanced", "High"};
+                for (int i = 0; i < 3; ++i) c->addItem(QString::fromLatin1(names[i]), i);
+                edit = c;
+            } else {
+                auto* s = new QDoubleSpinBox(body);
+                s->setRange(-1e9, 1e9);
+                s->setDecimals(dflt.is_number_integer() ? 0 : 6);
+                s->setButtonSymbols(QAbstractSpinBox::NoButtons);
+                s->setKeyboardTracking(false);
+                edit = s;
+            }
+            edit->setObjectName(QStringLiteral("settings:lighting:%1").arg(qs(k.key)));
+            if (!k.hint.empty()) edit->setToolTip(qs(k.hint));
+            lightingEdits_[k.key] = edit;
+            auto* reset = new QToolButton(body);
+            reset->setObjectName(QStringLiteral("settings:lighting:reset:%1").arg(qs(k.key)));
+            reset->setText(QStringLiteral("Reset"));
+            reset->setToolTip(QStringLiteral("Back to the default"));
+            reset->setAutoRaise(true);
+            QObject::connect(reset, &QToolButton::clicked, this, [this, key = k.key] { resetLighting(key); });
+            auto* row = new QHBoxLayout;
+            row->addWidget(edit, 1);
+            row->addWidget(reset);
+            auto* label = new QLabel(qs(k.label), body);
+            label->setToolTip(qs(k.hint));
+            form->addRow(label, row);
+        }
+        bv->addLayout(form);
+    }
+    bv->addStretch(1);
+}
+
+void SettingsDialog::setLightingEdit(const std::string& key, const nlohmann::json& value) {
+    QWidget* w = lightingEdits_.at(key);
+    if (auto* c = qobject_cast<QCheckBox*>(w)) {
+        c->setChecked(value.is_boolean() ? value.get<bool>() : value.get<double>() != 0);
+    } else if (auto* b = qobject_cast<QComboBox*>(w)) {
+        const int i = b->findData(value.is_number() ? static_cast<int>(value.get<double>()) : 0);
+        b->setCurrentIndex(i < 0 ? 0 : i);
+    } else if (auto* s = qobject_cast<QDoubleSpinBox*>(w)) {
+        s->setValue(value.get<double>());
+    }
+}
+
+void SettingsDialog::resetLighting(const std::string& key) {
+    if (!lightingLoaded_ || !lightingEdits_.count(key)) return;
+    setLightingEdit(key, lightingOriginal_.defaults[key]);
+}
+
+std::string SettingsDialog::lightingFile() const { return (std::filesystem::path(win_.assetsRoot()) / "lighting.json").generic_string(); }
+
+void SettingsDialog::reloadLighting() {
+    const bool have = !win_.assetsRoot().empty() && QFileInfo(qs(win_.assetsRoot())).isDir();
+    lightingLoaded_ = false;
+    lightingPage_->setEnabled(have);
+    if (!have) {
+        lightingNote_->setText(QStringLiteral("Choose the game folder first (General)."));
+        return;
+    }
+    lightingOriginal_ = tools::readLightingConfig(lightingFile());
+    for (const auto& [key, w] : lightingEdits_) {
+        (void)w;
+        if (lightingOriginal_.values.contains(key)) setLightingEdit(key, lightingOriginal_.values[key]);
+    }
+    QString text = QStringLiteral("Stored in %1. A BSP export reads it each time, so a change counts from the next export.").arg(qs(lightingOriginal_.file));
+    if (!lightingOriginal_.warning.empty()) text += QStringLiteral("\n") + qs(lightingOriginal_.warning);
+    lightingNote_->setText(text);
+    lightingLoaded_ = true;
+}
+
+nlohmann::json SettingsDialog::lightingChanges() const {
+    nlohmann::json changes = nlohmann::json::object();
+    if (!lightingLoaded_) return changes;
+    for (const auto& [key, w] : lightingEdits_) {
+        const nlohmann::json& was = lightingOriginal_.values[key];
+        if (auto* c = qobject_cast<QCheckBox*>(w)) {
+            if (c->isChecked() != was.get<bool>()) changes[key] = c->isChecked();
+        } else if (auto* b = qobject_cast<QComboBox*>(w)) {
+            if (b->currentData().toInt() != static_cast<int>(was.get<double>())) changes[key] = b->currentData().toInt();
+        } else if (auto* s = qobject_cast<QDoubleSpinBox*>(w)) {
+            if (sameNumber(s->value(), was.get<double>())) continue;
+            if (lightingOriginal_.defaults[key].is_number_integer()) changes[key] = static_cast<long long>(std::llround(s->value()));
+            else changes[key] = s->value();
+        }
+    }
+    return changes;
+}
+
+QString SettingsDialog::applyLighting() {
+    const nlohmann::json changes = lightingChanges();
+    if (changes.empty()) return {};
+    const std::string err = tools::writeLightingConfig(lightingFile(), changes);
+    return err.empty() ? QString() : qs(err);
+}
+
 // ---- all -------------------------------------------------------------------------------------------------------------------------
 
 bool SettingsDialog::dirty() const {
@@ -468,12 +619,13 @@ bool SettingsDialog::dirty() const {
         if (g.exe != old.exe || g.args != old.args || g.workingDir != old.workingDir) return true;
     }
     if (profileLoaded_ && readProfileForm() != profileOriginal_) return true;
+    if (!lightingChanges().empty()) return true;
     return readEditorPrefs() != win_.editorPrefs();
 }
 
 QString SettingsDialog::applyAll() {
     setError({});
-    for (const auto apply : {&SettingsDialog::applyEditor, &SettingsDialog::applyProfile, &SettingsDialog::applyGeneral}) {
+    for (const auto apply : {&SettingsDialog::applyEditor, &SettingsDialog::applyLighting, &SettingsDialog::applyProfile, &SettingsDialog::applyGeneral}) {
         const QString err = (this->*apply)();
         if (!err.isEmpty()) {
             setError(err);

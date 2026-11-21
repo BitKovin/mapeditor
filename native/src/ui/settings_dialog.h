@@ -1,7 +1,8 @@
-// ui/settings_dialog -- Settings: General (the game folder), Game profile (game_profile.json of that folder) and Editor (what new viewports start with, the
-// recent maps). The Keymap page (T4.6, the binding editor) applies its changes at once; further pages come with their features. OK / Apply write everything that changed:
+// ui/settings_dialog -- Settings: General (the game folder), Game profile (game_profile.json of that folder), Editor (what new viewports start with, the
+// recent maps) and Lighting (lighting.json of that folder: what a BSP export bakes with). The Keymap page (T4.6, the binding editor) applies its changes at once; further pages come with their features. OK / Apply write everything that changed:
 //   Editor     -> MainWindow::setEditorPrefs (the QSettings)
 //   Profile    -> game_profile.json through core::writeProfileFile, then MainWindow::reloadProfile
+//   Lighting   -> lighting.json through tools::writeLightingConfig (only the keys that changed)
 //   General    -> MainWindow::setAssetsRoot (profile, entity definitions, textures, prefabs and the panels follow)
 // The profile goes first so it is written to the folder it was read from when both change in one Apply.
 // Thread: UI thread only.
@@ -10,7 +11,11 @@
 
 #include <QDialog>
 
+#include <map>
+#include <string>
+
 #include "exporting/launch.h"
+#include "tools/lighting_config.h"
 #include "tools/prefs.h"
 #include "tools/profile_form.h"
 
@@ -23,6 +28,7 @@ class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QStackedWidget;
+class QWidget;
 
 namespace native::ui {
 
@@ -32,7 +38,7 @@ class MainWindow;
 class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
-    enum Page { General = 0, GameProfile = 1, Editor = 2, Keymap = 3 };
+    enum Page { General = 0, GameProfile = 1, Editor = 2, Lighting = 3, Keymap = 4 };
 
     explicit SettingsDialog(MainWindow& window, QWidget* parent = nullptr);
 
@@ -53,12 +59,19 @@ private:
     void buildGeneral(QWidget* page);
     void buildProfile(QWidget* page);
     void buildEditor(QWidget* page);
+    void buildLighting(QWidget* page);
     void reloadGeneral();
     void reloadProfile();
     void reloadEditor();
+    void reloadLighting();
     tools::ProfileForm readProfileForm() const;
     tools::EditorPrefs readEditorPrefs() const;
     QString applyEditor();
+    QString applyLighting();
+    nlohmann::json lightingChanges() const;   // the keys whose editors differ from the stored file
+    std::string lightingFile() const;
+    void setLightingEdit(const std::string& key, const nlohmann::json& value);
+    void resetLighting(const std::string& key);
     QString applyProfile();
     QString applyGeneral();
     void setError(const QString& text);
@@ -91,6 +104,12 @@ private:
     QDoubleSpinBox* fly_ = nullptr;
     QLabel* recentInfo_ = nullptr;
     QPushButton* clearRecent_ = nullptr;
+    // Lighting (lighting.json of the game folder; one editor per key, each remembers its default)
+    QWidget* lightingPage_ = nullptr;
+    QLabel* lightingNote_ = nullptr;
+    std::map<std::string, QWidget*> lightingEdits_;
+    tools::LightingConfig lightingOriginal_;
+    bool lightingLoaded_ = false;
     // Keymap
     KeymapPage* keymap_ = nullptr;
 };
