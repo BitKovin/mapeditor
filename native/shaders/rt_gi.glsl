@@ -3,7 +3,10 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_nonuniform_qualifier : require
 
-layout(set = 2, binding = 0) uniform sampler2D textures[];   // the texture table of the renderer (global texture indices are what the vertices carry)
+#ifndef TEX_SET
+#define TEX_SET 2
+#endif
+layout(set = TEX_SET, binding = 0) uniform sampler2D textures[];   // the texture table of the renderer (global texture indices are what the vertices carry)
 
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer WordBuf { uint w[]; };
 

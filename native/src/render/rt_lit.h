@@ -141,6 +141,13 @@ public:
     };
     bool readCounters(RtLitTargets& t, uint32_t slot, Counters* out) const;
 
+    // The descriptor sets of a frame slot, for the translucent surface shader of the blended pass (mesh_glass.frag): it reads the Params, the lights and the records of the set and the
+    // acceleration structure. Valid once record() wrote the slot.
+    VkDescriptorSetLayout litSetLayout() const { return setLayout_; }
+    VkDescriptorSetLayout tlasSetLayout() const { return tlasLayout_; }
+    static VkDescriptorSet litSet(const RtLitTargets& t, uint32_t slot) { return t.sets[slot & 1u]; }
+    static VkDescriptorSet tlasSet(const RtLitTargets& t, uint32_t slot) { return t.tlasSets[slot & 1u]; }
+
     // DLSS Ray Reconstruction: once per target set, before the first evaluate (outside a render pass): the black specular albedo guide.
     void prepareReconstruction(VkCommandBuffer cmd, RtLitTargets& t) const;
 

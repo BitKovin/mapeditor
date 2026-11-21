@@ -4,33 +4,37 @@
 // G-buffer (rasterised, render size): uAlbedo = the surface's colour (or the sky), uNormal = world normal + 1 (0 where there is no surface), uDist = distance along
 // the view direction (the clip w). History (render size): uHist = (mean occlusion, mean of its square, sample count N, distance of that pixel).
 #extension GL_KHR_shader_subgroup_basic : require
+// RT_SET: the descriptor set of the ray traced Lit kernels (0 in the compute passes, 2 in the translucent surface shader mesh_glass.frag)
+#ifndef RT_SET
+#define RT_SET 0
+#endif
 
-layout(set = 0, binding = 0) uniform sampler2D uDist;
-layout(set = 0, binding = 1) uniform sampler2D uAlbedo;
-layout(set = 0, binding = 2) uniform sampler2D uNormal;
-layout(set = 0, binding = 3) uniform sampler2D uNormalPrev;
-layout(set = 0, binding = 4, rgba32f) uniform image2D uHistPrev;
-layout(set = 0, binding = 5, rgba32f) uniform image2D uHist;
-layout(set = 0, binding = 7, rg16f) uniform image2D uFil0;
-layout(set = 0, binding = 8, rg16f) uniform image2D uFil1;
-layout(set = 0, binding = 9, rgba16f) uniform image2D uOut;
-layout(set = 0, binding = 10, r16f) uniform image2D uSample;
-layout(set = 0, binding = 11, std430) buffer Counters { uint traced; uint surface; } counters;
+layout(set = RT_SET, binding = 0) uniform sampler2D uDist;
+layout(set = RT_SET, binding = 1) uniform sampler2D uAlbedo;
+layout(set = RT_SET, binding = 2) uniform sampler2D uNormal;
+layout(set = RT_SET, binding = 3) uniform sampler2D uNormalPrev;
+layout(set = RT_SET, binding = 4, rgba32f) uniform image2D uHistPrev;
+layout(set = RT_SET, binding = 5, rgba32f) uniform image2D uHist;
+layout(set = RT_SET, binding = 7, rg16f) uniform image2D uFil0;
+layout(set = RT_SET, binding = 8, rg16f) uniform image2D uFil1;
+layout(set = RT_SET, binding = 9, rgba16f) uniform image2D uOut;
+layout(set = RT_SET, binding = 10, r16f) uniform image2D uSample;
+layout(set = RT_SET, binding = 11, std430) buffer Counters { uint traced; uint surface; } counters;
 // R3: the direct light's history (mean D rgb, mean of the square of its luminance), the frame's D sample (for DLSS Ray Reconstruction) and the filtered D (rgb, variance of the mean luminance).
-layout(set = 0, binding = 13, rgba32f) uniform image2D uHistDPrev;
-layout(set = 0, binding = 14, rgba32f) uniform image2D uHistD;
-layout(set = 0, binding = 15, rgba16f) uniform image2D uSampleD;
-layout(set = 0, binding = 19, rgba16f) uniform image2D uFilD0;
-layout(set = 0, binding = 20, rgba16f) uniform image2D uFilD1;
+layout(set = RT_SET, binding = 13, rgba32f) uniform image2D uHistDPrev;
+layout(set = RT_SET, binding = 14, rgba32f) uniform image2D uHistD;
+layout(set = RT_SET, binding = 15, rgba16f) uniform image2D uSampleD;
+layout(set = RT_SET, binding = 19, rgba16f) uniform image2D uFilD0;
+layout(set = RT_SET, binding = 20, rgba16f) uniform image2D uFilD1;
 // R7: the direct light of the style layers 1..3 (12 section 4): running means (rgb) of the previous frame and of this frame, one image per layer. The frame's total sample (all layers
 // weighted by the style values) goes into uSampleD, the means are weighted by the compose pass.
-layout(set = 0, binding = 22, rgba32f) uniform image2D uHistSPrev0;
-layout(set = 0, binding = 23, rgba32f) uniform image2D uHistSPrev1;
-layout(set = 0, binding = 24, rgba32f) uniform image2D uHistSPrev2;
-layout(set = 0, binding = 25, rgba32f) uniform image2D uHistSCur0;
-layout(set = 0, binding = 26, rgba32f) uniform image2D uHistSCur1;
-layout(set = 0, binding = 27, rgba32f) uniform image2D uHistSCur2;
-layout(set = 0, binding = 12, std140) uniform Params {
+layout(set = RT_SET, binding = 22, rgba32f) uniform image2D uHistSPrev0;
+layout(set = RT_SET, binding = 23, rgba32f) uniform image2D uHistSPrev1;
+layout(set = RT_SET, binding = 24, rgba32f) uniform image2D uHistSPrev2;
+layout(set = RT_SET, binding = 25, rgba32f) uniform image2D uHistSCur0;
+layout(set = RT_SET, binding = 26, rgba32f) uniform image2D uHistSCur1;
+layout(set = RT_SET, binding = 27, rgba32f) uniform image2D uHistSCur2;
+layout(set = RT_SET, binding = 12, std140) uniform Params {
     vec4 rayA;       // the pixel's ray: direction = rayA + rayX * ndc.x + rayY * ndc.y (ndc of the pixel centre, jittered), not normalised
     vec4 rayX;
     vec4 rayY;
@@ -53,6 +57,9 @@ layout(set = 0, binding = 12, std140) uniform Params {
     uvec4 layerOff;  // per layer: the first entry of its sun / sky lights in the index list
     uvec4 layerCnt;  // per layer: how many of them
     uvec4 layerInfo; // x = style layers (1 without styled lights), y = grid cells per layer
+    uvec4 sharcA;    // R7 (glass): the SHaRC buffers for a shader without the push constants: hash entries address (lo, hi), accumulation address (lo, hi)
+    uvec4 sharcB;    // resolved address (lo, hi), capacity, the radiance scale as float bits
+    vec4 sharcCam;   // xyz = the camera position of the grid levels, w = the scene scale
 } P;
 
 vec3 loadStyledPrev(uint l, ivec2 p) {
@@ -74,7 +81,7 @@ float styleWeight(uint layer) { return layer == 0u ? 1.0 : P.styleW[layer]; }
 
 // The object records of render/rt_scene.h (RtRecord, 32 bytes = 2 uvec4 per instance slot = instanceCustomIndex): rec[2s] = (vertex address lo, hi, index address lo, hi),
 // rec[2s + 1] = (triangle count, flags: bit 0 raw mesh, bit 1 the object receives baked light, vertex count, 0).
-layout(set = 0, binding = 21, std430) readonly buffer Records { uvec4 rec[]; };
+layout(set = RT_SET, binding = 21, std430) readonly buffer Records { uvec4 rec[]; };
 
 // The instance masks of render/rt_scene.h: only objects of a class that blocks light (the game profile's blockLight, core::LightingClasses) are seen by the shadow, occlusion and light rays.
 const uint RT_MASK_SOLID = 1u;

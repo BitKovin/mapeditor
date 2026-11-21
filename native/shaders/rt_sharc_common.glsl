@@ -12,6 +12,22 @@
 #include "../third_party/sharc/include/SharcGlslHelpers.h"
 #include "../third_party/sharc/include/SharcCommon.h"
 
+#ifdef SHARC_FROM_PARAMS
+// The glass shader has no room for the push constants: the Params hold the same values (rt_lit_common.glsl).
+SharcParameters sharcParameters() {
+    SharcParameters sp;
+    sp.hashGridParameters.cameraPosition = P.sharcCam.xyz;
+    sp.hashGridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+    sp.hashGridParameters.sceneScale = P.sharcCam.w;
+    sp.hashGridParameters.levelBias = float(SHARC_GRID_LEVEL_BIAS);
+    sp.hashGridData.capacity = P.sharcB.z;
+    sp.hashGridData.hashEntriesBuffer = RWStructuredBuffer_uint64_t(packUint2x32(P.sharcA.xy));
+    sp.radianceScale = uintBitsToFloat(P.sharcB.w);
+    sp.accumulationBuffer = RWStructuredBuffer_SharcAccumulationData(packUint2x32(P.sharcA.zw));
+    sp.resolvedBuffer = RWStructuredBuffer_SharcPackedData(packUint2x32(P.sharcB.xy));
+    return sp;
+}
+#else
 // Push constants of the three kernels.
 layout(push_constant) uniform SharcPush {
     uint64_t hashAddr, accumAddr, resolvedAddr;
@@ -37,5 +53,7 @@ SharcParameters sharcParameters() {
     sp.resolvedBuffer = RWStructuredBuffer_SharcPackedData(G.resolvedAddr);
     return sp;
 }
+
+#endif
 
 #endif

@@ -7,9 +7,9 @@
 //     probability. Lights that do not cast shadows are added without a ray.
 // Included by rt_ao.comp only (needs `tlas`, the pcg / rand01 helpers and the Params of rt_lit_common.glsl).
 
-layout(set = 0, binding = 16, std430) readonly buffer Lights { vec4 lt[]; };         // 8 x vec4 per light, then the sky tables
-layout(set = 0, binding = 17, std430) readonly buffer Cells { uvec2 cells[]; };      // (offset into the index list, count) per grid cell
-layout(set = 0, binding = 18, std430) readonly buffer LightIndex { uint lightIndex[]; };
+layout(set = RT_SET, binding = 16, std430) readonly buffer Lights { vec4 lt[]; };         // 8 x vec4 per light, then the sky tables
+layout(set = RT_SET, binding = 17, std430) readonly buffer Cells { uvec2 cells[]; };      // (offset into the index list, count) per grid cell
+layout(set = RT_SET, binding = 18, std430) readonly buffer LightIndex { uint lightIndex[]; };
 
 const float MIN_DIST = 0.05;
 const uint LREC = 8u;

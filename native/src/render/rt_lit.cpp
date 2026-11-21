@@ -29,8 +29,10 @@ struct Params {
     uint32_t giB[4];
     float styleW[4];
     uint32_t layerOff[4], layerCnt[4], layerInfo[4];
+    uint32_t sharcA[4], sharcB[4];
+    float sharcCam[4];
 };
-static_assert(sizeof(Params) == 400);
+static_assert(sizeof(Params) == 448);
 
 // Matches `SharcPush` of shaders/rt_sharc_common.glsl.
 struct SharcPush {
@@ -155,7 +157,7 @@ RtLit::RtLit(const gpu::Device& device, VkDescriptorSetLayout textureLayout) : d
     vkCreateSampler(dev, &sci, nullptr, &sampler_);
 
     VkDescriptorSetLayoutBinding b[27]{};
-    const VkShaderStageFlags cs = VK_SHADER_STAGE_COMPUTE_BIT;
+    const VkShaderStageFlags cs = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;   // the fragment stage: the translucent surface shader (mesh_glass.frag) reads the set
     uint32_t n = 0;
     for (uint32_t i : {0u, 1u, 2u, 3u}) b[n++] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, cs, nullptr};
     for (uint32_t i : {4u, 5u, 7u, 8u, 9u, 10u, 13u, 14u, 15u, 19u, 20u, 22u, 23u, 24u, 25u, 26u, 27u}) b[n++] = {i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, cs, nullptr};
@@ -458,6 +460,19 @@ bool RtLit::record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, c
         p.gi[2] = gi ? 1.0f : 0.0f;
         p.gi[3] = static_cast<float>(std::clamp(f.options.giPathLength, 2u, 8u));
         p.giB[0] = std::clamp(f.options.giBlock, 1u, 16u);
+        if (gi) {   // the same cache values for a shader that has no push constants (mesh_glass.frag)
+            for (int i = 0; i < 3; ++i) {
+                const uint64_t addr = t.cache.address[i];
+                uint32_t* dst = i == 0 ? &p.sharcA[0] : i == 1 ? &p.sharcA[2] : &p.sharcB[0];
+                dst[0] = static_cast<uint32_t>(addr & 0xffffffffu);
+                dst[1] = static_cast<uint32_t>(addr >> 32);
+            }
+            p.sharcB[2] = t.cache.capacity;
+            const float scale = kRadianceScale;
+            std::memcpy(&p.sharcB[3], &scale, sizeof(float));
+            for (int i = 0; i < 3; ++i) p.sharcCam[i] = static_cast<float>(f.eye[i]);
+            p.sharcCam[3] = f.options.giSceneScale;
+        }
         std::memcpy(t.paramsPtr[slot], &p, sizeof(p));
         vmaFlushAllocation(device_.allocator(), t.paramsAlloc[slot], 0, sizeof(p));
     }

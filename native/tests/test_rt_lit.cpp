@@ -1096,7 +1096,7 @@ TEST_CASE("RT Lit: bounce light (SHaRC cache of S = Db + I) brightens what the l
 }
 
 // The baked Lit view (chunked lightmaps, LightingService converged) against the ray traced Lit view for one camera of a real map. Runs only when NATIVE_CMP_ROOT and NATIVE_CMP_MAP
-// are set (NATIVE_CMP_EYE / _TARGET / _SIZE / _TIMEOUT / _OUT like the look test; NATIVE_CMP_BOUNCE 0 / 1). Writes native/build/<OUT> = bake | ray traced | |difference| x 4 and prints the
+// are set (NATIVE_CMP_EYE / _TARGET / _SIZE / _TIMEOUT / _OUT like the look test; NATIVE_CMP_BOUNCE 0 / 1; NATIVE_CMP_STYLE_TIME seconds: freeze the light styles). Writes native/build/<OUT> = bake | ray traced | |difference| x 4 and prints the
 // mean brightness of both and the ratio per 4 x 4 region of the picture.
 TEST_CASE("Compare: the baked Lit view against the ray traced Lit view" * doctest::test_suite("gpu") * doctest::skip(rtEnv("NATIVE_CMP_ROOT").empty())) {
     const auto env = [](const char* name, const std::string& fallback) {
@@ -1153,6 +1153,7 @@ TEST_CASE("Compare: the baked Lit view against the ray traced Lit view" * doctes
     producer.waitIdle();
     f.rt->setRtLighting(render::rtLightingOf(*f.snapshot->doc));
     f.rt->setObjectRules(render::makeRtRules(*f.snapshot, core::LightingClasses::fromProfile(*profile)));   // MainWindow does this in the editor
+    if (!env("NATIVE_CMP_STYLE_TIME", "").empty()) f.rt->setStyleClock(std::atof(env("NATIVE_CMP_STYLE_TIME", "0").c_str()));   // freezes the light styles (the bake shows style 0 only)
     render::RtLitOptions o = options(1024);
     o.lightmapTexelsPerMeter = 16.0f;
     o.bounces = std::atoi(env("NATIVE_CMP_BOUNCE", "1").c_str()) != 0;
@@ -1463,5 +1464,62 @@ TEST_CASE("RT Lit: the style layers are accumulated apart: a flicker shows at on
     CHECK(meanDiff(on, both) < 0.5);
     savePng(both, "rt_lit_styles_on.png");
     savePng(off, "rt_lit_styles_off.png");
+    CHECK(f.device->validationErrors() == 0);
+}
+
+// ---- R7: translucent surfaces -----------------------------------------------------------------------------------------------------------------------------------------
+
+TEST_CASE("RT Lit: the glass of a level is lit by the lights, the sun's shadow rays and the bounce light, not drawn unlit" * doctest::test_suite("gpu")) {
+    Fixture f;
+    if (!f.start(480, 300)) return;
+    // the central part of the translucent cube of demo_lit as seen from the default camera
+    const auto regionLuma = [&](const render::CapturedImage& img) {
+        double sum = 0;
+        size_t n = 0;
+        for (uint32_t y = f.h * 30 / 100; y < f.h * 60 / 100; ++y)
+            for (uint32_t x = f.w * 47 / 100; x < f.w * 73 / 100; ++x) {
+                const size_t i = (static_cast<size_t>(y) * img.width + x) * 4;
+                sum += 0.2126 * img.rgba[i] + 0.7152 * img.rgba[i + 1] + 0.0722 * img.rgba[i + 2];
+                ++n;
+            }
+        return sum / static_cast<double>(n);
+    };
+    render::RtLighting dark;   // no ambient
+    f.rt->setRtLighting(dark);
+    f.rt->setRtLights(render::makeRtLightData({}));
+    f.rt->setRtLit(true, options(64));
+    REQUIRE(f.shot().width == f.w);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+    f.cut++;
+    f.shot();
+    REQUIRE(f.converge());
+    const render::CapturedImage black = f.shot();
+    REQUIRE(black.ok());
+    const double darkLuma = regionLuma(black);
+    CHECK(darkLuma < 3.0);   // drawn unlit it would show its colours
+
+    f.rt->setRtLights(render::makeRtLightData(directTestLights()));
+    f.cut++;
+    f.shot();
+    REQUIRE(f.converge());
+    const render::CapturedImage lit = f.shot();
+    REQUIRE(lit.ok());
+    const double litLuma = regionLuma(lit);
+    MESSAGE("glass region luma: no light " << darkLuma << ", lit " << litLuma);
+    CHECK(litLuma > darkLuma + 8.0);
+    savePng(lit, "rt_lit_glass_lit.png");
+
+    // the bounce light adds to the glass too (the walls of demo_lit are lit by the lights, the glass sees them)
+    render::RtLitOptions bounce = options(64);
+    bounce.bounces = true;
+    f.rt->setRtLit(true, bounce);
+    f.cut++;
+    f.shot();
+    REQUIRE(f.converge());
+    const render::CapturedImage withBounce = f.shot();
+    REQUIRE(withBounce.ok());
+    const double bounceLuma = regionLuma(withBounce);
+    MESSAGE("glass region luma with bounce light: " << bounceLuma);
+    CHECK(bounceLuma >= litLuma - 1.0);
     CHECK(f.device->validationErrors() == 0);
 }

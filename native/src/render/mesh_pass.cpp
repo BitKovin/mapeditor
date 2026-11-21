@@ -9,6 +9,7 @@
 #include "native_shaders/label_vert.spv.h"
 #include "native_shaders/mesh_frag.spv.h"
 #include "native_shaders/mesh_gbuf_frag.spv.h"
+#include "native_shaders/mesh_glass_frag.spv.h"
 #include "native_shaders/mesh_vert.spv.h"
 #include "native_shaders/overlay_frag.spv.h"
 #include "native_shaders/overlay_vert.spv.h"
@@ -158,7 +159,7 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat colorFor
 } // namespace
 
 MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat depthFormat, VkDescriptorSetLayout textureLayout, VkDescriptorSetLayout lightmapLayout)
-    : device_(device), colorFormat_(colorFormat), depthFormat_(depthFormat) {
+    : device_(device), colorFormat_(colorFormat), depthFormat_(depthFormat), textureLayout_(textureLayout), lightmapLayout_(lightmapLayout) {
     const VkDevice dev = device_.device();
     VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants)};
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -233,15 +234,41 @@ MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat dep
     vkDestroyShaderModule(dev, fs, nullptr);
 }
 
+bool MeshPass::enableGlass(VkDescriptorSetLayout lit, VkDescriptorSetLayout tlas) {
+    if (glassTranslucent_) return true;
+    if (!device_.caps().bounceCache || lit == VK_NULL_HANDLE || tlas == VK_NULL_HANDLE) return false;
+    const VkDevice dev = device_.device();
+    VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants)};
+    const VkDescriptorSetLayout setLayouts[4] = {textureLayout_, lightmapLayout_, lit, tlas};
+    VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    lci.setLayoutCount = 4;
+    lci.pSetLayouts = setLayouts;
+    lci.pushConstantRangeCount = 1;
+    lci.pPushConstantRanges = &range;
+    if (vkCreatePipelineLayout(dev, &lci, nullptr, &glassLayout_) != VK_SUCCESS) return false;
+    VkShaderModule vs = makeModule(dev, native::shaders::k_mesh_vert_spv, sizeof(native::shaders::k_mesh_vert_spv));
+    VkShaderModule fs = makeModule(dev, native::shaders::k_mesh_glass_frag_spv, sizeof(native::shaders::k_mesh_glass_frag_spv));
+    PipelineSpec blended;
+    blended.blend = true;
+    blended.depthWrite = false;
+    glassTranslucent_ = makePipeline(dev, glassLayout_, colorFormat_, depthFormat_, vs, fs, blended);
+    vkDestroyShaderModule(dev, vs, nullptr);
+    vkDestroyShaderModule(dev, fs, nullptr);
+    if (!glassTranslucent_) base::logWarning("MeshPass: the translucent surface pipeline failed; glass stays unlit");
+    return glassTranslucent_ != VK_NULL_HANDLE;
+}
+
 MeshPass::~MeshPass() {
     const VkDevice dev = device_.device();
+    if (glassTranslucent_) vkDestroyPipeline(dev, glassTranslucent_, nullptr);
+    if (glassLayout_) vkDestroyPipelineLayout(dev, glassLayout_, nullptr);
     for (VkPipeline p : {opaque_, translucent_, volume_, skyBg_, gBufferOpaque_, gBufferSky_, worldLines_, screenLines_, plainLines_, topLines_, fills_, labels_, labelsOver_})
         if (p) vkDestroyPipeline(dev, p, nullptr);
     if (layout_) vkDestroyPipelineLayout(dev, layout_, nullptr);
 }
 
 void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene& scene, const DrawLists& lists, VkDescriptorSet textures,
-                      uint32_t skyTexture, bool showVolumes, const FrameOverlays& ov, VkDescriptorSet lightmaps, const LitParams& lit, int parts) const {
+                      uint32_t skyTexture, bool showVolumes, const FrameOverlays& ov, VkDescriptorSet lightmaps, const LitParams& lit, int parts, const GlassSets& glass) const {
     if (!valid()) return;
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &textures, 0, nullptr);
     if (lightmaps) vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 1, 1, &lightmaps, 0, nullptr);
@@ -318,7 +345,17 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
     };
     if (!(parts & kMeshBlended)) draw(gbuf ? gBufferOpaque_ : opaque_, 0, lists.solid);
     if (!gbuf) {
-        draw(translucent_, 1, lists.translucent);
+        if ((parts & kMeshBlended) && glassTranslucent_ && glass.valid() && lightmaps && lists.translucent.count != 0) {   // the ray traced Lit view lights glass per fragment
+            const VkDescriptorSet sets[4] = {textures, lightmaps, glass.lit, glass.tlas};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glassLayout_, 0, 4, sets, 0, nullptr);
+            PushConstants p = pc;
+            p.misc[0] = 1;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glassTranslucent_);
+            vkCmdPushConstants(cmd, glassLayout_, stages, 0, sizeof(p), &p);
+            vkCmdDrawIndexedIndirect(cmd, lists.translucent.buffer, lists.translucent.offset, lists.translucent.count, sizeof(VkDrawIndexedIndirectCommand));
+        } else {
+            draw(translucent_, 1, lists.translucent);
+        }
         if (showVolumes) draw(volume_, 2, lists.volume);
     }
     if (parts & kMeshOverlays) overlays();

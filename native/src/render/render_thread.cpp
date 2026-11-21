@@ -1382,9 +1382,16 @@ void RenderThread::loop() {
                 vkCmdSetScissor(f.cmd, 0, 1, &scissor);
             }
             if (useDlss || useRt) dlssPass_->resolve(f.cmd, v.dlss);
-            if (mesh_)
+            if (mesh_) {
+                GlassSets glass;   // the ray traced view lights translucent surfaces per fragment
+                if (useRt && rtLit_ && mesh_->enableGlass(rtLit_->litSetLayout(), rtLit_->tlasSetLayout())) {
+                    const uint32_t rtSlot = static_cast<uint32_t>((v.frameCounter - 1) % kFramesInFlight);
+                    glass.lit = RtLit::litSet(v.rt, rtSlot);
+                    glass.tlas = RtLit::tlasSet(v.rt, rtSlot);
+                }
                 mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true, ov, lightmapView_->set(), lit,
-                              useRt ? (kMeshOverlays | kMeshBlended) : (useDlss ? kMeshOverlays : kMeshAll));
+                              useRt ? (kMeshOverlays | kMeshBlended) : (useDlss ? kMeshOverlays : kMeshAll), glass);
+            }
             if (pass_) pass_->record(f.cmd, extent, w.view, !scene_->hasObjects());
             vkCmdEndRendering(f.cmd);
 

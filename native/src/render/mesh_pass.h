@@ -51,6 +51,12 @@ enum MeshParts : int { kMeshScene = 1, kMeshOverlays = 2, kMeshAll = 3, kMeshGBu
 constexpr VkFormat kGBufferNormalFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kGBufferDistFormat = VK_FORMAT_R32_SFLOAT;
 
+// The descriptor sets the translucent surface shader needs (RtLit::litSet / tlasSet of this frame).
+struct GlassSets {
+    VkDescriptorSet lit = VK_NULL_HANDLE, tlas = VK_NULL_HANDLE;
+    bool valid() const { return lit != VK_NULL_HANDLE && tlas != VK_NULL_HANDLE; }
+};
+
 class MeshPass {
 public:
     // `lightmapLayout` = set 1 (the display pages, render/lightmap_view.h).
@@ -63,14 +69,19 @@ public:
     VkFormat colorFormat() const { return colorFormat_; }
     VkFormat depthFormat() const { return depthFormat_; }
 
+    // The ray traced Lit viewport lights translucent surfaces per fragment (mesh_glass.frag): needs the set layouts of RtLit; false when the pipeline cannot be made (glass stays Unlit).
+    bool enableGlass(VkDescriptorSetLayout lit, VkDescriptorSetLayout tlas);
+
     // Inside vkCmdBeginRendering (viewport and scissor already set). `skyTexture` = a sky entry of the texture table (TextureTable::skyIndex), 0 = none.
     void record(VkCommandBuffer cmd, const ViewState& view, const GpuScene& scene, const DrawLists& lists, VkDescriptorSet textures, uint32_t skyTexture,
-                bool showVolumes, const FrameOverlays& overlays, VkDescriptorSet lightmaps = VK_NULL_HANDLE, const LitParams& lit = {}, int parts = kMeshAll) const;
+                bool showVolumes, const FrameOverlays& overlays, VkDescriptorSet lightmaps = VK_NULL_HANDLE, const LitParams& lit = {}, int parts = kMeshAll, const GlassSets& glass = {}) const;
 
 private:
     const gpu::Device& device_;
     VkFormat colorFormat_, depthFormat_;
-    VkPipelineLayout layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout layout_ = VK_NULL_HANDLE, glassLayout_ = VK_NULL_HANDLE;
+    VkPipeline glassTranslucent_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout textureLayout_ = VK_NULL_HANDLE, lightmapLayout_ = VK_NULL_HANDLE;
     VkPipeline gBufferOpaque_ = VK_NULL_HANDLE, gBufferSky_ = VK_NULL_HANDLE;
     VkPipeline opaque_ = VK_NULL_HANDLE, translucent_ = VK_NULL_HANDLE, volume_ = VK_NULL_HANDLE, skyBg_ = VK_NULL_HANDLE;
     VkPipeline worldLines_ = VK_NULL_HANDLE, screenLines_ = VK_NULL_HANDLE, plainLines_ = VK_NULL_HANDLE, fills_ = VK_NULL_HANDLE, topLines_ = VK_NULL_HANDLE;
