@@ -119,6 +119,7 @@ class FttWindow;
 class TexturePropsDialog;
 class TexGroupEditor;
 class GroupsPanel;
+class LevelSettingsPanel;
 class TileSetEditor;
 class ReliefEditor;
 
@@ -246,6 +247,8 @@ public:
     // Makes `after` (built from document() with a doc::VersionEditor) the current version as one undo step named `label`. False when it
     // was not built from the current version or changed nothing. Listeners hear documentEdited with the change set.
     bool commitEdit(const std::string& label, std::shared_ptr<const doc::DocumentVersion> after);
+    // The level settings (worldspawn keys; nullopt removes a key) as one undo step named `label`; false when nothing changed or the edit is refused.
+    bool setLevelKeys(const std::string& label, const std::vector<std::pair<std::string, std::optional<std::string>>>& changes);
     bool canUndo() const;
     bool canRedo() const;
     // "Undo Move" / "Redo Clip" for the Edit menu; "Undo" / "Redo" when there is nothing to undo / redo.
@@ -530,6 +533,8 @@ public:
     ads::CDockWidget* texturesDock() const { return texturesDock_; }
     TextureBrowserPanel* textureBrowser() const { return textureBrowser_; }
     GroupsPanel* groupsPanel() const { return groupsPanel_; }
+    LevelSettingsPanel* levelPanel() const { return levelPanel_; }
+    ads::CDockWidget* levelDock() const { return levelDock_; }
     ads::CDockWidget* groupsDock() const { return groupsDock_; }
     std::shared_ptr<const core::GameProfile> gameProfile() const { return profile_; }
     OutlinerPanel* outliner() const { return outliner_; }
@@ -729,6 +734,8 @@ private:
     SurfacePanel* surface_ = nullptr;
     TextureBrowserPanel* textureBrowser_ = nullptr;
     GroupsPanel* groupsPanel_ = nullptr;
+    LevelSettingsPanel* levelPanel_ = nullptr;
+    ads::CDockWidget* levelDock_ = nullptr;
     ads::CDockWidget* groupsDock_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;
     DetailsPanel* details_ = nullptr;

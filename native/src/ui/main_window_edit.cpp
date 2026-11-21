@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "doc/io.h"
+#include "doc/level_settings.h"
 #include "doc/selection.h"
 #include "tools/prefabize.h"
 #include "render/picking.h"
@@ -146,6 +147,12 @@ bool MainWindow::pasteClipboard(const core::Vec3& offset) {
         return false;
     }
     return applyEdit(tools::pasteInto(document_, *payload, offset));
+}
+
+bool MainWindow::setLevelKeys(const std::string& label, const std::vector<std::pair<std::string, std::optional<std::string>>>& changes) {
+    if (!document_) return false;
+    const auto after = doc::setLevelKeys(document_, changes);
+    return after && commitEdit(label, after);
 }
 
 // ---- hiding --------------------------------------------------------------------------------------------------------------------------

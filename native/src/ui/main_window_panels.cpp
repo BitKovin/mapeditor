@@ -18,6 +18,7 @@
 #include "ui/main_window.h"
 #include "ui/outliner_panel.h"
 #include "ui/groups_panel.h"
+#include "ui/level_settings_panel.h"
 #include "ui/place_panel.h"
 #include "ui/surface_panel.h"
 #include "ui/texture_browser_panel.h"
@@ -46,6 +47,8 @@ void MainWindow::createToolDocks() {
     texturesDock_ = make("Textures", "texturesDock", textureBrowser_);
     groupsPanel_ = new GroupsPanel(*this);
     groupsDock_ = make("Groups", "groupsDock", groupsPanel_);
+    levelPanel_ = new LevelSettingsPanel(*this);
+    levelDock_ = make("Level", "levelDock", levelPanel_);
     place_ = new PlacePanel(*this);
     placeDock_ = make("Place", "placeDock", place_);
 }
@@ -55,6 +58,7 @@ void MainWindow::layoutToolDocks(ads::CDockAreaWidget* statsArea) {
     detailsDock_->setAsCurrentTab();
     ads::CDockAreaWidget* detailsArea = dockManager_->addDockWidget(ads::CenterDockWidgetArea, detailsDock_, statsArea);
     dockManager_->addDockWidget(ads::CenterDockWidgetArea, surfaceDock_, detailsArea);
+    dockManager_->addDockWidget(ads::CenterDockWidgetArea, levelDock_, detailsArea);
     detailsDock_->setAsCurrentTab();
     ads::CDockAreaWidget* outlinerArea = dockManager_->addDockWidget(ads::TopDockWidgetArea, outlinerDock_, detailsArea);
     dockManager_->setSplitterSizes(outlinerArea, {360, 440});
