@@ -18,6 +18,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -35,6 +36,7 @@
 
 #include "base/jobs.h"
 #include "doc/changeset.h"
+#include "doc/edit.h"
 #include "doc/io.h"
 #include "doc/prefabs.h"
 #include "gpu/device.h"
@@ -1748,6 +1750,158 @@ TEST_CASE("RT bench: frames and GPU time per pass of one ray traced Lit viewport
         const double tConverged = std::chrono::duration<double>(std::chrono::steady_clock::now() - tOpen).count();
         MESSAGE("G-rt open " << f.mapName << " " << size[0] << "x" << size[1] << " DLSS " << dlssName << ": first picture " << tFirst << " s, textures and scene loaded " << tLoaded << " s, converged "
                              << tConverged << " s after the Lit switch, " << f.info().frames << " frames");
+        CHECK(f.device->validationErrors() == 0);
+        return;
+    }
+
+    if (scenario == "brush_move") {   // G-brush (09 section 3): one brush is dragged 1 m over 3 s through the document, the scene builder and the render thread, the way the editor does it
+        using Clock = std::chrono::steady_clock;
+        const doc::LoadResult loaded = doc::loadDocumentFile(fs::path(f.root) / f.mapName, f.mapName);
+        REQUIRE(loaded.version);
+        auto texEnv = std::make_shared<core::texplan::TexEnvironment>(f.root, *profile);
+        scene::ReliefEnv renv;
+        renv.info = [texEnv](const std::string& p) { return texEnv->info(p); };
+        renv.groups = [texEnv](const std::string& n) { return texEnv->group(n); };
+        renv.revision = 1;
+        scene::SceneBuilder builder(f.pool);
+        builder.setReliefEnv(renv);
+        std::mutex mu;
+        std::map<uint64_t, Clock::time_point> published, submitted;
+        builder.setListener([&](const std::shared_ptr<const scene::SceneSnapshot>& snap) {
+            {
+                std::lock_guard<std::mutex> lock(mu);
+                published[snap->version] = Clock::now();
+            }
+            f.rt->setSnapshot(snap);
+        });
+        doc::PrefabLibrary lib(f.root);
+        doc::PrefabResolver resolver(lib);
+        const std::shared_ptr<const doc::Expansion> expansion = resolver.expand(*loaded.version);
+        std::shared_ptr<const doc::DocumentVersion> current = loaded.version;
+        builder.submit(current, doc::allChanged(0, current->version), expansion);
+        REQUIRE(builder.waitIdle(300000));
+        REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 300000));
+
+        // the brush: NATIVE_BENCH_BRUSH = "entity/brush", else the first brush of the first entity that is not the worldspawn
+        std::string entityId, brushId;
+        const std::string want = env("NATIVE_BENCH_BRUSH", "");
+        for (const auto& e : current->entities) {
+            for (const auto& b : e->brushes) {
+                const bool match = want.empty() ? e->typed.classname != "worldspawn" : want == e->typed.id + "/" + b->brush.id;
+                if (match && entityId.empty()) {
+                    entityId = e->typed.id;
+                    brushId = b->brush.id;
+                }
+            }
+        }
+        REQUIRE_MESSAGE(!entityId.empty(), "no brush to move (NATIVE_BENCH_BRUSH = entity/brush)");
+        const std::shared_ptr<const doc::DocumentVersion> base = current;
+        core::Brush original = base->entities[static_cast<size_t>(base->findEntity(entityId))]->brushes[static_cast<size_t>(base->findBrush(entityId, brushId))]->brush;
+        core::Vec3 centre{0, 0, 0};
+        for (const core::Vec3& v : original.vertices) centre = centre + v * (1.0 / static_cast<double>(original.vertices.size()));
+        const auto edit = [&](double dx) {   // the brush at `dx` metres from where it was, as the next version
+            doc::VersionEditor ed(base);
+            core::Brush b = original;
+            for (core::Vec3& v : b.vertices) v.x += dx;
+            REQUIRE(ed.replaceBrush(entityId, b));
+            auto next = ed.finish();
+            REQUIRE(next);
+            const doc::ChangeSet changes = doc::diff(*current, *next);
+            {
+                std::lock_guard<std::mutex> lock(mu);
+                submitted[next->version] = Clock::now();
+            }
+            builder.submit(next, changes, expansion);
+            current = next;
+            return next->version;
+        };
+        const auto settled = [&](uint64_t version) {   // the version is published and uploaded
+            return waitFor([&] {
+                {
+                    std::lock_guard<std::mutex> lock(mu);
+                    if (!published.count(version)) return false;
+                }
+                return builder.idle() && f.rt->sceneInfo().scene.queued == 0;
+            }, 120000);
+        };
+        f.cut++;
+        f.shot();
+        REQUIRE(f.converge(600000));
+        REQUIRE(settled(edit(1.0)));   // the reference: the brush where the drag ends, converged
+        f.shot();
+        REQUIRE(f.converge(600000));
+        const render::CapturedImage reference = f.shot();
+        REQUIRE(reference.ok());
+        savePng(reference, "brush_move_end.png");
+        REQUIRE(settled(edit(0.0)));   // back at the start, converged: the drag begins from a still picture
+        f.shot();
+        REQUIRE(f.converge(600000));
+        const render::CapturedImage startImg = f.shot();
+        REQUIRE(startImg.ok());
+        savePng(startImg, "brush_move_start.png");
+        const double moved = meanAbsDiff(startImg, reference);   // how much the picture changes with the drag: "visibly converged" is relative to it (the level is dark, an absolute limit would say nothing)
+        REQUIRE(moved > 1.0);
+        const double fractions[3] = {0.2, 0.1, 0.05};   // how much of the change may be left: 20 %, 10 % (the gate: not noticeable next to the change itself), 5 %
+        double tFraction[3] = {-1, -1, -1};
+
+        const uint64_t frames0 = f.rt->framesRendered(f.id);
+        const auto t0 = Clock::now();
+        size_t edits = 0;
+        for (double e = 0; (e = std::chrono::duration<double>(Clock::now() - t0).count()) < 3.0; ++edits) {
+            edit(e / 3.0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));   // the 60 Hz of a mouse drag
+        }
+        const double dragSeconds = std::chrono::duration<double>(Clock::now() - t0).count();
+        const uint64_t dragFrames = f.rt->framesRendered(f.id) - frames0;
+        const uint64_t last = edit(1.0);
+        const Clock::time_point tLast = Clock::now();
+        double tPublished = -1, tShown = -1, diffFirst = -1;
+        while (std::chrono::duration<double>(Clock::now() - tLast).count() < 10.0 && tFraction[2] < 0) {
+            const render::CapturedImage img = f.shot();
+            const double t = std::chrono::duration<double>(Clock::now() - tLast).count();
+            std::lock_guard<std::mutex> lock(mu);
+            if (!published.count(last)) continue;
+            if (tPublished < 0) tPublished = std::chrono::duration<double>(published[last] - tLast).count();
+            if (tShown < 0 && f.rt->sceneInfo().scene.queued == 0 && t >= tPublished) {
+                tShown = t;
+                diffFirst = meanAbsDiff(img, reference);
+            }
+            if (!img.ok()) continue;
+            const double d = meanAbsDiff(img, reference);
+            for (int k = 0; k < 3; ++k)
+                if (tFraction[k] < 0 && d < fractions[k] * moved) tFraction[k] = t;
+        }
+        double sum = 0, worst = 0;
+        size_t n = 0;
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            for (const auto& [v, tp] : published) {
+                if (!submitted.count(v)) continue;
+                const double ms = std::chrono::duration<double, std::milli>(tp - submitted[v]).count();
+                sum += ms;
+                worst = std::max(worst, ms);
+                ++n;
+            }
+        }
+        savePng(f.shot(), "brush_move_after.png");
+        MESSAGE("G-brush " << f.mapName << " brush " << entityId << "/" << brushId << " at " << centre.x << "," << centre.y << "," << centre.z << " moved 1 m in x over " << dragSeconds << " s: " << edits
+                           << " edits, " << n << " snapshots published (builder latency mean " << (n ? sum / static_cast<double>(n) : 0.0) << " ms, worst " << worst << " ms), " << dragFrames / dragSeconds
+                           << " fps while dragging; after the last edit: published " << tPublished * 1000 << " ms, first frame with it " << tShown * 1000 << " ms (difference to the converged picture " << diffFirst
+                           << " / 255, the drag changes the picture by " << moved << "); the error left is under 20 % of the change after " << tFraction[0] * 1000 << " ms, 10 % after " << tFraction[1] * 1000 << " ms, 5 % after " << tFraction[2] * 1000 << " ms");
+        // G-undo: the undo brings the first version's geometry back; its derived data is in the cache (no CSG recompute: `computed` stays, the hits grow)
+        const scene::BuilderStats before = builder.stats();
+        const auto tUndo = Clock::now();
+        const uint64_t undone = edit(0.0);
+        REQUIRE(settled(undone));
+        const double undoMs = std::chrono::duration<double, std::milli>(Clock::now() - tUndo).count();
+        const scene::BuilderStats after = builder.stats();
+        MESSAGE("G-undo: back at the start in " << undoMs << " ms, " << after.computed - before.computed << " surface computations, " << after.cacheHits - before.cacheHits << " cache hits");
+        CHECK(after.computed == before.computed);
+        CHECK(after.cacheHits > before.cacheHits);
+        CHECK(tShown >= 0);
+        CHECK(tShown < 0.1);     // G-brush: the light of the moved brush and its neighbours updated within 100 ms of the last move
+        CHECK(tFraction[1] >= 0);
+        CHECK(tFraction[1] < 2.0);   // G-brush: visibly converged within 2 s
         CHECK(f.device->validationErrors() == 0);
         return;
     }
