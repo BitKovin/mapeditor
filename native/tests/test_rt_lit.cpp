@@ -983,3 +983,53 @@ TEST_CASE("RT Lit: the lighting rules of the classes: objects that do not block 
     CHECK(meanAbsDiff(normal, again) < 2.0);   // the noise of two converged runs
     CHECK(f.device->validationErrors() == 0);
 }
+
+TEST_CASE("RT Lit: an edit that leaves every shape as it was keeps the accumulated light, a moved object restarts it" * doctest::test_suite("gpu")) {
+    Fixture f;
+    if (!f.start(480, 300)) return;
+    f.rt->setRtLights(render::makeRtLightData(directTestLights()));
+    f.rt->setRtLit(true, options(64));
+    REQUIRE(f.shot().width == f.w);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+    f.cut++;
+    f.shot();
+    REQUIRE(f.converge());
+
+    // the same shapes, other texture coordinates (what a texture or projection edit makes): uploaded again, light kept
+    auto retextured = std::make_shared<scene::SceneSnapshot>(*f.snapshot);
+    retextured->version += 1;
+    const auto shifted = [](const std::shared_ptr<const scene::RenderMesh>& m, float du, float dx) {
+        if (!m) return m;
+        auto c = std::make_shared<scene::RenderMesh>(*m);
+        for (scene::RenderVertex& v : c->vertices) {
+            v.uv[0] += du;
+            v.pos[0] += dx;
+        }
+        return std::shared_ptr<const scene::RenderMesh>(c);
+    };
+    for (auto& [key, prod] : retextured->objects) {
+        prod.render = shifted(prod.render, 0.5f, 0.0f);
+        prod.raw = shifted(prod.raw, 0.5f, 0.0f);
+    }
+    const uint64_t uploadsBefore = f.rt->sceneInfo().scene.uploads;
+    f.rt->setSnapshot(retextured);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().scene.uploads > uploadsBefore && f.rt->sceneInfo().scene.queued == 0; }, 60000));
+    f.shot();
+    f.shot();
+    CHECK(f.info().tracingSkipped);          // still converged: nothing restarted
+    CHECK(f.info().tracedPixels == 0);
+
+    // the same objects moved: the light of the view is traced again
+    auto moved = std::make_shared<scene::SceneSnapshot>(*f.snapshot);
+    moved->version += 2;
+    for (auto& [key, prod] : moved->objects) {
+        prod.render = shifted(prod.render, 0.0f, 0.25f);
+        prod.raw = shifted(prod.raw, 0.0f, 0.25f);
+    }
+    const uint64_t uploadsMid = f.rt->sceneInfo().scene.uploads;
+    f.rt->setSnapshot(moved);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().scene.uploads > uploadsMid && f.rt->sceneInfo().scene.queued == 0; }, 60000));
+    f.shot();
+    CHECK_FALSE(f.info().tracingSkipped);
+    CHECK(f.device->validationErrors() == 0);
+}

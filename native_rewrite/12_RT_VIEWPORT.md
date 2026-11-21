@@ -137,6 +137,8 @@ e.g. the cell value is `S`, not outgoing radiance):
 
 ## 6. History invalidation from the ChangeSet (no heuristic lag)
 
+> **As built (R4 replaced, 2026-11-21):** no regions for the direct / AO signals. The accumulation restarts completely when `GpuScene::lightingSerial()` changes (a drawn object's shape, a lighting rule or the set of drawn objects) or the lights / trace settings change; an edit that keeps every shape (texture, projection) restarts nothing, because albedo is not in the accumulated light. The text below is the design for the radiance cache (R6) if it needs regions.
+
 A game denoiser guesses that lighting changed (A-SVGF gradients, colour clamping) and lags or ghosts. The editor **knows** what changed:
 every ChangeSet (03 §6) becomes, on the render thread, a list of world-space **change regions per signal class**, using the table of
 06 §7 (light influence old ∪ new; geometry box grown by the light radius / `_ao_radius` / `indirectRadius`; sun → all of `D_sun`;

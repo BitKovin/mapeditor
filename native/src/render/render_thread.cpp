@@ -797,7 +797,7 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     }
 
     // ---- history rules: what restarts it, what keeps it
-    const uint64_t changes = scene_->changeSerial();
+    const uint64_t changes = scene_->lightingSerial();   // not changeSerial(): an edit that leaves every shape as it was (a texture) keeps the accumulated light
     const bool moved = !v.havePrev || view.viewProj != v.prevViewProj;
     const bool reset = created || !v.havePrev || view.cut != v.lastCut || view.renderMode != v.lastRenderMode || changes != v.lastChanges || !lighting.sameTrace(v.rtLighting) ||
                          rtLightsUploaded_ != v.lastLightSerial;

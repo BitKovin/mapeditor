@@ -162,6 +162,19 @@ bool GpuScene::upload(VkCommandBuffer cmd, gpu::UploadRing& ring, const Work& w)
         fresh.vb = vb;
         fresh.ib = ib;
         fresh.serial = ++serials_;
+        {   // FNV-1a over the positions and the indices
+            uint64_t h = 1469598103934665603ull;
+            const auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+            for (const scene::RenderVertex& v : mesh.vertices) {
+                uint32_t b[3];
+                std::memcpy(b, v.pos, sizeof b);
+                mix(b[0]);
+                mix(b[1]);
+                mix(b[2]);
+            }
+            for (uint32_t i : mesh.indices) mix(i);
+            fresh.geomHash = h;
+        }
         fresh.vertexCount = static_cast<uint32_t>(mesh.vertices.size());
         fresh.vertexOffset = static_cast<int32_t>(start / kVertexSize);
         fresh.firstIndex = static_cast<uint32_t>(ib.offset / sizeof(uint32_t));
@@ -298,6 +311,7 @@ void GpuScene::rebuildDraws() {
     ++changes_;
     draws_.clear();
     rt_.clear();
+    uint64_t signature = 0;
     draws_.reserve(objects_.size());
     rawObjects_ = 0;
     for (const auto& [key, o] : objects_) {
@@ -319,7 +333,19 @@ void GpuScene::rebuildDraws() {
         d.volume = o.volume;
         d.textures = &o.textures;
         draws_.push_back(d);
-        if (!o.volume) rt_.push_back({o.serial, flags, static_cast<uint32_t>(o.vertexOffset), o.firstIndex, o.indexCount, o.vertexCount, o.raw});
+        if (!o.volume) {
+            rt_.push_back({o.serial, flags, static_cast<uint32_t>(o.vertexOffset), o.firstIndex, o.indexCount, o.vertexCount, o.raw, o.geomHash});
+            uint64_t h = o.geomHash ^ (uint64_t(flags) * 0x9E3779B97F4A7C15ull);
+            h ^= h >> 29;
+            h *= 0xBF58476D1CE4E5B9ull;
+            h ^= h >> 32;
+            signature += h;   // a sum: the order of the map does not matter
+        }
+    }
+    if (signature != lightingSignature_ || rt_.size() != lightingCount_) {
+        lightingSignature_ = signature;
+        lightingCount_ = rt_.size();
+        ++lightingChanges_;
     }
     drawsDirty_ = false;
 }

@@ -72,6 +72,7 @@ struct RtObject {
     uint32_t indexCount = 0;
     uint32_t vertexCount = 0;
     bool raw = false;               // drawn from the authored brush (no mesh yet)
+    uint64_t geomHash = 0;          // of the positions and indices: equal hashes = the same shape, whatever the textures say
 };
 
 using HiddenObjects = std::unordered_set<scene::ObjectKey, scene::ObjectKey::Hash>;
@@ -111,6 +112,9 @@ public:
     bool hasObjects() const { return !draws_.empty(); }
     // Grows whenever what is drawn changed (an object uploaded, removed, hidden or shown): the DLSS history is not valid across such a change.
     uint64_t changeSerial() const { return changes_; }
+    // Grows only when what the ray tracing scene shows differs in shape: an object added, removed, hidden, moved or reshaped, or a lighting rule changed. Re-uploading an object
+    // with the same positions and indices (a texture or projection edit) does not move it: the albedo is not part of the accumulated light, so nothing has to restart.
+    uint64_t lightingSerial() const { return lightingChanges_; }
     SceneStats stats() const;
     uint32_t litObjects_ = 0;
 
@@ -127,6 +131,7 @@ private:
         doc::Box bounds;
         bool volume = false;
         bool raw = false;
+        uint64_t geomHash = 0;
     };
     struct Work {
         scene::ObjectKey key;
@@ -169,6 +174,8 @@ private:
     };
     std::vector<Draw> draws_;
     std::vector<RtObject> rt_;
+    uint64_t lightingChanges_ = 0, lightingSignature_ = 0;
+    size_t lightingCount_ = ~size_t(0);
     uint64_t serials_ = 0;
     std::vector<VkDrawIndexedIndirectCommand> scratchSolid_, scratchTranslucent_, scratchVolume_;
     uint32_t rawObjects_ = 0;
