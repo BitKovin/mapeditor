@@ -14,35 +14,91 @@ namespace native::render {
 
 bool RtLightData::operator==(const RtLightData& o) const {
     return lightCount == o.lightCount && globalCount == o.globalCount && cell == o.cell && std::memcmp(origin, o.origin, sizeof(origin)) == 0 &&
-           std::memcmp(dim, o.dim, sizeof(dim)) == 0 && records == o.records && index == o.index && cells == o.cells;
+           std::memcmp(dim, o.dim, sizeof(dim)) == 0 && records == o.records && index == o.index && cells == o.cells && layerCount == o.layerCount &&
+           std::memcmp(layerStyle, o.layerStyle, sizeof(layerStyle)) == 0 && std::memcmp(layerGlobalOffset, o.layerGlobalOffset, sizeof(layerGlobalOffset)) == 0 &&
+           std::memcmp(layerGlobalCount, o.layerGlobalCount, sizeof(layerGlobalCount)) == 0 && cellCount == o.cellCount && styles.patterns == o.styles.patterns;
 }
 
-std::shared_ptr<const RtLightData> makeRtLightData(const std::vector<core::Light>& lights) {
+void RtLightData::layerWeights(double seconds, float out[4]) const {
+    out[0] = 1.0f;
+    for (uint32_t l = 1; l < 4; ++l) out[l] = l < layerCount && layerStyle[l] > 0 ? static_cast<float>(styles.value(layerStyle[l], seconds)) : 1.0f;
+}
+
+bool RtLightData::animated() const {
+    for (uint32_t l = 1; l < layerCount; ++l)
+        if (layerStyle[l] > 0 && !styles.patterns[static_cast<size_t>(layerStyle[l])].empty()) return true;
+    return false;
+}
+
+std::shared_ptr<const RtLightData> makeRtLightData(const std::vector<core::Light>& source, const core::LightStyleTable* table) {
     auto out = std::make_shared<RtLightData>();
+    out->styles = table ? *table : core::LightStyleTable::defaults();
+    std::vector<core::Light> lights = source;
+    // ---- the style layers
+    std::vector<int> ids;
+    for (core::Light& l : lights) {
+        l.style = std::clamp(l.style, 0, core::kMaxStyleId);
+        if (l.style != 0) ids.push_back(l.style);
+    }
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    const size_t real = ids.size() > 3 ? 2 : ids.size();     // styles that keep a layer of their own (the rest share the last layer as constant light)
+    out->layerCount = static_cast<uint32_t>(1 + std::min<size_t>(ids.size(), 3));
+    for (size_t i = 0; i < real; ++i) out->layerStyle[1 + i] = ids[i];
+    std::vector<uint32_t> layerOf(lights.size(), 0);
+    for (size_t k = 0; k < lights.size(); ++k) {
+        core::Light& l = lights[k];
+        if (l.style == 0) continue;
+        const auto it = std::lower_bound(ids.begin(), ids.end(), l.style);
+        const size_t i = static_cast<size_t>(it - ids.begin());
+        if (i < real) {
+            layerOf[k] = static_cast<uint32_t>(1 + i);
+            continue;
+        }
+        layerOf[k] = 3;   // merged: the light scaled by the mean of its pattern
+        const std::string& pattern = out->styles.patterns[static_cast<size_t>(l.style)];
+        double mean = 1.0;
+        if (!pattern.empty()) {
+            mean = 0.0;
+            for (size_t f = 0; f < pattern.size(); ++f) mean += out->styles.value(l.style, (static_cast<double>(f) + 0.5) / core::kStyleHz);
+            mean /= static_cast<double>(pattern.size());
+        }
+        l.brightness *= mean;
+    }
     out->lightCount = static_cast<uint32_t>(lights.size());
     out->records = light::packLights(lights);
-    std::vector<uint32_t> local;
-    for (uint32_t k = 0; k < lights.size(); ++k) {
-        const core::LightType t = lights[k].type;
-        if (t == core::LightType::Directional || t == core::LightType::Sky) out->index.push_back(k);
-        else if (lights[k].radius > 0) local.push_back(k);
+    // ---- the lists: the globals of every layer first, then the cells
+    std::vector<uint32_t> local[4];
+    for (uint32_t layer = 0; layer < out->layerCount; ++layer) {
+        out->layerGlobalOffset[layer] = static_cast<uint32_t>(out->index.size());
+        for (uint32_t k = 0; k < lights.size(); ++k) {
+            if (layerOf[k] != layer) continue;
+            const core::LightType t = lights[k].type;
+            if (t == core::LightType::Directional || t == core::LightType::Sky) out->index.push_back(k);
+            else if (lights[k].radius > 0) local[layer].push_back(k);
+        }
+        out->layerGlobalCount[layer] = static_cast<uint32_t>(out->index.size()) - out->layerGlobalOffset[layer];
     }
-    out->globalCount = static_cast<uint32_t>(out->index.size());
-    if (local.empty()) {
-        out->cells = {0u, 0u};
+    out->globalCount = out->layerGlobalCount[0];
+    const uint32_t listBase = static_cast<uint32_t>(out->index.size());
+    bool anyLocal = false;
+    for (uint32_t layer = 0; layer < out->layerCount; ++layer) anyLocal = anyLocal || !local[layer].empty();
+    if (!anyLocal) {
+        out->cells.assign(2u * out->layerCount, 0u);
         return out;
     }
     // the bounds of the lights' ranges, and a cell size that keeps the grid at a few million cells
     double lo[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max()};
     double hi[3] = {std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest()};
-    for (uint32_t k : local) {
-        const core::Light& L = lights[k];
-        const double p[3] = {L.position.x, L.position.y, L.position.z};
-        for (int a = 0; a < 3; ++a) {
-            lo[a] = std::min(lo[a], p[a] - L.radius);
-            hi[a] = std::max(hi[a], p[a] + L.radius);
+    for (uint32_t layer = 0; layer < out->layerCount; ++layer)
+        for (uint32_t k : local[layer]) {
+            const core::Light& L = lights[k];
+            const double p[3] = {L.position.x, L.position.y, L.position.z};
+            for (int a = 0; a < 3; ++a) {
+                lo[a] = std::min(lo[a], p[a] - L.radius);
+                hi[a] = std::max(hi[a], p[a] + L.radius);
+            }
         }
-    }
     double cell = 2.0;
     uint32_t dim[3];
     for (;;) {
@@ -51,7 +107,7 @@ std::shared_ptr<const RtLightData> makeRtLightData(const std::vector<core::Light
             dim[a] = std::max(1u, static_cast<uint32_t>(std::ceil((hi[a] - lo[a]) / cell)));
             cells *= dim[a];
         }
-        if (cells <= 4.0e6) break;
+        if (cells * out->layerCount <= 4.0e6) break;
         cell *= 1.25;
     }
     for (int a = 0; a < 3; ++a) {
@@ -60,8 +116,7 @@ std::shared_ptr<const RtLightData> makeRtLightData(const std::vector<core::Light
     }
     out->cell = static_cast<float>(cell);
     const size_t cellCount = static_cast<size_t>(dim[0]) * dim[1] * dim[2];
-    // pass 1: how many lights per cell; pass 2: fill (the same loop twice)
-    std::vector<uint32_t> counts(cellCount, 0);
+    out->cellCount = static_cast<uint32_t>(cellCount);
     const auto forCells = [&](const core::Light& L, const auto& fn) {
         const double p[3] = {L.position.x, L.position.y, L.position.z};
         int a0[3], a1[3];
@@ -84,17 +139,23 @@ std::shared_ptr<const RtLightData> makeRtLightData(const std::vector<core::Light
                     fn((static_cast<size_t>(z) * dim[1] + y) * dim[0] + x);
                 }
     };
-    for (uint32_t k : local) forCells(lights[k], [&](size_t c) { ++counts[c]; });
-    out->cells.resize(cellCount * 2);
-    uint32_t offset = out->globalCount;
-    for (size_t c = 0; c < cellCount; ++c) {
-        out->cells[2 * c] = offset;
-        out->cells[2 * c + 1] = counts[c];
-        offset += counts[c];
+    // per layer: pass 1 counts the lights per cell, pass 2 fills (the same loop twice)
+    out->cells.resize(cellCount * 2 * out->layerCount);
+    uint32_t offset = listBase;
+    std::vector<std::vector<uint32_t>> counts(out->layerCount, std::vector<uint32_t>(cellCount, 0u));
+    for (uint32_t layer = 0; layer < out->layerCount; ++layer) {
+        for (uint32_t k : local[layer]) forCells(lights[k], [&](size_t c) { ++counts[layer][c]; });
+        for (size_t c = 0; c < cellCount; ++c) {
+            out->cells[2 * (layer * cellCount + c)] = offset;
+            out->cells[2 * (layer * cellCount + c) + 1] = counts[layer][c];
+            offset += counts[layer][c];
+        }
     }
     out->index.resize(offset);
-    std::fill(counts.begin(), counts.end(), 0u);
-    for (uint32_t k : local) forCells(lights[k], [&](size_t c) { out->index[out->cells[2 * c] + counts[c]++] = k; });
+    for (uint32_t layer = 0; layer < out->layerCount; ++layer) {
+        std::fill(counts[layer].begin(), counts[layer].end(), 0u);
+        for (uint32_t k : local[layer]) forCells(lights[k], [&](size_t c) { out->index[out->cells[2 * (layer * cellCount + c)] + counts[layer][c]++] = k; });
+    }
     return out;
 }
 
@@ -162,13 +223,13 @@ void RtLightsProducer::run() {
                 const std::vector<core::ResolvedEntity> resolved = r.snapshot->prefabs ? r.snapshot->prefabs->flat() : std::vector<core::ResolvedEntity>();
                 const core::LightingSource source{coreDoc, resolved, *r.profile, r.assetsRoot};
                 core::LightScene all = core::lightSceneOf(source, skyCache_);
-                core::LightScene style0 = core::lightsOfStyle(all, 0);
-                for (core::Light& l : style0.lights) {   // the bake's defaults for lights authored without a source size
+                for (core::Light& l : all.lights) {   // the bake's defaults for lights authored without a source size
                     if (l.sourceSize > 0) continue;
                     if (l.type == core::LightType::Point || l.type == core::LightType::Spot) l.sourceSize = kDefaultSourceSize;
                     else if (l.type == core::LightType::Directional) l.sourceSize = kDefaultSunSize;
                 }
-                data = makeRtLightData(style0.lights);
+                const core::LightStyleTable styles = core::LightStyleTable::fromProfile(*r.profile);
+                data = makeRtLightData(all.lights, &styles);
             } catch (const std::exception& e) {
                 base::logError(std::string("ray traced Lit: the lights could not be collected: ") + e.what());
             }
@@ -293,6 +354,12 @@ bool RtLightsGpu::upload(const RtLightData& data) {
     info_ = RtLightData{};
     info_.lightCount = data.lightCount;
     info_.globalCount = data.globalCount;
+    info_.layerCount = std::max(1u, data.layerCount);
+    std::memcpy(info_.layerStyle, data.layerStyle, sizeof(info_.layerStyle));
+    std::memcpy(info_.layerGlobalOffset, data.layerGlobalOffset, sizeof(info_.layerGlobalOffset));
+    std::memcpy(info_.layerGlobalCount, data.layerGlobalCount, sizeof(info_.layerGlobalCount));
+    info_.cellCount = std::max(1u, data.cellCount);
+    info_.styles = data.styles;
     std::memcpy(info_.origin, data.origin, sizeof(info_.origin));
     std::memcpy(info_.dim, data.dim, sizeof(info_.dim));
     info_.cell = data.cell;

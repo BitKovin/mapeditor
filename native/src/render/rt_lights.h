@@ -23,6 +23,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/light_styles.h"
 #include "core/lighting_classes.h"
 #include "core/lighting_inputs.h"
 #include "gpu/device.h"
@@ -34,17 +35,29 @@ namespace native::render {
 struct RtLightData {
     std::vector<float> records;          // light::packLights(...): 8 vec4 per light, then the sky tables
     uint32_t lightCount = 0;
-    uint32_t globalCount = 0;            // lights without a position: directional and sky (the first entries of `index`)
-    std::vector<uint32_t> index;
-    std::vector<uint32_t> cells;         // (offset, count) per cell, x fastest
+    uint32_t globalCount = 0;            // lights without a position of layer 0: directional and sky (the first entries of `index`)
+    std::vector<uint32_t> index;         // [globals of layer 0][globals of layer 1]...[the cell lists of every layer]
+    std::vector<uint32_t> cells;         // (offset, count) per cell, x fastest, layer after layer (cellCount cells per layer)
+    // Light styles (12 section 4): the direct light is accumulated per style layer, the compose pass multiplies the layers by the animated style values, so a flicker
+    // never smears the accumulation. Layer 0 = style 0 (always 1); layers 1..3 = the first distinct styles of the level; when there are more styles, the last layer holds
+    // all the rest as constant light (every light scaled by the mean of its pattern: layerStyle = -1).
+    uint32_t layerCount = 1;
+    int layerStyle[4] = {0, -1, -1, -1};
+    uint32_t layerGlobalOffset[4] = {0, 0, 0, 0}, layerGlobalCount[4] = {0, 0, 0, 0};
+    uint32_t cellCount = 1;              // grid cells of one layer
+    core::LightStyleTable styles;        // the patterns of the layers' styles
+    // The multiplier of every layer at `seconds` (layer 0: 1).
+    void layerWeights(double seconds, float out[4]) const;
+    bool animated() const;               // some layer has a pattern that changes over time
     float origin[3] = {0, 0, 0};
     float cell = 1;                      // edge of a cell in metres
     uint32_t dim[3] = {1, 1, 1};
     bool operator==(const RtLightData& o) const;
 };
 
-// The lights of one style layer (style 0): the local lights (point, spot, rect) are entered into the grid cells their range touches.
-std::shared_ptr<const RtLightData> makeRtLightData(const std::vector<core::Light>& lights);
+// All lights, grouped into style layers (RtLightData); the local lights (point, spot, rect) are entered into the grid cells their range touches, per layer. `styles`:
+// the patterns (null = the engine's defaults).
+std::shared_ptr<const RtLightData> makeRtLightData(const std::vector<core::Light>& lights, const core::LightStyleTable* styles = nullptr);
 
 // The lighting rules of the snapshot's objects (the game profile's classes): receives = the class has lightmaps, casts = the class blocks light and the object has a surface that
 // does. Objects whose surfaces are not built yet are left out (they have both until they are). The same rules as the bake's accel (light/accel.cpp) and layout.

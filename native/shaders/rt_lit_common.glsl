@@ -22,6 +22,14 @@ layout(set = 0, binding = 14, rgba32f) uniform image2D uHistD;
 layout(set = 0, binding = 15, rgba16f) uniform image2D uSampleD;
 layout(set = 0, binding = 19, rgba16f) uniform image2D uFilD0;
 layout(set = 0, binding = 20, rgba16f) uniform image2D uFilD1;
+// R7: the direct light of the style layers 1..3 (12 section 4): running means (rgb) of the previous frame and of this frame, one image per layer. The frame's total sample (all layers
+// weighted by the style values) goes into uSampleD, the means are weighted by the compose pass.
+layout(set = 0, binding = 22, rgba32f) uniform image2D uHistSPrev0;
+layout(set = 0, binding = 23, rgba32f) uniform image2D uHistSPrev1;
+layout(set = 0, binding = 24, rgba32f) uniform image2D uHistSPrev2;
+layout(set = 0, binding = 25, rgba32f) uniform image2D uHistSCur0;
+layout(set = 0, binding = 26, rgba32f) uniform image2D uHistSCur1;
+layout(set = 0, binding = 27, rgba32f) uniform image2D uHistSCur2;
 layout(set = 0, binding = 12, std140) uniform Params {
     vec4 rayA;       // the pixel's ray: direction = rayA + rayX * ndc.x + rayY * ndc.y (ndc of the pixel centre, jittered), not normalised
     vec4 rayX;
@@ -41,7 +49,28 @@ layout(set = 0, binding = 12, std140) uniform Params {
     vec4 look;       // x = lightmap texels per metre for the lightmap look (0 = off), y = shadow ray origin bias, z = far distance
     vec4 gi;         // bounce light (R6): x = the bake's surface albedo, y = the gather range, z = 1 when bounces are on, w = longest update path (vertices)
     uvec4 giB;       // x = the update samples one pixel of every giB.x * giB.x block
+    vec4 styleW;     // R7: the multipliers of the style layers 1..3 (layer 0 is always 1)
+    uvec4 layerOff;  // per layer: the first entry of its sun / sky lights in the index list
+    uvec4 layerCnt;  // per layer: how many of them
+    uvec4 layerInfo; // x = style layers (1 without styled lights), y = grid cells per layer
 } P;
+
+vec3 loadStyledPrev(uint l, ivec2 p) {
+    if (l == 0u) return imageLoad(uHistSPrev0, p).rgb;
+    if (l == 1u) return imageLoad(uHistSPrev1, p).rgb;
+    return imageLoad(uHistSPrev2, p).rgb;
+}
+vec3 loadStyledCur(uint l, ivec2 p) {
+    if (l == 0u) return imageLoad(uHistSCur0, p).rgb;
+    if (l == 1u) return imageLoad(uHistSCur1, p).rgb;
+    return imageLoad(uHistSCur2, p).rgb;
+}
+void storeStyled(uint l, ivec2 p, vec3 v) {
+    if (l == 0u) imageStore(uHistSCur0, p, vec4(v, 0.0));
+    else if (l == 1u) imageStore(uHistSCur1, p, vec4(v, 0.0));
+    else imageStore(uHistSCur2, p, vec4(v, 0.0));
+}
+float styleWeight(uint layer) { return layer == 0u ? 1.0 : P.styleW[layer]; }
 
 // The object records of render/rt_scene.h (RtRecord, 32 bytes = 2 uvec4 per instance slot = instanceCustomIndex): rec[2s] = (vertex address lo, hi, index address lo, hi),
 // rec[2s + 1] = (triangle count, flags: bit 0 raw mesh, bit 1 the object receives baked light, vertex count, 0).

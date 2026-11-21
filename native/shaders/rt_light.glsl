@@ -183,14 +183,14 @@ float bounceWeight(uint k, vec3 p) {
     return w;
 }
 
-// The direct light (sun, sky, local lights) arriving at p (normal n): one unbiased sample of what the bake computes per lightmap texel. `bounce`: every light weighted by its
-// bounce source weight (what the bake feeds into the bounces: Db).
-vec3 directSampleW(vec3 p, vec3 n, inout uint seed, bool bounce) {
+// The direct light (sun, sky, local lights of the style layer `layer`) arriving at p (normal n): one unbiased sample of what the bake computes per lightmap texel. `bounce`: every
+// light weighted by its bounce source weight (what the bake feeds into the bounces: Db). The layer's lights without the style value (the compose pass applies it).
+vec3 directSampleL(vec3 p, vec3 n, inout uint seed, bool bounce, uint layer) {
     if (P.lightInfo.z == 0u) return vec3(0.0);
     vec3 o = p + n * P.look.y;
     vec3 sum = vec3(0.0);
-    for (uint g = 0u; g < P.lightInfo.y; ++g) {
-        uint k = lightIndex[g];
+    for (uint g = 0u; g < P.layerCnt[layer]; ++g) {
+        uint k = lightIndex[P.layerOff[layer] + g];
         int type = int(lt[k * LREC + 1u].w + 0.5);
         bool casts = lt[k * LREC + 5u].z > 0.5;
         float bw = bounce ? bounceWeight(k, p) : 1.0;
@@ -207,7 +207,7 @@ vec3 directSampleW(vec3 p, vec3 n, inout uint seed, bool bounce) {
     vec3 rel = (p - P.gridOrigin.xyz) / P.gridOrigin.w;
     ivec3 c = ivec3(floor(rel));
     if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, ivec3(P.gridDim.xyz)))) return sum;
-    uvec2 cell = cells[(uint(c.z) * P.gridDim.y + uint(c.y)) * P.gridDim.x + uint(c.x)];
+    uvec2 cell = cells[layer * P.layerInfo.y + (uint(c.z) * P.gridDim.y + uint(c.y)) * P.gridDim.x + uint(c.x)];
     float wSum = 0.0, wSel = 0.0;
     uint sel = 0xFFFFFFFFu;
     vec3 cSel = vec3(0.0);
@@ -232,4 +232,5 @@ vec3 directSampleW(vec3 p, vec3 n, inout uint seed, bool bounce) {
     return sum;
 }
 
-vec3 directSample(vec3 p, vec3 n, inout uint seed) { return directSampleW(p, n, seed, false); }
+vec3 directSampleW(vec3 p, vec3 n, inout uint seed, bool bounce) { return directSampleL(p, n, seed, bounce, 0u); }
+vec3 directSample(vec3 p, vec3 n, inout uint seed) { return directSampleL(p, n, seed, false, 0u); }

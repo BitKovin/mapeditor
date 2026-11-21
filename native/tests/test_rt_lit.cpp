@@ -81,8 +81,8 @@ HWND makeWindow(int w, int h) {
     (void)registered;
     RECT r{0, 0, w, h};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    HWND hwnd = CreateWindowExW(0, kClass, L"native rt lit test", WS_OVERLAPPEDWINDOW, 60, 60, r.right - r.left, r.bottom - r.top, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kClass, L"native rt lit test", WS_OVERLAPPEDWINDOW, 60, 60, r.right - r.left, r.bottom - r.top, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    // The test windows are never shown (the swapchain presents to a hidden window): a test run must not disturb whoever uses the machine.
     pump();
     return hwnd;
 }
@@ -809,7 +809,7 @@ TEST_CASE("RT Lit: point, spot, sun and sky light with ray traced shadows equal 
     CHECK(f.device->validationErrors() == 0);
 }
 
-TEST_CASE("RT Lit: lights from a document: the producer collects the level's style 0 lights and the viewport shows them" * doctest::test_suite("gpu")) {
+TEST_CASE("RT Lit: lights from a document: the producer collects the level's lights, a styled one on a layer of its own" * doctest::test_suite("gpu")) {
     const fs::path root = NATIVE_CORE_ASSETS_DIR;
     if (!fs::exists(root / "maps/demo_lit.map.json")) return;
     base::JobPool pool(4);
@@ -827,10 +827,13 @@ TEST_CASE("RT Lit: lights from a document: the producer collects the level's sty
     producer.waitIdle();
     std::lock_guard<std::mutex> lock(mutex);
     REQUIRE(got);
-    // demo_lit: two point lights (one of them in light style 6: not in the layer of style 0) and a sky light
-    CHECK(got->lightCount == 2);
+    // demo_lit: two point lights (one of them in light style 6: the layer 1) and a sky light (layer 0)
+    CHECK(got->lightCount == 3);
+    CHECK(got->layerCount == 2);
+    CHECK(got->layerStyle[1] == 6);
     CHECK(got->globalCount == 1);
-    CHECK(got->cells.size() == static_cast<size_t>(got->dim[0]) * got->dim[1] * got->dim[2] * 2);
+    CHECK(got->layerGlobalCount[1] == 0);
+    CHECK(got->cells.size() == static_cast<size_t>(got->dim[0]) * got->dim[1] * got->dim[2] * 2 * got->layerCount);
     CHECK(calls == 1);
     // the same document again: nothing new is reported
     producer.request({snapshot, std::make_shared<core::GameProfile>(core::loadProfile(root)), root});
@@ -1329,5 +1332,136 @@ TEST_CASE("Compare: the baked Lit view against the ray traced Lit view" * doctes
         }
     const fs::path dir = fs::path(NATIVE_CORE_ASSETS_DIR).parent_path().parent_path() / "native" / "build";
     out.save(QString::fromStdString((dir / env("NATIVE_CMP_OUT", "compare_bake_rt.png")).string()));
+    CHECK(f.device->validationErrors() == 0);
+}
+
+// ---- R7: light styles ------------------------------------------------------------------------------------------------------------------------------------------------
+
+TEST_CASE("RT Lit: a styled light gets a layer of its own, the grid holds the lists of every layer, styles beyond three share the last layer as constant light") {
+    std::vector<core::Light> lights = directTestLights();   // style 0: point, spot, sun, sky
+    core::Light a = testLight(core::LightType::Point, {0, 1, 0}, {0, 0, 1}, 2, 8);
+    a.style = 3;
+    core::Light b = testLight(core::LightType::Directional, {0, 0, 0}, {0, -1, 0}, 1, 0);
+    b.style = 3;
+    core::Light c = testLight(core::LightType::Point, {2, 1, 0}, {0, 0, 1}, 1, 8);
+    c.style = 7;
+    lights.push_back(a);
+    lights.push_back(b);
+    lights.push_back(c);
+    core::LightStyleTable table = core::LightStyleTable::defaults();
+    table.patterns[3] = "am";
+    table.patterns[7] = "z";
+    const auto data = render::makeRtLightData(lights, &table);
+    REQUIRE(data->layerCount == 3);
+    CHECK(data->layerStyle[0] == 0);
+    CHECK(data->layerStyle[1] == 3);
+    CHECK(data->layerStyle[2] == 7);
+    CHECK(data->layerGlobalCount[0] == 2);   // the sun and the sky
+    CHECK(data->layerGlobalCount[1] == 1);   // the styled sun
+    CHECK(data->layerGlobalCount[2] == 0);
+    REQUIRE(data->cellCount > 0);
+    REQUIRE(data->cells.size() == static_cast<size_t>(data->cellCount) * 2 * data->layerCount);
+    for (uint32_t layer = 0; layer < data->layerCount; ++layer) {
+        uint32_t entries = 0;
+        for (uint32_t cell = 0; cell < data->cellCount; ++cell) {
+            const uint32_t off = data->cells[2 * (layer * data->cellCount + cell)], n = data->cells[2 * (layer * data->cellCount + cell) + 1];
+            for (uint32_t i = 0; i < n; ++i) {
+                const uint32_t k = data->index[off + i];
+                ++entries;
+                const int style = lights[k].style;
+                CHECK(style == data->layerStyle[layer]);   // only the lights of the layer's style
+            }
+        }
+        CHECK(entries > 0);
+    }
+    float w[4];
+    data->layerWeights(0.0, w);
+    CHECK(w[0] == 1.0f);
+    CHECK(w[1] == 0.0f);                   // 'a'
+    CHECK(w[2] == doctest::Approx(25.0 / 12.0));
+    data->layerWeights(0.1, w);
+    CHECK(w[1] == 1.0f);                   // 'm'
+    CHECK(data->animated());
+    core::LightStyleTable still = table;
+    still.patterns[3].clear();
+    still.patterns[7].clear();
+    CHECK_FALSE(render::makeRtLightData(lights, &still)->animated());
+    CHECK_FALSE(render::makeRtLightData(directTestLights())->animated());
+    CHECK(render::makeRtLightData(directTestLights())->layerCount == 1);
+
+    // five styles: the first two keep a layer, the rest is constant light on the last layer scaled by the mean of its pattern
+    std::vector<core::Light> many;
+    for (int style = 3; style <= 7; ++style) {
+        core::Light l = testLight(core::LightType::Point, {double(style), 1, 0}, {0, 0, 1}, 4, 8);
+        l.style = style;
+        many.push_back(l);
+    }
+    core::LightStyleTable mt = core::LightStyleTable::defaults();
+    mt.patterns[3] = "m";
+    mt.patterns[4] = "m";
+    mt.patterns[5] = "a";    // mean 0
+    mt.patterns[6] = "m";    // mean 1
+    mt.patterns[7] = "";     // constant 1
+    const auto m = render::makeRtLightData(many, &mt);
+    REQUIRE(m->layerCount == 4);
+    CHECK(m->layerStyle[1] == 3);
+    CHECK(m->layerStyle[2] == 4);
+    CHECK(m->layerStyle[3] == -1);
+    const auto brightnessOf = [&](size_t light) { return m->records[(light * 8 + 1) * 4]; };
+    CHECK(brightnessOf(0) == doctest::Approx(4.0f));
+    CHECK(brightnessOf(2) == doctest::Approx(0.0f));
+    CHECK(brightnessOf(3) == doctest::Approx(4.0f));
+    CHECK(brightnessOf(4) == doctest::Approx(4.0f));
+    m->layerWeights(0.0, w);
+    CHECK(w[3] == 1.0f);
+}
+
+TEST_CASE("RT Lit: the style layers are accumulated apart: a flicker shows at once, without a restart and without smear" * doctest::test_suite("gpu")) {
+    Fixture f;
+    if (!f.start(480, 300)) return;
+    core::Light base = testLight(core::LightType::Point, {-0.5, 2.0, -3.5}, {0, 0, 1}, 6, 14);
+    core::Light styled = testLight(core::LightType::Point, {2.5, 2.0, 0.0}, {0, 0, 1}, 6, 14);
+    styled.style = 4;
+    core::LightStyleTable table = core::LightStyleTable::defaults();
+    table.patterns[4] = "am";   // frame 0: off, frame 1 (from 0.1 s): on
+    const auto meanDiff = [](const render::CapturedImage& a, const render::CapturedImage& b) {
+        double sum = 0;
+        for (size_t i = 0; i < a.rgba.size(); ++i) sum += std::abs(static_cast<int>(a.rgba[i]) - static_cast<int>(b.rgba[i]));
+        return sum / static_cast<double>(a.rgba.size());
+    };
+    f.rt->setStyleClock(0.0);
+    f.rt->setRtLights(render::makeRtLightData({base}));
+    f.rt->setRtLit(true, options(256));
+    REQUIRE(f.shot().width == f.w);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+    f.cut++;
+    f.shot();
+    REQUIRE(f.converge());
+    const render::CapturedImage baseOnly = f.shot();
+    REQUIRE(baseOnly.ok());
+
+    f.rt->setStyleClock(0.1);   // the styled light is on
+    f.rt->setRtLights(render::makeRtLightData({base, styled}, &table));
+    f.cut++;
+    f.shot();
+    REQUIRE(f.converge());
+    const render::CapturedImage both = f.shot();
+    REQUIRE(both.ok());
+    CHECK(meanDiff(both, baseOnly) > 1.5);   // the second light is visible
+
+    const uint64_t resets = f.info().resets;
+    f.rt->setStyleClock(0.0);                // off: at once, nothing is traced again
+    f.shot();
+    const render::CapturedImage off = f.shot();
+    CHECK(f.info().tracingSkipped);
+    CHECK(f.info().resets == resets);
+    CHECK(meanDiff(off, baseOnly) < 1.0);    // the same picture as without the light: the layer's history is not smeared into it
+    f.rt->setStyleClock(0.1);                // on again: the accumulated layer is back as it was
+    f.shot();
+    const render::CapturedImage on = f.shot();
+    CHECK(f.info().tracingSkipped);
+    CHECK(meanDiff(on, both) < 0.5);
+    savePng(both, "rt_lit_styles_on.png");
+    savePng(off, "rt_lit_styles_off.png");
     CHECK(f.device->validationErrors() == 0);
 }

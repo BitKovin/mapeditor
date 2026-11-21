@@ -44,9 +44,9 @@ public:
         (void)registered;
         RECT r{0, 0, clientW, clientH};
         AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-        hwnd_ = CreateWindowExW(0, kClass, L"native test", WS_OVERLAPPEDWINDOW, 50, 50, r.right - r.left, r.bottom - r.top,
+        hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kClass, L"native test", WS_OVERLAPPEDWINDOW, 50, 50, r.right - r.left, r.bottom - r.top,
                                 nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-        ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+        // The test windows are never shown (the swapchain presents to a hidden window): a test run must not disturb whoever uses the machine.
         pump();
     }
     ~TestWindow() { if (hwnd_) DestroyWindow(hwnd_); }

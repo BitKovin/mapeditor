@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 
 #include "base/log.h"
@@ -17,6 +18,13 @@
 namespace native::render {
 
 namespace {
+
+// The clock of the light styles (they play at 10 Hz from the start of the program).
+std::chrono::steady_clock::time_point styleEpoch() {
+    static const auto epoch = std::chrono::steady_clock::now();
+    return epoch;
+}
+double styleSeconds() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - styleEpoch()).count(); }
 
 constexpr int kFramesInFlight = 2;
 constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
@@ -451,6 +459,20 @@ void RenderThread::setRtLights(std::shared_ptr<const RtLightData> lights) {
         for (auto& kv : viewports_) kv.second->dirty = true;
         wake_.notify_all();
     }
+}
+
+void RenderThread::setStyleClock(double seconds) {
+    styleClock_.store(seconds);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (rtLitEnabled_.load()) {
+        for (auto& kv : viewports_) kv.second->dirty = true;
+        wake_.notify_all();
+    }
+}
+
+double RenderThread::styleNow() const {
+    const double c = styleClock_.load();
+    return c >= 0.0 ? c : styleSeconds();
 }
 
 void RenderThread::setRtLighting(const RtLighting& lighting) {
@@ -889,6 +911,7 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     fr.lighting = lighting;
     fr.options = options;
     fr.lights = rtLightsGpu_.get();
+    if (lightData) lightData->layerWeights(styleNow(), fr.styleW);   // light styles: the layers' animated values of this frame
     fr.records = rtScene_->recordBuffer();
     fr.textures = textures_->set();
     bool ok = rtLit_->record(cmd, v.rt, d, fr);
@@ -1077,9 +1100,20 @@ void RenderThread::loop() {
             };
             // the ray tracing scene's idle upgrade is due at a time of its own
             const auto rtDeadline = rtScene_ && !device_.lost() ? rtScene_->nextWake() : std::chrono::steady_clock::time_point::max();
-            if (rtDeadline == std::chrono::steady_clock::time_point::max()) wake_.wait(lock, ready);
-            else wake_.wait_until(lock, rtDeadline, ready);
+            // light styles play at 10 Hz: while the level has an animated style the ray traced views draw a frame every style step (the compose pass applies the new values)
+            const bool styleTick = rtLitEnabled_.load() && styleClock_.load() < 0.0 && rtLightData_ && rtLightData_->animated();
+            auto styleDeadline = std::chrono::steady_clock::time_point::max();
+            if (styleTick) {
+                const double step = 1.0 / core::kStyleHz;
+                styleDeadline = styleEpoch() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>((std::floor(styleSeconds() / step) + 1.0) * step));
+            }
+            const auto deadline = std::min(rtDeadline, styleDeadline);
+            if (deadline == std::chrono::steady_clock::time_point::max()) wake_.wait(lock, ready);
+            else wake_.wait_until(lock, deadline, ready);
             rtDue = rtDeadline != std::chrono::steady_clock::time_point::max() && std::chrono::steady_clock::now() >= rtDeadline;
+            if (styleTick && std::chrono::steady_clock::now() >= styleDeadline)
+                for (auto& kv : viewports_)
+                    if (kv.second->view.renderMode > 0) kv.second->dirty = true;
             doUpload = workPending_;
             workPending_ = false;
             skyName = skyName_;

@@ -132,6 +132,8 @@ public:
     // settings (render/rt_lighting.h), fed by the editor from every snapshot. Marks every viewport dirty.
     void setRtLit(bool on, const RtLitOptions& options = {});
     void setRtLighting(const RtLighting& lighting);
+    // The clock of the light styles in seconds (tests): a fixed value freezes the animation; negative = the real clock (the default).
+    void setStyleClock(double seconds);
     // The level lights (R3, render/rt_lights.h), fed by the editor from every snapshot (RtLightsProducer). Restarts the accumulation of every ray traced viewport; null = no lights.
     void setRtLights(std::shared_ptr<const RtLightData> lights);
     // Which objects receive baked light (shadows show on them) and which block light: render/rt_lights.h makeRtRules. Null = all objects do both.
@@ -185,6 +187,8 @@ private:
     std::unique_ptr<RtScene> rtScene_;    // render thread only; made while ray tracing is on (declared after scene_: it goes first)
     std::atomic<bool> rtEnabled_{false};
     std::atomic<bool> rtLitEnabled_{false};
+    std::atomic<double> styleClock_{-1.0};
+    double styleNow() const;
     RtLitOptions rtLitOptions_;           // guarded by mutex_
     RtLighting rtLighting_;               // guarded by mutex_
     std::shared_ptr<const RtLightData> rtLightData_;   // guarded by mutex_

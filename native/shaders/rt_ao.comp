@@ -43,14 +43,17 @@ float rand01(inout uint seed) {
 #include "rt_sharc_common.glsl"
 
 // What the previous frame knew about the surface point seen here: h = (mean, mean of the square, N, distance) or N = 0; hd = the direct light's (mean rgb, mean of luminance^2).
-void reprojected(ivec2 p, vec3 world, vec3 n, float dist, bool still, bool reset, out vec4 h, out vec4 hd) {
+void reprojected(ivec2 p, vec3 world, vec3 n, float dist, bool still, bool reset, out vec4 h, out vec4 hd, out vec3 hs[3]) {
     ivec2 sz = ivec2(P.size.xy);
     h = vec4(0.0);
     hd = vec4(0.0);
+    for (uint l = 0u; l < 3u; ++l) hs[l] = vec3(0.0);
+    uint styled = min(P.layerInfo.x, 4u) - 1u;
     if (reset) return;
     if (still) {
         h = imageLoad(uHistPrev, p);
         hd = imageLoad(uHistDPrev, p);
+        for (uint l = 0u; l < styled; ++l) hs[l] = loadStyledPrev(l, p);
         return;
     }
     vec4 pc = P.prevViewProj * vec4(world, 1.0);
@@ -59,6 +62,7 @@ void reprojected(ivec2 p, vec3 world, vec3 n, float dist, bool still, bool reset
     ivec2 base = ivec2(floor(px));
     vec2 f = px - vec2(base);
     vec4 sum = vec4(0.0), sumD = vec4(0.0);
+    vec3 sumS[3] = vec3[3](vec3(0.0), vec3(0.0), vec3(0.0));
     float wsum = 0.0;
     for (int i = 0; i < 4; ++i) {
         ivec2 q = base + ivec2(i & 1, i >> 1);
@@ -70,11 +74,13 @@ void reprojected(ivec2 p, vec3 world, vec3 n, float dist, bool still, bool reset
         float w = ((i & 1) != 0 ? f.x : 1.0 - f.x) * ((i >> 1) != 0 ? f.y : 1.0 - f.y);
         sum += w * hq;
         sumD += w * imageLoad(uHistDPrev, q);
+        for (uint l = 0u; l < styled; ++l) sumS[l] += w * loadStyledPrev(l, q);
         wsum += w;
     }
     if (wsum < 1e-3) return;
     h = sum / wsum;
     hd = sumD / wsum;
+    for (uint l = 0u; l < styled; ++l) hs[l] = sumS[l] / wsum;
 }
 
 // The lightmap look: the centre of one of the four texels of a planar grid around `world` (the grid of the dominant axis of the normal, P.look.x texels per metre), picked
@@ -103,6 +109,7 @@ void main() {
     if (nrm.w < 0.8) {   // no surface, or a surface of a class that does not receive baked light (shown unlit by the compose pass): nothing is traced
         imageStore(uHist, p, vec4(0.0));
         imageStore(uHistD, p, vec4(0.0));
+        for (uint l = 0u; l < min(P.layerInfo.x, 4u) - 1u; ++l) storeStyled(l, p, vec3(0.0));
         imageStore(uSample, p, vec4(0.0));
         imageStore(uSampleD, p, vec4(0.0));
         return;
@@ -114,7 +121,10 @@ void main() {
     bool still = (P.u.y & F_STILL) != 0u, reset = (P.u.y & F_RESET) != 0u;
 
     vec4 h, hd;
-    reprojected(p, world, nGeo, dist, still, reset, h, hd);
+    vec3 sMean[3];
+    reprojected(p, world, nGeo, dist, still, reset, h, hd, sMean);
+    uint styled = min(P.layerInfo.x, 4u) - 1u;
+    vec3 sx[3] = vec3[3](vec3(0.0), vec3(0.0), vec3(0.0));
     float count = h.b;
     if (!still) count = min(count, P.mode.y);
     float mean = h.r, m2 = h.g;
@@ -156,7 +166,9 @@ void main() {
             }
         }
         dx = directSample(ps, n, seed) + gi;
+        for (uint l = 0u; l < styled; ++l) sx[l] = directSampleL(ps, n, seed, false, l + 1u);
         float c = min(count + 1.0, float(P.u.z));
+        for (uint l = 0u; l < styled; ++l) sMean[l] += (sx[l] - sMean[l]) / c;
         mean += (x - mean) / c;
         m2 += (x * x - m2) / c;
         dMean += (dx - dMean) / c;
@@ -165,10 +177,16 @@ void main() {
         count = c;
         tracedNow = 1u;
     }
+    // the frame's sample of the styled layers when it was traced, else their means: weighted with the style values of this frame
+    vec3 dxTotal = dx;
+    for (uint l = 0u; l < styled; ++l) {
+        storeStyled(l, p, sMean[l]);
+        dxTotal += P.styleW[l + 1u] * (tracedNow != 0u ? sx[l] : sMean[l]);
+    }
     imageStore(uHist, p, vec4(mean, m2, count, dist));
     imageStore(uHistD, p, vec4(dMean, dM2));
     imageStore(uSample, p, vec4(x, 0.0, 0.0, 0.0));
-    imageStore(uSampleD, p, vec4(dx, 0.0));
+    imageStore(uSampleD, p, vec4(dxTotal, 0.0));
     uint t = subgroupAdd(tracedNow);
     if (subgroupElect() && t != 0u) atomicAdd(counters.traced, t);
 }

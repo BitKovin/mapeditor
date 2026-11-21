@@ -56,6 +56,8 @@ struct RtLitTargets {
     VkExtent2D render{};
     Image normal[2], dist, hist[2], fil[2], sample, radiance, specAlbedo;   // radiance, specAlbedo: only with reconstruction
     Image histD[2], filD[2], sampleD;  // the direct light: history (rgb mean, mean of luminance^2), filtered value (rgb, variance of the mean), this frame sample
+    Image histS[2][3];                 // R7: the running mean of the direct light of the style layers 1..3 (rgb), only while the level has styled lights
+    uint32_t styledLayers = 0;         // how many of histS exist
     bool specAlbedoReady = false;      // specAlbedo was cleared to black and is in SHADER_READ_ONLY
     struct Cache {                     // the SHaRC buffers (R6)
         VkBuffer buffer[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};   // hash entries, accumulation, resolved
@@ -102,6 +104,7 @@ struct RtLitFrame {
     RtLighting lighting;
     RtLitOptions options;
     const RtLightsGpu* lights = nullptr;   // the level lights (required; an empty set is fine)
+    float styleW[4] = {1, 1, 1, 1};        // the animated style values of the light layers now (layer 0 is 1): RtLightData::layerWeights
     VkBuffer records = VK_NULL_HANDLE;     // RtScene::recordBuffer (the objects a gather ray can hit)
     VkDescriptorSet textures = VK_NULL_HANDLE;   // the renderer's texture table (set 2 of the trace kernels)
 };
@@ -153,6 +156,8 @@ private:
     VkPipelineLayout aoLayout_ = VK_NULL_HANDLE, filterLayout_ = VK_NULL_HANDLE, resolveLayout_ = VK_NULL_HANDLE;
     VkPipeline aoPipeline_ = VK_NULL_HANDLE, filterPipeline_ = VK_NULL_HANDLE, composePipeline_ = VK_NULL_HANDLE, updatePipeline_ = VK_NULL_HANDLE, resolvePipeline_ = VK_NULL_HANDLE;
     bool ensureCache(RtLitTargets& t, const RtLitOptions& o) const;
+    // The running means of the style layers 1..`layers - 1` (zero layers: nothing). New images need their first layout; true when they were just made (the history restarts).
+    bool ensureStyled(VkCommandBuffer cmd, RtLitTargets& t, uint32_t layers) const;
     void destroyCache(RtLitTargets& t) const;
 };
 
