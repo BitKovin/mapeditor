@@ -40,33 +40,49 @@ fs::path inside(const fs::path& root, const std::string& rel) {
 
 } // namespace
 
-ModelStore::~ModelStore() { uninstall(); }
+struct ModelStore::Shared {
+    std::mutex mutex;
+    std::map<std::string, Slot> slots;
+    fs::path root;
+    base::JobPool* pool = nullptr;
+    std::function<void()> onChange;
+    uint64_t generation = 0, revision = 0;
+};
+
+ModelStore::ModelStore() : s_(std::make_shared<Shared>()) {}
+
+ModelStore::~ModelStore() {
+    uninstall();
+    std::lock_guard<std::mutex> lock(s_->mutex);
+    s_->onChange = {};
+    ++s_->generation;
+}
 
 void ModelStore::setSource(const fs::path& assetsRoot, base::JobPool* pool, std::function<void()> onChange) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    root_ = assetsRoot;
-    pool_ = pool;
-    onChange_ = std::move(onChange);
-    slots_.clear();
-    ++generation_;
-    ++revision_;
+    std::lock_guard<std::mutex> lock(s_->mutex);
+    s_->root = assetsRoot;
+    s_->pool = pool;
+    s_->onChange = std::move(onChange);
+    s_->slots.clear();
+    ++s_->generation;
+    ++s_->revision;
 }
 
 void ModelStore::clear() {
     std::function<void()> notify;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        slots_.clear();
-        ++generation_;
-        ++revision_;
-        notify = onChange_;
+        std::lock_guard<std::mutex> lock(s_->mutex);
+        s_->slots.clear();
+        ++s_->generation;
+        ++s_->revision;
+        notify = s_->onChange;
     }
     if (notify) notify();
 }
 
 uint64_t ModelStore::revision() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return revision_;
+    std::lock_guard<std::mutex> lock(s_->mutex);
+    return s_->revision;
 }
 
 ModelStore::Slot ModelStore::get(const std::string& path) {
@@ -74,45 +90,45 @@ ModelStore::Slot ModelStore::get(const std::string& path) {
     base::JobPool* pool = nullptr;
     uint64_t generation = 0;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto it = slots_.find(path);
-        if (it != slots_.end()) return it->second;
-        slots_[path] = Slot{};
-        root = root_;
-        pool = pool_;
-        generation = generation_;
+        std::lock_guard<std::mutex> lock(s_->mutex);
+        const auto it = s_->slots.find(path);
+        if (it != s_->slots.end()) return it->second;
+        s_->slots[path] = Slot{};
+        root = s_->root;
+        pool = s_->pool;
+        generation = s_->generation;
     }
-    const auto run = [this, root, path, generation] {
+    const auto run = [s = s_, root, path, generation] {
         std::string error;
         Slot slot;
         slot.model = load(root, path, error);
         slot.status = slot.model ? Status::Ready : Status::Error;
         slot.error = error;
-        finish(generation, path, std::move(slot));
+        finish(*s, generation, path, std::move(slot));
     };
     if (pool) pool->submit(run);
     else run();
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = slots_.find(path);
-    return it != slots_.end() ? it->second : Slot{};
+    std::lock_guard<std::mutex> lock(s_->mutex);
+    const auto it = s_->slots.find(path);
+    return it != s_->slots.end() ? it->second : Slot{};
 }
 
-void ModelStore::finish(uint64_t generation, const std::string& path, Slot slot) {
+void ModelStore::finish(Shared& s, uint64_t generation, const std::string& path, Slot slot) {
     std::function<void()> notify;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (generation != generation_) return;   // the source changed while it was loading
-        slots_[path] = std::move(slot);
-        ++revision_;
-        notify = onChange_;
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (generation != s.generation) return;   // the source changed while it was loading
+        s.slots[path] = std::move(slot);
+        ++s.revision;
+        notify = s.onChange;
     }
     if (notify) notify();
 }
 
 std::optional<Box> ModelStore::bounds(const std::string& path) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = slots_.find(path);
-    if (it == slots_.end() || it->second.status != Status::Ready || !it->second.model) return std::nullopt;
+    std::lock_guard<std::mutex> lock(s_->mutex);
+    const auto it = s_->slots.find(path);
+    if (it == s_->slots.end() || it->second.status != Status::Ready || !it->second.model) return std::nullopt;
     return it->second.model->data.bounds;
 }
 
@@ -120,9 +136,9 @@ void ModelStore::install() {
     installed_ = true;
     setModelBoundsProvider([this](const std::string& path) -> std::optional<Box> {
         {
-            std::lock_guard<std::mutex> lock(mutex_);
-            const auto it = slots_.find(path);
-            if (it != slots_.end()) {
+            std::lock_guard<std::mutex> lock(s_->mutex);
+            const auto it = s_->slots.find(path);
+            if (it != s_->slots.end()) {
                 if (it->second.status == Status::Ready && it->second.model) return it->second.model->data.bounds;
                 return std::nullopt;
             }

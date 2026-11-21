@@ -8,10 +8,12 @@
 #include <volk.h>
 
 #include <cstdint>
+#include <memory>
 
 #include "gpu/device.h"
 #include "render/gpu_scene.h"
 #include "render/line_vertex.h"
+#include "render/model_pass.h"
 #include "render/view_state.h"
 
 namespace native::render {
@@ -86,6 +88,7 @@ private:
     VkPipeline opaque_ = VK_NULL_HANDLE, translucent_ = VK_NULL_HANDLE, volume_ = VK_NULL_HANDLE, skyBg_ = VK_NULL_HANDLE;
     VkPipeline worldLines_ = VK_NULL_HANDLE, screenLines_ = VK_NULL_HANDLE, plainLines_ = VK_NULL_HANDLE, fills_ = VK_NULL_HANDLE, topLines_ = VK_NULL_HANDLE;
     VkPipeline labels_ = VK_NULL_HANDLE, labelsOver_ = VK_NULL_HANDLE;
+    std::unique_ptr<ModelPass> models_;   // the models of entities, drawn after the opaque surfaces
 };
 
 } // namespace native::render

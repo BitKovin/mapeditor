@@ -28,6 +28,7 @@
 #include "gpu/upload_ring.h"
 #include "light/light_link.h"
 #include "render/math3d.h"
+#include "render/model_draws.h"
 #include "render/texture_table.h"
 #include "scene/render_mesh.h"
 #include "scene/snapshot.h"
@@ -46,6 +47,7 @@ struct DrawLists {
     DrawList translucent;   // the solid objects that have a translucent texture (drawn again, blended, without depth writes)
     DrawList volume;        // subtractive brushes and other volumes: translucent, no depth writes
     uint32_t visible = 0;   // objects inside the frustum
+    ModelDrawList models;   // the models of entities inside the frustum (render/model_renderer)
 };
 
 struct SceneStats {

@@ -131,6 +131,7 @@ RenderThread::RenderThread(gpu::Device& device) : device_(device) {
     ring_ = std::make_unique<gpu::UploadRing>(device_);
     textures_ = std::make_unique<TextureTable>(device_);
     scene_ = std::make_unique<GpuScene>(device_, *textures_);
+    models_ = std::make_unique<ModelRenderer>(device_, *textures_);
     // the display pages of the lit modes: one empty layer until the bake publishes its layout (the shader needs something to sample)
     lightmapView_ = std::make_unique<LightmapView>(device_);
     display_ = std::make_unique<light::PageImages>(device_, 1024, VK_FORMAT_R16G16B16A16_SFLOAT, true);
@@ -171,6 +172,7 @@ RenderThread::~RenderThread() {
     display_.reset();
     lightmapView_.reset();
     rtScene_.reset();
+    models_.reset();
     scene_.reset();
     textures_.reset();
     ring_.reset();
@@ -336,6 +338,16 @@ void RenderThread::setSelectionLines(std::shared_ptr<const std::vector<LineVerte
     {
         std::lock_guard<std::mutex> lock(mutex_);
         selectionLines_ = std::move(lines);
+        for (auto& kv : viewports_) kv.second->dirty = true;
+    }
+    wake_.notify_all();
+}
+
+void RenderThread::setModels(std::shared_ptr<const ModelScene> models) {
+    models_->setScene(std::move(models));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        workPending_ = true;   // the next iteration takes the scene (and draws the viewports that need it)
         for (auto& kv : viewports_) kv.second->dirty = true;
     }
     wake_.notify_all();
@@ -1154,13 +1166,24 @@ void RenderThread::loop() {
                 const double step = 1.0 / core::kStyleHz;
                 styleDeadline = styleEpoch() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>((std::floor(styleSeconds() / step) + 1.0) * step));
             }
-            const auto deadline = std::min(rtDeadline, styleDeadline);
+            // animated models play at about 30 frames a second
+            const bool modelTick = models_ && models_->animated();
+            auto modelDeadline = std::chrono::steady_clock::time_point::max();
+            if (modelTick) {
+                if (modelNext_ < std::chrono::steady_clock::now() - std::chrono::milliseconds(200)) modelNext_ = std::chrono::steady_clock::now();
+                modelDeadline = modelNext_;
+            }
+            const auto deadline = std::min(std::min(rtDeadline, styleDeadline), modelDeadline);
             if (deadline == std::chrono::steady_clock::time_point::max()) wake_.wait(lock, ready);
             else wake_.wait_until(lock, deadline, ready);
             rtDue = rtDeadline != std::chrono::steady_clock::time_point::max() && std::chrono::steady_clock::now() >= rtDeadline;
             if (styleTick && std::chrono::steady_clock::now() >= styleDeadline)
                 for (auto& kv : viewports_)
                     if (kv.second->view.renderMode > 0) kv.second->dirty = true;
+            if (modelTick && std::chrono::steady_clock::now() >= modelDeadline) {
+                for (auto& kv : viewports_) kv.second->dirty = true;
+                modelNext_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(33);
+            }
             doUpload = workPending_;
             workPending_ = false;
             skyName = skyName_;
@@ -1252,6 +1275,7 @@ void RenderThread::loop() {
             }
             skyIndex_ = skyName.empty() ? 0 : textures_->skyIndex(skyName);
             bool more = scene_->sync(uploadCmd_[slot], *ring_, completedFrames(), nextTimelineValue_.load());
+            models_->sync(*ring_, completedFrames(), nextTimelineValue_.load(), styleSeconds());   // before the textures' upload: it asks for the models' images
             more = textures_->upload(uploadCmd_[slot], *ring_) || more;
             more = syncRayTracing(uploadCmd_[slot]) || more;
             vkEndCommandBuffer(uploadCmd_[slot]);
@@ -1386,6 +1410,7 @@ void RenderThread::loop() {
             datt.clearValue.depthStencil = {1.0f, 0};
             DrawLists lists;
             scene_->buildDraws(w.view.viewProj, *ring_, lists);
+            models_->buildDraws(w.view.viewProj, *ring_, lists.models);
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 info_.visibleObjects = lists.visible;

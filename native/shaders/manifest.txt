@@ -9,6 +9,9 @@ sky_bg_vert|sky_bg.vert|vulkan1.3|
 mesh_frag|mesh.frag|vulkan1.3|
 mesh_gbuf_frag|mesh.frag|vulkan1.3|GBUFFER
 mesh_glass_frag|mesh_glass.frag|vulkan1.3|
+model_vert|model.vert|vulkan1.3|
+model_frag|model.frag|vulkan1.3|
+model_gbuf_frag|model.frag|vulkan1.3|GBUFFER
 overlay_vert|overlay.vert|vulkan1.3|
 overlay_frag|overlay.frag|vulkan1.3|
 label_vert|label.vert|vulkan1.3|

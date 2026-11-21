@@ -6,6 +6,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -20,7 +22,10 @@
 
 #include "gpu/device.h"
 #include "render/camera_rig.h"
+#include "render/model_scene.h"
 #include "render/render_thread.h"
+#include "model_builder.h"
+#include "scene/model_store.h"
 
 using namespace native;
 
@@ -545,4 +550,126 @@ TEST_CASE("a lost GPU device stops the viewport without hanging a resize or a re
         vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);
     }
     gpuFx.device->setLostHandler(nullptr);
+}
+
+// T11.9c: the models of entities. A glb triangle is placed between the camera and the test box: the pixel in the middle of the view turns from the box to the model, and goes back when
+// the models are taken away. Validation stays clean (buffers, the instance and vertex streams, the push block).
+TEST_CASE("a placed model is drawn through the viewport and leaves with its scene" * doctest::test_suite("gpu")) {
+    GpuFixture gpuFx;
+    if (!gpuFx.device) return;
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("model_gpu_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(root / "models");
+    {
+        modeltest::Builder b;
+        const int pos = b.floats({-1, 0, 2, 1, 0, 2, -1, 4, 2}, "VEC3");
+        using nlohmann::json;
+        const json g = b.document({{"meshes", json::array({json{{"primitives", json::array({json{{"attributes", {{"POSITION", pos}}}}})}}})}, {"nodes", json::array({json{{"mesh", 0}}})}});
+        const std::vector<uint8_t> bytes = b.glb(g);
+        std::ofstream(root / "models/tri.glb", std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    scene::ModelStore store;
+    store.setSource(root, nullptr, {});
+    const auto slot = store.get("models/tri.glb");
+    REQUIRE(slot.model);
+    auto models = std::make_shared<render::ModelScene>();
+    render::ModelPlacement placement;
+    placement.model = slot.model;
+    placement.matrix = native::scene::modelMatrix({0, 0, 0}, {0, 0, 0}, {1, 1, 1});
+    placement.bounds = slot.model->data.bounds;
+    placement.bounds.min = {-1, 0, 2};
+    placement.bounds.max = {1, 4, 2};
+    models->placements.push_back(placement);
+    {
+        TestWindow window(320, 240);
+        VkSurfaceKHR surface = gpuFx.makeSurface(window.hwnd());
+        {
+            render::RenderThread rt(*gpuFx.device);
+            const auto id = rt.addViewport(surface, 320, 240);
+            rt.setView(id, frontView(320, 240));
+            const auto before = rt.capture(id);
+            REQUIRE(before.ok());
+            CHECK(closeTo(pixel(before, 160, 120), {108, 108, 142}, 8));   // the box
+            rt.setModels(models);
+            const auto with = rt.capture(id);
+            REQUIRE(with.ok());
+            const Rgb m = pixel(with, 160, 120);
+            CHECK_FALSE(closeTo(m, {108, 108, 142}, 20));   // the triangle is in front of the box
+            CHECK_FALSE(closeTo(m, {27, 27, 29}, 10));      // and it is not the clear colour either
+            CHECK(closeTo(pixel(with, 300, 20), {27, 27, 29}, 3));   // far from the model nothing changed
+            rt.setModels(nullptr);
+            const auto after = rt.capture(id);
+            REQUIRE(after.ok());
+            CHECK(closeTo(pixel(after, 160, 120), {108, 108, 142}, 8));
+            rt.removeViewport(id);
+        }
+        vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);
+    }
+    CHECK(gpuFx.device->validationErrors() == 0);
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
+// T11.9c: an animated model takes the posed-vertex path (a fresh vertex stream per iteration in the upload ring). The joint slides a little along x; the triangle stays over the middle.
+TEST_CASE("an animated model keeps being drawn while it plays" * doctest::test_suite("gpu")) {
+    GpuFixture gpuFx;
+    if (!gpuFx.device) return;
+    namespace sc = native::scene;
+    auto loaded = std::make_shared<sc::LoadedModel>();
+    loaded->path = "test/animated.glb";
+    sc::ModelPrimitive p;
+    p.positions = {-1, 0, 2, 1, 0, 2, -1, 4, 2};
+    p.normals = {0, 0, 1, 0, 0, 1, 0, 0, 1};
+    p.uvs = {0, 0, 0, 0, 0, 0};
+    p.indices = {0, 1, 2};
+    p.joints = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    p.weights = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
+    p.skin = 0;
+    loaded->data.primitives.push_back(p);
+    loaded->data.nodes.resize(1);
+    loaded->data.roots = {0};
+    sc::ModelSkin skin;
+    skin.joints = {0};
+    skin.inverseBind = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    loaded->data.skins.push_back(skin);
+    sc::ModelAnimation anim;
+    anim.name = "Slide";
+    anim.duration = 1;
+    sc::ModelChannel ch;
+    ch.node = 0;
+    ch.path = sc::ChannelPath::Translation;
+    ch.times = {0, 1};
+    ch.values = {0, 0, 0, 0.1f, 0, 0};
+    anim.channels.push_back(ch);
+    loaded->data.animations.push_back(anim);
+    loaded->data.bounds.min = {-1, 0, 2};
+    loaded->data.bounds.max = {1, 4, 2};
+    auto models = std::make_shared<render::ModelScene>();
+    render::ModelPlacement placement;
+    placement.model = loaded;
+    placement.matrix = sc::modelMatrix({0, 0, 0}, {0, 0, 0}, {1, 1, 1});
+    placement.animation = 0;
+    placement.bounds = loaded->data.bounds;
+    models->placements.push_back(placement);
+    REQUIRE(models->animated());
+    {
+        TestWindow window(320, 240);
+        VkSurfaceKHR surface = gpuFx.makeSurface(window.hwnd());
+        {
+            render::RenderThread rt(*gpuFx.device);
+            const auto id = rt.addViewport(surface, 320, 240);
+            rt.setView(id, frontView(320, 240));
+            rt.setModels(models);
+            for (int i = 0; i < 4; ++i) {
+                const auto img = rt.capture(id);
+                REQUIRE(img.ok());
+                CHECK_FALSE(closeTo(pixel(img, 160, 120), {108, 108, 142}, 20));
+                CHECK_FALSE(closeTo(pixel(img, 160, 120), {27, 27, 29}, 10));
+                sleepMs(60);
+            }
+            rt.removeViewport(id);
+        }
+        vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);
+    }
+    CHECK(gpuFx.device->validationErrors() == 0);
 }

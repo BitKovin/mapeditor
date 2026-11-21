@@ -44,7 +44,7 @@ public:
         std::shared_ptr<const LoadedModel> model;   // Ready only
     };
 
-    ModelStore() = default;
+    ModelStore();
     ModelStore(const ModelStore&) = delete;
     ModelStore& operator=(const ModelStore&) = delete;
     ~ModelStore();
@@ -68,14 +68,10 @@ public:
     static std::shared_ptr<const LoadedModel> load(const std::filesystem::path& assetsRoot, const std::string& path, std::string& error);
 
 private:
-    void finish(uint64_t generation, const std::string& path, Slot slot);
+    struct Shared;   // what the loading jobs share with the store (a job that finishes after the store is gone only finds an empty listener)
+    static void finish(Shared& s, uint64_t generation, const std::string& path, Slot slot);
 
-    mutable std::mutex mutex_;
-    std::map<std::string, Slot> slots_;
-    std::filesystem::path root_;
-    base::JobPool* pool_ = nullptr;
-    std::function<void()> onChange_;
-    uint64_t generation_ = 0, revision_ = 0;
+    std::shared_ptr<Shared> s_;
     bool installed_ = false;
 };
 

@@ -165,6 +165,7 @@ void MainWindow::refreshHidden() {
     const bool changed = (next != nullptr) != (hiddenSet_ != nullptr) || (next && hiddenSet_ && *next != *hiddenSet_);
     hiddenSet_ = std::move(next);
     if (changed && services_.renderThread) services_.renderThread->setHiddenObjects(hiddenSet_);
+    if (changed) refreshModels();
     // a hidden thing cannot stay selected: it could still be moved or deleted unseen
     if (document_ && !selection_->empty()) {
         const std::vector<doc::SelRef> keep = tools::pruneHidden(*document_, selection_->items(), hide_);

@@ -232,6 +232,7 @@ MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat dep
     vkDestroyShaderModule(dev, vs, nullptr);
     vkDestroyShaderModule(dev, bg, nullptr);
     vkDestroyShaderModule(dev, fs, nullptr);
+    models_ = std::make_unique<ModelPass>(device_, layout_, colorFormat_, depthFormat_);
 }
 
 bool MeshPass::enableGlass(VkDescriptorSetLayout lit, VkDescriptorSetLayout tlas) {
@@ -259,6 +260,7 @@ bool MeshPass::enableGlass(VkDescriptorSetLayout lit, VkDescriptorSetLayout tlas
 }
 
 MeshPass::~MeshPass() {
+    models_.reset();   // before the layout it uses
     const VkDevice dev = device_.device();
     if (glassTranslucent_) vkDestroyPipeline(dev, glassTranslucent_, nullptr);
     if (glassLayout_) vkDestroyPipelineLayout(dev, glassLayout_, nullptr);
@@ -327,7 +329,11 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
         lines(topLines_, ov.gizmo, view.viewProj);
         lines(screenLines_, ov.screen, mat4Identity());
     };
+    // the models of entities go in with the opaque surfaces (not into the blended pass over a finished ray traced picture)
+    const bool drawModels = models_ && models_->valid() && (parts & (kMeshScene | kMeshGBuffer)) && !(parts & kMeshBlended) && !lists.models.draws.empty();
+    const float litPush[4] = {pc.lit[0], pc.lit[1], pc.lit[2], pc.lit[3]};
     if (!(parts & (kMeshScene | kMeshGBuffer | kMeshBlended)) || (lists.solid.count == 0 && lists.volume.count == 0 && lists.translucent.count == 0)) {
+        if (drawModels) models_->record(cmd, view, litPush, lists.models, gbuf);
         if (parts & kMeshOverlays) overlays();
         return;
     }
@@ -344,6 +350,11 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
         vkCmdDrawIndexedIndirect(cmd, list.buffer, list.offset, list.count, sizeof(VkDrawIndexedIndirectCommand));
     };
     if (!(parts & kMeshBlended)) draw(gbuf ? gBufferOpaque_ : opaque_, 0, lists.solid);
+    if (drawModels) {
+        models_->record(cmd, view, litPush, lists.models, gbuf);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &zero);   // the scene's arenas again for the draws that follow
+        vkCmdBindIndexBuffer(cmd, scene.indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+    }
     if (!gbuf) {
         if ((parts & kMeshBlended) && glassTranslucent_ && glass.valid() && lightmaps && lists.translucent.count != 0) {   // the ray traced Lit view lights glass per fragment
             const VkDescriptorSet sets[4] = {textures, lightmaps, glass.lit, glass.tlas};

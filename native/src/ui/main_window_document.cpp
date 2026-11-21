@@ -4,6 +4,9 @@
 // run inline, which keeps tests simple. A finished job hands its result to the UI thread through a queue drained by a timer.
 // Spec: 03_DOCUMENT.md §3, 08_MILESTONES.md T2.2.
 #include <QApplication>
+#include <QCoreApplication>
+#include <QMetaObject>
+#include <QPointer>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -37,6 +40,8 @@
 #include "light/lighting_service.h"
 #include "gpu/device.h"
 #include "scene/builder.h"
+#include "scene/model_entity.h"
+#include "scene/model_store.h"
 #include "scene/point_box.h"
 #include "ui/main_window.h"
 #include "ui/registry_menus.h"
@@ -489,10 +494,33 @@ void MainWindow::setupScene() {
     }
     rebuildTextureEnvironment();
     services_.renderThread->setTextureSource(root, services_.jobs);
+    if (!modelStore_) modelStore_ = std::make_unique<scene::ModelStore>();
+    {   // the models are read from the assets folder; a finished load comes back on the UI thread (the store and the window go together)
+        QPointer<MainWindow> self(this);
+        const auto queued = modelChangeQueued_;
+        modelStore_->setSource(root, services_.jobs, [self, queued] {
+            if (queued->exchange(true) || !QCoreApplication::instance()) return;   // one pending call covers every load that finishes meanwhile
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [self, queued] {
+                queued->store(false);
+                if (self) self->modelStoreChanged();
+            }, Qt::QueuedConnection);
+        });
+        modelStore_->install();
+    }
     // the game's entity definitions: class boxes (picking, drawing), colours
     entityDefs_ = std::make_shared<core::EntityDefinitions>(core::loadEntityDefinitions(root / profile.entityDefinitions));
     if (!picker_) picker_ = std::make_unique<render::Picker>();
     picker_->setBoxOf(scene::classBoxes(entityDefs_.get()));
+    {   // the game's default of a key (the .ent's model_path of a class) for entities that do not set it
+        const auto defs = entityDefs_;
+        scene::setKeyDefaultProvider([defs](const std::string& classname, const std::string& key) -> std::string {
+            const core::EntClass* c = defs ? defs->find(classname) : nullptr;
+            if (!c) return {};
+            for (const core::EntKey& k : c->keys)
+                if (k.key == key && k.defaultValue) return *k.defaultValue;
+            return {};
+        });
+    }
     prefabRoot_ = profile.prefabRoot;
     refreshOverlays();
     emit entityDefinitionsChanged();

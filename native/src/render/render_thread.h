@@ -38,6 +38,7 @@
 #include "render/glyph_atlas.h"
 #include "render/line_vertex.h"
 #include "render/mesh_pass.h"
+#include "render/model_renderer.h"
 #include "render/view_state.h"
 
 namespace native::render {
@@ -97,6 +98,8 @@ public:
     void setLightLink(std::shared_ptr<light::LightLink> link);
     // The skybox ("env/<name> cube") drawn behind the scene in perspective views; "" = none.
     void setSkyTexture(const std::string& name);
+    // The models of entities the viewports draw (render/model_scene); null = none. Marks every viewport dirty. Animated models keep the viewports redrawing.
+    void setModels(std::shared_ptr<const ModelScene> models);
     // What the scene holds on the GPU and how the textures stand (refreshed every loop iteration).
     struct SceneInfo {
         SceneStats scene;
@@ -192,6 +195,8 @@ private:
     std::unique_ptr<gpu::UploadRing> ring_;
     std::unique_ptr<TextureTable> textures_;
     std::unique_ptr<GpuScene> scene_;
+    std::chrono::steady_clock::time_point modelNext_{};   // the next frame of animated models
+    std::unique_ptr<ModelRenderer> models_;   // render thread (setModels from any thread); after textures_, so it goes first
     std::unique_ptr<RtScene> rtScene_;    // render thread only; made while ray tracing is on (declared after scene_: it goes first)
     std::atomic<bool> rtEnabled_{false};
     std::atomic<bool> rtLitEnabled_{false};

@@ -42,6 +42,9 @@
 #include "light/light_link.h"
 #include "light/lighting_service.h"
 #include "scene/builder.h"
+#include "scene/model_entity.h"
+#include "scene/model_store.h"
+#include "render/model_scene.h"
 #include "scene/point_box.h"
 #include "scene/size_labels.h"
 #include "ui/glyph_atlas_qt.h"
@@ -243,6 +246,8 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
 MainWindow::~MainWindow() {
     if (services_.device) services_.device->setLostHandler(nullptr);   // waits for a handler call in progress
     rtLights_.reset();   // its callback feeds the render thread
+    scene::setKeyDefaultProvider({});
+    modelStore_.reset();   // uninstalls the bounds provider; a loading job only finds an empty listener
     lighting_.reset();   // the bake thread reads the link and the device
     if (services_.renderThread) services_.renderThread->setLightLink(nullptr);
     lightLink_.reset();
@@ -589,7 +594,21 @@ void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot
         lighting_->setInputs(std::move(in));
     }
     picker_->setSnapshot(std::move(snapshot));
+    refreshModels();
     refreshHidden();   // also refreshes the outline when it prunes the selection; otherwise:
+    refreshOutline();
+}
+
+// ---- models of entities (T11.9c) ---------------------------------------------------------------------------------------------------
+
+void MainWindow::refreshModels() {
+    if (!services_.renderThread || !modelStore_ || !picker_ || !picker_->snapshot()) return;
+    services_.renderThread->setModels(render::buildModelScene(*picker_->snapshot(), *modelStore_, hiddenSet_.get()));
+}
+
+void MainWindow::modelStoreChanged() {
+    if (picker_ && picker_->snapshot()) picker_->setSnapshot(picker_->snapshot());   // the boxes of the entities that show the model changed
+    refreshModels();
     refreshOutline();
 }
 

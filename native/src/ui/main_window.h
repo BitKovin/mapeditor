@@ -16,6 +16,7 @@
 
 #include <deque>
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <set>
@@ -77,6 +78,7 @@ struct LoadResult;
 namespace native::scene {
 struct SceneSnapshot;
 class SceneBuilder;
+class ModelStore;
 } // namespace native::scene
 namespace native::light {
 class LightLink;
@@ -304,6 +306,10 @@ public:
     void refreshOutline();
     // The entity boxes / arrows / gizmos and the size labels of every viewport (the snapshot, the selection or a viewport's view changed).
     void refreshOverlays();
+    // The models of entities (T11.9c): the placements the render thread draws, from the snapshot, the store and the hidden set.
+    void refreshModels();
+    // A model finished loading (queued from the loading thread): its box changes the entity's pick / outline box, then the scene is rebuilt.
+    void modelStoreChanged();
     // The size labels of the selection in a viewport (what refreshSizeLabels sends to the render thread; empty = none).
     std::vector<render::TextItem> sizeLabelsFor(size_t panelIndex);
     void refreshSizeLabels(size_t panelIndex);
@@ -767,6 +773,8 @@ private:
     std::unique_ptr<render::RtLightsProducer> rtLights_;   // the ray traced Lit path lights (null without --rt-lit); stopped before the render thread goes
     std::unique_ptr<light::LightingService> lighting_;     // the bake thread (stopped before the link and the render thread go)
     std::unique_ptr<render::Picker> picker_;
+    std::unique_ptr<scene::ModelStore> modelStore_;   // the models of entities; reset before the render thread goes
+    std::shared_ptr<std::atomic<bool>> modelChangeQueued_ = std::make_shared<std::atomic<bool>>(false);
     struct PickDrag {
         render::ViewportWindow* viewport = nullptr;
         QPointF start, current;

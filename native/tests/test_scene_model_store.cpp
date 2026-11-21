@@ -165,3 +165,17 @@ TEST_CASE("model entity: the model's box replaces the class box once loaded") {
     CHECK(near(pointBox(e, classBox).max[0], 0.25));
     pool.waitIdle();
 }
+
+TEST_CASE("model store: a job that finishes after the store is gone is harmless") {
+    TempAssets a;
+    a.write("models/tri.glb", triangleGlb());
+    native::base::JobPool pool(1);
+    std::atomic<int> changes{0};
+    {
+        ModelStore store;
+        store.setSource(a.root, &pool, [&] { ++changes; });
+        store.get("models/tri.glb");
+    }   // destroyed with the load possibly still running: no listener call, no crash
+    pool.waitIdle();
+    CHECK(changes.load() <= 1);
+}
