@@ -457,7 +457,7 @@ void MainWindow::setupScene() {
         return;
     }
     profile_ = std::make_shared<const core::GameProfile>(profile);
-    if (!lighting_ && services_.device && services_.device->caps().lit()) {   // the live lighting: made once, fed by onSnapshot
+    if (!lighting_ && !services_.rtLit && services_.device && services_.device->caps().lit()) {   // the live lighting: made once, fed by onSnapshot
         lightLink_ = std::make_shared<light::LightLink>(*services_.device);
         services_.renderThread->setLightLink(lightLink_);
         lighting_ = std::make_unique<light::LightingService>(*services_.device, *lightLink_);

@@ -35,10 +35,13 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBits
         return VK_FALSE;
     }
     const std::string text = "vulkan validation: " + msg;
-    if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+    // NVIDIA's NGX creates its own images inside slEvaluateFeature (named "nv.ngx.*") and the synchronization validation reports a hazard between two of its own
+    // commands there (DLSS Ray Reconstruction, first evaluate). That is not ours to fix: counted as a warning, still logged.
+    const bool ngxInternal = msg.find("[nv.ngx.") != std::string::npos;
+    if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) && !ngxInternal) {
         ++counts->errors;
         logError(text);
-    } else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+    } else if ((severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT))) {
         ++counts->warnings;
         logWarning(text);
     }

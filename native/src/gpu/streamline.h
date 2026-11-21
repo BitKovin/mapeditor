@@ -53,6 +53,12 @@ struct DlssFrame {
     float nearPlane = 0.05f, farPlane = 2000.0f, fovY = 0.9f, aspect = 1.0f;
     bool reset = false;                          // the history is not valid for this frame (camera cut, resize, mode switch, big change)
     DlssImage color, depth, mvec, out;           // colour in (render size), depth (render size), motion vectors in pixels (render size), colour out (output size)
+    // DLSS Ray Reconstruction (R2): `reconstruction` evaluates the denoiser + upscaler instead of Super Resolution. `color` is then the noisy radiance (render size), and
+    // albedo (diffuse albedo), specAlbedo (black), normal (world normal, roughness 1 in w) are the guides; worldToView / viewToWorld are the camera's view matrices (same
+    // column-major convention as the others).
+    bool reconstruction = false;
+    DlssImage albedo, specAlbedo, normal;
+    float worldToView[16] = {}, viewToWorld[16] = {};
 };
 
 struct StreamlineStatus {
@@ -61,6 +67,7 @@ struct StreamlineStatus {
     bool reflexActive = false;         // low-latency mode is on and the driver reports it available
     bool pclSupported = false;
     bool dlssSupported = false;        // the DLSS Super Resolution plugin is usable on this adapter (RTX GPU, nvngx_dlss.dll present)
+    bool rrSupported = false;          // the DLSS Ray Reconstruction plugin is usable on this adapter (sl.dlss_d.dll, nvngx_dlssd.dll present)
     std::string version;               // "2.14.16"
     std::string note;                  // why something is off ("sl.interposer.dll not found", ...); empty when all is well
     double latencyMs = 0;              // average of the last frame reports: simulation start -> GPU render end
@@ -92,11 +99,13 @@ public:
     // DLSS Super Resolution (render thread only; SL's DLSS calls are not thread safe). mode 1 = Quality, 2 = DLAA.
     bool dlssAvailable() const;
     // The render size DLSS wants for an output size and mode; false when DLSS is not available.
-    bool dlssRenderSize(int mode, uint32_t outW, uint32_t outH, uint32_t* renderW, uint32_t* renderH);
+    bool dlssRenderSize(int mode, uint32_t outW, uint32_t outH, uint32_t* renderW, uint32_t* renderH, bool reconstruction = false);
+    // DLSS Ray Reconstruction (render thread only): the same calls with DlssFrame::reconstruction. mode 1 = Quality, 2 = DLAA.
+    bool rrAvailable() const;
     // Sets the options (when they changed), the constants and the tags of the viewport and records the upscale into `cmd` (outside a render pass).
     // The command buffer's bound state is undefined afterwards. False with *err set when SL refuses (the output image then has no valid content).
     bool dlssEvaluate(VkCommandBuffer cmd, const DlssFrame& frame, std::string* err);
-    // The viewport's DLSS resources go (the GPU must be idle).
+    // The viewport's DLSS resources (Super Resolution and Ray Reconstruction) go (the GPU must be idle).
     void dlssRelease(uint32_t viewport);
 
     StreamlineStatus status() const;

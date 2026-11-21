@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
         return 3;
     }
     native::render::RenderThread renderThread(*device);
+    if (parsed.options.rtLit) renderThread.setRtLit(true);
 
     // Declared after the render thread and the Qt instance: destroyed first, so every viewport releases its swapchain while
     // both still exist.
@@ -90,6 +91,7 @@ int main(int argc, char** argv) {
     services.assetsRoot = parsed.options.assetsRoot;
     services.device = device.get();
     services.renderThread = &renderThread;
+    services.rtLit = parsed.options.rtLit;
     services.vulkanInstance = &vulkanInstance;
     services.settings = screenshotRun ? nullptr : &layoutSettings;
     services.forceViewports = parsed.options.layoutViewports;

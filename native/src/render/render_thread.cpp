@@ -87,6 +87,18 @@ struct RenderThread::Viewport {
     int lastRenderMode = 0;
     uint64_t lastChanges = 0;
     DlssInfo dlssInfo;
+    // The ray traced Lit path (R2). It shares `dlss` (the render-size colour / depth / mvec and the output image) and the previous-frame fields above; dlssOwner says which path made them.
+    int dlssOwner = 0;                    // 0 none, 1 DLSS Super Resolution, 2 the ray traced Lit path
+    RtLitTargets rt;
+    bool rtFailed = false;                // the targets could not be made: this viewport stays on the chunked path until ray traced Lit is switched off
+    uint32_t rtStill = 0;                 // consecutive frames of a still camera so far
+    uint32_t rtFrameNumber = 0;           // the random sequence's position
+    bool rtMore = false;                  // the last ray traced frame still traced (it asks for another one)
+    bool rtRr = false;                    // the ray traced Lit targets were made for DLSS Ray Reconstruction
+    int rtRrFailedMode = 0;               // Streamline refused Ray Reconstruction in this DLSS mode: the filter is used until the mode changes
+    RtLighting rtLighting;
+    uint64_t rtSlotFrame[2] = {0, 0};
+    RtLitInfo rtInfo;
 };
 
 RenderThread::RenderThread(gpu::Device& device) : device_(device) {
@@ -415,10 +427,38 @@ void RenderThread::setRayTracing(bool on, const RtOptions& options) {
     wake_.notify_all();
 }
 
+void RenderThread::setRtLit(bool on, const RtLitOptions& options) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    rtLitOptions_ = options;
+    const bool enable = on && device_.caps().lit();
+    rtLitEnabled_.store(enable);
+    if (!enable)
+        for (auto& kv : viewports_) kv.second->rtFailed = false;
+    workPending_ = true;
+    for (auto& kv : viewports_) kv.second->dirty = true;
+    wake_.notify_all();
+}
+
+void RenderThread::setRtLighting(const RtLighting& lighting) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (rtLighting_ == lighting) return;
+    rtLighting_ = lighting;
+    if (rtLitEnabled_.load()) {
+        for (auto& kv : viewports_) kv.second->dirty = true;
+        wake_.notify_all();
+    }
+}
+
+RenderThread::RtLitInfo RenderThread::rtLitInfo(ViewportId id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = viewports_.find(id);
+    return it == viewports_.end() ? RtLitInfo{} : it->second->rtInfo;
+}
+
 RenderThread::RtInfo RenderThread::rtInfo() const {
     std::lock_guard<std::mutex> lock(mutex_);
     RtInfo i = rtInfo_;
-    i.enabled = rtEnabled_.load();
+    i.enabled = rtEnabled_.load() || rtLitEnabled_.load();
     return i;
 }
 
@@ -460,17 +500,69 @@ void RenderThread::releaseViewport(Viewport& v) {
 }
 
 void RenderThread::releaseDlss(Viewport& v) {
+    if (v.rt.valid() && rtLit_) {
+        vkQueueWaitIdle(device_.graphicsQueue());
+        rtLit_->destroyTargets(v.rt);
+    }
     if (v.dlss.valid() && dlssPass_) {
         vkQueueWaitIdle(device_.graphicsQueue());
         if (gpu::Streamline* sl = device_.streamline()) sl->dlssRelease(v.id);
         dlssPass_->destroyTargets(v.dlss);
     }
+    v.dlssOwner = 0;
+    v.rtStill = 0;
+    v.rtMore = false;
     v.dlssMode = 0;
     v.havePrev = false;
     v.dlssSettle = 0;
     std::lock_guard<std::mutex> lock(mutex_);
     v.dlssInfo.active = false;
 }
+
+namespace {
+
+// The camera part of a DLSS frame (Super Resolution and Ray Reconstruction): output size, projection matrices, the basis, the planes.
+void fillDlssCamera(gpu::DlssFrame& df, const ViewState& view, VkExtent2D extent, const Mat4& clipToPrev, const Mat4& prevToClip) {
+    const auto toFloat = [](const Mat4& m, float* out) {
+        for (size_t i = 0; i < 16; ++i) out[i] = static_cast<float>(m[i]);
+    };
+    df.outW = extent.width;
+    df.outH = extent.height;
+    toFloat(view.proj, df.viewToClip);
+    toFloat(mat4Invert(view.proj), df.clipToView);
+    toFloat(clipToPrev, df.clipToPrevClip);
+    toFloat(prevToClip, df.prevClipToClip);
+    for (int i = 0; i < 3; ++i) {
+        df.position[i] = static_cast<float>(view.eye[i]);
+        df.up[i] = static_cast<float>(view.up[i]);
+        df.right[i] = static_cast<float>(view.right[i]);
+        df.forward[i] = static_cast<float>(view.forward[i]);
+    }
+    df.nearPlane = static_cast<float>(view.nearPlane);
+    df.farPlane = static_cast<float>(view.farPlane);
+    df.fovY = static_cast<float>(view.fovY);
+    df.aspect = static_cast<float>(extent.width) / static_cast<float>(std::max(1u, extent.height));
+    // the view matrix (world -> camera, the camera looks down -z) and its inverse, column-major
+    Mat4 V = mat4Identity();
+    for (int c = 0; c < 3; ++c) {
+        V[static_cast<size_t>(c * 4 + 0)] = view.right[c];
+        V[static_cast<size_t>(c * 4 + 1)] = view.up[c];
+        V[static_cast<size_t>(c * 4 + 2)] = -view.forward[c];
+    }
+    double dr = 0, du = 0, df2 = 0;
+    for (int c = 0; c < 3; ++c) {
+        dr += view.right[c] * view.eye[c];
+        du += view.up[c] * view.eye[c];
+        df2 += view.forward[c] * view.eye[c];
+    }
+    V[12] = -dr;
+    V[13] = -du;
+    V[14] = df2;
+    toFloat(V, df.worldToView);
+    toFloat(mat4Invert(V), df.viewToWorld);
+}
+
+} // namespace
 
 bool RenderThread::recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState& view, VkExtent2D extent, const DrawLists& lists, const float clear[3], LitParams lit,
                               gpu::Streamline& sl) {
@@ -487,7 +579,7 @@ bool RenderThread::recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState&
         return false;
     }
     DlssTargets& t = v.dlss;
-    if (!t.valid() || t.out.width != extent.width || t.out.height != extent.height || v.dlssMode != mode) {
+    if (!t.valid() || t.out.width != extent.width || t.out.height != extent.height || v.dlssMode != mode || v.dlssOwner != 1) {
         uint32_t rw = 0, rh = 0;
         if (!sl.dlssRenderSize(mode, extent.width, extent.height, &rw, &rh)) {
             v.dlssFailedMode = mode;
@@ -496,6 +588,7 @@ bool RenderThread::recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState&
         }
         vkQueueWaitIdle(device_.graphicsQueue());
         sl.dlssRelease(v.id);
+        if (v.rt.valid() && rtLit_) rtLit_->destroyTargets(v.rt);
         if (!dlssPass_->createTargets(t, {rw, rh}, extent)) {
             v.dlssFailedMode = mode;
             return false;
@@ -503,6 +596,7 @@ bool RenderThread::recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState&
         base::logInfo("DLSS " + std::string(dlssModeName(static_cast<DlssMode>(mode))) + ": viewport " + std::to_string(v.id) + " renders " + std::to_string(rw) + "x" +
                       std::to_string(rh) + " for " + std::to_string(extent.width) + "x" + std::to_string(extent.height));
         v.dlssMode = mode;
+        v.dlssOwner = 1;
         v.dlssReset = true;
         v.dlssFrame = 0;
         v.havePrev = false;
@@ -572,27 +666,9 @@ bool RenderThread::recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState&
     df.mode = mode;
     df.renderW = rw;
     df.renderH = rh;
-    df.outW = extent.width;
-    df.outH = extent.height;
     df.jitter[0] = static_cast<float>(jx);
     df.jitter[1] = static_cast<float>(jy);
-    const auto toFloat = [](const Mat4& m, float* out) {
-        for (size_t i = 0; i < 16; ++i) out[i] = static_cast<float>(m[i]);
-    };
-    toFloat(view.proj, df.viewToClip);
-    toFloat(mat4Invert(view.proj), df.clipToView);
-    toFloat(clipToPrev, df.clipToPrevClip);
-    toFloat(prevToClip, df.prevClipToClip);
-    for (int i = 0; i < 3; ++i) {
-        df.position[i] = static_cast<float>(view.eye[i]);
-        df.up[i] = static_cast<float>(view.up[i]);
-        df.right[i] = static_cast<float>(view.right[i]);
-        df.forward[i] = static_cast<float>(view.forward[i]);
-    }
-    df.nearPlane = static_cast<float>(view.nearPlane);
-    df.farPlane = static_cast<float>(view.farPlane);
-    df.fovY = static_cast<float>(view.fovY);
-    df.aspect = static_cast<float>(extent.width) / static_cast<float>(std::max(1u, extent.height));
+    fillDlssCamera(df, view, extent, clipToPrev, prevToClip);
     df.reset = reset;
     df.color = DlssPass::color(t);
     df.depth = DlssPass::depth(t);
@@ -616,6 +692,212 @@ bool RenderThread::recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState&
         v.dlssInfo.outH = extent.height;
         if (reset) ++v.dlssInfo.resets;
         if (ok) ++v.dlssInfo.frames;
+    }
+    return ok;
+}
+
+bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, const ViewState& view, VkExtent2D extent, const DrawLists& lists, const float clear[3],
+                               gpu::Streamline* sl) {
+    if (!rtScene_ || !rtScene_->valid() || !mesh_) return false;
+    const VkAccelerationStructureKHR tlas = rtScene_->tlas();
+    if (tlas == VK_NULL_HANDLE) return false;   // the ray tracing scene has no triangle yet: the normal frame
+    if (!rtLit_) rtLit_ = std::make_unique<RtLit>(device_);
+    if (!dlssPass_ || dlssPass_->swapchainFormat() != v.swapchain->format()) {
+        vkQueueWaitIdle(device_.graphicsQueue());
+        dlssPass_ = std::make_unique<DlssPass>(device_, v.swapchain->format(), kDepthFormat);
+    }
+    if (!meshHdr_)
+        meshHdr_ = std::make_unique<MeshPass>(device_, VK_FORMAT_R16G16B16A16_SFLOAT, kDepthFormat, textures_->layout(), lightmapView_->layout());
+    if (!rtLit_->valid() || !dlssPass_->valid() || !meshHdr_->valid()) {
+        base::logWarning("ray traced Lit: the pipelines could not be made; this viewport is drawn with the chunked bake");
+        v.rtFailed = true;
+        return false;
+    }
+    RtLitOptions options;
+    RtLighting lighting;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        options = rtLitOptions_;
+        lighting = rtLighting_;
+    }
+    // DLSS Ray Reconstruction denoises and upscales when the viewport asks for DLSS (Quality / DLAA); otherwise the a-trous filter runs at the output size.
+    const int rrMode = view.dlss;
+    if (rrMode == 0) v.rtRrFailedMode = 0;
+    bool rr = options.reconstruction && sl && sl->rrAvailable() && rrMode != 0 && v.rtRrFailedMode != rrMode;
+    VkExtent2D render = extent;
+    if (rr) {
+        uint32_t rw = 0, rh = 0;
+        if (sl->dlssRenderSize(rrMode, extent.width, extent.height, &rw, &rh, true)) render = {rw, rh};
+        else {
+            v.rtRrFailedMode = rrMode;
+            base::logWarning("Ray Reconstruction: no render size for " + std::to_string(extent.width) + "x" + std::to_string(extent.height) + "; this viewport uses the filter");
+            rr = false;
+        }
+    }
+    DlssTargets& d = v.dlss;
+    bool created = false;
+    if (!d.valid() || !v.rt.valid() || v.dlssOwner != 2 || v.rtRr != rr || (rr && v.dlssMode != rrMode) || d.out.width != extent.width || d.out.height != extent.height ||
+        d.render.width != render.width || d.render.height != render.height) {
+        vkQueueWaitIdle(device_.graphicsQueue());
+        if (sl) sl->dlssRelease(v.id);
+        rtLit_->destroyTargets(v.rt);
+        if (!dlssPass_->createTargets(d, render, extent) || !rtLit_->createTargets(v.rt, render, rr)) {
+            dlssPass_->destroyTargets(d);
+            rtLit_->destroyTargets(v.rt);
+            v.dlssOwner = 0;
+            v.rtFailed = true;
+            base::logWarning("ray traced Lit: the targets could not be made; this viewport is drawn with the chunked bake");
+            return false;
+        }
+        v.dlssOwner = 2;
+        v.dlssMode = rr ? rrMode : 0;
+        v.rtRr = rr;
+        v.dlssFrame = 0;
+        v.havePrev = false;
+        created = true;
+        base::logInfo("ray traced Lit: viewport " + std::to_string(v.id) + " renders " + std::to_string(render.width) + "x" + std::to_string(render.height) +
+                      (rr ? std::string(", DLSS Ray Reconstruction ") + dlssModeName(static_cast<DlssMode>(rrMode)) + " to " + std::to_string(extent.width) + "x" + std::to_string(extent.height) : std::string(", filtered")));
+    }
+    {   // the counters of the frame that used this slot last (it has finished)
+        RtLit::Counters c;
+        if (rtLit_->readCounters(v.rt, slot, &c)) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            v.rtInfo.tracedPixels = c.traced;
+            v.rtInfo.surfacePixels = c.surface;
+            v.rtInfo.counterFrame = v.rtSlotFrame[slot & 1u];
+        }
+    }
+
+    // ---- history rules: what restarts it, what keeps it
+    const uint64_t changes = scene_->changeSerial();
+    const bool moved = !v.havePrev || view.viewProj != v.prevViewProj;
+    const bool reset = created || !v.havePrev || view.cut != v.lastCut || view.renderMode != v.lastRenderMode || changes != v.lastChanges || !lighting.sameTrace(v.rtLighting);
+    const bool still = !moved && !reset;
+    const bool skip = still && v.rtStill >= options.targetSamples + 1;
+    const Mat4 prevVP = v.havePrev ? v.prevViewProj : view.viewProj;
+    double jx = 0, jy = 0;
+    uint32_t phases = 1;
+    if (rr) {
+        phases = dlssPhaseCount(render.width, extent.width);
+        dlssJitter(v.dlssFrame++, phases, &jx, &jy);
+        if (moved || reset || !(lighting == v.rtLighting)) v.dlssSettle = phases + 6;   // the upscaler needs a few jittered frames after any change
+    }
+    const Mat4 jittered = rr ? jitteredViewProj(view.viewProj, jx, jy, render.width, render.height) : view.viewProj;
+    const Mat4 reproject = mat4Multiply(prevVP, mat4Invert(jittered));
+    const Mat4 clipToPrev = mat4Multiply(prevVP, mat4Invert(view.viewProj));
+    const Mat4 prevToClip = mat4Multiply(view.viewProj, mat4Invert(prevVP));
+    v.rtStill = still ? v.rtStill + 1 : 0;
+    v.rtMore = !skip;
+    v.prevViewProj = view.viewProj;
+    v.havePrev = true;
+    v.lastCut = view.cut;
+    v.lastRenderMode = view.renderMode;
+    v.lastChanges = changes;
+    v.rtLighting = lighting;
+
+    // ---- 1. the G-buffer at the render size: albedo (the colour target), normal, distance
+    if (rr) rtLit_->prepareReconstruction(cmd, v.rt);
+    dlssPass_->beginScene(cmd, d);
+    rtLit_->beginGBuffer(cmd, v.rt);
+    VkRenderingAttachmentInfo atts[3]{{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}};
+    const VkImageView views[3] = {d.color.view, RtLit::normalView(v.rt), RtLit::distView(v.rt)};
+    for (int i = 0; i < 3; ++i) {
+        atts[i].imageView = views[i];
+        atts[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        atts[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        atts[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    }
+    atts[0].clearValue.color = {{clear[0], clear[1], clear[2], 1.0f}};
+    VkRenderingAttachmentInfo datt{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    datt.imageView = d.depth.view;
+    datt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    datt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    datt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    datt.clearValue.depthStencil = {1.0f, 0};
+    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea = {{0, 0}, render};
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 3;
+    ri.pColorAttachments = atts;
+    ri.pDepthAttachment = &datt;
+    vkCmdBeginRendering(cmd, &ri);
+    {
+        const VkViewport viewport{0.0f, 0.0f, static_cast<float>(render.width), static_cast<float>(render.height), 0.0f, 1.0f};
+        const VkRect2D scissor{{0, 0}, render};
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+    }
+    FrameOverlays none;
+    ViewState sceneView = view;
+    sceneView.viewProj = jittered;
+    LitParams gl;
+    if (rr) gl.lodBias = dlssMipBias(render.width, extent.width);
+    meshHdr_->record(cmd, sceneView, *scene_, lists, textures_->set(), skyIndex_, false, none, lightmapView_->set(), gl, kMeshGBuffer);
+    vkCmdEndRendering(cmd);
+    float rep[16];
+    for (int i = 0; i < 16; ++i) rep[i] = static_cast<float>(reproject[static_cast<size_t>(i)]);
+    dlssPass_->endSceneAndMotion(cmd, d, rep, static_cast<float>(jx), static_cast<float>(jy));
+    rtLit_->endGBuffer(cmd, v.rt);
+
+    // ---- 2. the light of every pixel
+    dlssPass_->beforeUpscale(cmd, d);
+    RtLitFrame fr;
+    fr.slot = slot;
+    fr.frameNumber = v.rtFrameNumber++;
+    fr.reset = reset;
+    fr.still = still;
+    fr.skipTrace = skip;
+    fr.reconstruction = rr;
+    fr.mode = view.renderMode;
+    fr.tlas = tlas;
+    for (int i = 0; i < 3; ++i) {
+        fr.eye[i] = view.eye[i];
+        fr.forward[i] = view.forward[i];
+    }
+    fr.jitteredViewProj = jittered;
+    fr.prevViewProj = prevVP;
+    fr.lighting = lighting;
+    fr.options = options;
+    bool ok = rtLit_->record(cmd, v.rt, d, fr);
+    if (ok && rr) {   // 3. Ray Reconstruction: the radiance of the compose pass + the guides in, the denoised, upscaled picture out (d.output)
+        gpu::DlssFrame df;
+        df.viewport = v.id;
+        df.mode = rrMode;
+        df.renderW = render.width;
+        df.renderH = render.height;
+        df.jitter[0] = static_cast<float>(jx);
+        df.jitter[1] = static_cast<float>(jy);
+        fillDlssCamera(df, view, extent, clipToPrev, prevToClip);
+        df.reset = reset;
+        df.reconstruction = true;
+        df.color = RtLit::radiance(v.rt);
+        df.depth = DlssPass::depth(d);
+        df.mvec = DlssPass::mvec(d);
+        df.out = DlssPass::output(d);
+        df.albedo = DlssPass::color(d);
+        df.specAlbedo = RtLit::specularAlbedo(v.rt);
+        df.normal = RtLit::normalForUpscaler(v.rt);
+        std::string err;
+        if (!sl->dlssEvaluate(cmd, df, &err)) {
+            v.rtRrFailedMode = rrMode;
+            base::logError("Ray Reconstruction: " + err + "; this viewport uses the filter");
+            ok = false;
+            std::lock_guard<std::mutex> lock(mutex_);
+            v.dirty = true;
+        }
+    }
+    dlssPass_->afterUpscale(cmd, d);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        v.rtSlotFrame[slot & 1u] = v.rtInfo.frames + 1;
+        v.rtInfo.active = ok;
+        v.rtInfo.reconstruction = ok && rr;
+        v.rtInfo.renderW = render.width;
+        v.rtInfo.renderH = render.height;
+        ++v.rtInfo.frames;
+        if (reset) ++v.rtInfo.resets;
+        v.rtInfo.stillFrames = v.rtStill;
+        v.rtInfo.tracingSkipped = skip;
     }
     return ok;
 }
@@ -705,7 +987,7 @@ RenderThread::LightSubmit RenderThread::syncLighting(light::LightLink& link, VkC
 
 // R1: keeps the ray tracing scene in step with the GpuScene while ray tracing is on (render thread, in the upload command buffer after the scene's own uploads).
 bool RenderThread::syncRayTracing(VkCommandBuffer cmd) {
-    if (!rtEnabled_.load()) {
+    if (!rtEnabled_.load() && !rtLitEnabled_.load()) {
         if (rtScene_) {
             vkQueueWaitIdle(device_.graphicsQueue());
             rtScene_.reset();
@@ -725,6 +1007,7 @@ bool RenderThread::syncRayTracing(VkCommandBuffer cmd) {
             base::logWarning("ray tracing scene: could not be created, ray tracing stays off");
             rtScene_.reset();
             rtEnabled_.store(false);
+            rtLitEnabled_.store(false);
             return false;
         }
     }
@@ -1011,11 +1294,20 @@ void RenderThread::loop() {
             }
             // DLSS Super Resolution (T6.8): the scene at the render size and the upscale come first, outside the display pass; the display pass then copies
             // the result to the swapchain image and draws the overlays at full size. Any trouble falls back to the normal frame below.
+            // The ray traced Lit viewport (R2) draws the scene itself (G-buffer, compute passes) and replaces both.
+            bool useRt = false;
+            if (rtLitEnabled_.load() && !v.rtFailed && w.view.perspective && (w.view.renderMode == 1 || w.view.renderMode == 2) && v.swapchain)
+                useRt = recordRtLit(v, f.cmd, static_cast<uint32_t>((v.frameCounter - 1) % kFramesInFlight), w.view, extent, lists, w.clear, sl);
+            if (!useRt && v.dlssOwner == 2) releaseDlss(v);
             bool useDlss = false;
-            if (w.view.dlss != 0 && w.view.perspective && sl && sl->dlssAvailable() && v.dlssFailedMode != w.view.dlss && mesh_)
+            if (!useRt && w.view.dlss != 0 && w.view.perspective && sl && sl->dlssAvailable() && v.dlssFailedMode != w.view.dlss && mesh_)
                 useDlss = recordDlss(v, f.cmd, w.view, extent, lists, w.clear, lit, *sl);
-            if (!useDlss && v.dlss.valid() && (w.view.dlss == 0 || !w.view.perspective)) releaseDlss(v);
-            if (!useDlss) v.havePrev = false;
+            if (!useRt && !useDlss && v.dlss.valid() && (w.view.dlss == 0 || !w.view.perspective)) releaseDlss(v);
+            if (!useDlss && !useRt) v.havePrev = false;
+            if (!useRt && v.rtInfo.active) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                v.rtInfo.active = false;
+            }
             if (w.view.dlss == 0) v.dlssFailedMode = 0;
             if (!useDlss && v.dlssInfo.active) {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -1034,8 +1326,10 @@ void RenderThread::loop() {
                 vkCmdSetViewport(f.cmd, 0, 1, &viewport);
                 vkCmdSetScissor(f.cmd, 0, 1, &scissor);
             }
-            if (useDlss) dlssPass_->resolve(f.cmd, v.dlss);
-            if (mesh_) mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true, ov, lightmapView_->set(), lit, useDlss ? kMeshOverlays : kMeshAll);
+            if (useDlss || useRt) dlssPass_->resolve(f.cmd, v.dlss);
+            if (mesh_)
+                mesh_->record(f.cmd, w.view, *scene_, lists, textures_->set(), skyIndex_, true, ov, lightmapView_->set(), lit,
+                              useRt ? (kMeshOverlays | kMeshBlended) : (useDlss ? kMeshOverlays : kMeshAll));
             if (pass_) pass_->record(f.cmd, extent, w.view, !scene_->hasObjects());
             vkCmdEndRendering(f.cmd);
 
@@ -1142,8 +1436,12 @@ void RenderThread::loop() {
             std::lock_guard<std::mutex> lock(mutex_);
             ++v.frames;
             totalFrames_.fetch_add(1);
-            if (useDlss && v.dlssSettle > 0) {   // the loop only draws what changed: a still camera needs a few more jittered frames
+            if ((useDlss || useRt) && v.dlssSettle > 0) {   // the loop only draws what changed: a still camera needs a few more jittered frames
                 --v.dlssSettle;
+                v.dirty = true;
+                wake_.notify_all();
+            }
+            if (useRt && v.rtMore) {             // the accumulation goes on until the converged stop
                 v.dirty = true;
                 wake_.notify_all();
             }

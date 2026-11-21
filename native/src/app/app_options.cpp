@@ -68,6 +68,7 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
         else if (a == "--validation") o.validation = true;
         else if (a == "--no-streamline") o.noStreamline = true;
         else if (a == "--gpu-crash-dumps") o.gpuCrashDumps = true;
+        else if (a == "--rt-lit") o.rtLit = true;
         else if (a == "--help" || a == "-h") o.help = true;
         else {
             r.error = "unknown option: " + a;

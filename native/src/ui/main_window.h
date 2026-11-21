@@ -105,6 +105,7 @@ class KeyHelpOverlay;
 struct Services {
     gpu::Device* device = nullptr;
     render::RenderThread* renderThread = nullptr;
+    bool rtLit = false;                       // --rt-lit: Lit / Lighting only are ray traced per pixel (R2); the chunked bake does not run
     QVulkanInstance* vulkanInstance = nullptr;
     QSettings* settings = nullptr;     // where the layout is kept; null = nothing is saved or restored
     int forceViewports = 0;            // 1, 2 or 4: ignore the saved preset (the saved dock arrangement is not used either)

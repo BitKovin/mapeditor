@@ -1,0 +1,129 @@
+// render/rt_lit -- the GPU side of the ray traced Lit viewport (R2): per-viewport history buffers and the three compute passes (trace + accumulate, a-trous filter,
+// compose) that turn the rasterised G-buffer into the lit picture.
+//
+// Owns: RtLitTargets (per viewport: the G-buffer's normal pair and distance image, the history pair RGBA32F, the filter pair, the sample image, the converged-stop counters
+// and their read-back, the descriptor sets of two frames in flight) and RtLit (the shared pipelines). The G-buffer itself is drawn by MeshPass (kMeshGBuffer) into
+// DlssTargets::color (albedo) / RtLitTargets::normal / RtLitTargets::dist; the motion vectors come from DlssPass (the same depth -> mvec kernel).
+// Signal (this task): the ambient occlusion `o`, accumulated as a running mean per pixel with a sample count N; `L = ambient * aoFactor(o)`. Direct light, the sun, the sky and
+// bounces join it in R3 - R6 on the same buffers (12_RT_VIEWPORT.md §3, §7).
+// Image layouts: the history pair stays GENERAL and the normal pair SHADER_READ_ONLY between frames; everything else is rewritten each frame (UNDEFINED at the start).
+// Thread: the render thread. Spec: 12_RT_VIEWPORT.md §2, §3, §7, 08_MILESTONES.md R2.
+#pragma once
+
+#include <volk.h>
+
+#include <vk_mem_alloc.h>
+
+#include <cstdint>
+
+#include "gpu/device.h"
+#include "render/dlss_pass.h"
+#include "render/math3d.h"
+#include "render/rt_lighting.h"
+
+namespace native::render {
+
+struct RtLitOptions {
+    uint32_t targetSamples = 1024;     // a pixel with this many samples under a still camera is not traced any more (the converged stop)
+    uint32_t sampleCap = 4096;         // the running mean's N while the camera is still (a plain mean up to here)
+    uint32_t sampleCapMoving = 32;     // N after reprojection while the camera moves (bounds the blur of resampling the history)
+    uint32_t filterIterations = 4;     // a-trous iterations of the fallback denoiser
+    bool reconstruction = true;        // use DLSS Ray Reconstruction when the viewport asks for DLSS (Quality / DLAA) and Streamline offers it
+    bool filter = true;                // the fallback denoiser (it never runs while DLSS Ray Reconstruction does)
+    float meanBlend = 32.0f;           // N at which the running mean has replaced the filtered value completely
+    float meanBlendRr = 64.0f;         // the same for the input of DLSS Ray Reconstruction under a still camera
+};
+
+struct RtLitTargets {
+    struct Image {
+        VkImage image = VK_NULL_HANDLE;
+        VmaAllocation allocation = nullptr;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+    };
+    VkExtent2D render{};
+    Image normal[2], dist, hist[2], fil[2], sample, radiance, specAlbedo;   // radiance, specAlbedo: only with reconstruction
+    bool specAlbedoReady = false;      // specAlbedo was cleared to black and is in SHADER_READ_ONLY
+    VkBuffer counters = VK_NULL_HANDLE;
+    VmaAllocation countersAlloc = nullptr;
+    VkBuffer readback[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VmaAllocation readbackAlloc[2] = {nullptr, nullptr};
+    uint32_t* readbackPtr[2] = {nullptr, nullptr};
+    VkBuffer params[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VmaAllocation paramsAlloc[2] = {nullptr, nullptr};
+    void* paramsPtr[2] = {nullptr, nullptr};
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet sets[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE}, tlasSets[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    // frame state
+    bool initialized = false;          // layouts of the persistent images were set
+    uint32_t normalCur = 0;            // the normal image this frame draws (the other one is the previous frame's)
+    uint32_t latest = 0;               // the history image that holds the newest data
+    bool readbackValid[2] = {false, false};
+    bool valid() const { return dist.image != VK_NULL_HANDLE; }
+};
+
+// What one frame's compute passes need to know.
+struct RtLitFrame {
+    uint32_t slot = 0;                 // frame in flight: picks the descriptor sets and the read-back
+    uint32_t frameNumber = 0;          // the random sequence's position
+    bool reset = false;                // every history restarts
+    bool still = false;                // the camera did not move
+    bool skipTrace = false;            // converged: the history is shown as it is, nothing is traced
+    bool reconstruction = false;       // the radiance goes to DLSS Ray Reconstruction (the compose output is its input, not the final picture)
+    int mode = 1;                      // 1 = Lit, 2 = Lighting only
+    VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
+    double eye[3] = {0, 0, 0}, forward[3] = {0, 0, -1};
+    Mat4 jitteredViewProj = mat4Identity();      // the matrix the G-buffer was drawn with
+    Mat4 prevViewProj = mat4Identity();          // the previous frame's unjittered matrix
+    RtLighting lighting;
+    RtLitOptions options;
+};
+
+class RtLit {
+public:
+    explicit RtLit(const gpu::Device& device);
+    ~RtLit();
+    RtLit(const RtLit&) = delete;
+    RtLit& operator=(const RtLit&) = delete;
+
+    bool valid() const { return aoPipeline_ != VK_NULL_HANDLE && filterPipeline_ != VK_NULL_HANDLE && composePipeline_ != VK_NULL_HANDLE; }
+
+    // The GPU must be idle (or the old targets unused). `reconstruction` also makes the radiance image DLSS Ray Reconstruction reads.
+    bool createTargets(RtLitTargets& t, VkExtent2D render, bool reconstruction) const;
+    void destroyTargets(RtLitTargets& t) const;
+
+    // Before the G-buffer pass: the persistent images get their first layouts, the normal and distance images become attachments. The caller attaches
+    // normalView() / distView() as colour attachments 1 and 2.
+    void beginGBuffer(VkCommandBuffer cmd, RtLitTargets& t) const;
+    static VkImageView normalView(const RtLitTargets& t) { return t.normal[t.normalCur].view; }
+    static VkImageView distView(const RtLitTargets& t) { return t.dist.view; }
+    // After the G-buffer pass (and DlssPass::endSceneAndMotion): the new normals and the distances are readable.
+    void endGBuffer(VkCommandBuffer cmd, const RtLitTargets& t) const;
+
+    // The trace + accumulate, filter and compose passes. `d.output` (GENERAL, DlssPass::beforeUpscale) receives the picture, or `t.radiance` when `f.reconstruction`.
+    // Returns false when the descriptors could not be written.
+    bool record(VkCommandBuffer cmd, RtLitTargets& t, const DlssTargets& d, const RtLitFrame& f) const;
+
+    // The counters of the last frame that used `slot` (call before recording the slot again, once its frame finished): false until there is one.
+    struct Counters {
+        uint32_t traced = 0, surface = 0;
+    };
+    bool readCounters(RtLitTargets& t, uint32_t slot, Counters* out) const;
+
+    // DLSS Ray Reconstruction: once per target set, before the first evaluate (outside a render pass): the black specular albedo guide.
+    void prepareReconstruction(VkCommandBuffer cmd, RtLitTargets& t) const;
+
+    // The images as Ray Reconstruction sees them at the evaluate call: radiance GENERAL (left by record), normal / specular albedo SHADER_READ_ONLY.
+    static gpu::DlssImage radiance(const RtLitTargets& t);
+    static gpu::DlssImage normalForUpscaler(const RtLitTargets& t);
+    static gpu::DlssImage specularAlbedo(const RtLitTargets& t);
+
+private:
+    const gpu::Device& device_;
+    VkSampler sampler_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE, tlasLayout_ = VK_NULL_HANDLE;
+    VkPipelineLayout aoLayout_ = VK_NULL_HANDLE, filterLayout_ = VK_NULL_HANDLE;
+    VkPipeline aoPipeline_ = VK_NULL_HANDLE, filterPipeline_ = VK_NULL_HANDLE, composePipeline_ = VK_NULL_HANDLE;
+};
+
+} // namespace native::render

@@ -2,6 +2,7 @@
 #include "gpu/streamline.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <string>
@@ -16,6 +17,7 @@
 #include <sl.h>
 #include <sl_consts.h>
 #include <sl_dlss.h>
+#include <sl_dlss_d.h>
 #include <sl_pcl.h>
 #include <sl_reflex.h>
 #endif
@@ -73,9 +75,13 @@ struct Streamline::Impl {
     PFun_slFreeResources* freeResources = nullptr;
     PFun_slDLSSGetOptimalSettings* dlssOptimal = nullptr;
     PFun_slDLSSSetOptions* dlssSetOptions = nullptr;
+    PFun_slDLSSDGetOptimalSettings* rrOptimal = nullptr;
+    PFun_slDLSSDSetOptions* rrSetOptions = nullptr;
+    std::atomic<bool> rrSupported{false};
     struct DlssOptionsKey {
         int mode = 0;
         uint32_t outW = 0, outH = 0;
+        bool rr = false;
         bool operator==(const DlssOptionsKey&) const = default;
     };
     std::map<uint32_t, DlssOptionsKey> dlssViewports;   // the options last given per viewport (set again only when they change)
@@ -123,7 +129,7 @@ std::unique_ptr<Streamline> Streamline::load(const std::string& dir, std::string
     }
 
     const wchar_t* paths[1] = {folder.c_str()};
-    const sl::Feature features[] = {sl::kFeatureReflex, sl::kFeaturePCL, sl::kFeatureDLSS};
+    const sl::Feature features[] = {sl::kFeatureReflex, sl::kFeaturePCL, sl::kFeatureDLSS, sl::kFeatureDLSS_RR};
     sl::Preferences pref{};
     pref.showConsole = false;
     pref.logLevel = sl::LogLevel::eDefault;
@@ -133,7 +139,7 @@ std::unique_ptr<Streamline> Streamline::load(const std::string& dir, std::string
     pref.logMessageCallback = &slLogCallback;
     pref.flags = sl::PreferenceFlags::eDisableCLStateTracking;   // no over-the-air downloads of plugins
     pref.featuresToLoad = features;
-    pref.numFeaturesToLoad = 3;
+    pref.numFeaturesToLoad = 4;
     pref.engine = sl::EngineType::eCustom;
     pref.engineVersion = "native-1";
     pref.projectId = "7d2f6f0a-3b1e-4c58-9a7e-5f3c2b8d1e44";
@@ -172,6 +178,8 @@ void Streamline::deviceCreated(VkInstance, VkPhysicalDevice physical, VkDevice) 
     if (m.pclSupported) fn(sl::kFeaturePCL, "slPCLSetMarker", m.pclSetMarker);
     m.dlssSupported = m.isSupported(sl::kFeatureDLSS, adapter) == sl::Result::eOk && m.setConstants && m.evaluate && m.freeResources &&
                       fn(sl::kFeatureDLSS, "slDLSSGetOptimalSettings", m.dlssOptimal) && fn(sl::kFeatureDLSS, "slDLSSSetOptions", m.dlssSetOptions);
+    m.rrSupported = m.isSupported(sl::kFeatureDLSS_RR, adapter) == sl::Result::eOk && m.setConstants && m.evaluate && m.freeResources &&
+                    fn(sl::kFeatureDLSS_RR, "slDLSSDGetOptimalSettings", m.rrOptimal) && fn(sl::kFeatureDLSS_RR, "slDLSSDSetOptions", m.rrSetOptions);
     if (m.reflexSupported &&
         fn(sl::kFeatureReflex, "slReflexSetOptions", m.reflexSetOptions) && fn(sl::kFeatureReflex, "slReflexSleep", m.reflexSleep) &&
         fn(sl::kFeatureReflex, "slReflexGetState", m.reflexGetState)) {
@@ -185,7 +193,7 @@ void Streamline::deviceCreated(VkInstance, VkPhysicalDevice physical, VkDevice) 
     if (!m.reflexSupported) m.note = "Reflex is not supported by this adapter or driver";
     else if (!m.reflexActive) m.note = "Reflex low latency is not available";
     base::logInfo(std::string("streamline: Reflex ") + (m.reflexActive ? "on" : "off") + ", PCL markers " + (m.pclSupported ? "on" : "off") + ", DLSS " +
-                  (m.dlssSupported ? "on" : "off"));
+                  (m.dlssSupported ? "on" : "off") + ", Ray Reconstruction " + (m.rrSupported ? "on" : "off"));
 }
 
 void Streamline::shutdown() {
@@ -271,9 +279,24 @@ void fillResource(sl::Resource& r, const DlssImage& img) {
 } // namespace
 
 bool Streamline::dlssAvailable() const { return impl_->running && impl_->dlssSupported; }
+bool Streamline::rrAvailable() const { return impl_->running && impl_->rrSupported; }
 
-bool Streamline::dlssRenderSize(int mode, uint32_t outW, uint32_t outH, uint32_t* renderW, uint32_t* renderH) {
+bool Streamline::dlssRenderSize(int mode, uint32_t outW, uint32_t outH, uint32_t* renderW, uint32_t* renderH, bool reconstruction) {
     Impl& m = *impl_;
+    if (reconstruction) {
+        if (!rrAvailable() || !m.rrOptimal) return false;
+        sl::DLSSDOptions o{};
+        o.mode = slMode(mode);
+        o.outputWidth = outW;
+        o.outputHeight = outH;
+        o.colorBuffersHDR = sl::Boolean::eFalse;
+        o.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
+        sl::DLSSDOptimalSettings s{};
+        if (m.rrOptimal(o, s) != sl::Result::eOk || s.optimalRenderWidth == 0 || s.optimalRenderHeight == 0) return false;
+        *renderW = s.optimalRenderWidth;
+        *renderH = s.optimalRenderHeight;
+        return true;
+    }
     if (!dlssAvailable() || !m.dlssOptimal) return false;
     sl::DLSSOptimalSettings settings{};
     if (m.dlssOptimal(makeOptions(mode, outW, outH), settings) != sl::Result::eOk || settings.optimalRenderWidth == 0 || settings.optimalRenderHeight == 0) return false;
@@ -288,14 +311,32 @@ bool Streamline::dlssEvaluate(VkCommandBuffer cmd, const DlssFrame& f, std::stri
         if (err) *err = std::string(what) + " failed (" + std::to_string(static_cast<int>(r)) + ")";
         return false;
     };
-    if (!dlssAvailable() || !m.token) {
-        if (err) *err = "DLSS is not available";
+    if (f.reconstruction ? !rrAvailable() : !dlssAvailable() || !m.token) {
+        if (err) *err = f.reconstruction ? "DLSS Ray Reconstruction is not available" : "DLSS is not available";
+        return false;
+    }
+    if (!m.token) {
+        if (err) *err = "no frame token";
         return false;
     }
     const sl::ViewportHandle viewport(f.viewport);
-    const Impl::DlssOptionsKey key{f.mode, f.outW, f.outH};
+    const Impl::DlssOptionsKey key{f.mode, f.outW, f.outH, f.reconstruction};
     auto it = m.dlssViewports.find(f.viewport);
-    if (it == m.dlssViewports.end() || !(it->second == key)) {
+    if (f.reconstruction) {   // the options carry the camera matrices: set every frame
+        if (it != m.dlssViewports.end() && !(it->second == key) && !it->second.rr && m.freeResources) m.freeResources(sl::kFeatureDLSS, viewport);
+        sl::DLSSDOptions o{};
+        o.mode = slMode(f.mode);
+        o.outputWidth = f.outW;
+        o.outputHeight = f.outH;
+        o.colorBuffersHDR = sl::Boolean::eFalse;
+        o.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
+        copyMatrix(o.worldToCameraView, f.worldToView);
+        copyMatrix(o.cameraViewToWorld, f.viewToWorld);
+        const sl::Result r = m.rrSetOptions(viewport, o);
+        if (r != sl::Result::eOk) return fail("slDLSSDSetOptions", r);
+        m.dlssViewports[f.viewport] = key;
+    } else if (it == m.dlssViewports.end() || !(it->second == key)) {
+        if (it != m.dlssViewports.end() && it->second.rr && m.freeResources) m.freeResources(sl::kFeatureDLSS_RR, viewport);
         const sl::Result r = m.dlssSetOptions(viewport, makeOptions(f.mode, f.outW, f.outH));
         if (r != sl::Result::eOk) return fail("slDLSSSetOptions", r);
         m.dlssViewports[f.viewport] = key;
@@ -345,6 +386,19 @@ bool Streamline::dlssEvaluate(VkCommandBuffer cmd, const DlssFrame& f, std::stri
     sl::ResourceTag tagDepth(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent);
     sl::ResourceTag tagMvec(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent);
     sl::ResourceTag tagColorOut(&colorOut, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow, &outExtent);
+    if (f.reconstruction) {
+        sl::Resource albedo{}, specAlbedo{}, normal{};
+        fillResource(albedo, f.albedo);
+        fillResource(specAlbedo, f.specAlbedo);
+        fillResource(normal, f.normal);
+        sl::ResourceTag tagAlbedo(&albedo, sl::kBufferTypeAlbedo, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent);
+        sl::ResourceTag tagSpec(&specAlbedo, sl::kBufferTypeSpecularAlbedo, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent);
+        sl::ResourceTag tagNormal(&normal, sl::kBufferTypeNormalRoughness, sl::ResourceLifecycle::eOnlyValidNow, &renderExtent);
+        const sl::BaseStructure* rin[] = {&viewport, &tagColorIn, &tagDepth, &tagMvec, &tagColorOut, &tagAlbedo, &tagSpec, &tagNormal};
+        const sl::Result rr = m.evaluate(sl::kFeatureDLSS_RR, *m.token, rin, static_cast<uint32_t>(sizeof(rin) / sizeof(rin[0])), cmd);
+        if (rr != sl::Result::eOk) return fail("slEvaluateFeature(DLSS Ray Reconstruction)", rr);
+        return true;
+    }
     const sl::BaseStructure* inputs[] = {&viewport, &tagColorIn, &tagDepth, &tagMvec, &tagColorOut};
     const sl::Result re = m.evaluate(sl::kFeatureDLSS, *m.token, inputs, static_cast<uint32_t>(sizeof(inputs) / sizeof(inputs[0])), cmd);
     if (re != sl::Result::eOk) return fail("slEvaluateFeature(DLSS)", re);
@@ -354,7 +408,11 @@ bool Streamline::dlssEvaluate(VkCommandBuffer cmd, const DlssFrame& f, std::stri
 void Streamline::dlssRelease(uint32_t viewport) {
     Impl& m = *impl_;
     if (!m.running) return;
-    if (m.dlssViewports.erase(viewport) && m.freeResources) m.freeResources(sl::kFeatureDLSS, sl::ViewportHandle(viewport));
+    const auto it = m.dlssViewports.find(viewport);
+    if (it == m.dlssViewports.end()) return;
+    const bool rr = it->second.rr;
+    m.dlssViewports.erase(it);
+    if (m.freeResources) m.freeResources(rr ? sl::kFeatureDLSS_RR : sl::kFeatureDLSS, sl::ViewportHandle(viewport));
 }
 
 StreamlineStatus Streamline::status() const {
@@ -365,6 +423,7 @@ StreamlineStatus Streamline::status() const {
     s.reflexActive = m.reflexActive;
     s.pclSupported = m.pclSupported;
     s.dlssSupported = m.dlssSupported;
+    s.rrSupported = m.rrSupported;
     s.version = std::to_string(SL_VERSION_MAJOR) + "." + std::to_string(SL_VERSION_MINOR) + "." + std::to_string(SL_VERSION_PATCH);
     s.note = m.note;
     s.latencyMs = m.latencyUs.load() / 1000.0;
@@ -389,7 +448,8 @@ void Streamline::beginFrame() {}
 void Streamline::sleep() {}
 void Streamline::marker(PclMarker) {}
 bool Streamline::dlssAvailable() const { return false; }
-bool Streamline::dlssRenderSize(int, uint32_t, uint32_t, uint32_t*, uint32_t*) { return false; }
+bool Streamline::rrAvailable() const { return false; }
+bool Streamline::dlssRenderSize(int, uint32_t, uint32_t, uint32_t*, uint32_t*, bool) { return false; }
 bool Streamline::dlssEvaluate(VkCommandBuffer, const DlssFrame&, std::string* err) {
     if (err) *err = "built without the Streamline SDK";
     return false;

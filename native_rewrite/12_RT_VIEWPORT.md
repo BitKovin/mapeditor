@@ -159,6 +159,11 @@ directions (§9). Camera motion never resets anything (it only reprojects).
   normal, object id, variance-guided luminance stop), 4 iterations on the demodulated signals with blend weight `1 − min(1, N_c / 32)`,
   so tests and a non-SL run still give a readable, unbiased-when-converged image.
 
+> **As built (R2):** see 08 R2. The RR input is `albedo * L` (not demodulated) with exposure and brightness applied before RR, the albedo is also the diffuse albedo guide; RR is selected by the viewport's DLSS setting
+> (Quality: render size from `slDLSSDGetOptimalSettings`, DLAA: native), the a-trous filter runs at the output size when DLSS is off or unavailable. Translucent faces and cutout holes are not in the G-buffer (the blended pass
+> draws them Unlit over the result until R3). The history is a per-pixel running mean of the occlusion with reprojection by world position (4 taps checked by distance and normal); it is reset by the triggers listed in 08 R2.
+
+
 ## 8. Other surfaces
 
 - **Translucent surfaces** (blended pass, no G-buffer, so no accumulation): the fragment shader reads the cache `S` for the indirect part

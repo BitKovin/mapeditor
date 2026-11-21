@@ -1,0 +1,42 @@
+#version 460
+// R2: the shown colour of the ray traced Lit path (12 §2): clamp(albedo * L * exposure + brightness) with L = max(0, ambient * aoFactor(o)) in Lit,
+// clamp(L * exposure + brightness) in Lighting only. `o` is the running mean of the occlusion, replaced near the start of a history by the filtered signal
+// (blend 1 - min(1, N / mode.z)); aoFactor is applied to that estimate, never to a single sample (it is not linear). For DLSS Ray Reconstruction (flag 8) the
+// input is the single sample of this frame, replaced by the running mean once the camera has been still for mode.w samples, so a still view hands RR its
+// converged picture. Pixels without a surface show the albedo target (the sky / the background clear colour).
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "rt_lit_common.glsl"
+
+layout(push_constant) uniform PC {
+    uint finalFil;   // 0: the last filter iteration wrote uFil0, 1: uFil1
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = ivec2(P.size.xy);
+    if (p.x >= sz.x || p.y >= sz.y) return;
+    vec4 albedo = texelFetch(uAlbedo, p, 0);
+    uint s = subgroupAdd(hasSurface(p) ? 1u : 0u);
+    if (subgroupElect() && s != 0u) atomicAdd(counters.surface, s);
+    if (!hasSurface(p)) {
+        imageStore(uOut, p, vec4(albedo.rgb, 1.0));
+        return;
+    }
+    vec4 h = imageLoad(uHist, p);
+    float o = h.r;
+    if ((P.u.y & F_RR) != 0u) {
+        float x = imageLoad(uSample, p).r;
+        bool still = (P.u.y & F_STILL) != 0u;
+        o = still ? mix(x, h.r, min(1.0, h.b / P.mode.w)) : x;
+    } else if ((P.u.y & F_FILTER) != 0u) {
+        float f = pc.finalFil == 0u ? imageLoad(uFil0, p).r : imageLoad(uFil1, p).r;
+        o = mix(f, h.r, min(1.0, h.b / P.mode.z));
+    }
+    vec3 L = max(vec3(0.0), P.ambient.rgb * aoFactor(o));
+    vec3 base = P.mode.x > 1.5 ? vec3(1.0) : albedo.rgb;
+    imageStore(uOut, p, vec4(clamp(base * L * P.ao2.z + P.ao2.w, 0.0, 1.0), 1.0));
+}

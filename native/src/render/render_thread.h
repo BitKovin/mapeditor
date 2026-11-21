@@ -33,6 +33,8 @@
 #include "render/entity_overlay.h"
 #include "render/dlss_pass.h"
 #include "render/rt_scene.h"
+#include "render/rt_lit.h"
+#include "render/rt_lighting.h"
 #include "render/glyph_atlas.h"
 #include "render/line_vertex.h"
 #include "render/mesh_pass.h"
@@ -125,6 +127,24 @@ public:
     };
     RtInfo rtInfo() const;
 
+    // The ray traced Lit viewport (R2, 12_RT_VIEWPORT.md): off by default. While on, a perspective viewport in Lit / Lighting only shows the per-pixel ray traced light (ambient
+    // occlusion at this step) instead of the chunked bake's pages; it needs the ray tracing scene (switched on with it) and a device with ray queries. `lighting` = the level's
+    // settings (render/rt_lighting.h), fed by the editor from every snapshot. Marks every viewport dirty.
+    void setRtLit(bool on, const RtLitOptions& options = {});
+    void setRtLighting(const RtLighting& lighting);
+    struct RtLitInfo {
+        bool active = false;                   // the last frame of the viewport was drawn by the ray traced path
+        bool reconstruction = false;           // ... with DLSS Ray Reconstruction
+        uint32_t renderW = 0, renderH = 0;
+        uint64_t frames = 0;                   // frames drawn by the ray traced path
+        uint64_t resets = 0;                   // frames that restarted every history
+        uint32_t stillFrames = 0;              // consecutive frames of a still camera (the converged stop is at RtLitOptions::targetSamples + 1)
+        bool tracingSkipped = false;           // the last frame did not trace (converged)
+        uint32_t tracedPixels = 0, surfacePixels = 0;   // the counters of the newest frame whose read-back came in (a frame or two behind)
+        uint64_t counterFrame = 0;             // `frames` of that frame
+    };
+    RtLitInfo rtLitInfo(ViewportId id) const;
+
     // Renders the next frame of this viewport and returns its pixels. Blocks the caller (not the render thread's other
     // viewports) up to timeoutMs; returns an empty image on timeout or when the viewport has no surface area.
     CapturedImage capture(ViewportId id, int timeoutMs = 4000);
@@ -146,6 +166,9 @@ private:
     bool recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState& view, VkExtent2D extent, const DrawLists& lists, const float clear[3], LitParams lit,
                     gpu::Streamline& sl);
     void releaseDlss(Viewport& v);
+    // R2: the ray traced Lit frame of one viewport: G-buffer at the render size, the trace / accumulate / filter / compose passes, and (with DLSS Ray Reconstruction) the
+    // upscale into DlssTargets::output. False when the frame has to be drawn the normal way (the ray tracing scene is not ready, a failure).
+    bool recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, const ViewState& view, VkExtent2D extent, const DrawLists& lists, const float clear[3], gpu::Streamline* sl);
     bool syncRayTracing(VkCommandBuffer cmd);
 
     gpu::Device& device_;
@@ -157,6 +180,10 @@ private:
     std::unique_ptr<GpuScene> scene_;
     std::unique_ptr<RtScene> rtScene_;    // render thread only; made while ray tracing is on (declared after scene_: it goes first)
     std::atomic<bool> rtEnabled_{false};
+    std::atomic<bool> rtLitEnabled_{false};
+    RtLitOptions rtLitOptions_;           // guarded by mutex_
+    RtLighting rtLighting_;               // guarded by mutex_
+    std::unique_ptr<RtLit> rtLit_;        // render thread only
     RtOptions rtOptions_;                 // guarded by mutex_; read when the RT scene is made
     RtInfo rtInfo_;                       // guarded by mutex_
     std::unique_ptr<ScenePass> pass_;     // render thread only

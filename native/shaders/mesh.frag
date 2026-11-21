@@ -24,6 +24,12 @@ layout(location = 4) in vec3 vDir;
 layout(location = 5) in vec2 vLm;
 layout(location = 6) flat in uint vPage;
 layout(location = 0) out vec4 outColor;
+#ifdef GBUFFER
+// The G-buffer of the ray traced Lit path (R2): outColor = the albedo (the texture's own colour, sky faces and the background show the sky), outNormal = world
+// normal and 1, or 0 where there is no surface to light, outDepth = distance along the view direction (the clip w), 0 where there is no surface.
+layout(location = 1) out vec4 outNormal;
+layout(location = 2) out float outDepth;
+#endif
 
 vec3 skyColor(uint base, float kind, vec3 dir) {
     if (kind > 3.5) {
@@ -77,6 +83,10 @@ void main() {
     vec4 m = meta[vTex];
     if (m.x > 2.5 && ((vFlags & 1u) != 0u || pass > 2.5)) {
         outColor = vec4(skyColor(vTex, m.x, vDir), 1.0);
+#ifdef GBUFFER
+        outNormal = vec4(0.0);
+        outDepth = 0.0;
+#endif
         return;
     }
     vec4 t = texture(textures[nonuniformEXT(vTex)], vUv, pc.lit.w);
@@ -88,6 +98,12 @@ void main() {
         if (pass > 0.5) discard;
         if (m.x > 0.5 && t.a < m.y) discard;   // cutout
     }
+#ifdef GBUFFER
+    outColor = vec4(t.rgb, 1.0);
+    outNormal = vec4(n, 1.0);
+    outDepth = 1.0 / gl_FragCoord.w;
+    return;
+#endif
     float mode = pc.lit.x;
     if (mode > 0.5) {
         if ((vFlags & 4u) != 0u) {

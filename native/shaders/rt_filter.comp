@@ -1,0 +1,62 @@
+#version 460
+// R2: the edge-aware a-trous filter of the occlusion signal (SVGF: 5 x 5 B-spline kernel with a growing step, stopped by distance, normal and a luminance
+// weight guided by the variance of the mean). Used where DLSS Ray Reconstruction is not (fallback, tests); the compose pass fades it out as the sample count grows.
+// Iteration 0 reads the history (mean, variance of the mean), iteration k reads the output of iteration k - 1; iteration k writes uFil0 (even k) or uFil1 (odd k).
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "rt_lit_common.glsl"
+
+layout(push_constant) uniform PC {
+    uint iteration;
+} pc;
+
+vec2 load(ivec2 q) {
+    if (pc.iteration == 0u) {
+        vec4 h = imageLoad(uHist, q);
+        // the variance of one sample, shrunk towards a prior of 4 samples (an occlusion sample lies in 0..1): with one or two samples the temporal estimate is zero and
+        // the luminance weight would stop every neighbour
+        float n = max(h.b, 1.0);
+        float s2 = (n * max(0.0, h.g - h.r * h.r) + 4.0 * 0.05) / (n + 4.0);
+        return vec2(h.r, s2 / n);
+    }
+    return (pc.iteration & 1u) == 1u ? imageLoad(uFil0, q).rg : imageLoad(uFil1, q).rg;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = ivec2(P.size.xy);
+    if (p.x >= sz.x || p.y >= sz.y) return;
+    vec4 np = texelFetch(uNormal, p, 0);
+    vec2 centre = load(p);
+    vec2 result = centre;
+    if (np.w > 0.5) {
+        float dp = texelFetch(uDist, p, 0).r;
+        vec3 n = normalize(np.xyz);
+        const float kernel[3] = float[3](1.0, 2.0 / 3.0, 1.0 / 6.0);
+        int step = 1 << pc.iteration;
+        float sum = 0.0, sumVar = 0.0, wsum = 0.0;
+        float sigma = 4.0 * sqrt(centre.y) + 1e-3;
+        for (int dy = -2; dy <= 2; ++dy) {
+            for (int dx = -2; dx <= 2; ++dx) {
+                ivec2 q = p + ivec2(dx, dy) * step;
+                if (q.x < 0 || q.y < 0 || q.x >= sz.x || q.y >= sz.y) continue;
+                vec4 nq = texelFetch(uNormal, q, 0);
+                if (nq.w < 0.5) continue;
+                float dq = texelFetch(uDist, q, 0).r;
+                vec2 v = load(q);
+                float w = kernel[abs(dx)] * kernel[abs(dy)];
+                w *= exp(-abs(dq - dp) / (0.02 * dp + 1e-3));
+                w *= pow(max(0.0, dot(n, normalize(nq.xyz))), 32.0);
+                w *= exp(-abs(v.x - centre.x) / sigma);
+                sum += w * v.x;
+                sumVar += w * w * v.y;
+                wsum += w;
+            }
+        }
+        if (wsum > 1e-6) result = vec2(sum / wsum, sumVar / (wsum * wsum));
+    }
+    if ((pc.iteration & 1u) == 0u) imageStore(uFil0, p, vec4(result, 0.0, 0.0));
+    else imageStore(uFil1, p, vec4(result, 0.0, 0.0));
+}

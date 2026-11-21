@@ -539,6 +539,7 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
 
 void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
     if (!picker_) picker_ = std::make_unique<render::Picker>();
+    if (services_.rtLit && services_.renderThread && snapshot && snapshot->doc) services_.renderThread->setRtLighting(render::rtLightingOf(*snapshot->doc));   // the level's ambient / occlusion / exposure
     if (lighting_ && profile_ && snapshot && snapshot->complete) {   // the lit modes' bake follows complete snapshots
         light::LightingInputs in;
         in.snapshot = snapshot;

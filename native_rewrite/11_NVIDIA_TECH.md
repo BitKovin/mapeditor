@@ -87,6 +87,14 @@ viewports show large levels; DLSS-SR lets a viewport render at 67 % scale (the Q
 > **Measured gate (RTX 4070 Ti, 143 Hz display, lvl2, 4 x 3840x2160):** Quality 85.4 fps per viewport, DLAA 79.7, Off 140.1, Quality 1440p 141 (Off and 1440p are capped by the
 > display refresh). The DLSS evaluate costs about 1.2 ms per 4K viewport on this GPU (without it the same run is at the display cap), so the gate (100 fps) is not met with four
 > 4K viewports; no lower preset was added. See 08 T6.8.
+>
+> **As built (R2, Ray Reconstruction):** `sl.dlss_d.dll` + `nvngx_dlssd.dll` are copied next to the exe, `kFeatureDLSS_RR` (1001) is requested in `slInit`, `slDLSSDGetOptimalSettings` / `slDLSSDSetOptions` come through
+> `slGetFeatureFunction`. Options (set every frame: they carry `worldToCameraView` / `cameraViewToWorld`): mode Quality / DLAA, `colorBuffersHDR = eFalse`, `normalRoughnessMode = ePacked`. Tags: `kBufferTypeScalingInputColor`
+> (the noisy radiance), `kBufferTypeDepth`, `kBufferTypeMotionVectors`, `kBufferTypeScalingOutputColor`, `kBufferTypeAlbedo` (diffuse albedo), `kBufferTypeSpecularAlbedo` (a black image: no specular yet),
+> `kBufferTypeNormalRoughness` (world normal, roughness 1 in w). **Tagging `kBufferTypeNormals` alone, for the packed mode, crashes inside the plugin** (a null dereference in `slEvaluateFeature`); the packed mode
+> needs `kBufferTypeNormalRoughness`. The first RR evaluate of a viewport makes NGX clear its own image (`nv.ngx.dlssd.resource`) right after a layout transition of its own and the synchronization validation reports a
+> WRITE_AFTER_WRITE hazard; `gpu::Device` counts messages naming `[nv.ngx.` as warnings. The viewport's DLSS setting (Quality / DLAA) selects RR in the ray-traced Lit path; with DLSS off the a-trous fallback runs.
+
 
 ### 2.3 DLSS Ray Reconstruction — only for a ray-traced *screen-space* image
 RR is a denoiser (and upscaler) for **noisy ray-traced images in screen space**: it takes the noisy radiance of a few rays per pixel together

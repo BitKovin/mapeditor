@@ -8,6 +8,7 @@
 #include "native_shaders/label_frag.spv.h"
 #include "native_shaders/label_vert.spv.h"
 #include "native_shaders/mesh_frag.spv.h"
+#include "native_shaders/mesh_gbuf_frag.spv.h"
 #include "native_shaders/mesh_vert.spv.h"
 #include "native_shaders/overlay_frag.spv.h"
 #include "native_shaders/overlay_vert.spv.h"
@@ -45,6 +46,7 @@ struct PipelineSpec {
     bool depthBias = false;
     bool blend = false;
     bool depthWrite = true;
+    bool gbuffer = false;      // three colour attachments: albedo (colorFormat), normal RGBA16F, distance R32F (the ray traced Lit path)
     VkCompareOp depthOp = VK_COMPARE_OP_LESS;
 };
 
@@ -119,15 +121,17 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat colorFor
     att.alphaBlendOp = VK_BLEND_OP_ADD;
     att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    cb.attachmentCount = 1;
-    cb.pAttachments = &att;
+    const VkPipelineColorBlendAttachmentState attachments[3] = {att, att, att};
+    cb.attachmentCount = spec.gbuffer ? 3 : 1;
+    cb.pAttachments = attachments;
     const VkDynamicState dynStates[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dyn.dynamicStateCount = 2;
     dyn.pDynamicStates = dynStates;
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachmentFormats = &colorFormat;
+    const VkFormat gFormats[3] = {colorFormat, kGBufferNormalFormat, kGBufferDistFormat};
+    rendering.colorAttachmentCount = spec.gbuffer ? 3 : 1;
+    rendering.pColorAttachmentFormats = spec.gbuffer ? gFormats : &colorFormat;
     rendering.depthAttachmentFormat = depthFormat;
 
     VkGraphicsPipelineCreateInfo pi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -214,6 +218,16 @@ MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat dep
     sky.depthWrite = false;
     sky.depthOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     skyBg_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, bg, fs, sky);
+    {   // the G-buffer variants of the opaque and sky background draws (R2)
+        VkShaderModule gfs = makeModule(dev, native::shaders::k_mesh_gbuf_frag_spv, sizeof(native::shaders::k_mesh_gbuf_frag_spv));
+        PipelineSpec gOpaque;
+        gOpaque.gbuffer = true;
+        gBufferOpaque_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, vs, gfs, gOpaque);
+        PipelineSpec gSky = sky;
+        gSky.gbuffer = true;
+        gBufferSky_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, bg, gfs, gSky);
+        vkDestroyShaderModule(dev, gfs, nullptr);
+    }
     vkDestroyShaderModule(dev, vs, nullptr);
     vkDestroyShaderModule(dev, bg, nullptr);
     vkDestroyShaderModule(dev, fs, nullptr);
@@ -221,7 +235,7 @@ MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat dep
 
 MeshPass::~MeshPass() {
     const VkDevice dev = device_.device();
-    for (VkPipeline p : {opaque_, translucent_, volume_, skyBg_, worldLines_, screenLines_, plainLines_, topLines_, fills_, labels_, labelsOver_})
+    for (VkPipeline p : {opaque_, translucent_, volume_, skyBg_, gBufferOpaque_, gBufferSky_, worldLines_, screenLines_, plainLines_, topLines_, fills_, labels_, labelsOver_})
         if (p) vkDestroyPipeline(dev, p, nullptr);
     if (layout_) vkDestroyPipelineLayout(dev, layout_, nullptr);
 }
@@ -232,7 +246,7 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &textures, 0, nullptr);
     if (lightmaps) vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 1, 1, &lightmaps, 0, nullptr);
     PushConstants pc{};
-    pc.lit[0] = lightmaps ? static_cast<float>(lit.mode) : 0.f;
+    pc.lit[0] = lightmaps && !(parts & (kMeshGBuffer | kMeshBlended)) ? static_cast<float>(lit.mode) : 0.f;
     pc.lit[1] = lit.exposure;
     pc.lit[2] = lit.brightness;
     pc.lit[3] = lit.lodBias;
@@ -240,13 +254,14 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
     for (int i = 0; i < 3; ++i) pc.eye[i] = static_cast<float>(view.eye[i]);
     const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    if ((parts & kMeshScene) && skyTexture != 0 && view.perspective) {
+    const bool gbuf = (parts & kMeshGBuffer) != 0;
+    if ((parts & (kMeshScene | kMeshGBuffer)) && skyTexture != 0 && view.perspective && !(parts & kMeshBlended)) {
         const Mat4 inv = mat4Invert(view.viewProj);
         PushConstants bgc = pc;
         for (int i = 0; i < 16; ++i) bgc.viewProj[i] = static_cast<float>(inv[i]);
         bgc.misc[0] = 3;
         bgc.misc[1] = static_cast<float>(skyTexture);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBg_);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gbuf ? gBufferSky_ : skyBg_);
         vkCmdPushConstants(cmd, layout_, stages, 0, sizeof(bgc), &bgc);
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
@@ -285,7 +300,7 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
         lines(topLines_, ov.gizmo, view.viewProj);
         lines(screenLines_, ov.screen, mat4Identity());
     };
-    if (!(parts & kMeshScene) || (lists.solid.count == 0 && lists.volume.count == 0)) {
+    if (!(parts & (kMeshScene | kMeshGBuffer | kMeshBlended)) || (lists.solid.count == 0 && lists.volume.count == 0 && lists.translucent.count == 0)) {
         if (parts & kMeshOverlays) overlays();
         return;
     }
@@ -301,9 +316,11 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
         vkCmdPushConstants(cmd, layout_, stages, 0, sizeof(p), &p);
         vkCmdDrawIndexedIndirect(cmd, list.buffer, list.offset, list.count, sizeof(VkDrawIndexedIndirectCommand));
     };
-    draw(opaque_, 0, lists.solid);
-    draw(translucent_, 1, lists.translucent);
-    if (showVolumes) draw(volume_, 2, lists.volume);
+    if (!(parts & kMeshBlended)) draw(gbuf ? gBufferOpaque_ : opaque_, 0, lists.solid);
+    if (!gbuf) {
+        draw(translucent_, 1, lists.translucent);
+        if (showVolumes) draw(volume_, 2, lists.volume);
+    }
     if (parts & kMeshOverlays) overlays();
 }
 

@@ -45,7 +45,11 @@ struct LitParams {
 
 // What MeshPass::record draws: the scene (sky, opaque, translucent, volumes) and / or the overlays over it (entity lines, selection, labels, gizmo, rubber band).
 // DLSS draws the scene at the render resolution and the overlays at the output resolution after the upscaler.
-enum MeshParts : int { kMeshScene = 1, kMeshOverlays = 2, kMeshAll = 3 };
+// kMeshGBuffer: the ray traced Lit path's G-buffer pass (sky background + opaque into three attachments: albedo, normal, distance; see mesh.frag GBUFFER),
+// kMeshBlended: only the translucent and volume draws, Unlit, over the finished picture (depth tested, no writes).
+enum MeshParts : int { kMeshScene = 1, kMeshOverlays = 2, kMeshAll = 3, kMeshGBuffer = 4, kMeshBlended = 8 };
+constexpr VkFormat kGBufferNormalFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkFormat kGBufferDistFormat = VK_FORMAT_R32_SFLOAT;
 
 class MeshPass {
 public:
@@ -55,7 +59,7 @@ public:
     MeshPass(const MeshPass&) = delete;
     MeshPass& operator=(const MeshPass&) = delete;
 
-    bool valid() const { return opaque_ != VK_NULL_HANDLE && translucent_ != VK_NULL_HANDLE && volume_ != VK_NULL_HANDLE && skyBg_ != VK_NULL_HANDLE && worldLines_ != VK_NULL_HANDLE && screenLines_ != VK_NULL_HANDLE && plainLines_ != VK_NULL_HANDLE && fills_ != VK_NULL_HANDLE && topLines_ != VK_NULL_HANDLE && labels_ != VK_NULL_HANDLE && labelsOver_ != VK_NULL_HANDLE; }
+    bool valid() const { return opaque_ != VK_NULL_HANDLE && gBufferOpaque_ != VK_NULL_HANDLE && gBufferSky_ != VK_NULL_HANDLE && translucent_ != VK_NULL_HANDLE && volume_ != VK_NULL_HANDLE && skyBg_ != VK_NULL_HANDLE && worldLines_ != VK_NULL_HANDLE && screenLines_ != VK_NULL_HANDLE && plainLines_ != VK_NULL_HANDLE && fills_ != VK_NULL_HANDLE && topLines_ != VK_NULL_HANDLE && labels_ != VK_NULL_HANDLE && labelsOver_ != VK_NULL_HANDLE; }
     VkFormat colorFormat() const { return colorFormat_; }
     VkFormat depthFormat() const { return depthFormat_; }
 
@@ -67,6 +71,7 @@ private:
     const gpu::Device& device_;
     VkFormat colorFormat_, depthFormat_;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
+    VkPipeline gBufferOpaque_ = VK_NULL_HANDLE, gBufferSky_ = VK_NULL_HANDLE;
     VkPipeline opaque_ = VK_NULL_HANDLE, translucent_ = VK_NULL_HANDLE, volume_ = VK_NULL_HANDLE, skyBg_ = VK_NULL_HANDLE;
     VkPipeline worldLines_ = VK_NULL_HANDLE, screenLines_ = VK_NULL_HANDLE, plainLines_ = VK_NULL_HANDLE, fills_ = VK_NULL_HANDLE, topLines_ = VK_NULL_HANDLE;
     VkPipeline labels_ = VK_NULL_HANDLE, labelsOver_ = VK_NULL_HANDLE;
