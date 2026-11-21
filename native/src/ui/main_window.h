@@ -115,6 +115,7 @@ class TextureBrowserPanel;
 class FttWindow;
 class TexturePropsDialog;
 class TexGroupEditor;
+class GroupsPanel;
 
 // The faces the Fast Texture Tool edits: some faces (all, when a whole brush is selected) of one brush.
 struct FttTarget {
@@ -509,6 +510,8 @@ public:
     SurfacePanel* surface() const { return surface_; }
     ads::CDockWidget* texturesDock() const { return texturesDock_; }
     TextureBrowserPanel* textureBrowser() const { return textureBrowser_; }
+    GroupsPanel* groupsPanel() const { return groupsPanel_; }
+    ads::CDockWidget* groupsDock() const { return groupsDock_; }
     std::shared_ptr<const core::GameProfile> gameProfile() const { return profile_; }
     OutlinerPanel* outliner() const { return outliner_; }
     DetailsPanel* details() const { return details_; }
@@ -585,6 +588,7 @@ public:
 signals:
     // The game folder was changed.
     void assetsRootChanged();
+    void texGroupsChanged();   // a group file was written or removed
     // The editor preferences were changed.
     void editorPrefsChanged();
     // A viewport changed (its settings or camera) or another one became the active one.
@@ -704,6 +708,8 @@ private:
     ads::CDockWidget *placeDock_ = nullptr, *outlinerDock_ = nullptr, *detailsDock_ = nullptr, *surfaceDock_ = nullptr, *texturesDock_ = nullptr;
     SurfacePanel* surface_ = nullptr;
     TextureBrowserPanel* textureBrowser_ = nullptr;
+    GroupsPanel* groupsPanel_ = nullptr;
+    ads::CDockWidget* groupsDock_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;
     DetailsPanel* details_ = nullptr;
     PlacePanel* place_ = nullptr;

@@ -22,6 +22,14 @@ struct GroupTemplate {
 /// "Building facade", "Panel wall" and "Bordered floor": what New group starts from. Each is a valid group file.
 const std::vector<GroupTemplate>& groupTemplates();
 
+/// Which tab of the Groups panel a group file belongs to: a "kit" is a simple texture set (wall pieces in rows, 9-slice frame), anything else is an advanced rule group.
+enum class GroupTab { Simple, Advanced };
+GroupTab groupTabOf(const nlohmann::json& raw);
+/// The names that contain `query` (case-insensitive), in order.
+std::vector<std::string> filterGroups(const std::vector<std::string>& names, const std::string& query);
+/// "<name>_copy", or "<name>_copy2", ... the first that is not in `existing`.
+std::string copyName(const std::string& name, const std::vector<std::string>& existing);
+
 /// Letters, digits, _ and - with / for folders, at most 120 characters.
 bool validGroupName(const std::string& name);
 

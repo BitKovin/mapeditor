@@ -17,6 +17,7 @@
 #include "ui/details_panel.h"
 #include "ui/main_window.h"
 #include "ui/outliner_panel.h"
+#include "ui/groups_panel.h"
 #include "ui/place_panel.h"
 #include "ui/surface_panel.h"
 #include "ui/texture_browser_panel.h"
@@ -43,6 +44,8 @@ void MainWindow::createToolDocks() {
     surfaceDock_ = make("Surface", "surfaceDock", surface_);
     textureBrowser_ = new TextureBrowserPanel(*this);
     texturesDock_ = make("Textures", "texturesDock", textureBrowser_);
+    groupsPanel_ = new GroupsPanel(*this);
+    groupsDock_ = make("Groups", "groupsDock", groupsPanel_);
     place_ = new PlacePanel(*this);
     placeDock_ = make("Place", "placeDock", place_);
 }

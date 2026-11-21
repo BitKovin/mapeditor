@@ -31,6 +31,7 @@ std::string MainWindow::texGroupWrite(const std::string& name, const nlohmann::j
         return err;
     }
     rebuildTextureEnvironment();
+    emit texGroupsChanged();
     return {};
 }
 
@@ -44,6 +45,7 @@ std::string MainWindow::texGroupRemove(const std::string& name) {
         return err;
     }
     rebuildTextureEnvironment();
+    emit texGroupsChanged();
     return {};
 }
 

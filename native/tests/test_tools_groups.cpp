@@ -227,3 +227,17 @@ TEST_CASE("edit layout and clear layout: only faces that have a layout change; a
     CHECK_FALSE(clearLayout(cleared.version, sel).ok());
     CHECK(layoutGroupOf(core::BrushFace{}) == "");
 }
+
+TEST_CASE("groups panel model: the tab follows the kit key, the filter ignores case, copies get the first free name") {
+    CHECK(groupTabOf(nlohmann::json::parse(R"({"kit": {"kind": "wall"}})")) == GroupTab::Simple);
+    CHECK(groupTabOf(nlohmann::json::parse(R"({"root": {}})")) == GroupTab::Advanced);
+    CHECK(groupTabOf(nlohmann::json::parse("[]")) == GroupTab::Advanced);
+    const std::vector<std::string> names = {"bld/Facade", "bld/panels", "floor/tiles"};
+    CHECK(filterGroups(names, "").size() == 3);
+    CHECK(filterGroups(names, "FAC") == std::vector<std::string>{"bld/Facade"});
+    CHECK(filterGroups(names, "bld").size() == 2);
+    CHECK(filterGroups(names, "zzz").empty());
+    CHECK(copyName("a", {"a"}) == "a_copy");
+    CHECK(copyName("a", {"a", "a_copy"}) == "a_copy2");
+    CHECK(copyName("a", {"a", "a_copy", "a_copy2"}) == "a_copy3");
+}

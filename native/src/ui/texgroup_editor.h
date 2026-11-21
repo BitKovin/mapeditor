@@ -44,6 +44,7 @@ public:
     const std::vector<core::texplan::Cell>& cells() const { return cells_; }
     void setOutlines(bool on) { outlines_ = on; update(); }
     void setLabels(bool on) { labels_ = on; update(); }
+    void setMargin(double m) { margin_ = m; update(); }
     int highlight() const { return highlight_; }
     void setHighlight(int index);
     int hovered() const { return hovered_; }
@@ -72,6 +73,7 @@ private:
     double w_ = 9, h_ = 12;
     int highlight_ = -1, hovered_ = -1;
     bool outlines_ = true, labels_ = true;
+    double margin_ = 8;
 };
 
 class TexGroupEditor : public QDialog {

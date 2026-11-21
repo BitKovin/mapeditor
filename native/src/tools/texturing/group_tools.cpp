@@ -83,6 +83,27 @@ const std::vector<GroupTemplate>& groupTemplates() {
     return t;
 }
 
+GroupTab groupTabOf(const nlohmann::json& raw) { return raw.is_object() && raw.contains("kit") ? GroupTab::Simple : GroupTab::Advanced; }
+
+std::vector<std::string> filterGroups(const std::vector<std::string>& names, const std::string& query) {
+    std::string q = query;
+    std::transform(q.begin(), q.end(), q.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::vector<std::string> out;
+    for (const std::string& n : names) {
+        std::string l = n;
+        std::transform(l.begin(), l.end(), l.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (l.find(q) != std::string::npos) out.push_back(n);
+    }
+    return out;
+}
+
+std::string copyName(const std::string& name, const std::vector<std::string>& existing) {
+    const auto taken = [&](const std::string& n) { return std::find(existing.begin(), existing.end(), n) != existing.end(); };
+    std::string c = name + "_copy";
+    for (int i = 2; taken(c) && i < 10000; ++i) c = name + "_copy" + std::to_string(i);
+    return c;
+}
+
 bool validGroupName(const std::string& name) {
     if (name.empty() || name.size() > 120) return false;
     bool segmentStart = true;

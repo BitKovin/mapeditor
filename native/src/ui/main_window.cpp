@@ -149,6 +149,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, detailsDock_);
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, surfaceDock_);
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, texturesDock_);
+        dockManager_->addDockWidget(ads::CenterDockWidgetArea, groupsDock_);
     }
     // Documents: the assets root (--assets, else the saved one), the recent list, the job results timer.
     assetsRoot_ = services_.assetsRoot;
@@ -380,6 +381,7 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
     }
     ads::CDockAreaWidget* placeArea = dockManager_->addDockWidget(ads::LeftDockWidgetArea, placeDock_);
     dockManager_->addDockWidget(ads::CenterDockWidgetArea, texturesDock_, placeArea);
+    dockManager_->addDockWidget(ads::CenterDockWidgetArea, groupsDock_, placeArea);
     placeDock_->setAsCurrentTab();
     ads::CDockAreaWidget* statsArea = dockManager_->addDockWidget(ads::RightDockWidgetArea, statsDock_);
     // Equal viewport cells; the Place dock on the left and the Outliner / Details / Stats column on the right at fixed widths.
@@ -427,6 +429,7 @@ void MainWindow::setLayoutPreset(LayoutPreset preset) {
     dockManager_->removeDockWidget(detailsDock_);
     dockManager_->removeDockWidget(surfaceDock_);
     dockManager_->removeDockWidget(texturesDock_);
+    dockManager_->removeDockWidget(groupsDock_);
     destroyViewports();
     buildViewports(preset, saved);
     if (menus_) menus_->refresh();

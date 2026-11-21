@@ -20,6 +20,7 @@
 #include "tools/texturing/face_edit.h"
 #include "tools/texturing/group_tools.h"
 #include "ui/app_actions.h"
+#include "ui/groups_panel.h"
 #include "ui/main_window.h"
 #include "ui/texgroup_editor.h"
 
@@ -103,6 +104,11 @@ struct Fixture {
 
 template <class T>
 T* part(ui::TexGroupEditor* d, const char* name) {
+    return static_cast<T*>(d->part(QString::fromLatin1(name)));
+}
+
+template <class T>
+T* part2(ui::GroupsPanel* d, const char* name) {
     return static_cast<T*>(d->part(QString::fromLatin1(name)));
 }
 
@@ -284,4 +290,61 @@ TEST_CASE("group store: writing and removing rebuild the scene; the list and rea
     CHECK_FALSE(f.window.texGroupRead("x"));
     CHECK(f.window.texGroupRemove("a/b").empty());
     CHECK(f.window.texGroupList().empty());
+}
+
+TEST_CASE("groups panel: two tabs by the kind of file, a search, thumbnails, apply / duplicate / remove through the store") {
+    Fixture f;
+    f.disk["bld/facade"] = json::parse(native::tools::tex::groupTemplates()[0].text);
+    f.disk["bld/panels"] = json::parse(native::tools::tex::groupTemplates()[1].text);
+    f.disk["sets/wall"] = json{{"format", 1}, {"name", "Wall set"}, {"kit", {{"kind", "wall"}}}, {"root", {{"tex", "a"}}}};
+    ui::GroupsPanel* p = f.window.groupsPanel();
+    REQUIRE(p);
+    p->reload();
+    CHECK(p->entries().size() == 3);
+    CHECK(p->tab() == native::tools::tex::GroupTab::Advanced);
+    CHECK(p->shown() == std::vector<std::string>{"bld/facade", "bld/panels"});
+    p->setTab(native::tools::tex::GroupTab::Simple);
+    CHECK(p->shown() == std::vector<std::string>{"sets/wall"});
+    p->setTab(native::tools::tex::GroupTab::Advanced);
+    p->setQuery(QStringLiteral("PAN"));
+    CHECK(p->shown() == std::vector<std::string>{"bld/panels"});
+    CHECK(part2<QListWidget>(p, "list")->count() == 1);
+    CHECK(part2<QLabel>(p, "count")->text() == "1 of 2");
+    p->setQuery({});
+    // the thumbnail is the group laid out (not the empty grey)
+    const QImage thumb = p->thumbnailOf("bld/facade");
+    CHECK(thumb.size() == QSize(96, 72));
+    bool varied = false;
+    for (int x = 0; x < thumb.width() && !varied; ++x)
+        if (thumb.pixel(x, 30) != thumb.pixel(0, 0)) varied = true;
+    CHECK(varied);
+    // apply
+    f.window.selection().select(doc::SelRef::brush("w", "a"));
+    CHECK(p->apply("bld/facade"));
+    CHECK(f.layouts() == 6);
+    // duplicate: a new file with a new name, the list follows (the write signals the panel)
+    CHECK(p->duplicate("bld/facade") == "bld/facade_copy");
+    CHECK(f.disk.count("bld/facade_copy"));
+    CHECK(f.disk["bld/facade_copy"]["name"] == "Building facade (copy)");
+    CHECK(p->duplicate("bld/facade") == "bld/facade_copy2");
+    CHECK(p->shown().size() == 4);
+    CHECK(p->remove("bld/facade_copy").empty());
+    CHECK_FALSE(f.disk.count("bld/facade_copy"));
+    CHECK(p->shown().size() == 3);
+    // edit opens the editor on the group; saving it refreshes the panel
+    p->edit("bld/panels");
+    REQUIRE(f.window.groupEditor());
+    CHECK(f.window.groupEditor()->groupName() == "bld/panels");
+}
+
+TEST_CASE("groups panel: the New advanced group button opens the editor on a template; the dock exists and has an action") {
+    Fixture f;
+    ui::GroupsPanel* p = f.window.groupsPanel();
+    REQUIRE(p);
+    CHECK(f.window.groupsDock());
+    static_cast<QPushButton*>(p->part("btn:newAdvanced"))->click();
+    REQUIRE(f.window.groupEditor());
+    CHECK(f.window.groupEditor()->groupName().empty());
+    CHECK(f.window.groupEditor()->valid());
+    CHECK(f.window.registry().find("view.groups.toggle"));
 }

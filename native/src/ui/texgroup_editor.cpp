@@ -37,8 +37,6 @@ using ojson = nlohmann::ordered_json;
 
 namespace {
 
-constexpr double kMargin = 8;
-
 int hueOf(const std::string& s) {
     int x = 0;
     for (const char c : s) x = (x * 31 + static_cast<unsigned char>(c)) % 360;
@@ -89,14 +87,14 @@ const QImage& GroupPreviewCanvas::image(const std::string& path) {
 }
 
 QPointF GroupPreviewCanvas::pixelOf(double x, double y) const {
-    const double s = tex::previewScale(width(), height(), w_, h_, kMargin);
-    return {kMargin + s * x, kMargin + s * (h_ - y)};
+    const double s = tex::previewScale(width(), height(), w_, h_, margin_);
+    return {margin_ + s * x, margin_ + s * (h_ - y)};
 }
 
 int GroupPreviewCanvas::cellAtPixel(const QPointF& p) const {
-    const double s = tex::previewScale(width(), height(), w_, h_, kMargin);
+    const double s = tex::previewScale(width(), height(), w_, h_, margin_);
     if (!(s > 0)) return -1;
-    return tex::cellAt(cells_, (p.x() - kMargin) / s, h_ - (p.y() - kMargin) / s);
+    return tex::cellAt(cells_, (p.x() - margin_) / s, h_ - (p.y() - margin_) / s);
 }
 
 void GroupPreviewCanvas::hover(const QPointF& p) {
@@ -124,10 +122,10 @@ void GroupPreviewCanvas::leaveEvent(QEvent*) {
 void GroupPreviewCanvas::paintEvent(QPaintEvent*) {
     QPainter g(this);
     g.fillRect(rect(), QColor(0x16, 0x16, 0x16));
-    const double s = tex::previewScale(width(), height(), w_, h_, kMargin);
+    const double s = tex::previewScale(width(), height(), w_, h_, margin_);
     if (!(s > 0)) return;
     g.setRenderHint(QPainter::SmoothPixmapTransform, false);
-    g.translate(kMargin, kMargin);
+    g.translate(margin_, margin_);
     for (const tp::Cell& c : cells_) {
         const QRectF r(s * c.x0, s * (h_ - c.y1), s * (c.x1 - c.x0), s * (c.y1 - c.y0));
         const tp::TexInfo* ti = info_ ? info_(c.texture) : nullptr;
