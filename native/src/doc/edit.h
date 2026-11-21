@@ -28,6 +28,8 @@ public:
     // `rawBase` (the JSON of the node this one is copied from) keeps the keys the editor does not model; the typed value wins where both have a key.
     bool addBrush(const std::string& entityId, const core::Brush& brush, const Json& rawBase = Json());       // appended to the entity
     bool removeBrush(const std::string& entityId, const std::string& brushId);
+    // Sets one key of the brush's JSON the editor does not model (the parametric `shape` record); a null `value` removes the key.
+    bool setBrushKey(const std::string& entityId, const std::string& brushId, const std::string& key, const Json& value);
     bool replaceEntity(const core::Entity& entity);                             // its own keys; entity.brushes is ignored
     // appended; entity.brushes (if any) become its brush nodes (`brushRaws[i]` = the base JSON of brush i, when given)
     bool addEntity(const core::Entity& entity, const Json& rawBase = Json(), const std::vector<Json>& brushRaws = {});

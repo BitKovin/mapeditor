@@ -103,6 +103,24 @@ bool VersionEditor::addBrush(const std::string& entityId, const core::Brush& bru
     return true;
 }
 
+bool VersionEditor::setBrushKey(const std::string& entityId, const std::string& brushId, const std::string& key, const Json& value) {
+    if (!working_) return false;
+    auto e = entityIndex_.find(entityId);
+    if (e == entityIndex_.end()) return fail("no entity " + entityId);
+    auto& bi = brushIndexOf(e->second);
+    auto b = bi.find(brushId);
+    if (b == bi.end()) return fail("entity " + entityId + " has no brush " + brushId);
+    EntityNode& node = mutableEntity(e->second);
+    auto next = std::make_shared<BrushNode>(*node.brushes[b->second]);
+    if (!next->raw.is_object()) next->raw = Json::object();
+    if (value.is_null()) next->raw.erase(key);
+    else next->raw[key] = value;
+    next->contentHash = base::hashJson(next->raw);
+    node.brushes[b->second] = next;
+    changed_ = true;
+    return true;
+}
+
 bool VersionEditor::removeBrush(const std::string& entityId, const std::string& brushId) {
     if (!working_) return false;
     auto e = entityIndex_.find(entityId);

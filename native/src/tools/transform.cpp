@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "doc/edit.h"
+#include "tools/parametric.h"
 
 namespace native::tools {
 
@@ -284,6 +285,18 @@ Targets selectionTargets(const std::vector<doc::SelRef>& sels) {
     return t;
 }
 
+namespace {
+// A parametric shape's box moves with its parts (REQUIREMENTS 22 P1); reconcileShapes then finds the parts still matching their record.
+void mapShapeKey(doc::VersionEditor& ed, const std::string& entityId, const doc::BrushNode& b, const Affine& map) {
+    if (!b.raw.is_object() || !b.raw.contains("shape")) return;
+    const parametric::Json mapped = parametric::mapShapeRecord(b.raw["shape"], [&map](const Vec3& p) {
+        const V3 q = map({p.x, p.y, p.z});
+        return Vec3{q[0], q[1], q[2]};
+    });
+    ed.setBrushKey(entityId, b.brush.id, "shape", mapped);
+}
+} // namespace
+
 std::shared_ptr<const doc::DocumentVersion> transformSelections(const std::shared_ptr<const doc::DocumentVersion>& base, const std::vector<doc::SelRef>& sels, const Affine& map,
                                                                 bool flip, double yawDeg, bool lockUv) {
     if (!base) return base;
@@ -294,13 +307,19 @@ std::shared_ptr<const doc::DocumentVersion> transformSelections(const std::share
         const std::string& id = node->typed.id;
         if (t.entities.count(id)) {
             ed.replaceEntity(mapEntityPoints(node->typed, !node->brushes.empty(), map, yawDeg));
-            for (const auto& b : node->brushes) ed.replaceBrush(id, mapBrushPoints(b->brush, map, flip, lockUv));
+            for (const auto& b : node->brushes) {
+                ed.replaceBrush(id, mapBrushPoints(b->brush, map, flip, lockUv));
+                mapShapeKey(ed, id, *b, map);
+            }
             continue;
         }
         const auto it = t.brushes.find(id);
         if (it == t.brushes.end()) continue;
         for (const auto& b : node->brushes)
-            if (it->second.count(b->brush.id)) ed.replaceBrush(id, mapBrushPoints(b->brush, map, flip, lockUv));
+            if (it->second.count(b->brush.id)) {
+                ed.replaceBrush(id, mapBrushPoints(b->brush, map, flip, lockUv));
+                mapShapeKey(ed, id, *b, map);
+            }
     }
     for (const auto& inst : base->instances)
         if (t.instances.count(inst->typed.id)) ed.replaceInstance(mapInstancePoints(inst->typed, map));
