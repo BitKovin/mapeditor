@@ -6,7 +6,7 @@
 // Lit modes (the Shell's LITTEX_FS / LIT_FS): surfaces with a chart of the live layout (flag 4) show albedo x the bicubic-sampled display page x exposure + brightness,
 // clamped at the end; Lighting only shows the light alone. Surfaces without a chart keep the unlit shading, dimmed.
 layout(set = 0, binding = 0) uniform sampler2D textures[];
-layout(set = 0, binding = 1, std430) readonly buffer Meta { vec4 meta[]; };   // x mode, y cutoff, z opacity, w has alpha
+layout(set = 0, binding = 1, std430) readonly buffer Meta { vec4 meta[]; };   // x mode, y cutoff, z opacity, w 1 + tint (unused here)
 layout(set = 1, binding = 0) uniform sampler2DArray uLightmap;               // the display pages (RGBA16F, linear)
 
 layout(push_constant) uniform PC {

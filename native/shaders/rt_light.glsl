@@ -110,23 +110,81 @@ void frameOf(vec3 n, out vec3 t, out vec3 b) {
     b = cross(n, t);
 }
 
-// 1 when the segment o + t * d, t in [0, tmax] meets no surface (all occluders are opaque for now), else 0.
-float transmit(vec3 o, vec3 d, float tmax) {
-    rayQueryEXT rq;
-    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, RT_MASK_SOLID, o, 0.0, d, tmax);
-    while (rayQueryProceedEXT(rq)) {}
-    return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? 0.0 : 1.0;
+#ifndef TEX_SET
+#define TEX_SET 2
+#endif
+layout(set = TEX_SET, binding = 0) uniform sampler2D textures[];   // the texture table of the renderer (global texture indices are what the vertices carry)
+layout(set = TEX_SET, binding = 1, std430) readonly buffer TexMeta { vec4 texMeta[]; };   // x mode (0 opaque, 1 cutout, 2 translucent), y cutoff, z opacity, w 1 + tint (0 = not loaded)
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer WordBuf { uint w[]; };
+
+// The material of a candidate triangle (an instance whose texture has a cutout or translucent mode is not forced opaque, so the shadow rays see its triangles as candidates) the way the
+// Core's compiled bake sees it (raytrace.cpp surfaceAt): 0 = a surface that blocks (opaque, or a cutout texel that is solid), -1 = no surface here (a cutout hole, a clear texel of
+// a translucent texture), 1 = a translucent surface: `tm` is what passes (the texel colour mixed with white by the tint, times 1 - opacity * alpha), counted once where the ray enters
+// (front side), not where it leaves a closed brush.
+int candidateSurface(rayQueryEXT rq, vec3 dir, out vec3 tm) {
+    tm = vec3(1.0);
+    uint slot = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false));
+    uvec4 r0 = rec[slot * 2u];
+    WordBuf vb = WordBuf(packUint2x32(uvec2(r0.x, r0.y)));
+    WordBuf ib = WordBuf(packUint2x32(uvec2(r0.z, r0.w)));
+    uint prim = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false));
+    uvec3 idx = uvec3(ib.w[prim * 3u], ib.w[prim * 3u + 1u], ib.w[prim * 3u + 2u]);
+    uint o0 = idx.x * 10u, o1 = idx.y * 10u, o2 = idx.z * 10u;
+    uint tex = vb.w[o0 + 9u];
+    vec4 m = texMeta[tex];
+    if (m.x < 0.5) return 0;
+    vec2 bc = rayQueryGetIntersectionBarycentricsEXT(rq, false);
+    vec3 w3 = vec3(1.0 - bc.x - bc.y, bc.x, bc.y);
+    vec2 uv = vec2(uintBitsToFloat(vb.w[o0 + 4u]), uintBitsToFloat(vb.w[o0 + 5u])) * w3.x + vec2(uintBitsToFloat(vb.w[o1 + 4u]), uintBitsToFloat(vb.w[o1 + 5u])) * w3.y +
+                vec2(uintBitsToFloat(vb.w[o2 + 4u]), uintBitsToFloat(vb.w[o2 + 5u])) * w3.z;
+    ivec2 sz = textureSize(textures[nonuniformEXT(tex)], 0);
+    ivec2 px = min(sz - 1, ivec2(fract(uv) * vec2(sz)));   // the texel the Core picks (no filtering)
+    vec4 t = texelFetch(textures[nonuniformEXT(tex)], px, 0);
+    if (m.x < 1.5) return t.a < m.y ? -1 : 0;
+    if (t.a * 255.0 < 16.0) return -1;
+    vec3 p0 = vec3(uintBitsToFloat(vb.w[o0]), uintBitsToFloat(vb.w[o0 + 1u]), uintBitsToFloat(vb.w[o0 + 2u]));
+    vec3 p1 = vec3(uintBitsToFloat(vb.w[o1]), uintBitsToFloat(vb.w[o1 + 1u]), uintBitsToFloat(vb.w[o1 + 2u]));
+    vec3 p2 = vec3(uintBitsToFloat(vb.w[o2]), uintBitsToFloat(vb.w[o2 + 1u]), uintBitsToFloat(vb.w[o2 + 2u]));
+    if (dot(cross(p1 - p0, p2 - p0), dir) >= 0.0) return 1;   // leaving the brush: no further dimming
+    float tint = m.w >= 1.0 ? m.w - 1.0 : 1.0;
+    tm = (vec3(1.0) + (t.rgb - vec3(1.0)) * tint) * (1.0 - m.z * t.a);
+    return 1;
 }
 
-float blocked(vec3 o, vec3 target) {
+// What of the light passes along the segment o + t * d, t in [0, tmax], per colour channel: 1 = nothing in the way, 0 = a surface that blocks, in between through translucent surfaces
+// (the Core's TriangleBvh::transmittance); cutout holes do not block.
+vec3 transmit(vec3 o, vec3 d, float tmax) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT, RT_MASK_SOLID, o, 0.0, d, tmax);
+    vec3 T = vec3(1.0);
+    while (rayQueryProceedEXT(rq)) {
+        if (rayQueryGetIntersectionTypeEXT(rq, false) != gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+        vec3 tm;
+        int s = candidateSurface(rq, d, tm);
+        if (s == 0) {
+            rayQueryConfirmIntersectionEXT(rq);
+        } else if (s > 0) {
+            T *= tm;
+            if (max(T.x, max(T.y, T.z)) < 1e-3) {
+                rayQueryTerminateEXT(rq);
+                return vec3(0.0);
+            }
+        }
+    }
+    return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? vec3(0.0) : T;
+}
+
+vec3 blocked(vec3 o, vec3 target) {
     vec3 d = target - o;
     float dist = length(d);
-    if (dist <= P.look.y) return 1.0;
+    if (dist <= P.look.y) return vec3(1.0);
     return transmit(o, d / dist, dist - P.look.y);
 }
 
-// One sample of the light's visibility from o: a point of the light's source (disc for point / spot, rectangle, the sun's disc), one shadow ray.
-float visibilitySample(uint k, vec3 o, inout uint seed) {
+// One sample of the light's visibility from o (per colour channel: translucent surfaces tint the light): a point of the light's source (disc for point / spot, rectangle, the sun's
+// disc), one shadow ray.
+vec3 visibilitySample(uint k, vec3 o, inout uint seed) {
     vec4 a = lt[k * LREC + 0u];
     int type = int(lt[k * LREC + 1u].w + 0.5);
     float size = lt[k * LREC + 4u].w;
@@ -155,7 +213,7 @@ float visibilitySample(uint k, vec3 o, inout uint seed) {
         float u1 = rand01(seed), u2 = rand01(seed);
         return blocked(o, a.xyz + right * ((u1 - 0.5) * w) + up * ((u2 - 0.5) * h));
     }
-    return 1.0;
+    return vec3(1.0);
 }
 
 // One sample of the sky light with occlusion: a cosine weighted ray; only an upward ray that escapes counts, weighted by the skybox's light from its direction.

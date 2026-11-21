@@ -90,12 +90,24 @@ bool waitFor(const std::function<bool()>& cond, int ms) {
 
 // Waits until the RT scene holds `objects` instances, nothing waits for a BLAS and the TLAS is at least of that generation.
 bool settled(render::RenderThread& rt, uint32_t objects, uint64_t minGeneration) {
-    return waitFor(
-        [&] {
-            const auto i = rt.rtInfo();
-            return i.valid && i.stats.objects == objects && !i.stats.backlog && i.generation >= minGeneration && rt.sceneInfo().scene.queued == 0;
-        },
-        120000);
+    const auto ready = [&] {
+        const auto i = rt.rtInfo();
+        return i.valid && i.stats.objects == objects && !i.stats.backlog && i.generation >= minGeneration && rt.sceneInfo().scene.queued == 0 &&
+               rt.sceneInfo().texturesPending == 0;
+    };
+    // A texture that arrives makes an object alpha (cutout / translucent): its instance flag changes and the TLAS is built again a few frames later, so the generation has to
+    // stay the same for a while.
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(120000);
+    while (std::chrono::steady_clock::now() < end) {
+        if (ready()) {
+            const uint64_t gen = rt.rtInfo().generation;
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (ready() && rt.rtInfo().generation == gen) return true;
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+    return false;
 }
 
 // `tolerance`: the float noise of a hit distance grows with the distance (lvl2 is about 500 m across).

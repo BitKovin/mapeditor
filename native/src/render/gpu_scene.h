@@ -63,6 +63,7 @@ struct SceneStats {
 // The lighting rules of an object (the game profile's classes, core::LightingClasses): bit 0 = receives baked light (shows shadows), bit 1 = blocks light (casts shadows).
 // Objects without an entry in the rules have both. The draw's firstInstance carries the bits to the shaders.
 constexpr uint32_t kObjReceives = 1, kObjCasts = 2;
+constexpr uint32_t kObjAlpha = 8;   // ray tracing only (RtObject::flags): a texture of the object has holes or lets light through; its instance is not forced opaque, the shadow rays look at the texels
 
 struct RtObject {
     uint64_t serial = 0;
@@ -166,6 +167,7 @@ private:
     std::vector<Retired> retired_;
     bool barrierNeeded_ = false;
     bool drawsDirty_ = false;
+    uint32_t seenTextures_ = ~0u;   // TextureTable::loaded() at the last rebuildDraws: a texture that arrived may make an object alpha (kObjAlpha)
     struct Draw {
         VkDrawIndexedIndirectCommand cmd;
         doc::Box bounds;

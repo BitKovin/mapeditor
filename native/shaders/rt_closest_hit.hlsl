@@ -16,8 +16,8 @@ void main(uint3 id : SV_DispatchThreadID) {
     ray.TMin = 0.0;
     ray.Direction = b.xyz;
     ray.TMax = a.w;
-    RayQuery<RAY_FLAG_NONE> q;
-    q.TraceRayInline(tlas, RAY_FLAG_NONE, 0xFF, ray);
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
+    q.TraceRayInline(tlas, RAY_FLAG_FORCE_OPAQUE, 0xFF, ray);
     while (q.Proceed()) {}
     if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
         const float2 bary = q.CommittedTriangleBarycentrics();

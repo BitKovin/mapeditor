@@ -416,6 +416,7 @@ bool RtScene::update(VkCommandBuffer cmd, uint64_t completed, uint64_t submitted
             inst.instanceCustomIndex = e.slot;
             inst.mask = (o.flags & kObjCasts) != 0 ? kRtMaskSolid : kRtMaskReceiver;
             inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;   // double sided
+            if ((o.flags & kObjAlpha) != 0) inst.flags |= VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;   // the shadow rays see its triangles as candidates and read the texels
             inst.accelerationStructureReference = e.blas.address;
             instances.push_back(inst);
         }

@@ -92,7 +92,7 @@ TextureTable::TextureTable(gpu::Device& device) : device_(device) {
     b[1].binding = 1;
     b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     b[1].descriptorCount = 1;
-    b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;   // the ray traced shadow rays read the transparency of the surface they pass
     const VkDescriptorBindingFlags flags[2] = {VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, 0};
     VkDescriptorSetLayoutBindingFlagsCreateInfo fi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
     fi.bindingCount = 2;
@@ -441,7 +441,7 @@ void TextureTable::load(uint32_t index, std::string name) {
                     d.meta[0] = static_cast<float>(static_cast<int>(t.mode));
                     d.meta[1] = t.cutoff;
                     d.meta[2] = t.opacity;
-                    d.meta[3] = kind == core::AlphaKind::None ? 0.0f : 1.0f;
+                    d.meta[3] = 1.0f + t.tint;   // 1 + the tint of the transparency (0 = not loaded); the shaders do not read the "has alpha" flag it replaces
                     d.ok = true;
                 }
             }

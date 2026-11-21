@@ -23,8 +23,6 @@
 #define RT_SET 2
 #define TEX_SET 0
 
-layout(set = 0, binding = 1, std430) readonly buffer Meta { vec4 meta[]; };   // x mode, y cutoff, z opacity, w has alpha
-
 layout(push_constant) uniform PC {
     mat4 viewProj;
     vec4 eye;
@@ -127,7 +125,7 @@ vec3 bounceLight(vec3 p, vec3 n) {
 
 void main() {
     vec3 n = normalize(vN);
-    vec4 m = meta[vTex];
+    vec4 m = texMeta[vTex];   // x mode, y cutoff, z opacity, w 1 + tint (declared by rt_light.glsl)
     vec4 t = texture(textures[nonuniformEXT(vTex)], vUv, pc.lit.w);
     float a = m.z * t.a;
     if ((vObj & 1u) == 0u) {   // a class without lightmaps: the unlit look of the other modes

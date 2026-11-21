@@ -303,6 +303,7 @@ bool GpuScene::sync(VkCommandBuffer cmd, gpu::UploadRing& ring, uint64_t complet
         vkCmdPipelineBarrier2(cmd, &dep);
         barrierNeeded_ = false;
     }
+    if (textures_.loaded() != seenTextures_) drawsDirty_ = true;
     if (drawsDirty_) rebuildDraws();
     return !queue_.empty();
 }
@@ -312,6 +313,7 @@ void GpuScene::rebuildDraws() {
     draws_.clear();
     rt_.clear();
     uint64_t signature = 0;
+    seenTextures_ = textures_.loaded();
     draws_.reserve(objects_.size());
     rawObjects_ = 0;
     for (const auto& [key, o] : objects_) {
@@ -334,8 +336,14 @@ void GpuScene::rebuildDraws() {
         d.textures = &o.textures;
         draws_.push_back(d);
         if (!o.volume) {
-            rt_.push_back({o.serial, flags, static_cast<uint32_t>(o.vertexOffset), o.firstIndex, o.indexCount, o.vertexCount, o.raw, o.geomHash});
-            uint64_t h = o.geomHash ^ (uint64_t(flags) * 0x9E3779B97F4A7C15ull);
+            uint32_t rtFlags = flags;
+            for (uint32_t t : o.textures)
+                if (textures_.alphaSurface(t)) {
+                    rtFlags |= kObjAlpha;
+                    break;
+                }
+            rt_.push_back({o.serial, rtFlags, static_cast<uint32_t>(o.vertexOffset), o.firstIndex, o.indexCount, o.vertexCount, o.raw, o.geomHash});
+            uint64_t h = o.geomHash ^ (uint64_t(rtFlags) * 0x9E3779B97F4A7C15ull);
             h ^= h >> 29;
             h *= 0xBF58476D1CE4E5B9ull;
             h ^= h >> 32;

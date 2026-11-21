@@ -13,7 +13,7 @@ void main() {
     if (i >= uint(rays.length()) / 2u) return;
     vec4 a = rays[2u * i], b = rays[2u * i + 1u];
     rayQueryEXT rq;
-    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsNoneEXT, 0xFF, a.xyz, 0.0, b.xyz, a.w);
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFF, a.xyz, 0.0, b.xyz, a.w);
     while (rayQueryProceedEXT(rq)) {}
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
         vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);

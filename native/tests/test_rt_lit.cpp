@@ -117,9 +117,18 @@ core::OccluderMesh drawnTriangles(const scene::SceneSnapshot& snap, std::vector<
             const scene::RenderVertex& first = m->vertices[m->indices[i]];
             const std::string& tex = first.texture < m->textures.size() ? m->textures[first.texture] : std::string();
             if (blended) blended->push_back(tex.find("glass") != std::string::npos || tex.find("window") != std::string::npos ? 1 : 0);
+            int32_t texId = -1;   // the texture of the triangle, for core::attachAlbedo (the reference tracer reads its transparency)
+            if (!tex.empty()) {
+                const auto it = std::find(mesh.textureNames.begin(), mesh.textureNames.end(), tex);
+                texId = static_cast<int32_t>(it - mesh.textureNames.begin());
+                if (it == mesh.textureNames.end()) mesh.textureNames.push_back(tex);
+            }
+            mesh.triTexture.push_back(texId);
+            mesh.uvRatio.push_back(1.0f);
             for (size_t c = 0; c < 3; ++c) {
-                const float* v = m->vertices[m->indices[i + c]].pos;
-                mesh.tris.insert(mesh.tris.end(), {v[0], v[1], v[2]});
+                const scene::RenderVertex& rv = m->vertices[m->indices[i + c]];
+                mesh.tris.insert(mesh.tris.end(), {rv.pos[0], rv.pos[1], rv.pos[2]});
+                mesh.albedoUv.insert(mesh.albedoUv.end(), {rv.uv[0], rv.uv[1]});
             }
         }
     }
@@ -630,24 +639,24 @@ double cpuDirect(const std::vector<core::Light>& lights, const core::TriangleBvh
             if (v != 0 && L.castShadows) {
                 const core::Vec3 t = L.position - o;
                 const double td = std::sqrt(t.dot(t));
-                if (td > kBias && bvh.occluded(o, t * (1.0 / td), td - kBias)) v = 0;
+                if (td > kBias) v *= bvh.transmittance(o, t * (1.0 / td), td - kBias).y;   // green: the glass tint
             }
         } else if (L.type == core::LightType::Directional) {
             v = std::max(0.0, n.dot(L.forward * -1.0));
-            if (v != 0 && L.castShadows && bvh.occluded(o, L.forward * -1.0, 10000.0)) v = 0;
+            if (v != 0 && L.castShadows) v *= bvh.transmittance(o, L.forward * -1.0, 10000.0).y;
         } else if (L.type == core::LightType::Sky) {
             const core::Vec3 helper = std::abs(n.x) < 0.9 ? core::Vec3{1, 0, 0} : core::Vec3{0, 1, 0};
             const core::Vec3 tu = n.cross(helper).normalized(), tv = n.cross(tu);
             std::uniform_real_distribution<double> u(0.0, 1.0);
             const int kRays = 512;
-            int open = 0;
+            double open = 0;
             for (int k = 0; k < kRays; ++k) {
                 const double u1 = (k + u(rng)) / kRays, u2 = u(rng);
                 const double rad = std::sqrt(u1), phi = 2.0 * kPi * u2;
                 const core::Vec3 dir = tu * (rad * std::cos(phi)) + tv * (rad * std::sin(phi)) + n * std::sqrt(std::max(0.0, 1.0 - u1));
-                if (dir.y > 0 && !bvh.occluded(o, dir, 10000.0)) ++open;
+                if (dir.y > 0) open += bvh.transmittance(o, dir, 10000.0).y;
             }
-            v = static_cast<double>(open) / kRays;
+            v = open / kRays;
         }
         sum += v * L.brightness;
     }
@@ -665,7 +674,11 @@ TEST_CASE("RT Lit: point, spot, sun and sky light with ray traced shadows equal 
     Fixture f;
     if (!f.start(640, 400)) return;
     std::vector<uint8_t> blended;
-    const core::OccluderMesh mesh = drawnTriangles(*f.snapshot, &blended);
+    core::OccluderMesh mesh = drawnTriangles(*f.snapshot, &blended);
+    {   // translucent glass lets the light through, tinted, and cutouts have holes (the Core's compiled bake: TriangleBvh::transmittance), like the ray traced shadow rays
+        auto lib = std::make_shared<core::AlbedoLibrary>(f.root, core::loadProfile(f.root));
+        core::attachAlbedo(mesh, [lib](const std::string& name) { return lib->get(name); });
+    }
     const core::TriangleBvh bvh(mesh);
     const std::vector<core::Light> lights = directTestLights();
     render::RtLighting lighting;
@@ -1237,6 +1250,7 @@ TEST_CASE("Compare: the baked Lit view against the ray traced Lit view" * doctes
         cscene.openDocument(f.mapName);
         const auto surfaces = cscene.lightSurfaces();
         core::LightScene clights = cscene.lightScene();
+        if (noStyles) clights = core::lightsOfStyle(clights, 0);
         core::LightmapSettings lcfg;
         lcfg.playable = clights.playable;
         lcfg.lod = clights.level.lod;
@@ -1265,6 +1279,10 @@ TEST_CASE("Compare: the baked Lit view against the ray traced Lit view" * doctes
         MESSAGE("level: exposure " << clights.level.exposure << ", brightness " << clights.level.brightness << ", ambient " << clights.ambient.x << " " << clights.ambient.y << " " << clights.ambient.z);
         double bd[17] = {}, bf[17] = {}, rOff[17] = {}, rOn[17] = {};
         size_t cnt[17] = {};
+        struct Splat { double depth; int x, y, half; float core, rt; };
+        std::vector<Splat> splat;
+        double absCoreFull[17] = {}, absRtFull[17] = {}, absCoreDirect[17] = {}, absRtDirect[17] = {};
+        size_t absCnt[17] = {};
         const size_t atlas = static_cast<size_t>(samples.atlas);
         for (size_t i = 0; i < samples.count(); ++i) {
             const core::Vec3 p{samples.pos[i * 4], samples.pos[i * 4 + 1], samples.pos[i * 4 + 2]}, n{samples.nrm[i * 4], samples.nrm[i * 4 + 1], samples.nrm[i * 4 + 2]};
@@ -1282,6 +1300,25 @@ TEST_CASE("Compare: the baked Lit view against the ray traced Lit view" * doctes
             const uint32_t px = std::min<uint32_t>(rt.width - 1, static_cast<uint32_t>((nx * 0.5 + 0.5) * rt.width));
             const uint32_t py = std::min<uint32_t>(rt.height - 1, static_cast<uint32_t>((ny * 0.5 + 0.5) * rt.height));
             const size_t pi = (static_cast<size_t>(py) * rt.width + px) * 4;
+            {   // the absolute shown brightness of the Core's compiled bake (lighting only: L * exposure + brightness) against the ray traced pixel, no filter but saturation
+                const uint32_t t0 = samples.texel[i];
+                const int pg = static_cast<int>(t0 / (atlas * atlas)), tx0 = static_cast<int>((t0 % (atlas * atlas)) % atlas), ty0 = static_cast<int>((t0 % (atlas * atlas)) / atlas);
+                const double cf = lum(full.at(pg, tx0, ty0)) * clights.level.exposure * 255.0 + shownBrightness;
+                const double cd = lum(direct.at(pg, tx0, ty0)) * clights.level.exposure * 255.0 + shownBrightness;
+                const double rf = 0.2126 * rtOn.rgba[pi] + 0.7152 * rtOn.rgba[pi + 1] + 0.0722 * rtOn.rgba[pi + 2];
+                const double rd = 0.2126 * rtOff.rgba[pi] + 0.7152 * rtOff.rgba[pi + 1] + 0.0722 * rtOff.rgba[pi + 2];
+                {   // the splat of the Core's texels: a square of one texel's projected size, nearest last
+                    const double ppm = 0.5 * rt.height * std::abs(vs.viewProj[1 * 4 + 1]) / q[3];
+                    const int half = std::clamp(static_cast<int>(std::lround(0.5 * ppm / 16.0)), 0, 8);
+                    splat.push_back({q[3], static_cast<int>(px), static_cast<int>(py), half, static_cast<float>(cf), static_cast<float>(rf)});
+                }
+                if (cf < 245.0 && rf < 245.0) {
+                    const size_t c = (py * 4 / rt.height) * 4 + (px * 4 / rt.width);
+                    for (const size_t k : {c, size_t{16}}) {
+                        absCoreFull[k] += cf; absRtFull[k] += rf; absCoreDirect[k] += cd; absRtDirect[k] += rd; ++absCnt[k];
+                    }
+                }
+            }
             {   // only where the two views agree on the direct light (the translucent cube is drawn unlit by the ray traced view)
                 const double lb = 0.2126 * baked.rgba[pi] + 0.7152 * baked.rgba[pi + 1] + 0.0722 * baked.rgba[pi + 2];
                 const double lr = 0.2126 * rtOff.rgba[pi] + 0.7152 * rtOff.rgba[pi + 1] + 0.0722 * rtOff.rgba[pi + 2];
@@ -1299,6 +1336,37 @@ TEST_CASE("Compare: the baked Lit view against the ray traced Lit view" * doctes
                 rOn[k] += std::max(0.0, 0.2126 * rtOn.rgba[pi] + 0.7152 * rtOn.rgba[pi + 1] + 0.0722 * rtOn.rgba[pi + 2] - shownBrightness);
                 ++cnt[k];
             }
+        }
+        {   // NATIVE_CMP_OUT + "_abs.png": Core compiled (texels splatted) | ray traced | ratio (green = equal, red = ray traced brighter, blue = darker)
+            std::sort(splat.begin(), splat.end(), [](const Splat& a, const Splat& b) { return a.depth > b.depth; });
+            QImage img(static_cast<int>(rt.width * 3), static_cast<int>(rt.height), QImage::Format_RGBA8888);
+            img.fill(QColor(0, 0, 0, 255));
+            const auto put = [&](int panel, int x, int y, int r, int g, int b) {
+                if (x < 0 || y < 0 || x >= static_cast<int>(rt.width) || y >= static_cast<int>(rt.height)) return;
+                uint8_t* px = img.scanLine(y) + (static_cast<size_t>(panel) * rt.width + x) * 4;
+                px[0] = static_cast<uint8_t>(r); px[1] = static_cast<uint8_t>(g); px[2] = static_cast<uint8_t>(b); px[3] = 255;
+            };
+            for (const Splat& s : splat)
+                for (int dy = -s.half; dy <= s.half; ++dy)
+                    for (int dx = -s.half; dx <= s.half; ++dx) {
+                        const int c = std::clamp(static_cast<int>(s.core), 0, 255), r = std::clamp(static_cast<int>(s.rt), 0, 255);
+                        const double ratio = (s.rt + 4.0) / (s.core + 4.0);
+                        const double lg = std::clamp(std::log2(ratio), -1.5, 1.5) / 1.5;   // -1 .. 1
+                        put(0, s.x + dx, s.y + dy, c, c, c);
+                        put(1, s.x + dx, s.y + dy, r, r, r);
+                        put(2, s.x + dx, s.y + dy, lg > 0 ? static_cast<int>(255 * lg) : 0, static_cast<int>(255 * (1.0 - std::abs(lg))), lg < 0 ? static_cast<int>(-255 * lg) : 0);
+                    }
+            const fs::path d = fs::path(NATIVE_CORE_ASSETS_DIR).parent_path().parent_path() / "native" / "build";
+            std::string name = env("NATIVE_CMP_OUT", "compare_bake_rt.png");
+            name = name.substr(0, name.rfind('.')) + "_abs.png";
+            img.save(QString::fromStdString((d / name).string()));
+        }
+        {
+            std::ostringstream a;
+            a << std::fixed << std::setprecision(2);
+            for (int c = 0; c < 16; ++c) a << (c % 4 == 0 ? "\n   " : " ") << (absCnt[c] > 50 && absCoreFull[c] > 1e-6 ? absRtFull[c] / absCoreFull[c] : 0.0);
+            MESSAGE("absolute shown brightness, ray traced / Core compiled bake (" << absCnt[16] << " visible texels): with bounces " << absRtFull[16] / absCoreFull[16] << " (core mean "
+                    << absCoreFull[16] / absCnt[16] << ", rt mean " << absRtFull[16] / absCnt[16] << "), direct only " << absRtDirect[16] / absCoreDirect[16] << "; per region with bounces:" << a.str());
         }
         std::ostringstream g;
         g << std::fixed << std::setprecision(2);

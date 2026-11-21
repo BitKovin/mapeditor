@@ -1,14 +1,6 @@
 // R6: bounce light, the part that needs the surface a gather ray hit: where it is, which way it faces, whether it takes part (its class has lightmaps), its albedo
 // (the texture at the hit point, as the bake's gatherCpu does). Included by rt_ao.comp and rt_sharc_update.comp after rt_light.glsl (needs `tlas`, P and rec).
-#extension GL_EXT_buffer_reference : require
-#extension GL_EXT_nonuniform_qualifier : require
-
-#ifndef TEX_SET
-#define TEX_SET 2
-#endif
-layout(set = TEX_SET, binding = 0) uniform sampler2D textures[];   // the texture table of the renderer (global texture indices are what the vertices carry)
-
-layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer WordBuf { uint w[]; };
+// (the texture table `textures[]`, `texMeta[]` and the WordBuf reference type are declared in rt_light.glsl, which the shadow rays need for translucent surfaces and cutouts)
 
 struct GiHit {
     bool valid;        // a surface that takes part

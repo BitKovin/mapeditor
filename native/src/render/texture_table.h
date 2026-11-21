@@ -65,6 +65,13 @@ public:
     // True when the texture at `index` blends (transparency mode translucent); false while it is not loaded. Render thread.
     bool translucent(uint32_t index) const { return meta_ && index < kMax && meta_[static_cast<size_t>(index) * 4] == 2.0f; }
 
+    // True when the texture at `index` lets light through or has holes (cutout or translucent); false while it is not loaded. Render thread.
+    bool alphaSurface(uint32_t index) const {
+        if (!meta_ || index >= kMax) return false;
+        const float mode = meta_[static_cast<size_t>(index) * 4];
+        return mode == 1.0f || mode == 2.0f;
+    }
+
     uint32_t assigned() const { return static_cast<uint32_t>(entries_.size()); }
     uint32_t loaded() const { return loaded_; }
     uint32_t failed() const { return failed_; }
@@ -83,7 +90,7 @@ private:
         uint32_t index = 0;
         int width = 0, height = 0;
         std::vector<std::vector<uint8_t>> mips;   // RGBA8, mip l is max(1, w >> l) x max(1, h >> l)
-        float meta[4] = {0, 0.5f, 1, 0};          // transparency mode (0 opaque, 1 cutout, 2 translucent), cutoff, opacity, has alpha
+        float meta[4] = {0, 0.5f, 1, 0};          // transparency mode (0 opaque, 1 cutout, 2 translucent), cutoff, opacity, 1 + tint
         bool ok = false;
     };
     void startLoad(uint32_t index, const std::string& name);
