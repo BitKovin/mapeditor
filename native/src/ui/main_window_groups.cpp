@@ -6,6 +6,7 @@
 #include "tools/texturing/face_edit.h"
 #include "ui/main_window.h"
 #include "ui/texgroup_editor.h"
+#include "ui/tileset_editor.h"
 
 namespace native::ui {
 
@@ -82,6 +83,23 @@ TexGroupEditor* MainWindow::openTexGroupEditor(const std::string& name, bool sho
         groupEditor_->raise();
     }
     return groupEditor_;
+}
+
+TileSetEditor* MainWindow::openTileSetEditor(const std::string& name, tools::tex::KitKind kind, bool show) {
+    if (tileSetEditor_) {
+        tileSetEditor_->close();
+        tileSetEditor_->deleteLater();
+        tileSetEditor_ = nullptr;
+    }
+    tileSetEditor_ = new TileSetEditor(*this, name, kind);
+    QObject::connect(tileSetEditor_, &QObject::destroyed, this, [this](QObject* o) {
+        if (o == tileSetEditor_) tileSetEditor_ = nullptr;
+    });
+    if (show) {
+        tileSetEditor_->show();
+        tileSetEditor_->raise();
+    }
+    return tileSetEditor_;
 }
 
 } // namespace native::ui

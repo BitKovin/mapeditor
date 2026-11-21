@@ -17,6 +17,7 @@
 #include "core/texplan.h"
 #include "ui/main_window.h"
 #include "ui/texgroup_editor.h"
+#include "ui/tileset_editor.h"
 
 namespace native::ui {
 
@@ -49,12 +50,20 @@ GroupsPanel::GroupsPanel(MainWindow& window, QWidget* parent) : QWidget(parent),
     newAdvanced_ = new QPushButton(QStringLiteral("New advanced group..."));
     newAdvanced_->setObjectName(QStringLiteral("btn:newAdvanced"));
     newAdvanced_->setToolTip(QStringLiteral("Start a rule group from a template"));
+    newWall_ = new QPushButton(QStringLiteral("New wall set..."));
+    newWall_->setObjectName(QStringLiteral("btn:newWall"));
+    newWall_->setToolTip(QStringLiteral("Pieces of a wall in rows: window, door, plain, rooftop"));
+    newFrame_ = new QPushButton(QStringLiteral("New 9-slice frame..."));
+    newFrame_->setObjectName(QStringLiteral("btn:newFrame"));
+    newFrame_->setToolTip(QStringLiteral("Corners, edges and middle from nine textures; edges and middle repeat"));
     auto* refresh = new QPushButton(QStringLiteral("Rescan"));
     refresh->setObjectName(QStringLiteral("btn:rescan"));
     refresh->setToolTip(QStringLiteral("Rescan the texture group folder"));
     count_ = new QLabel;
     count_->setObjectName(QStringLiteral("count"));
     bar->addWidget(search_, 1);
+    bar->addWidget(newWall_);
+    bar->addWidget(newFrame_);
     bar->addWidget(newAdvanced_);
     bar->addWidget(refresh);
     bar->addWidget(count_);
@@ -79,6 +88,8 @@ GroupsPanel::GroupsPanel(MainWindow& window, QWidget* parent) : QWidget(parent),
     connect(search_, &QLineEdit::textChanged, this, [this](const QString& t) { setQuery(t); });
     connect(refresh, &QPushButton::clicked, this, [this] { reload(); });
     connect(newAdvanced_, &QPushButton::clicked, this, [this] { win_.openTexGroupEditor({}); });
+    connect(newWall_, &QPushButton::clicked, this, [this] { win_.openTileSetEditor({}, tex::KitKind::Wall); });
+    connect(newFrame_, &QPushButton::clicked, this, [this] { win_.openTileSetEditor({}, tex::KitKind::Frame); });
     connect(list_, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) {
         pending_ = item->data(kPath).toString().toStdString();
         clickTimer_->start();   // a double click edits instead
@@ -106,7 +117,6 @@ GroupsPanel::GroupsPanel(MainWindow& window, QWidget* parent) : QWidget(parent),
     connect(&win_, &MainWindow::texGroupsChanged, this, [this] { reload(); });
     connect(&win_, &MainWindow::assetsRootChanged, this, [this] { reload(); });
     connect(&win_, &MainWindow::entityDefinitionsChanged, this, [this] { reload(); });
-    setTab(tex::GroupTab::Advanced);   // the Simple tab fills with the set editor (T11.4d)
     reload();
 }
 
@@ -171,8 +181,10 @@ void GroupsPanel::rebuild() {
     }
     count_->setText(QStringLiteral("%1 of %2").arg(names.size()).arg(mine));
     newAdvanced_->setVisible(tab_ == tex::GroupTab::Advanced);
+    newWall_->setVisible(tab_ == tex::GroupTab::Simple);
+    newFrame_->setVisible(tab_ == tex::GroupTab::Simple);
     empty_->setVisible(mine == 0);
-    empty_->setText(tab_ == tex::GroupTab::Simple ? QStringLiteral("No texture sets yet. Sets (wall pieces in rows, 9-slice frames) are made with the set editor.")
+    empty_->setText(tab_ == tex::GroupTab::Simple ? QStringLiteral("No texture sets yet. \"New wall set\" builds a wall from window, door, plain and rooftop pieces; \"New 9-slice frame\" builds a frame whose edges repeat.")
                                                    : QStringLiteral("No advanced groups. They are rule sets (splits, repeats, conditions): \"New advanced group\" starts from a template."));
 }
 
@@ -216,7 +228,14 @@ QImage GroupsPanel::render(const std::string& name) const {
 
 bool GroupsPanel::apply(const std::string& name) { return win_.applyTexGroup(name); }
 
-void GroupsPanel::edit(const std::string& name) { win_.openTexGroupEditor(name); }
+void GroupsPanel::edit(const std::string& name) {
+    for (const Entry& e : entries_)
+        if (e.name == name && e.tab == tex::GroupTab::Simple) {
+            win_.openTileSetEditor(name);   // a set opens in the set editor, a rule group in the text editor
+            return;
+        }
+    win_.openTexGroupEditor(name);
+}
 
 std::string GroupsPanel::duplicate(const std::string& name) {
     const auto raw = win_.texGroupRead(name);

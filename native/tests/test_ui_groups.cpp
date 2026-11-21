@@ -301,7 +301,8 @@ TEST_CASE("groups panel: two tabs by the kind of file, a search, thumbnails, app
     REQUIRE(p);
     p->reload();
     CHECK(p->entries().size() == 3);
-    CHECK(p->tab() == native::tools::tex::GroupTab::Advanced);
+    CHECK(p->tab() == native::tools::tex::GroupTab::Simple);
+    p->setTab(native::tools::tex::GroupTab::Advanced);
     CHECK(p->shown() == std::vector<std::string>{"bld/facade", "bld/panels"});
     p->setTab(native::tools::tex::GroupTab::Simple);
     CHECK(p->shown() == std::vector<std::string>{"sets/wall"});

@@ -62,7 +62,7 @@ private:
     QLabel* count_ = nullptr;
     QLabel* empty_ = nullptr;
     QListWidget* list_ = nullptr;
-    QPushButton* newAdvanced_ = nullptr;
+    QPushButton *newAdvanced_ = nullptr, *newWall_ = nullptr, *newFrame_ = nullptr;
     QTimer* clickTimer_ = nullptr;
     std::string pending_;
     mutable std::map<std::string, QImage> images_;   // decoded textures, until the next reload

@@ -41,6 +41,7 @@
 #include "tools/prefs.h"
 #include "tools/texturing/face_edit.h"
 #include "tools/texturing/ftt.h"
+#include "tools/texturing/tileset_edit.h"
 #include "tools/shapes.h"
 #include "exporting/launch.h"
 #include "tools/brush_edit.h"
@@ -116,6 +117,7 @@ class FttWindow;
 class TexturePropsDialog;
 class TexGroupEditor;
 class GroupsPanel;
+class TileSetEditor;
 
 // The faces the Fast Texture Tool edits: some faces (all, when a whole brush is selected) of one brush.
 struct FttTarget {
@@ -482,6 +484,8 @@ public:
     bool applyTexGroup(const std::string& name);                                          // to the selected faces / brushes; one undo step
     TexGroupEditor* openTexGroupEditor(const std::string& name, bool show = true);        // "" = a new group
     TexGroupEditor* groupEditor() const { return groupEditor_; }
+    TileSetEditor* openTileSetEditor(const std::string& name, tools::tex::KitKind kind = tools::tex::KitKind::Wall, bool show = true);   // "" = a new set of `kind`
+    TileSetEditor* tileSetEditor() const { return tileSetEditor_; }
 
     // ---- delete, duplicate, group, clipboard, hide (T4.3) ----
     // Each is one undo step on the selection (prefab-internal and face selections are left alone); false when refused or nothing to do (the status bar says why).
@@ -810,6 +814,7 @@ private:
     TexturePropsDialog* propsDialog_ = nullptr;
     TexGroupStore groupStore_;
     TexGroupEditor* groupEditor_ = nullptr;
+    TileSetEditor* tileSetEditor_ = nullptr;
     void rebuildTextureEnvironment();
     std::string originSel_;
     tools::HideState hide_;
