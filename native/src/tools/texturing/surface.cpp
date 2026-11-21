@@ -124,6 +124,10 @@ void refreshLookHash(core::BrushFace& f) {
 }
 
 core::BrushFace withProjection(const core::Brush& b, const core::BrushFace& f, const Projection& p) {
+    return withProjectionUvs(f, p, projectFace(b, f, p));
+}
+
+core::BrushFace withProjectionUvs(const core::BrushFace& f, const Projection& p, const std::vector<V2>& uvs) {
     core::BrushFace nf = f;
     json look = f.look && f.look->is_object() ? *f.look : json::object();
     look["projection"] = projectionJson(p);
@@ -134,7 +138,7 @@ core::BrushFace withProjection(const core::Brush& b, const core::BrushFace& f, c
     nf.projection.shiftV = p.shift[1];
     nf.projection.rotate = p.rotate;
     nf.uvs.clear();
-    for (const V2& uv : projectFace(b, f, p)) nf.uvs.push_back({uv[0], uv[1]});
+    for (const V2& uv : uvs) nf.uvs.push_back({uv[0], uv[1]});
     refreshLookHash(nf);
     return nf;
 }

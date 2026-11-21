@@ -36,6 +36,8 @@ V2 placedCoords(const V3& n, const V3& q, const Projection& p);
 std::vector<V2> projectFace(const core::Brush& b, const core::BrushFace& f, const Projection& p);
 /// The face with projection `p`: `look.projection` and the typed projection are set and `uvs` hold the result (so Core and the exporters never need the projection).
 core::BrushFace withProjection(const core::Brush& b, const core::BrushFace& f, const Projection& p);
+/// The same with the corner UVs given (they may be a map that is not exactly the projection's, e.g. unfolded by Flow); `p` is stored so the inspector can edit the face.
+core::BrushFace withProjectionUvs(const core::BrushFace& f, const Projection& p, const std::vector<V2>& uvs);
 /// Recomputes BrushFace::lookHash from the face's `look` and `uvs` (what the loader does), after anything of them changed.
 void refreshLookHash(core::BrushFace& f);
 
