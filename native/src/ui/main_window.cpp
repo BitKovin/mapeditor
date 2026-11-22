@@ -105,6 +105,14 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
 
     ads::CDockManager::setConfigFlag(ads::CDockManager::OpaqueSplitterResize, true);
     ads::CDockManager::setConfigFlag(ads::CDockManager::FocusHighlighting, false);
+    // The look of the docking chrome comes from ui/theme (dockStyleSheet, part of the application style sheet): the system's own style sheet is off, and an area keeps no
+    // close / float / tab-list buttons (a panel is closed from its tab's menu or View, floated by dragging its tab): 14_UI_REDESIGN.md section 9.2.
+    ads::CDockManager::setConfigFlag(ads::CDockManager::DisableStylesheet, true);
+    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasCloseButton, false);
+    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasUndockButton, false);
+    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasTabsMenuButton, false);
+    ads::CDockManager::setConfigFlag(ads::CDockManager::ActiveTabHasCloseButton, false);
+    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHideDisabledButtons, true);
     dockManager_ = new ads::CDockManager(this);   // becomes the central widget
 
     statsDock_ = new ads::CDockWidget(dockManager_, QStringLiteral("Stats"));

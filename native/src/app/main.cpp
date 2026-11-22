@@ -101,7 +101,7 @@ int main(int argc, char** argv) {
     services.rtLit = parsed.options.rtLit;
     services.vulkanInstance = &vulkanInstance;
     services.settings = screenshotRun ? nullptr : &layoutSettings;
-    if (!screenshotRun) native::ui::applyAppearance(native::ui::readAppearance(&layoutSettings));
+    native::ui::applyAppearance(native::ui::readAppearance(screenshotRun ? nullptr : &layoutSettings));   // a screenshot run shows the default look
     services.forceViewports = parsed.options.layoutViewports;
     services.watchInput = true;
     native::ui::setInputLogging(parsed.options.logInput);

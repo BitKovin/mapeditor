@@ -279,7 +279,7 @@ like the key help overlay, because viewports are native windows). It shows for 4
 dismissed for errors, and every notification also goes to the Messages drawer. It is used for load / save / export results,
 validation refusals and "texture not found". `QMessageBox` stays only where a decision is needed (unsaved changes, overwrite).
 
-### 6.7 Empty state and the game folder
+### 6.7 Game folder (the start page was dropped by the user, 2026-11-22)
 
 With no map open, the central area shows a start page instead of an empty grid: **New map**, **Open map…**, the recent maps
 (thumbnails when a screenshot exists next to the map), and the **game folder** with a "Change…" button. Opening a map that lies
@@ -427,7 +427,7 @@ stroke style, stored in `native/assets/icons/*.svg` and compiled into a Qt resou
 
 ### 9.4 Viewport text
 
-Entity name labels draw only for the selected and hovered entity, and for the others within 8 m of the camera, fading out
+**Approved by the user.** Entity name labels draw only for the selected and hovered entity, and for the others within 8 m of the camera, fading out
 between 6 and 8 m. A `Show ▾ › Names: All / Near / Selected` choice sets this. This touches the label overlay in `render/`, so
 it needs the user's yes (§11). Until then the default of the existing names toggle is set to "selected only", which needs no
 renderer change if the toggle already filters by selection; otherwise it waits.
@@ -449,12 +449,12 @@ Order: the visual foundation first (it touches every later screenshot), then the
 | **T14.6** Browser panel | one panel with a view switch (Textures, Shapes, Entities, Prefabs, Decals, Models, Groups), one search field; click applies (§8.5); Recent row; Ctrl+wheel size | `ui/browser_panel.{h,cpp}` from `PlacePanel`, `TextureBrowserPanel`, `GroupsPanel` | GUI: click applies to selected faces as one undo step; Ctrl+click does not apply; the search filters each view; drag-spawn (T13.4) still works |
 | **T14.7** Default layout + drawer + status fields | the §6.1 arrangement with relative sizes; Messages / History / Lighting / Stats in the bottom auto-hide bar; clickable status fields; `kStateVersion` bump; View › Reset layout | `main_window.cpp`, `main_window_panels.cpp`, `status_bar.cpp` | GUI: G1 and G2 at 1280×800 and 1920×1080; an old saved state is ignored once (G8) |
 | **T14.8** Notifications | toast overlay + Messages; replace non-decision `QMessageBox` calls | `ui/notifications.{h,cpp}`, callers | GUI: opening a non-map JSON shows a toast and no modal (G5) |
-| **T14.9** Start page + game folder | empty state, recent maps, game folder change, the "map outside game folder" offer | `ui/start_page.{h,cpp}`, `main_window_document.cpp` | GUI: no map → start page; opening a map from another `maps/` folder offers the switch |
+| **T14.9** Game folder | clickable game-folder status field, the "map outside game folder" offer, a notification instead of a modal when a file is not a map | `status_bar.cpp`, `main_window_document.cpp` | GUI: opening a map from another `maps/` folder offers the switch |
 | **T14.10** Context menu + Add popup | sectioned, selection-aware RMB menu (§6.8); `Shift+A` Add popup (§8.4) with recent items | `tools/context_menu.cpp`, `ui/add_popup.{h,cpp}` | Unit: menu sections per selection kind; GUI: Add creates on the surface under the pointer and selects it |
 | **T14.11** Viewport gestures | MMB texture pick / paste family (§8.1), tunnel select (§8.2), maximise (§8.3), `Alt+RMB` orbit around point | `main_window_texture.cpp`, select code, `main_window.cpp`, keymap | GUI per gesture; a paste drag is one undo step; keymap tests updated |
 | **T14.12** Toolbar customisation + polish | right-click "Customise toolbar…", saved per user; final screenshot pass of every panel for truncation and spacing | `ui/main_toolbar.cpp`, settings | GUI: a customised toolbar survives a restart |
-| *(ask)* T14.13 Label decluttering | §9.4 distance / selection rule for entity names | `render/` overlay | needs the user's yes |
-| *(ask)* T14.14 Zoom to pointer | §8.6 wheel dolly toward the cursor | `render/camera` rig | needs the user's yes |
+| T14.13 Label decluttering (approved) | §9.4 distance / selection rule for entity names | `render/` overlay | unit test of the label rule |
+| T14.14 Zoom to pointer (approved) | §8.6 wheel dolly toward the cursor | `render/camera` rig | unit test: the point under the cursor stays under it |
 
 The existing 49 GUI cases keep passing after each task (tests that address a panel by its old dock name get a helper that
 finds the section inside Properties / Browser). `13_CUTOVER_CHECKLIST.md` gets a line per task where it changes how a
@@ -462,7 +462,13 @@ REQUIREMENTS item is reached.
 
 ---
 
-## 11. Decisions for the user
+## 11. Decisions
+
+**Answered 2026-11-22: all proposed defaults accepted ("all yes"), except the start page, which is dropped.** So: box select stays
+(NRC drag-to-draw as a setting), MMB texture gestures yes, Shift+LMB stays face select, all four drawer panels auto-hide, both
+renderer items (labels, zoom to pointer) yes, Lucide + own icons, no start page (§6.7 is cancelled, T14.9 shrinks to the
+game-folder status field and the "map outside the game folder" offer), the UV lock button is added, the look comes first.
+The questions are kept below for the record.
 
 1. **Empty-space LMB drag in the Select tool**: box select (today, UE / Blender) or *draw a brush* (NetRadiant-custom)?
    Proposal: keep box select as the default and offer the NRC behaviour as a preference.
