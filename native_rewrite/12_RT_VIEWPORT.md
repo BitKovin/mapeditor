@@ -185,8 +185,8 @@ directions (§9). Camera motion never resets anything (it only reprojects).
 - **Translucent surfaces** (blended pass, no G-buffer, so no accumulation): the fragment shader reads the cache `S` for the indirect part
   and evaluates the direct light of at most 4 strongest lights of its grid cell with one ray-query shadow test each (centre of the light).
   Noise-free and approximate; translucent faces are rare.
-- **Models** (prefab / model entities): lit per pixel like brushes (better than the game, which lights them from the light volume,
-  DESIGN §6.7). A later option "Game look for models" samples the light volume instead.
+- **Models** (prefab / model entities) and **brush entities of classes without lightmaps** (doors, lifts): lit from the light volume like the game does (T10.1, 06_LIGHTING.md §11), one value
+  per entity; per pixel lighting made them look different from the game's map (the user's report). The G-buffer pass writes their finished colour, the compose pass shows it.
 - **Classes without lightmaps** and sky faces: as now (unlit / sky shading).
 
 ## 9. Correctness tests and gates

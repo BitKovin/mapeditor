@@ -44,6 +44,7 @@
 
 namespace native::render {
 
+struct EntityLightTable;
 class ScenePass;
 class MeshPass;
 class TextureTable;
@@ -155,6 +156,8 @@ public:
     void setRtLights(std::shared_ptr<const RtLightData> lights);
     // Which objects receive baked light (shadows show on them) and which block light: render/rt_lights.h makeRtRules. Null = all objects do both.
     void setObjectRules(std::shared_ptr<const ObjectRules> rules);
+    // The light volume's values for brush entities without lightmaps and for models (T10.1, render/entity_lights.h): lit by them like the game does. Null = none (the flat look).
+    void setEntityLights(std::shared_ptr<const EntityLightTable> table);
     struct RtLitInfo {
         bool active = false;                   // the last frame of the viewport was drawn by the ray traced path
         bool reconstruction = false;           // ... with DLSS Ray Reconstruction

@@ -19,9 +19,11 @@ layout(location = 6) in vec4 aM3;
 
 layout(location = 0) out vec3 vN;
 layout(location = 1) out vec2 vUv;
+layout(location = 2) flat out uint vLight;   // the entry of the light volume's value for this entity (0 = none): stored in the unused w of the first matrix column
 
 void main() {
-    mat4 m = mat4(aM0, aM1, aM2, aM3);
+    vLight = uint(aM0.w + 0.5);
+    mat4 m = mat4(vec4(aM0.xyz, 0.0), aM1, aM2, aM3);
     gl_Position = pc.viewProj * (m * vec4(aPos, 1.0));
     mat3 m3 = mat3(m);
     vN = transpose(inverse(m3)) * aNormal;   // right for non-uniform scales and mirrors too

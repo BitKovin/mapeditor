@@ -6,6 +6,7 @@
 #include <set>
 
 #include "base/log.h"
+#include "render/entity_lights.h"
 #include "render/frustum.h"
 
 namespace native::render {
@@ -48,6 +49,12 @@ void ModelRenderer::setScene(std::shared_ptr<const ModelScene> scene) {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_ = std::move(scene);
     hasPending_ = true;
+}
+
+void ModelRenderer::setEntityLights(std::shared_ptr<const EntityLightTable> table) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pendingLights_ = std::move(table);
+    hasPendingLights_ = true;
 }
 
 ModelRenderer::Stats ModelRenderer::stats() const {
@@ -123,6 +130,28 @@ void ModelRenderer::sync(gpu::UploadRing& ring, uint64_t completed, uint64_t sub
             scene_ = std::move(pending_);
             hasPending_ = false;
             ++changes_;
+            lightsMatch_ = false;
+            matchLights_ = true;
+        }
+        if (hasPendingLights_) {
+            lights_ = std::move(pendingLights_);
+            hasPendingLights_ = false;
+            ++changes_;
+            matchLights_ = true;
+        }
+    }
+    if (matchLights_) {   // the table is for these placements (the same scene, or one with the same models at the same places: a hide toggle or a prefab edit elsewhere rebuilds the scene)
+        matchLights_ = false;
+        lightsMatch_ = false;
+        if (lights_ && lights_->forScene && scene_) {
+            const ModelScene& a = *lights_->forScene;
+            const ModelScene& b = *scene_;
+            lightsMatch_ = lights_->forScene == scene_;
+            if (!lightsMatch_ && a.placements.size() == b.placements.size()) {
+                lightsMatch_ = true;
+                for (size_t i = 0; i < a.placements.size() && lightsMatch_; ++i)
+                    lightsMatch_ = a.placements[i].model == b.placements[i].model && a.placements[i].matrix == b.placements[i].matrix;
+            }
         }
     }
     for (size_t i = 0; i < retired_.size();) {
@@ -210,7 +239,11 @@ void ModelRenderer::buildDraws(const Mat4& viewProj, gpu::UploadRing& ring, Mode
         const gpu::UploadRing::Allocation inst = ring.allocate(VkDeviceSize(visible.size()) * kModelInstanceBytes, 16);
         if (!inst.ok()) return;
         float* m = static_cast<float*>(inst.data);
-        for (size_t k = 0; k < visible.size(); ++k) std::memcpy(m + k * 16, scene_->placements[visible[k]].matrix.data(), kModelInstanceBytes);
+        const EntityLightTable* lights = lightsMatch_ ? lights_.get() : nullptr;
+        for (size_t k = 0; k < visible.size(); ++k) {
+            std::memcpy(m + k * 16, scene_->placements[visible[k]].matrix.data(), kModelInstanceBytes);
+            m[k * 16 + 3] = lights && visible[k] < lights->models.size() ? static_cast<float>(lights->models[visible[k]]) : 0.0f;   // the unused w of the first column: model.vert reads the entry from it
+        }
         ring.flush(inst);
         for (size_t i = 0; i < g.gpu->prims.size(); ++i) {
             const Prim& pr = g.gpu->prims[i];

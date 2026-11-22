@@ -136,7 +136,7 @@ TextureTable::TextureTable(gpu::Device& device) : device_(device) {
     vkCreateSampler(dev, &sci, nullptr, &sampler_);
 
     VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bci.size = sizeof(float) * 4 * kMax;
+    bci.size = sizeof(float) * 4 * (kMax + 3 * kEntityLightMax);
     bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     VmaAllocationCreateInfo aci{};
     aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
@@ -144,7 +144,7 @@ TextureTable::TextureTable(gpu::Device& device) : device_(device) {
     VmaAllocationInfo info{};
     vmaCreateBuffer(device_.allocator(), &bci, &aci, &metaBuffer_, &metaAllocation_, &info);
     meta_ = static_cast<float*>(info.pMappedData);
-    if (meta_) std::memset(meta_, 0, sizeof(float) * 4 * kMax);
+    if (meta_) std::memset(meta_, 0, sizeof(float) * 4 * (kMax + 3 * kEntityLightMax));
     VkDescriptorBufferInfo mbi{metaBuffer_, 0, VK_WHOLE_SIZE};
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet = set_;
@@ -157,6 +157,14 @@ TextureTable::TextureTable(gpu::Device& device) : device_(device) {
     entries_.reserve(256);
     entries_.push_back(Entry{});   // 0: the placeholder
     makePlaceholder();
+}
+
+void TextureTable::setEntityLights(const float* data, uint32_t entries) {
+    if (!meta_) return;
+    entries = std::min(entries, kEntityLightMax);
+    float* dst = meta_ + static_cast<size_t>(kMax) * 4;
+    if (entries != 0 && data) std::memcpy(dst, data, sizeof(float) * 12 * entries);
+    std::memset(dst + static_cast<size_t>(entries) * 12, 0, sizeof(float) * 12 * (kEntityLightMax - entries));
 }
 
 TextureTable::~TextureTable() {

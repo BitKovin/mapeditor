@@ -35,6 +35,8 @@
 
 namespace native::render {
 
+struct EntityLightTable;
+
 struct DrawList {
     VkBuffer buffer = VK_NULL_HANDLE;   // the upload ring's buffer
     VkDeviceSize offset = 0;
@@ -65,6 +67,7 @@ struct SceneStats {
 // The lighting rules of an object (the game profile's classes, core::LightingClasses): bit 0 = receives baked light (shows shadows), bit 1 = blocks light (casts shadows).
 // Objects without an entry in the rules have both. The draw's firstInstance carries the bits to the shaders.
 constexpr uint32_t kObjReceives = 1, kObjCasts = 2;
+constexpr uint32_t kObjEntityShift = 8;   // bits 8 and up of the draw's firstInstance: the entry of the light volume's value of the object's entity (0 = none), see EntityLightTable
 constexpr uint32_t kObjAlpha = 8;   // ray tracing only (RtObject::flags): a texture of the object has holes or lets light through; its instance is not forced opaque, the shadow rays look at the texels
 
 struct RtObject {
@@ -95,6 +98,8 @@ public:
     void setHidden(std::shared_ptr<const HiddenObjects> hidden);
     // The lighting rules per object (kObjReceives / kObjCasts); null = every object has both. Takes effect at the next sync.
     void setRules(std::shared_ptr<const ObjectRules> rules);
+    // The light volume's entries of the brush entities that are not lightmapped (T10.1): the entry of an object goes into bits 8 and up of its firstInstance (mesh.frag reads it); null = none.
+    void setEntityLights(std::shared_ptr<const EntityLightTable> table);
     // The lit copies of the objects' meshes (light/lit_mesh), made for the live layout; an object whose mesh is not the one its copy was made from keeps its plain
     // mesh. null = none. Takes effect at the next sync.
     void setLit(std::shared_ptr<const light::LitSet> lit);
@@ -160,6 +165,8 @@ private:
     std::shared_ptr<const HiddenObjects> hidden_;
     std::shared_ptr<const ObjectRules> pendingRules_, rules_;
     bool rulesPending_ = false;
+    std::shared_ptr<const EntityLightTable> pendingEntityLights_, entityLights_;
+    bool entityLightsPending_ = false;
     std::shared_ptr<const light::LitSet> pendingLit_, lit_;
     bool litPending_ = false;
 

@@ -25,6 +25,8 @@
 
 namespace native::render {
 
+struct EntityLightTable;
+
 class ModelRenderer {
 public:
     ModelRenderer(gpu::Device& device, TextureTable& textures);
@@ -34,6 +36,9 @@ public:
 
     /// The placements to draw (any thread); takes effect at the next sync. Null = none.
     void setScene(std::shared_ptr<const ModelScene> scene);
+    // The light volume's entries of the placements (T10.1; entity_lights.h): a model whose entry is not 0 is lit by it (model.frag). A table made for another set of placements than
+    // the scene's is ignored; null = none.
+    void setEntityLights(std::shared_ptr<const EntityLightTable> table);
 
     /// Render thread, inside the iteration's upload frame: takes the pending scene, makes the GPU buffers of new models, retires the unused ones, poses the animated models at
     /// `seconds`. `completed` / `submitted` = the timeline values, as GpuScene::sync.
@@ -86,6 +91,10 @@ private:
     std::mutex mutex_;
     std::shared_ptr<const ModelScene> pending_;
     bool hasPending_ = false;
+    std::shared_ptr<const EntityLightTable> pendingLights_, lights_;
+    bool hasPendingLights_ = false;
+    bool matchLights_ = false;
+    bool lightsMatch_ = false;   // `lights_` was made for the placements of `scene_`
 
     std::shared_ptr<const ModelScene> scene_;
     std::map<const scene::LoadedModel*, std::unique_ptr<GpuModel>> models_;

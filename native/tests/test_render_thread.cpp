@@ -22,6 +22,7 @@
 
 #include "gpu/device.h"
 #include "render/camera_rig.h"
+#include "render/entity_lights.h"
 #include "render/model_scene.h"
 #include "render/render_thread.h"
 #include "model_builder.h"
@@ -754,6 +755,98 @@ TEST_CASE("a placed model is drawn through the viewport and leaves with its scen
             const auto after = rt.capture(id);
             REQUIRE(after.ok());
             CHECK(closeTo(pixel(after, 160, 120), {108, 108, 142}, 8));
+            rt.removeViewport(id);
+        }
+        vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);
+    }
+    CHECK(gpuFx.device->validationErrors() == 0);
+    std::error_code ec;
+    fs::remove_all(root, ec);
+}
+
+// T10.1: a model is lit by the light volume's value of its entity (ambient + directed * max(0, n . dir)), like the game, in the lit modes: a table with a green ambient makes the triangle
+// green, the flat look (no table, or a table made for other placements) stays grey, and a table for another scene with the same placements still counts.
+TEST_CASE("a model takes the light volume's value of its entry in the lit modes" * doctest::test_suite("gpu")) {
+    GpuFixture gpuFx;
+    if (!gpuFx.device) return;
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("model_light_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(root / "models");
+    {
+        modeltest::Builder b;
+        const int pos = b.floats({-1, 0, 2, 1, 0, 2, -1, 4, 2}, "VEC3");
+        using nlohmann::json;
+        const json g = b.document({{"meshes", json::array({json{{"primitives", json::array({json{{"attributes", {{"POSITION", pos}}}}})}}})}, {"nodes", json::array({json{{"mesh", 0}}})}});
+        const std::vector<uint8_t> bytes = b.glb(g);
+        std::ofstream(root / "models/tri.glb", std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    scene::ModelStore store;
+    store.setSource(root, nullptr, {});
+    const auto slot = store.get("models/tri.glb");
+    REQUIRE(slot.model);
+    const auto sceneOf = [&] {
+        auto models = std::make_shared<render::ModelScene>();
+        render::ModelPlacement placement;
+        placement.model = slot.model;
+        placement.matrix = native::scene::modelMatrix({0, 0, 0}, {0, 0, 0}, {1, 1, 1});
+        placement.bounds = slot.model->data.bounds;
+        placement.bounds.min = {-1, 0, 2};
+        placement.bounds.max = {1, 4, 2};
+        models->placements.push_back(placement);
+        return models;
+    };
+    const auto models = sceneOf();
+    const auto tableFor = [&](const std::shared_ptr<const render::ModelScene>& forScene, float r, float g, float b) {
+        auto t = std::make_shared<render::EntityLightTable>();
+        t->data = {r, g, b, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f};   // ambient, no directed light, dir up
+        t->models = {1};
+        t->forScene = forScene;
+        return std::shared_ptr<const render::EntityLightTable>(t);
+    };
+    {
+        TestWindow window(320, 240);
+        VkSurfaceKHR surface = gpuFx.makeSurface(window.hwnd());
+        {
+            render::RenderThread rt(*gpuFx.device);
+            const auto id = rt.addViewport(surface, 320, 240);
+            render::ViewState view = frontView(320, 240);
+            view.renderMode = 1;   // Lit: the models have no lightmap, so without a table they are drawn dimmed
+            rt.setView(id, view);
+            rt.setModels(models);
+            const Rgb flat = pixel(rt.capture(id), 160, 120);
+            CHECK(std::abs(flat.r - flat.g) <= 6);   // grey
+            CHECK(flat.r > 40);
+
+            rt.setEntityLights(tableFor(models, 0.f, 0.8f, 0.f));
+            const Rgb green = pixel(rt.capture(id), 160, 120);
+            CHECK(green.g > 170);
+            CHECK(green.r < 30);
+            CHECK(green.b < 30);
+
+            // the scene is rebuilt with the same model at the same place (a hide toggle elsewhere): the entry still counts
+            rt.setModels(sceneOf());
+            const Rgb again = pixel(rt.capture(id), 160, 120);
+            CHECK(again.g > 170);
+
+            // a table for other placements is ignored: back to the flat look
+            auto other = std::make_shared<render::ModelScene>();
+            rt.setEntityLights(tableFor(other, 0.f, 0.8f, 0.f));
+            const Rgb ignored = pixel(rt.capture(id), 160, 120);
+            CHECK(std::abs(ignored.r - ignored.g) <= 6);
+
+            // Lighting only shows the light alone: the same green, whatever the albedo
+            rt.setEntityLights(tableFor(sceneOf(), 0.f, 0.8f, 0.f));
+            view.renderMode = 2;
+            rt.setView(id, view);
+            const Rgb only = pixel(rt.capture(id), 160, 120);
+            CHECK(only.g > 170);
+            CHECK(only.r < 30);
+
+            // the Unlit mode ignores it
+            view.renderMode = 0;
+            rt.setView(id, view);
+            const Rgb unlit = pixel(rt.capture(id), 160, 120);
+            CHECK(std::abs(unlit.r - unlit.g) <= 6);
             rt.removeViewport(id);
         }
         vkDestroySurfaceKHR(gpuFx.device->instance(), surface, nullptr);

@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "base/log.h"
+#include "render/entity_lights.h"
 #include "render/frustum.h"
 
 namespace native::render {
@@ -51,6 +52,12 @@ void GpuScene::setHidden(std::shared_ptr<const HiddenObjects> hidden) {
     std::lock_guard<std::mutex> lock(mutex_);
     pendingHidden_ = std::move(hidden);
     hiddenPending_ = true;
+}
+
+void GpuScene::setEntityLights(std::shared_ptr<const EntityLightTable> table) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pendingEntityLights_ = std::move(table);
+    entityLightsPending_ = true;
 }
 
 void GpuScene::setRules(std::shared_ptr<const ObjectRules> rules) {
@@ -190,6 +197,12 @@ bool GpuScene::sync(VkCommandBuffer cmd, gpu::UploadRing& ring, uint64_t complet
             rulesPending_ = false;
             drawsDirty_ = true;
         }
+        if (entityLightsPending_) {
+            entityLights_ = std::move(pendingEntityLights_);
+            pendingEntityLights_.reset();
+            entityLightsPending_ = false;
+            drawsDirty_ = true;
+        }
     }
     if (next) current_ = next;
     if ((next || relit) && current_) {
@@ -294,6 +307,11 @@ void GpuScene::rebuildDraws() {
             const auto r = rules_->find(key);
             if (r != rules_->end()) flags = r->second;
         }
+        const uint32_t rtFlagsBase = flags;   // the lighting rules without the entity's entry: the ray tracing side never sees it (it would restart the light on every probe update)
+        if (entityLights_ && (flags & kObjReceives) == 0) {
+            const auto it = entityLights_->brush.find(scene::ObjectKey{key.instance, key.entityId, ""});
+            if (it != entityLights_->brush.end()) flags |= it->second << kObjEntityShift;
+        }
         Draw d{};
         d.cmd.indexCount = o.indexCount;
         d.cmd.instanceCount = 1;
@@ -305,7 +323,7 @@ void GpuScene::rebuildDraws() {
         d.textures = &o.textures;
         draws_.push_back(d);
         if (!o.volume) {
-            uint32_t rtFlags = flags;
+            uint32_t rtFlags = rtFlagsBase;
             for (uint32_t t : o.textures)
                 if (textures_.alphaSurface(t)) {
                     rtFlags |= kObjAlpha;

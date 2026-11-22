@@ -33,6 +33,10 @@ namespace native::render {
 class TextureTable {
 public:
     static constexpr uint32_t kMax = 4096;
+    // The light volume's values for brush entities and models (T10.1) follow the textures' meta in the same buffer: entry e (1 based) is three vec4 (ambient, directed, dir) at vec4 kMax + 3 (e - 1);
+    // the shaders (mesh.frag, model.frag: ENTITY_META) read them there. `data` = 12 floats an entry; the rest is cleared.
+    static constexpr uint32_t kEntityLightMax = 8192;
+    void setEntityLights(const float* data, uint32_t entries);
 
     explicit TextureTable(gpu::Device& device);
     ~TextureTable();   // the GPU must be idle

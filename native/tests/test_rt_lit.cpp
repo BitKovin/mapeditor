@@ -11,6 +11,7 @@
 #include "scene/snapshot.h"   // first: core headers use `near` as a name, which windows.h (via volk) defines as a macro
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -40,14 +41,17 @@
 #include "doc/io.h"
 #include "doc/prefabs.h"
 #include "gpu/device.h"
+#include "light/entity_probes.h"
 #include "light/light_link.h"
 #include "light/lighting_service.h"
 #include "render/camera_rig.h"
+#include "render/entity_lights.h"
 #include "render/render_thread.h"
 #include "render/rt_lights.h"
 #include "scene/builder.h"
 #include "scene/render_mesh.h"
 
+#include <core/lighting_classes.h>
 #include <core/profile.h>
 #include <core/albedo.h>
 #include <core/lightbake.h>
@@ -1726,6 +1730,94 @@ TEST_CASE("Unlit: translucent surfaces show their front faces only (backface cul
     MESSAGE("glass region (rgb): culled " << cr << " " << cg << " " << cb << ", two sided " << br << " " << bg << " " << bb);
     // two layers of glass hide more of what is behind than one
     CHECK(std::abs(cr - br) + std::abs(cg - bg) + std::abs(cb - bb) > 6.0);
+    CHECK(f.device->validationErrors() == 0);
+}
+
+// T10.1: the entities the game lights from its light volume (brush entities of classes without lightmaps, models) take the volume's value in the G-buffer pass; the compose pass shows it
+// as it is. A table that gives the door a red ambient and one that gives it a blue ambient show a red and a blue door; no table keeps the flat look.
+TEST_CASE("RT Lit: a brush entity without lightmaps is lit by the light volume's value (ambient + directed * max(0, n . dir)), not shown flat" * doctest::test_suite("gpu")) {
+    Fixture f;
+    if (!f.start(480, 300)) return;
+    const auto profile = std::make_shared<core::GameProfile>(core::loadProfile(f.root));
+    const core::LightingClasses classes = core::LightingClasses::fromProfile(*profile);
+    light::EntityProbeInputs in;
+    in.snapshot = f.snapshot;
+    in.profile = profile;
+    in.assetsRoot = f.root;
+    const light::EntityProbes probes = light::bakeEntityProbes(in);
+    REQUIRE(probes.error.empty());
+    const light::BrushEntityLight* door = nullptr;
+    for (const light::BrushEntityLight& e : probes.brushEntities)
+        if (e.key.entityId == "e_902c5c0f") door = &e;
+    if (!door || classes.isLightmapped("func_door")) { MESSAGE("demo_lit has no unlit-class door: skipped"); return; }
+    f.rt->setRtLighting(render::rtLightingOf(*f.snapshot->doc));
+    f.rt->setObjectRules(render::makeRtRules(*f.snapshot, classes));
+    f.rt->setRtLit(true, options(16));
+    REQUIRE(f.shot().width == f.w);
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+    // look at the door from the room
+    const double c[3] = {door->centre[0], door->centre[1], door->centre[2]};
+    f.rig.fly().lookAt({c[0] + 0.0, c[1] + 0.2, c[2] + 4.0}, {c[0], c[1], c[2]});
+    const auto tableOf = [&](float amb[3], float dir[3], float directed[3]) {
+        light::EntityProbes p = probes;
+        for (light::BrushEntityLight& e : p.brushEntities) {
+            e.light.valid = true;
+            for (int k = 0; k < 3; ++k) {
+                e.light.ambient[k] = amb[k];
+                e.light.directed[k] = directed[k];
+                e.light.dir[k] = dir[k];
+            }
+        }
+        return render::makeEntityLightTable(p, nullptr);
+    };
+    const auto shotAt = [&](const std::shared_ptr<const render::EntityLightTable>& t) {
+        f.rt->setEntityLights(t);
+        f.cut++;
+        f.shot();
+        for (int i = 0; i < 3; ++i) f.shot();
+        return f.shot();
+    };
+    const render::ViewState vs = f.view();
+    // the pixel the door's centre projects to
+    const auto project = [&](double x, double y, double z, double& px, double& py) {
+        const double* m = vs.viewProj.data();
+        const double cx = m[0] * x + m[4] * y + m[8] * z + m[12], cy = m[1] * x + m[5] * y + m[9] * z + m[13], cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+        px = (cx / cw * 0.5 + 0.5) * f.w;
+        py = (cy / cw * 0.5 + 0.5) * f.h;   // flipped below when the image is read
+    };
+    double px = 0, py = 0;
+    project(c[0], c[1], c[2], px, py);
+    MESSAGE("door centre " << c[0] << "," << c[1] << "," << c[2] << " -> pixel " << px << "," << py);
+    float red[3] = {1, 0, 0}, blue[3] = {0, 0, 1}, none[3] = {0, 0, 0}, up[3] = {0, 1, 0};
+    const render::CapturedImage flat = shotAt(nullptr);
+    const render::CapturedImage asRed = shotAt(tableOf(red, up, none));
+    const render::CapturedImage asBlue = shotAt(tableOf(blue, up, none));
+    REQUIRE(flat.ok());
+    REQUIRE(asRed.ok());
+    REQUIRE(asBlue.ok());
+    savePng(flat, "entity_light_flat.png");
+    savePng(asRed, "entity_light_red.png");
+    savePng(asBlue, "entity_light_blue.png");
+    const auto at = [&](const render::CapturedImage& img, int x, int y) {
+        x = std::clamp(x, 0, static_cast<int>(img.width) - 1);
+        y = std::clamp(y, 0, static_cast<int>(img.height) - 1);
+        const size_t i = (static_cast<size_t>(y) * img.width + x) * 4;
+        return std::array<int, 3>{img.rgba[i], img.rgba[i + 1], img.rgba[i + 2]};
+    };
+    // how much of the picture turned red / blue: the door's faces (the only surfaces whose light changed)
+    long redPixels = 0, bluePixels = 0, changed = 0;
+    for (uint32_t y = 0; y < asRed.height; ++y)
+        for (uint32_t x = 0; x < asRed.width; ++x) {
+            const auto r = at(asRed, static_cast<int>(x), static_cast<int>(y)), b = at(asBlue, static_cast<int>(x), static_cast<int>(y)), fl = at(flat, static_cast<int>(x), static_cast<int>(y));
+            if (r != fl) ++changed;
+            if (r[0] > 120 && r[1] < 20 && r[2] < 20) ++redPixels;
+            if (b[2] > 120 && b[0] < 20 && b[1] < 20) ++bluePixels;
+        }
+    MESSAGE("pixels: red door " << redPixels << ", blue door " << bluePixels << ", changed against flat " << changed);
+    CHECK(redPixels > 50);
+    CHECK(bluePixels > 50);
+    CHECK(changed > 50);
+    // the directed part follows the normal: light from straight up leaves a vertical face at the ambient, lights a horizontal one
     CHECK(f.device->validationErrors() == 0);
 }
 

@@ -234,6 +234,17 @@ deterministic function of (scene, pass count) for a fixed schedule — tests rel
 - Huge grids (lvl2: 18 M probes at 1 m): never cap them (the user's rule); bricks are baked lazily, nearest to the camera
   and the change first; memory: only bricks touched so far are resident (sparse table of bricks).
 
+> **As built (T10.1, 2026-11-22, the user: "you don't use lightvol for stuff that should use it"):** entity probes, not the whole grid. `light/entity_probes` bakes only the probes around
+> what the game lights from the volume: brush entities of classes without lightmaps (one sample at the middle of the bounds of their surfaces) and models (the middle of the placed box). A block of
+> 6 x 6 x 6 probes of the level's lattice (origin = bounds of the surfaces minus one cell, cell = `_lightvol_grid` or 1 m) is baked per sample point with the Core's own evaluator
+> (`core::bakeProbesCpu` on a BVH of the light blocking surfaces: direct light, sky and the level's ambient, the base style layer, no bounces) and fitted and interpolated by the Core's
+> code (`fitProbeDirectFirst`, `LightvolGrid::sample`: trilinear over the valid corners, nearest valid probe within 3 cells), so what an entity gets is what the game's grid would give it, minus
+> the bounce light. `render/entity_lights` (`EntityLightProducer`: newest request wins, 0.4 s of quiet first, off the UI thread) turns the result into a table of entries (ambient, directed, dir) in
+> the texture meta buffer (`TextureTable::setEntityLights`, vec4 4096 and up); a brush entity's entry travels in bits 8 and up of its draw's firstInstance (`kObjEntityShift`), a model's in the unused
+> `w` of the first column of its instance matrix. `mesh.frag` / `model.frag` light with `ambient + directed * max(0, n . dir)` * exposure + brightness; the ray traced Lit view writes the finished colour into
+> the G-buffer (normal alpha 0.7) and the compose pass shows it as it is. Unlit ignores it. Not built: bounce light in the probes, light style layers (the base layer only), the whole grid,
+> the lightvol sample overlay, the GPU port (the CPU bake of a few hundred probes takes a fraction of a second on demo_lit).
+
 ## 12. Denoising
 
 - Preview: `atrous.comp` every compose (cheap, chunk-local). DLSS Ray Reconstruction (11_NVIDIA_TECH.md) is a screen-space denoiser and does **not** denoise

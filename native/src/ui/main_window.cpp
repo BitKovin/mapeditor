@@ -270,6 +270,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
 MainWindow::~MainWindow() {
     if (services_.device) services_.device->setLostHandler(nullptr);   // waits for a handler call in progress
     rtLights_.reset();   // its callback feeds the render thread
+    entityLights_.reset();
     scene::setKeyDefaultProvider({});
     modelStore_.reset();   // uninstalls the bounds provider; a loading job only finds an empty listener
     lighting_.reset();   // the bake thread reads the link and the device
@@ -659,7 +660,18 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
 
 // ---- picking and selecting (T3.5) -----------------------------------------------------------------------------------------------
 
+void MainWindow::feedEntityLights(const std::shared_ptr<const scene::SceneSnapshot>& snapshot) {
+    // Only the lit views show it, and only where something makes light: the ray traced view or the lit bake
+    if (!(services_.rtLit || lighting_) || !services_.renderThread || !profile_ || !snapshot || !snapshot->complete || !snapshot->doc) return;
+    if (!entityLights_) {
+        render::RenderThread* rt = services_.renderThread;
+        entityLights_ = std::make_unique<render::EntityLightProducer>([rt](std::shared_ptr<const render::EntityLightTable> t) { rt->setEntityLights(std::move(t)); });
+    }
+    entityLights_->request({snapshot, profile_, assetsRoot_, lightFilter_, modelScene_});
+}
+
 void MainWindow::feedLighting(const std::shared_ptr<const scene::SceneSnapshot>& snapshot) {
+    feedEntityLights(snapshot);
     if (services_.rtLit && services_.renderThread && profile_ && snapshot && snapshot->complete && snapshot->doc) {   // the level lights, collected off the UI thread
         if (!rtLights_) {
             render::RenderThread* rt = services_.renderThread;
@@ -698,7 +710,9 @@ void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot
 
 void MainWindow::refreshModels() {
     if (!services_.renderThread || !modelStore_ || !picker_ || !picker_->snapshot()) return;
-    services_.renderThread->setModels(render::buildModelScene(*picker_->snapshot(), *modelStore_, hiddenSet_.get()));
+    modelScene_ = render::buildModelScene(*picker_->snapshot(), *modelStore_, hiddenSet_.get());
+    services_.renderThread->setModels(modelScene_);
+    feedEntityLights(picker_->snapshot());
 }
 
 void MainWindow::modelStoreChanged() {

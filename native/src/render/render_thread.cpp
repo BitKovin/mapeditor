@@ -12,6 +12,7 @@
 #include "base/trace.h"
 #include "gpu/swapchain.h"
 #include "render/dlss_math.h"
+#include "render/entity_lights.h"
 #include "render/lightmap_view.h"
 #include "render/mesh_pass.h"
 #include "render/scene_pass.h"
@@ -490,6 +491,16 @@ void RenderThread::setRtLit(bool on, const RtLitOptions& options) {
 
 void RenderThread::setObjectRules(std::shared_ptr<const ObjectRules> rules) {
     scene_->setRules(std::move(rules));
+    std::lock_guard<std::mutex> lock(mutex_);
+    workPending_ = true;
+    for (auto& kv : viewports_) kv.second->dirty = true;
+    wake_.notify_all();
+}
+
+void RenderThread::setEntityLights(std::shared_ptr<const EntityLightTable> table) {
+    textures_->setEntityLights(table ? table->data.data() : nullptr, table ? table->entries() : 0);
+    scene_->setEntityLights(table);
+    models_->setEntityLights(std::move(table));
     std::lock_guard<std::mutex> lock(mutex_);
     workPending_ = true;
     for (auto& kv : viewports_) kv.second->dirty = true;
@@ -989,6 +1000,9 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     ViewState sceneView = view;
     sceneView.viewProj = jittered;
     LitParams gl;
+    gl.mode = view.renderMode;   // the entities of the light volume are lit in the G-buffer pass (mesh.frag): Lit or Lighting only, with the level's exposure and brightness
+    gl.exposure = lighting.exposure;
+    gl.brightness = lighting.brightness;
     if (rr) gl.lodBias = dlssMipBias(render.width, extent.width);
     meshHdr_->record(cmd, sceneView, *scene_, lists, textures_->set(), skyIndex_, false, none, lightmapView_->set(), gl, kMeshGBuffer);
     vkCmdEndRendering(cmd);

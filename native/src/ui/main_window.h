@@ -34,6 +34,7 @@
 #include "app/actions/registry.h"
 #include "app/actions/router.h"
 #include "render/math3d.h"
+#include "render/entity_lights.h"
 #include "render/rt_lights.h"
 #include "scene/snapshot.h"
 #include "tools/context_menu.h"
@@ -826,6 +827,7 @@ private:
     void submitScene(const doc::ChangeSet& changes);
     void updateSky();
     void onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);
+    void feedEntityLights(const std::shared_ptr<const scene::SceneSnapshot>& snapshot);   // the light volume of models and entities without lightmaps follows the snapshot, the models and the light filter
     void feedLighting(const std::shared_ptr<const scene::SceneSnapshot>& snapshot);   // the light producers get the snapshot (and the light filter)
     void setLightFilter(light::LightFilter filter);   // UI thread: the picker and the outline follow the builder
     // transform tools (main_window_transform.cpp)
@@ -950,6 +952,8 @@ private:
     std::shared_ptr<const core::GameProfile> profile_;     // the loaded game profile (the lighting service reads it)
     std::shared_ptr<light::LightLink> lightLink_;          // bake -> render hand-over (null without a lit-capable device)
     std::shared_ptr<const render::ObjectRules> rtRules_;   // the last rules given to the render thread (a snapshot with the same rules does not restart the accumulation)
+    std::unique_ptr<render::EntityLightProducer> entityLights_;   // the light volume's values for models and brush entities without lightmaps (T10.1); stopped before the render thread goes
+    std::shared_ptr<const render::ModelScene> modelScene_;        // the last model scene given to the render thread (the entity probes are made for its placements)
     std::unique_ptr<render::RtLightsProducer> rtLights_;   // the ray traced Lit path lights (null without --rt-lit); stopped before the render thread goes
     std::unique_ptr<light::LightingService> lighting_;     // the bake thread (stopped before the link and the render thread go)
     std::unique_ptr<render::Picker> picker_;

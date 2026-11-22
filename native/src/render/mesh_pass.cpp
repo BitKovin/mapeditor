@@ -305,6 +305,7 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
     pc.lit[1] = lit.exposure;
     pc.lit[2] = lit.brightness;
     pc.lit[3] = lit.lodBias;
+    pc.misc[3] = static_cast<float>(lit.mode);   // the G-buffer pass lights the entities of the light volume itself: it needs to know Lit from Lighting only
     for (int i = 0; i < 16; ++i) pc.viewProj[i] = static_cast<float>(view.viewProj[i]);
     for (int i = 0; i < 3; ++i) pc.eye[i] = static_cast<float>(view.eye[i]);
     const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -361,7 +362,7 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
     };
     // the models of entities go in with the opaque surfaces (not into the blended pass over a finished ray traced picture)
     const bool drawModels = models_ && models_->valid() && (parts & (kMeshScene | kMeshGBuffer)) && !(parts & kMeshBlended) && !lists.models.draws.empty();
-    const float litPush[4] = {pc.lit[0], pc.lit[1], pc.lit[2], pc.lit[3]};
+    const float litPush[4] = {gbuf ? static_cast<float>(lit.mode) : pc.lit[0], pc.lit[1], pc.lit[2], pc.lit[3]};
     if (!(parts & (kMeshScene | kMeshGBuffer | kMeshBlended)) || (lists.solid.count == 0 && lists.volume.count == 0 && lists.translucent.count == 0)) {
         if (drawModels) models_->record(cmd, view, litPush, lists.models, gbuf);
         if (parts & kMeshOverlays) overlays();

@@ -12,7 +12,7 @@ layout(set = 1, binding = 0) uniform sampler2DArray uLightmap;               // 
 layout(push_constant) uniform PC {
     mat4 viewProj;
     vec4 eye;
-    vec4 misc;    // x = pass (0 opaque, 1 translucent, 2 volume, 3 sky background)
+    vec4 misc;    // x = pass (0 opaque, 1 translucent, 2 volume, 3 sky background), y = sky texture index, w = the render mode of the G-buffer pass (1 Lit, 2 Lighting only)
     vec4 lit;     // x = mode (0 unlit, 1 lit, 2 lighting only), y = exposure, z = brightness, w = texture lod bias (DLSS renders below the output size)
 } pc;
 
@@ -31,6 +31,14 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
 layout(location = 2) out float outDepth;
 #endif
+
+// The light volume's value for a brush entity of a class without lightmaps (T10.1): the draw's firstInstance carries the entry (bits 8 and up, 0 = none); the entries follow the
+// textures' meta in the same buffer (3 vec4 each: ambient, directed, dir). The game lights such entities from its light grid: ambient + directed * max(0, n . dir).
+const uint ENTITY_META = 4096u;
+vec3 entityLight(uint entry, vec3 n) {
+    uint b = ENTITY_META + 3u * (entry - 1u);
+    return meta[b].rgb + meta[b + 1u].rgb * max(0.0, dot(n, meta[b + 2u].xyz));
+}
 
 vec3 skyColor(uint base, float kind, vec3 dir) {
     if (kind > 3.5) {
@@ -104,8 +112,15 @@ void main() {
         if (m.x > 0.5 && t.a < m.y) discard;   // cutout
     }
 #ifdef GBUFFER
-    outColor = vec4(t.rgb, 1.0);
-    outNormal = vec4(n, (vObj & 1u) != 0u ? 1.0 : 0.6);   // 1 = receives light, 0.6 = a surface of a class without lightmaps (shown unlit, like the chunked path)
+    uint entry = (vObj & 1u) == 0u ? vObj >> 8u : 0u;
+    if (entry != 0u) {   // lit from the light volume, like the game: the finished colour goes into the albedo target (0.7 = shown as it is by the compose pass)
+        vec3 base = pc.misc.w > 1.5 ? vec3(1.0) : t.rgb;
+        outColor = vec4(clamp(base * entityLight(entry, n) * pc.lit.y + pc.lit.z, 0.0, 1.0), 1.0);
+        outNormal = vec4(n, 0.7);
+    } else {
+        outColor = vec4(t.rgb, 1.0);
+        outNormal = vec4(n, (vObj & 1u) != 0u ? 1.0 : 0.6);   // 1 = receives light, 0.6 = a surface of a class without lightmaps (shown unlit, like the chunked path)
+    }
     outDepth = 1.0 / gl_FragCoord.w;
     return;
 #endif
@@ -115,6 +130,8 @@ void main() {
             vec3 light = lightmapTexel(vec3(vLm, float(vPage)));
             vec3 albedo = mode > 1.5 ? vec3(1.0) : t.rgb;
             outColor = vec4(clamp(albedo * light * pc.lit.y + pc.lit.z, 0.0, 1.0), a);
+        } else if ((vObj & 1u) == 0u && (vObj >> 8u) != 0u) {   // a brush entity lit from the light volume
+            outColor = vec4(clamp((mode > 1.5 ? vec3(1.0) : t.rgb) * entityLight(vObj >> 8u, n) * pc.lit.y + pc.lit.z, 0.0, 1.0), a);
         } else {
             outColor = vec4((mode > 1.5 ? vec3(0.35) : t.rgb * 0.6) * s, a);   // no chart: not lightmapped, or its light is not made yet
         }
