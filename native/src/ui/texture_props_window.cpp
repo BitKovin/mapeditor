@@ -296,6 +296,8 @@ void TexturePropsDialog::build() {
         t.mode = kTrans[std::clamp(transMode_->currentIndex(), 0, 3)];
         t.cutoff = cutoff_->value();
         t.opacity = opacity_->value();
+        cutoff_->setEnabled(t.mode == "cutout");   // the fields that apply to the chosen mode (also right after the mode was changed by hand)
+        opacity_->setEnabled(t.mode == "translucent");
         draft_ = tex::withTransparency(draft_, t);
         edited();
     };

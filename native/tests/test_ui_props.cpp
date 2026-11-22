@@ -2,6 +2,8 @@
 // removes rectangles. The store is a fake (no assets folder).
 #include <doctest.h>
 
+#include <QTest>
+
 #include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -92,6 +94,48 @@ TEST_CASE("texture properties: the fields edit the sidecar, the write waits for 
     d->flush();
     CHECK(f.disk["wall/brick"]["pixelsPerMeter"].get<double>() == doctest::Approx(32));
     CHECK(f.disk["wall/brick"]["repeat"].empty());
+}
+
+TEST_CASE("texture properties: the opacity of a translucent texture can be changed and is written (cutoff only for cutout)") {
+    Fixture f;
+    f.disk["glass/pane"] = json::object();
+    ui::TexturePropsDialog* d = f.window.openTextureProperties("glass/pane", false);
+    REQUIRE(d);
+    auto* mode = part<QComboBox>(d, "transMode");
+    auto* cutoff = part<QDoubleSpinBox>(d, "cutoff");
+    auto* opacity = part<QDoubleSpinBox>(d, "opacity");
+    // Auto / Opaque: neither field applies
+    CHECK_FALSE(cutoff->isEnabled());
+    CHECK_FALSE(opacity->isEnabled());
+    // choosing Translucent by hand enables the opacity (the bug: it stayed greyed out until the window was opened again)
+    mode->setCurrentIndex(3);
+    CHECK(opacity->isEnabled());
+    CHECK_FALSE(cutoff->isEnabled());
+    opacity->setValue(0.4);
+    CHECK(tex::transparencyOf(d->props()).mode == "translucent");
+    CHECK(tex::transparencyOf(d->props()).opacity == doctest::Approx(0.4));
+    CHECK(d->flush().empty());
+    CHECK(f.disk["glass/pane"]["transparency"]["mode"] == "translucent");
+    CHECK(f.disk["glass/pane"]["transparency"]["opacity"].get<double>() == doctest::Approx(0.4));
+    // Cutout swaps the enabled field
+    mode->setCurrentIndex(2);
+    CHECK(cutoff->isEnabled());
+    CHECK_FALSE(opacity->isEnabled());
+    cutoff->setValue(0.3);
+    CHECK(tex::transparencyOf(d->props()).cutoff == doctest::Approx(0.3));
+    // typing into the field works too (the keyboard path of a spin box)
+    mode->setCurrentIndex(3);
+    auto* edit = opacity->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    edit->selectAll();
+    QTest::keyClicks(edit, QStringLiteral("0") + opacity->locale().decimalPoint() + QStringLiteral("75"));
+    QTest::keyClick(edit, Qt::Key_Return);
+    CHECK(tex::transparencyOf(d->props()).opacity == doctest::Approx(0.75).epsilon(0.01));
+    // a window opened on a sidecar that is translucent starts with the opacity enabled
+    d->flush();
+    ui::TexturePropsDialog* e = f.window.openTextureProperties("glass/pane", false);
+    REQUIRE(e);
+    CHECK(part<QDoubleSpinBox>(e, "opacity")->isEnabled() == (tex::transparencyOf(e->props()).mode == "translucent"));
 }
 
 TEST_CASE("texture properties: the hotspot canvas draws, selects, moves and removes rectangles; the list and the numbers follow") {

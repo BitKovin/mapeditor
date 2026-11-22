@@ -215,7 +215,7 @@ target_link_libraries(native_tests PRIVATE native_automation native_ui Qt6::Widg
 native_warnings(native_tests)
 
 # Tests that need real windows and the GPU (Qt "windows" platform): viewports in docks, re-docking, resizing.
-add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp tests/test_gui_document.cpp tests/test_gui_select.cpp tests/test_gui_transform.cpp tests/test_gui_box.cpp tests/test_gui_edit.cpp tests/test_gui_panels.cpp tests/test_gui_settings.cpp tests/test_gui_keymap.cpp tests/test_gui_context.cpp tests/test_gui_bookmarks.cpp tests/test_gui_snap.cpp tests/test_gui_viewport_header.cpp tests/test_gui_tool_options.cpp tests/test_gui_measure.cpp tests/test_gui_palette.cpp tests/test_gui_gate_m4.cpp tests/test_gui_lit.cpp tests/test_gui_hardware_input.cpp tests/test_gui_bench_dlss.cpp)
+add_executable(native_gui_tests tests/gui_main.cpp tests/test_gui_viewport.cpp tests/test_gui_input.cpp tests/test_gui_document.cpp tests/test_gui_select.cpp tests/test_gui_transform.cpp tests/test_gui_box.cpp tests/test_gui_edit.cpp tests/test_gui_panels.cpp tests/test_gui_settings.cpp tests/test_gui_keymap.cpp tests/test_gui_context.cpp tests/test_gui_bookmarks.cpp tests/test_gui_snap.cpp tests/test_gui_viewport_header.cpp tests/test_gui_audit.cpp tests/test_gui_tool_options.cpp tests/test_gui_measure.cpp tests/test_gui_palette.cpp tests/test_gui_gate_m4.cpp tests/test_gui_lit.cpp tests/test_gui_hardware_input.cpp tests/test_gui_bench_dlss.cpp)
 target_include_directories(native_gui_tests PRIVATE src)
 target_compile_definitions(native_gui_tests PRIVATE NATIVE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
                            NATIVE_CORE_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../core/assets")
