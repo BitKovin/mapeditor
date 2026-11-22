@@ -434,6 +434,13 @@ public:
     bool hasCameraBookmark(int slot) const;
     // Select similar (U9): kind "class", "texture" or "prefab"; hidden things are left out. False when nothing was found.
     bool selectSimilar(const std::string& kind);
+    // The Measure tool (U13): two clicked points, the distance and per-axis deltas in the status bar. A third click starts over; Esc or the action ends it.
+    bool startMeasure();
+    void stopMeasure();
+    bool measureActive() const { return measure_.has_value(); }
+    std::vector<core::Vec3> measurePoints() const;
+    void addMeasurePoint(const core::Vec3& p);
+    std::string measureReading() const;   // "5.39 m   dX 3.00 ..." for the placed points (the point under the cursor stands in for a missing second one), "" before the first
     bool selectAllItems();
     bool invertSelectionItems();
     bool deselectAll();
@@ -857,6 +864,13 @@ private:
         std::optional<size_t> drag;   // the point being dragged with the left button
     };
     std::optional<ClipState> clip_;
+    struct MeasureState {
+        std::vector<core::Vec3> pts;
+        std::optional<core::Vec3> hover;
+    };
+    std::optional<MeasureState> measure_;
+    bool measureMouse(size_t panelIndex, const actions::InputEvent& e);
+    std::vector<render::LineVertex> measureLines(size_t panelIndex) const;
     bool applyBrushEdit(const tools::BrushEdit& edit);
     std::optional<tools::Plane> clipperPlane() const;
     bool clipperMouse(size_t panelIndex, const actions::InputEvent& e);

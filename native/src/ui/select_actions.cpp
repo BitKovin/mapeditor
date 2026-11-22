@@ -70,6 +70,33 @@ void registerSelectActions(actions::Registry& r) {
         r.add(std::move(d));
     }
 
+    {
+        ActionDef d;
+        d.id = "view.measure";
+        d.label = "Measure distance";
+        d.category = "View";
+        d.kind = actions::ActionKind::Toggle;
+        d.description = "Click two points in a viewport: the distance, the per-axis deltas and the length along the ground are shown in the status bar. Esc ends it.";
+        d.menu = "&View";
+        d.menuSeparatorBefore = true;
+        d.contexts = {"area:viewport", "tool:select", "tool:measure"};
+        d.enabled = [](const ActionEnv& env, const json&) {
+            MainWindow* w = windowOf(env);
+            return w && (w->measureActive() || w->canSelectItems());
+        };
+        d.checked = [](const ActionEnv& env, const json&) {
+            MainWindow* w = windowOf(env);
+            return w && w->measureActive();
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            MainWindow* w = windowOf(env);
+            if (!w) return;
+            if (w->measureActive()) w->stopMeasure();
+            else w->startMeasure();
+        };
+        r.add(std::move(d));
+    }
+
     ActionDef d;
     d.id = "edit.nudge";
     d.label = "Nudge selection";

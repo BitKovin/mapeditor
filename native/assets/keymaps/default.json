@@ -53,6 +53,8 @@
 
     { "action": "texture.ftt", "context": "area:viewport", "input": "Shift+Q" },
     { "action": "texture.lift_at", "context": "area:viewport", "input": "Shift+RMB" },
+    { "action": "view.measure", "context": "tool:select", "input": "M" },
+    { "action": "view.measure", "context": "tool:measure", "input": "Escape" },
     { "action": "edit.select_all", "context": "area:viewport", "input": "Ctrl+A" },
     { "action": "edit.select_invert", "context": "area:viewport", "input": "Ctrl+I" },
     { "action": "edit.select_none", "context": "area:viewport", "input": "Alt+A" },

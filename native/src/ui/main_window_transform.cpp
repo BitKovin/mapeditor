@@ -492,6 +492,7 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesOnly(size_t index) {
     if (box_) return boxPreviewLines(index);   // the drawing in progress replaces the gizmo
     if (knife_) return knifeLines(index);      // so does the knife
     if (clip_) return clipperLines(index);     // and the clipper
+    if (measure_) return measureLines(index);  // and the measuring
     if (transform_ && transform_->source == TransformSession::Source::Modal) return {};   // the modal operators show no gizmo
     if (transform_ && (transform_->face.active || transform_->resize.active)) return faceDragLines(index);   // a face drag / 2D resize shows its handles
     GizmoTarget g;

@@ -520,6 +520,7 @@ void MainWindow::setContextsFor(render::ViewportWindow* vp) {
             contexts.push_back(meshElement() == tools::mesh::SelMode::Vertex ? "mode:mesh.vertex" : meshElement() == tools::mesh::SelMode::Edge ? "mode:mesh.edge" : "mode:mesh.face");
             if (knife_) contexts.push_back("mesh:knife");   // Enter cuts, Esc cancels
         }
+        if (measure_) contexts.push_back("tool:measure");   // Esc ends it
         if (clip_) contexts.push_back("brush:clipper");   // Enter / Shift+Enter / Ctrl+Enter cut, Esc cancels
     }
     router_.contexts().set(contexts);
@@ -562,6 +563,7 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
     if (boxMouse(index, ev)) return true;
     if (knifeMouse(index, ev)) return true;
     if (clipperMouse(index, ev)) return true;
+    if (measureMouse(index, ev)) return true;
     if (transformMouse(index, ev)) return true;
     setContextsFor(vp);
     UiEnv ui{this, vp};
