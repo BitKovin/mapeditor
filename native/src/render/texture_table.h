@@ -59,11 +59,22 @@ public:
     // the table is full or the name is taken by a file texture. Asking again for the same name returns the same index. Render thread.
     uint32_t addImage(const std::string& name, int width, int height, std::vector<uint8_t> rgba);
 
+    // Reads a texture that was asked for before (indexOf) again: its image and its sidecar (transparency), after either changed on disk. The entry keeps its index and shows
+    // the old image until the new one is uploaded. Ignored for a name that was never asked for, skyboxes and images made in memory. Render thread.
+    void reload(const std::string& name);
+
+    // Reads again every loaded texture whose image file or sidecar changed on disk since it was read (the window got the focus back after the files were edited elsewhere).
+    // Looks at the modification time and size of each file: a few milliseconds for hundreds of textures. Render thread.
+    void refreshChanged();
+
     // Uploads the images decoded since the last call. Returns true when more are waiting (the ring slice was full): call again next frame.
     bool upload(VkCommandBuffer cmd, gpu::UploadRing& ring);
 
     // True when the texture at `index` blends (transparency mode translucent); false while it is not loaded. Render thread.
     bool translucent(uint32_t index) const { return meta_ && index < kMax && meta_[static_cast<size_t>(index) * 4] == 2.0f; }
+
+    // The opacity of a translucent texture (the sidecar's, 1 for glass painted with alpha); 0 while it is not loaded. Render thread.
+    float opacity(uint32_t index) const { return meta_ && index < kMax ? meta_[static_cast<size_t>(index) * 4 + 2] : 0.f; }
 
     // True when the texture at `index` lets light through or has holes (cutout or translucent); false while it is not loaded. Render thread.
     bool alphaSurface(uint32_t index) const {
@@ -85,6 +96,7 @@ private:
         VmaAllocation allocation = nullptr;
         VkImageView view = VK_NULL_HANDLE;
         enum class State { Queued, Loading, Decoded, Uploaded, Failed } state = State::Queued;
+        std::string stamp;   // the image file and the sidecar as they were when read (refreshChanged)
     };
     struct Decoded {
         uint32_t index = 0;
@@ -92,6 +104,7 @@ private:
         std::vector<std::vector<uint8_t>> mips;   // RGBA8, mip l is max(1, w >> l) x max(1, h >> l)
         float meta[4] = {0, 0.5f, 1, 0};          // transparency mode (0 opaque, 1 cutout, 2 translucent), cutoff, opacity, 1 + tint
         bool ok = false;
+        std::string stamp;
     };
     void startLoad(uint32_t index, const std::string& name);
     void load(uint32_t index, std::string name);

@@ -4,6 +4,7 @@
 
 #include "core/albedo.h"
 #include "core/textures.h"
+#include "render/render_thread.h"
 #include "tools/texturing/props_edit.h"
 #include "ui/main_window.h"
 #include "ui/relief_editor.h"
@@ -29,6 +30,7 @@ std::string MainWindow::saveTextureProps(const std::string& texture, const nlohm
         return err;
     }
     rebuildTextureEnvironment();   // every face that shows the texture is drawn again with the new properties
+    if (services_.renderThread) services_.renderThread->reloadTexture(texture);   // the viewports read the transparency from the sidecar when the texture is loaded
     return {};
 }
 

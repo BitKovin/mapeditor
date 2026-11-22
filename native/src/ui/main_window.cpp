@@ -240,6 +240,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         QCoreApplication::instance()->installEventFilter(this);
         QObject::connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
             if (state != Qt::ApplicationActive) cancelInput();
+            else if (services_.renderThread) services_.renderThread->refreshTextures();   // texture files edited while the editor was in the background
         });
     }
 }

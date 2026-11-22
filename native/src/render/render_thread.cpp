@@ -252,6 +252,26 @@ void RenderThread::setSkyTexture(const std::string& name) {
     wake_.notify_all();
 }
 
+void RenderThread::reloadTexture(const std::string& name) {
+    if (name.empty()) return;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        reloadNames_.push_back(name);
+        workPending_ = true;
+        for (auto& kv : viewports_) kv.second->dirty = true;
+    }
+    wake_.notify_all();
+}
+
+void RenderThread::refreshTextures() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        refreshTextures_ = true;
+        workPending_ = true;
+    }
+    wake_.notify_all();
+}
+
 RenderThread::SceneInfo RenderThread::sceneInfo() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return info_;
@@ -1145,6 +1165,8 @@ void RenderThread::loop() {
         bool doUpload = false;
         bool rtDue = false;
         std::string skyName;
+        std::vector<std::string> reloads;
+        bool refreshTextures = false;
         std::shared_ptr<const EntityOverlay> overlay;
         std::shared_ptr<const GlyphAtlas> atlas;
         std::shared_ptr<light::LightLink> link;
@@ -1187,6 +1209,9 @@ void RenderThread::loop() {
             doUpload = workPending_;
             workPending_ = false;
             skyName = skyName_;
+            reloads.swap(reloadNames_);
+            refreshTextures = refreshTextures_;
+            refreshTextures_ = false;
             overlay = entityOverlay_;
             atlas = glyphAtlas_;
             link = link_;
@@ -1274,6 +1299,8 @@ void RenderThread::loop() {
                 atlasIndex_ = atlas && atlas->ok() ? textures_->addImage("glyphs" + std::to_string(++atlasSerial_), atlas->width, atlas->height, atlas->rgba) : 0;
             }
             skyIndex_ = skyName.empty() ? 0 : textures_->skyIndex(skyName);
+            for (const std::string& name : reloads) textures_->reload(name);
+            if (refreshTextures) textures_->refreshChanged();
             bool more = scene_->sync(uploadCmd_[slot], *ring_, completedFrames(), nextTimelineValue_.load());
             models_->sync(*ring_, completedFrames(), nextTimelineValue_.load(), styleSeconds());   // before the textures' upload: it asks for the models' images
             more = textures_->upload(uploadCmd_[slot], *ring_) || more;

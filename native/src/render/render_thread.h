@@ -98,6 +98,10 @@ public:
     void setLightLink(std::shared_ptr<light::LightLink> link);
     // The skybox ("env/<name> cube") drawn behind the scene in perspective views; "" = none.
     void setSkyTexture(const std::string& name);
+    // Reads a texture again (its image and its sidecar: transparency) after it changed on disk; every viewport draws again once it is in. Any thread.
+    void reloadTexture(const std::string& name);
+    // Looks for textures whose files changed on disk (image or sidecar) and reads those again; the viewports draw again once they are in. Any thread.
+    void refreshTextures();
     // The models of entities the viewports draw (render/model_scene); null = none. Marks every viewport dirty. Animated models keep the viewports redrawing.
     void setModels(std::shared_ptr<const ModelScene> models);
     // What the scene holds on the GPU and how the textures stand (refreshed every loop iteration).
@@ -236,6 +240,8 @@ private:
     uint64_t iteration_ = 0;
     uint32_t skyIndex_ = 0;
     std::string skyName_;                 // guarded by mutex_
+    std::vector<std::string> reloadNames_;   // guarded by mutex_: textures to read again
+    bool refreshTextures_ = false;           // guarded by mutex_: look for changed texture files
     std::shared_ptr<const std::vector<LineVertex>> selectionLines_;   // guarded by mutex_
     std::shared_ptr<const EntityOverlay> entityOverlay_;              // guarded by mutex_
     std::shared_ptr<const GlyphAtlas> glyphAtlas_;                    // guarded by mutex_

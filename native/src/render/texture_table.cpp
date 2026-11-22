@@ -292,6 +292,37 @@ uint32_t TextureTable::indexOf(const std::string& name) {
     return index;
 }
 
+namespace {
+std::string stampOf(const std::filesystem::path& root, const core::GameProfile& profile, const std::string& name);   // below
+}
+
+void TextureTable::reload(const std::string& name) {
+    const auto it = byName_.find(name);
+    if (it == byName_.end() || !valid()) return;
+    Entry& e = entries_[it->second];
+    if (e.state == Entry::State::Uploaded && loaded_ > 0) --loaded_;
+    else if (e.state == Entry::State::Failed && failed_ > 0) --failed_;
+    else if (e.state != Entry::State::Uploaded && e.state != Entry::State::Failed) return;   // still on its way: it reads the files as they are now anyway
+    e.state = Entry::State::Loading;
+    startLoad(it->second, name);
+}
+
+void TextureTable::refreshChanged() {
+    std::filesystem::path root;
+    std::shared_ptr<core::GameProfile> profile;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        root = root_;
+        profile = std::static_pointer_cast<core::GameProfile>(profile_);
+    }
+    if (!profile) return;
+    std::vector<std::string> changed;
+    for (const Entry& e : entries_)
+        if (e.state == Entry::State::Uploaded && !e.stamp.empty() && e.name.rfind("sky:", 0) != 0 && e.name.rfind("mem:", 0) != 0 && stampOf(root, *profile, e.name) != e.stamp)
+            changed.push_back(e.name);
+    for (const std::string& name : changed) reload(name);
+}
+
 uint32_t TextureTable::addImage(const std::string& name, int width, int height, std::vector<uint8_t> rgba) {
     if (name.empty() || !valid() || width <= 0 || height <= 0 || rgba.size() != static_cast<size_t>(width) * height * 4) return 0;
     const std::string key = "mem:" + name;
@@ -356,6 +387,19 @@ void TextureTable::startLoad(uint32_t index, const std::string& name) {
 namespace {
 
 // Decodes an image file, halves it until it fits, makes its mip chain. False when the file is not an image.
+// The modification time and size of a texture's image file and its sidecar, as one text (the sidecar may be absent). "" when the texture has no file.
+std::string stampOf(const std::filesystem::path& root, const core::GameProfile& profile, const std::string& name) {
+    const auto image = core::findTextureFile(root, profile, name);
+    if (!image) return {};
+    std::error_code ec;
+    const auto part = [&](const std::filesystem::path& p) {
+        const auto t = std::filesystem::last_write_time(p, ec);
+        const auto n = std::filesystem::file_size(p, ec);
+        return ec ? std::string("-") : std::to_string(t.time_since_epoch().count()) + ":" + std::to_string(n);
+    };
+    return part(*image) + "|" + part(std::filesystem::path(image->string() + ".json"));
+}
+
 bool decodeFile(const core::TextureFile& file, int& outW, int& outH, std::vector<std::vector<uint8_t>>& mips, core::AlphaKind* kind) {
     auto img = core::decodeImage(file.bytes, file.ext);
     if (!img || img->width <= 0 || img->height <= 0 || img->rgba.empty()) return false;
@@ -434,6 +478,7 @@ void TextureTable::load(uint32_t index, std::string name) {
         if (profile) {
             if (auto file = core::readTexture(root, *profile, name)) {
                 core::AlphaKind kind = core::AlphaKind::None;
+                d.stamp = stampOf(root, *profile, name);
                 if (decodeFile(*file, d.width, d.height, d.mips, &kind)) {
                     std::string propsJson;
                     if (auto props = core::readTextureProps(root, *profile, name)) propsJson = props->dump();
@@ -475,6 +520,13 @@ bool TextureTable::upload(VkCommandBuffer cmd, gpu::UploadRing& ring) {
             base::logWarning("texture '" + e.name + "' could not be loaded");
             continue;
         }
+        if (e.image) {   // a reload: the frames that read the old image are finished (gpuIdle_ above)
+            vkDestroyImageView(device_.device(), e.view, nullptr);
+            vmaDestroyImage(device_.allocator(), e.image, e.allocation);
+            e.view = VK_NULL_HANDLE;
+            e.image = VK_NULL_HANDLE;
+            e.allocation = nullptr;
+        }
         VkDeviceSize total = 0;
         for (const auto& m : d.mips) total += (m.size() + 15) & ~size_t(15);
         const gpu::UploadRing::Allocation a = ring.allocate(total, 16);
@@ -514,6 +566,7 @@ bool TextureTable::upload(VkCommandBuffer cmd, gpu::UploadRing& ring) {
         writeDescriptor(d.index, e.view);
         if (meta_) std::memcpy(meta_ + static_cast<size_t>(d.index) * 4, d.meta, sizeof(d.meta));
         e.state = Entry::State::Uploaded;
+        e.stamp = std::move(d.stamp);
         ++loaded_;
         bytes_ += total;
     }
