@@ -67,6 +67,19 @@ bool MainWindow::canSelectItems() const {
 
 bool MainWindow::canNudge() const { return canSelectItems() && !transformSelection().empty(); }
 
+bool MainWindow::selectSimilar(const std::string& kind) {
+    if (!document_ || meshMode()) return false;
+    const tools::SimilarKind k = kind == "texture" ? tools::SimilarKind::Texture : kind == "prefab" ? tools::SimilarKind::Prefab : tools::SimilarKind::Class;
+    const tools::SimilarSelect r = tools::selectSimilar(*document_, selection_->items(), k);
+    statusBar()->showMessage(qs(r.message), 5000);
+    if (r.found.empty()) return false;
+    const std::vector<doc::SelRef> shown = tools::pruneHidden(*document_, r.found, hide_);
+    if (shown.empty()) return false;
+    selection_->selectMany(*document_, shown);
+    refreshOutline();
+    return true;
+}
+
 bool MainWindow::selectAllItems() {
     if (!document_ || meshMode()) return false;
     const std::vector<doc::SelRef> all = tools::pruneHidden(*document_, tools::selectableItems(*document_), hide_);

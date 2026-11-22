@@ -62,6 +62,69 @@ std::vector<SelRef> invertedItems(const doc::DocumentVersion& d, const std::vect
     return out;
 }
 
+SimilarSelect selectSimilar(const doc::DocumentVersion& d, const std::vector<SelRef>& selected, SimilarKind kind) {
+    SimilarSelect out;
+    const char* what = kind == SimilarKind::Class ? "class" : kind == SimilarKind::Texture ? "texture" : "prefab";
+    const auto none = [&] {
+        out.message = std::string("Select similar (") + what + "): select " + (kind == SimilarKind::Prefab ? "a prefab instance" : kind == SimilarKind::Texture ? "a brush or a face" : "something") + " first";
+        return out;
+    };
+    auto plural = [](size_t n) { return std::to_string(n) + (n == 1 ? " item" : " items"); };
+
+    if (kind == SimilarKind::Prefab) {
+        std::set<std::string> files;
+        for (const SelRef& s : selected) {
+            if (!s.isInstance()) continue;
+            for (const auto& i : d.instances)
+                if (i->typed.id == s.instancePath[0]) files.insert(i->typed.file);
+        }
+        if (files.empty()) return none();
+        for (const auto& i : d.instances)
+            if (files.count(i->typed.file)) out.found.push_back(SelRef::instance(i->typed.id));
+        out.message = "Selected " + plural(out.found.size()) + " of the same prefab";
+        return out;
+    }
+
+    if (kind == SimilarKind::Class) {
+        std::set<std::string> classes;
+        for (const SelRef& s : selected) {
+            if (!s.instancePath.empty()) continue;
+            const int ei = d.findEntity(s.entityId);
+            if (ei >= 0) classes.insert(d.entities[static_cast<size_t>(ei)]->typed.classname);
+        }
+        if (classes.empty()) return none();
+        for (const SelRef& item : selectableItems(d)) {
+            const int ei = d.findEntity(item.entityId);
+            if (ei >= 0 && classes.count(d.entities[static_cast<size_t>(ei)]->typed.classname)) out.found.push_back(item);
+        }
+        out.message = "Selected " + plural(out.found.size()) + " of the same class";
+        return out;
+    }
+
+    std::set<std::string> textures;
+    for (const SelRef& s : selected) {
+        if (!s.instancePath.empty()) continue;
+        const int ei = d.findEntity(s.entityId);
+        if (ei < 0) continue;
+        const auto& ent = *d.entities[static_cast<size_t>(ei)];
+        for (const auto& b : ent.brushes) {
+            if (!s.brushId.empty() && b->brush.id != s.brushId) continue;
+            for (const core::BrushFace& f : b->brush.faces)
+                if (!s.faceId || f.id == *s.faceId) textures.insert(f.texture);
+        }
+    }
+    if (textures.empty()) return none();
+    for (const auto& e : d.entities)
+        for (const auto& b : e->brushes)
+            for (const core::BrushFace& f : b->brush.faces)
+                if (textures.count(f.texture)) {
+                    out.found.push_back(SelRef::brush(e->typed.id, b->brush.id));
+                    break;
+                }
+    out.message = "Selected " + plural(out.found.size()) + " with the same texture";
+    return out;
+}
+
 V3 nudgeDirection(const std::string& key, const V3& right, const V3& forward) {
     if (key == "left") return groundAxis({-right[0], 0, -right[2]});
     if (key == "right") return groundAxis(right);

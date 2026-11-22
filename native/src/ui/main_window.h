@@ -432,6 +432,8 @@ public:
     bool saveCameraBookmark(int slot);
     bool recallCameraBookmark(int slot);
     bool hasCameraBookmark(int slot) const;
+    // Select similar (U9): kind "class", "texture" or "prefab"; hidden things are left out. False when nothing was found.
+    bool selectSimilar(const std::string& kind);
     bool selectAllItems();
     bool invertSelectionItems();
     bool deselectAll();

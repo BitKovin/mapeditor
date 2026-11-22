@@ -19,6 +19,17 @@ std::vector<doc::SelRef> selectableItems(const doc::DocumentVersion& doc);
 // Everything that is NOT selected now (an entity selected as a whole counts as all of its brushes; a face selection counts as its brush).
 std::vector<doc::SelRef> invertedItems(const doc::DocumentVersion& doc, const std::vector<doc::SelRef>& selected);
 
+// Select similar (10_UI_AND_INPUT.md U9): everything that has the same class / texture / prefab file as the selection (the selection itself included).
+//   Class: the entities of the classes the selection belongs to (worldspawn brushes count as "worldspawn"): their brushes, or the point entities themselves.
+//   Texture: every brush that has a face with a texture of the selection (a selected face counts its own texture, a brush / entity all of its faces).
+//   Prefab: the instances of the files of the selected instances.
+enum class SimilarKind { Class, Texture, Prefab };
+struct SimilarSelect {
+    std::vector<doc::SelRef> found;   // empty = nothing to select (see message)
+    std::string message;              // what the status bar says
+};
+SimilarSelect selectSimilar(const doc::DocumentVersion& doc, const std::vector<doc::SelRef>& selected, SimilarKind kind);
+
 // The Radiant arrow nudge: the way a key moves the selection in the world. `right` / `forward` are the camera's axes; the horizontal one of the two that is
 // dominant on the ground (+-X or +-Z; Y is up) is taken. key: left, right, up (forward), down (back), pageup (world up), pagedown (world down).
 // Empty (zero) for an unknown key.

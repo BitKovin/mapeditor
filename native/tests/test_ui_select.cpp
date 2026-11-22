@@ -195,3 +195,89 @@ TEST_CASE("flip and rotate 90 degrees: about the centre of the selection, one un
     f.window.runAction("brush.flip", {{"axis", "x"}});
     CHECK(f.window.statusBar()->currentMessage().contains(QStringLiteral("select a brush first")));
 }
+
+namespace {
+
+std::shared_ptr<const doc::DocumentVersion> similarDoc() {
+    const doc::LoadResult r = doc::loadDocumentText(R"({"schemaVersion": "0.2", "entities": []})");
+    REQUIRE(r.version);
+    doc::VersionEditor ed(r.version);
+    core::Entity w;
+    w.id = "w";
+    w.classname = "worldspawn";
+    w.brushes.push_back(core::Brush::makeBox("a", {0, 0, 0}, {2, 2, 2}, "dev/grey"));
+    w.brushes.push_back(core::Brush::makeBox("b", {4, 0, 0}, {6, 2, 2}, "dev/wall"));
+    REQUIRE(ed.addEntity(w));
+    core::Entity g;
+    g.id = "g";
+    g.classname = "func_group";
+    g.brushes.push_back(core::Brush::makeBox("gb", {8, 0, 0}, {10, 2, 2}, "dev/wall"));
+    REQUIRE(ed.addEntity(g));
+    core::Entity l1, l2;
+    l1.id = "l1";
+    l1.classname = "light_point";
+    l2.id = "l2";
+    l2.classname = "light_point";
+    REQUIRE(ed.addEntity(l1));
+    REQUIRE(ed.addEntity(l2));
+    for (const auto& [id, file] : {std::pair<const char*, const char*>{"i1", "prefabs/door.map.json"}, {"i2", "prefabs/door.map.json"}, {"i3", "prefabs/crate.map.json"}}) {
+        core::PrefabInstance p;
+        p.id = id;
+        p.file = file;
+        REQUIRE(ed.addInstance(p));
+    }
+    const auto v = ed.finish();
+    REQUIRE(v);
+    return v;
+}
+
+std::vector<std::string> idsOf(const std::vector<SelRef>& list) {
+    std::vector<std::string> out;
+    for (const SelRef& s : list) out.push_back(s.isInstance() ? s.instancePath[0] : s.brushId.empty() ? s.entityId : s.brushId);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("select similar: same texture, same class, same prefab (pure)") {
+    const auto d = similarDoc();
+    using tools::SimilarKind;
+    // texture: the face of the brush "a" says dev/grey: only that brush; "b" says dev/wall: it and the brush of the group
+    CHECK(idsOf(tools::selectSimilar(*d, {SelRef::brush("w", "a")}, SimilarKind::Texture).found) == std::vector<std::string>{"a"});
+    CHECK(idsOf(tools::selectSimilar(*d, {SelRef::brush("w", "b")}, SimilarKind::Texture).found) == std::vector<std::string>{"b", "gb"});
+    CHECK(idsOf(tools::selectSimilar(*d, {SelRef::face("w", "b", 0)}, SimilarKind::Texture).found) == std::vector<std::string>{"b", "gb"});
+    CHECK(tools::selectSimilar(*d, {SelRef::entity("l1")}, SimilarKind::Texture).found.empty());
+    // class: the worldspawn brushes; the lights; the group's brush alone
+    CHECK(idsOf(tools::selectSimilar(*d, {SelRef::brush("w", "a")}, SimilarKind::Class).found) == std::vector<std::string>{"a", "b"});
+    CHECK(idsOf(tools::selectSimilar(*d, {SelRef::entity("l1")}, SimilarKind::Class).found) == std::vector<std::string>{"l1", "l2"});
+    CHECK(idsOf(tools::selectSimilar(*d, {SelRef::entity("g")}, SimilarKind::Class).found) == std::vector<std::string>{"gb"});
+    // prefab: the two doors, not the crate
+    CHECK(idsOf(tools::selectSimilar(*d, {SelRef::instance("i1")}, SimilarKind::Prefab).found) == std::vector<std::string>{"i1", "i2"});
+    const tools::SimilarSelect none = tools::selectSimilar(*d, {SelRef::brush("w", "a")}, SimilarKind::Prefab);
+    CHECK(none.found.empty());
+    CHECK(none.message.find("select a prefab instance first") != std::string::npos);
+}
+
+TEST_CASE("select similar: the action in the window, hidden things stay out") {
+    ui::MainWindow window(services());
+    window.setDocument(similarDoc(), true);
+    window.selection().select(SelRef::brush("w", "b"));
+    CHECK(window.runAction("edit.select_similar", {{"kind", "texture"}}));
+    {
+        const std::vector<std::string> got = idsOf(window.selection().items());
+        INFO("selected: " << (got.empty() ? std::string("-") : got[0]) << " " << got.size());
+        CHECK(got == std::vector<std::string>{"b", "gb"});
+    }   
+    CHECK(window.statusBar()->currentMessage().contains(QStringLiteral("same texture")));
+    window.selection().select(SelRef::entity("l1"));
+    window.setHideRules({{"light_point", true, true}});
+    CHECK_FALSE(window.selectSimilar("class"));   // both lights are hidden: nothing is selected
+    window.setHideRules({});
+    window.selection().select(SelRef::entity("l1"));
+    CHECK(window.selectSimilar("class"));
+    CHECK(idsOf(window.selection().items()) == std::vector<std::string>{"l1", "l2"});
+    window.selection().clear();
+    window.runAction("edit.select_similar", {{"kind", "class"}});   // nothing selected: nothing to be similar to
+    CHECK(window.selection().empty());
+}
