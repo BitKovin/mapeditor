@@ -18,6 +18,7 @@
 #include "ui/main_window.h"
 #include "ui/outliner_panel.h"
 #include "ui/groups_panel.h"
+#include "ui/history_panel.h"
 #include "ui/level_settings_panel.h"
 #include "ui/place_panel.h"
 #include "ui/surface_panel.h"
@@ -49,6 +50,8 @@ void MainWindow::createToolDocks() {
     groupsDock_ = make("Groups", "groupsDock", groupsPanel_);
     levelPanel_ = new LevelSettingsPanel(*this);
     levelDock_ = make("Level", "levelDock", levelPanel_);
+    historyPanel_ = new HistoryPanel(*this);
+    historyDock_ = make("History", "historyDock", historyPanel_);
     place_ = new PlacePanel(*this);
     placeDock_ = make("Place", "placeDock", place_);
 }
@@ -59,6 +62,7 @@ void MainWindow::layoutToolDocks(ads::CDockAreaWidget* statsArea) {
     ads::CDockAreaWidget* detailsArea = dockManager_->addDockWidget(ads::CenterDockWidgetArea, detailsDock_, statsArea);
     dockManager_->addDockWidget(ads::CenterDockWidgetArea, surfaceDock_, detailsArea);
     dockManager_->addDockWidget(ads::CenterDockWidgetArea, levelDock_, detailsArea);
+    dockManager_->addDockWidget(ads::CenterDockWidgetArea, historyDock_, detailsArea);
     detailsDock_->setAsCurrentTab();
     ads::CDockAreaWidget* outlinerArea = dockManager_->addDockWidget(ads::TopDockWidgetArea, outlinerDock_, detailsArea);
     dockManager_->setSplitterSizes(outlinerArea, {360, 440});

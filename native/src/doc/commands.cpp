@@ -81,4 +81,33 @@ bool History::redo() {
     return true;
 }
 
+std::vector<std::string> History::labels() const {
+    std::vector<std::string> out;
+    out.reserve(undo_.size() + redo_.size());
+    for (const Command& c : undo_) out.push_back(c.label);
+    for (auto it = redo_.rbegin(); it != redo_.rend(); ++it) out.push_back(it->label);
+    return out;
+}
+
+bool History::goTo(size_t position) {
+    if (interacting_ || position == undo_.size() || position > undo_.size() + redo_.size()) return false;
+    auto previous = current_;
+    const bool back = position < undo_.size();
+    ChangeCause cause = back ? ChangeCause::Undo : ChangeCause::Redo;
+    while (undo_.size() > position) {
+        Command c = std::move(undo_.back());
+        undo_.pop_back();
+        current_ = c.before;
+        redo_.push_back(std::move(c));
+    }
+    while (undo_.size() < position) {
+        Command c = std::move(redo_.back());
+        redo_.pop_back();
+        current_ = c.after;
+        undo_.push_back(std::move(c));
+    }
+    announce(previous, cause);
+    return true;
+}
+
 } // namespace native::doc

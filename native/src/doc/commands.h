@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "doc/changeset.h"
 #include "doc/document.h"
@@ -67,6 +68,14 @@ public:
 
     bool undo();
     bool redo();
+
+    // The undo history as a list of states: position 0 is the version the history began with, position k the version after the k-th command; `position()` is the
+    // current one (= undoCount()). `labels()` has one label per command, oldest first (labels()[k - 1] is what created position k), those after `position()` are
+    // the redo steps. `goTo` moves to a position in ONE step (the listener hears it once, with the change set between the two versions); false when it is
+    // the current one, out of range or an interaction is running.
+    size_t position() const { return undo_.size(); }
+    std::vector<std::string> labels() const;
+    bool goTo(size_t position);
 
 private:
     void announce(const std::shared_ptr<const DocumentVersion>& previous, ChangeCause cause);

@@ -436,7 +436,7 @@ TEST_CASE("the default preset gives every action that exists a binding, except t
                                            "view.place.toggle", "view.stats.toggle", "view.render_mode", "view.dlss", "view.grid", "help.keys_toggle",
                                            "mesh.bridge", "mesh.smooth", "mesh.sharp", "mesh.subdivide", "brush.hollow", "brush.merge", "brush.snap", "brush.select_inside", "brush.select_touching",
                                            "texture.apply", "texture.lift", "texture.copy_uv", "texture.paste_uv", "texture.flow", "texture.hotspot", "texture.reset", "texture.fit", "texture.match_grid",
-                                           "texture.justify", "texture.project", "texture.lightmap", "texture.properties", "texture.group.new", "texture.relief", "view.groups.toggle", "view.level.toggle", "edit.make_entity", "view.properties", "context.copy_surface", "context.flow_surface", "edit.prefabize"};
+                                           "texture.justify", "texture.project", "texture.lightmap", "texture.properties", "texture.group.new", "texture.relief", "view.groups.toggle", "view.level.toggle", "view.history.toggle", "edit.make_entity", "view.properties", "context.copy_surface", "context.flow_surface", "edit.prefabize"};
     for (const std::string& id : ids) {
         INFO("unbound: " << all);
         CHECK(allowed.count(id) == 1);

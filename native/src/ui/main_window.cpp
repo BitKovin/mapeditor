@@ -1,4 +1,5 @@
 // ui/main_window -- see main_window.h.
+#include "ui/history_panel.h"
 #include "ui/main_window.h"
 #include "tools/parametric.h"
 
@@ -155,6 +156,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, texturesDock_);
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, groupsDock_);
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, levelDock_);
+        dockManager_->addDockWidget(ads::CenterDockWidgetArea, historyDock_);
     }
     // Documents: the assets root (--assets, else the saved one), the recent list, the job results timer.
     assetsRoot_ = services_.assetsRoot;
@@ -178,6 +180,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         refreshOutline();
     });
     history_ = std::make_unique<doc::History>();
+    if (historyPanel_) historyPanel_->refreshNow();
     history_->setReconciler([](const std::shared_ptr<const doc::DocumentVersion>& prev, const std::shared_ptr<const doc::DocumentVersion>& next) {
         return tools::parametric::reconcileShapes(prev, next, [] { return tools::newId("s"); });
     });
@@ -442,6 +445,7 @@ void MainWindow::setLayoutPreset(LayoutPreset preset) {
     dockManager_->removeDockWidget(texturesDock_);
     dockManager_->removeDockWidget(groupsDock_);
     dockManager_->removeDockWidget(levelDock_);
+    dockManager_->removeDockWidget(historyDock_);
     destroyViewports();
     buildViewports(preset, saved);
     if (menus_) menus_->refresh();

@@ -124,6 +124,7 @@ class TexturePropsDialog;
 class TexGroupEditor;
 class GroupsPanel;
 class LevelSettingsPanel;
+class HistoryPanel;
 class HideDialog;
 class TileSetEditor;
 class ReliefEditor;
@@ -573,6 +574,8 @@ public:
     GroupsPanel* groupsPanel() const { return groupsPanel_; }
     LevelSettingsPanel* levelPanel() const { return levelPanel_; }
     ads::CDockWidget* levelDock() const { return levelDock_; }
+    HistoryPanel* historyPanel() const { return historyPanel_; }
+    ads::CDockWidget* historyDock() const { return historyDock_; }
     ads::CDockWidget* groupsDock() const { return groupsDock_; }
     std::shared_ptr<const core::GameProfile> gameProfile() const { return profile_; }
     OutlinerPanel* outliner() const { return outliner_; }
@@ -773,8 +776,10 @@ private:
     TextureBrowserPanel* textureBrowser_ = nullptr;
     GroupsPanel* groupsPanel_ = nullptr;
     LevelSettingsPanel* levelPanel_ = nullptr;
+    HistoryPanel* historyPanel_ = nullptr;
     HideDialog* hideDialog_ = nullptr;
     ads::CDockWidget* levelDock_ = nullptr;
+    ads::CDockWidget* historyDock_ = nullptr;
     ads::CDockWidget* groupsDock_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;
     DetailsPanel* details_ = nullptr;

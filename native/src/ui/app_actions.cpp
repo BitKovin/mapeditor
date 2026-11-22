@@ -964,7 +964,8 @@ void registerAppActions(actions::Registry& r) {
                                        {"view.surface.toggle", "Surface", &MainWindow::surfaceDock},
                                        {"view.textures.toggle", "Textures", &MainWindow::texturesDock},
                                        {"view.groups.toggle", "Groups", &MainWindow::groupsDock},
-                                       {"view.level.toggle", "Level", &MainWindow::levelDock}};
+                                       {"view.level.toggle", "Level", &MainWindow::levelDock},
+                                       {"view.history.toggle", "History", &MainWindow::historyDock}};
         bool first = true;
         for (const Panel& p : panels) {
             ActionDef d;
