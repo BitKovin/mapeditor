@@ -223,6 +223,7 @@ void RtLightsProducer::run() {
                 const std::vector<core::ResolvedEntity> resolved = r.snapshot->prefabs ? r.snapshot->prefabs->flat() : std::vector<core::ResolvedEntity>();
                 const core::LightingSource source{coreDoc, resolved, *r.profile, r.assetsRoot};
                 core::LightScene all = core::lightSceneOf(source, skyCache_);
+                if (r.filter) r.filter->apply(all.lights);
                 for (core::Light& l : all.lights) {   // the bake's defaults for lights authored without a source size
                     if (l.sourceSize > 0) continue;
                     if (l.type == core::LightType::Point || l.type == core::LightType::Spot) l.sourceSize = kDefaultSourceSize;

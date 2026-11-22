@@ -13,6 +13,7 @@
 #include "base/jobs.h"
 #include "gui_support.h"
 #include "render/camera_rig.h"
+#include "tools/light_list.h"
 
 using namespace native;
 using namespace guitest;
@@ -93,6 +94,77 @@ TEST_CASE("the Lit mode of a window shows the bake of its own snapshots" * docte
             for (uint32_t y = 0; y < lit.height; ++y) std::memcpy(out.scanLine(static_cast<int>(y)) + k * lit.width * 4, imgs[k]->rgba.data() + static_cast<size_t>(y) * lit.width * 4, lit.width * 4);
         out.save(QString::fromStdString((fs::path(NATIVE_CORE_ASSETS_DIR).parent_path().parent_path() / "native" / "build" / (envMap ? "gui_lit_other.png" : "gui_lit_demo_lit.png")).string()));
         CHECK(greyLevels(only) > 6);   // surfaces lit differently, not one flat grey
+    }
+    CHECK(app.device->validationErrors() == 0);
+}
+
+// U12: muting every light of the map darkens the live bake, "All lights on" brings it back; a solo keeps only one light (the document is never touched).
+TEST_CASE("the Lighting dock's mute and solo change the live bake without touching the map" * doctest::test_suite("gpu")) {
+    App app;
+    if (!app.ok) return;
+    if (!app.device->caps().lit() || app.device->computeQueue() == app.device->graphicsQueue()) {
+        MESSAGE("no ray tracing device with a second queue: skipped");
+        return;
+    }
+    const fs::path root = fs::path(NATIVE_CORE_ASSETS_DIR);
+    const std::string mapRel = "maps/demo_lit.map.json";
+    if (!fs::exists(root / mapRel)) return;
+    base::JobPool pool(8);
+    ui::Services sv = app.services();
+    sv.jobs = &pool;
+    sv.assetsRoot = root.generic_string();
+    {
+        ui::MainWindow window(sv);
+        window.resize(1000, 700);
+        window.show();
+        REQUIRE(waitUntil([&] { return allReady(window); }));
+        window.openDocument(mapRel);
+        REQUIRE(waitUntil([&] { return window.sceneReady(); }, 30000));
+        REQUIRE(window.lightingAvailable());
+        render::ViewportWindow* vp = window.viewports()[0].window;
+        vp->rig().fly().lookAt({3.55, 1.6, 2.5}, {-0.5, 1.2, -3.5});
+        vp->setRenderMode(render::RenderMode::LightingOnly);
+        vp->viewChanged();
+        const auto before = window.document();
+        const auto lights = tools::listLights(*before);
+        REQUIRE(lights.size() >= 2);
+        const auto mean = [&] {
+            const auto img = vp->capture();
+            REQUIRE(img.ok());
+            double sum = 0;
+            for (size_t i = 0; i + 3 < img.rgba.size(); i += 4) sum += img.rgba[i] + img.rgba[i + 1] + img.rgba[i + 2];
+            return sum / (static_cast<double>(img.rgba.size() / 4) * 3.0);
+        };
+        const auto settle = [&] {
+            REQUIRE(waitUntil([&] { return window.lightingSettled(); }, 120000));
+            pumpFor(500);
+        };
+        settle();
+        const double lit = mean();
+        for (const auto& l : lights) window.setLightMuted(l.id, true);
+        pumpFor(200);
+        settle();
+        const double dark = mean();
+        MESSAGE("mean lighting: all lights " << lit << ", all muted " << dark);
+        CHECK(dark < lit * 0.95);   // the ambient and the sky stay: only what the lights add goes
+        window.clearLightFilter();
+        pumpFor(200);
+        settle();
+        CHECK(mean() == doctest::Approx(lit).epsilon(0.1));
+        // a solo keeps only that light: between all muted and all on (some light of the map shows in this view)
+        double brightestSolo = 0;
+        for (const auto& l : lights) {
+            window.setLightSolo(l.id);
+            pumpFor(200);
+            settle();
+            const double solo = mean();
+            MESSAGE("mean lighting: solo " << l.id << " " << solo);
+            CHECK(solo <= lit + 0.5);
+            brightestSolo = std::max(brightestSolo, solo);
+        }
+        CHECK(brightestSolo > dark + 0.3);
+        CHECK(window.document() == before);   // editor state only: no undo step, no new version
+        CHECK_FALSE(window.isDirty());
     }
     CHECK(app.device->validationErrors() == 0);
 }

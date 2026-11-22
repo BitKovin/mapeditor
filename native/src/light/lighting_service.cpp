@@ -322,7 +322,8 @@ bool LightingService::build(const LightingInputs& in, std::unique_ptr<Epoch>& ou
     core::Document coreDoc = doc::toCoreDocument(*snap.doc);
     const std::vector<core::ResolvedEntity> resolved = snap.prefabs ? snap.prefabs->flat() : std::vector<core::ResolvedEntity>();
     const core::LightingSource source{coreDoc, resolved, *in.profile, in.assetsRoot};
-    const core::LightScene allLights = core::lightSceneOf(source, skyCache_);
+    core::LightScene allLights = core::lightSceneOf(source, skyCache_);
+    if (in.filter) in.filter->apply(allLights.lights);
     e->lights = core::lightsOfStyle(allLights, 0);
     e->lights.playable = allLights.playable;
     for (core::Light& l : e->lights.lights) {

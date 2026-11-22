@@ -27,6 +27,7 @@
 
 #include "gpu/device.h"
 #include "gpu/upload_ring.h"
+#include "light/light_filter.h"
 #include "light/light_link.h"
 #include "light/passes.h"
 
@@ -38,6 +39,7 @@ struct LightingInputs {
     std::shared_ptr<const scene::SceneSnapshot> snapshot;
     std::shared_ptr<const core::GameProfile> profile;
     std::filesystem::path assetsRoot;
+    std::shared_ptr<const LightFilter> filter;   // muted / soloed lights (null = all lights); a new filter is a new input and restarts the bake
 };
 
 struct LightingOptions {

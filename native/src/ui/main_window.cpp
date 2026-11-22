@@ -159,6 +159,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, historyDock_);
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, messagesDock_);
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, adjustDock_);
+        dockManager_->addDockWidget(ads::CenterDockWidgetArea, lightingDock_);
         dockManager_->addDockWidget(ads::CenterDockWidgetArea, toolOptionsDock_);
     }
     // Documents: the assets root (--assets, else the saved one), the recent list, the job results timer.
@@ -451,6 +452,7 @@ void MainWindow::setLayoutPreset(LayoutPreset preset) {
     dockManager_->removeDockWidget(historyDock_);
     dockManager_->removeDockWidget(messagesDock_);
     dockManager_->removeDockWidget(adjustDock_);
+    dockManager_->removeDockWidget(lightingDock_);
     dockManager_->removeDockWidget(toolOptionsDock_);
     destroyViewports();
     buildViewports(preset, saved);
@@ -586,28 +588,35 @@ bool MainWindow::routeViewportEvent(size_t index, QEvent* e, QPointF delta) {
 
 // ---- picking and selecting (T3.5) -----------------------------------------------------------------------------------------------
 
-void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
-    if (!picker_) picker_ = std::make_unique<render::Picker>();
-    if (services_.rtLit && services_.renderThread && snapshot && snapshot->doc) services_.renderThread->setRtLighting(render::rtLightingOf(*snapshot->doc));   // the level's ambient / occlusion / exposure
+void MainWindow::feedLighting(const std::shared_ptr<const scene::SceneSnapshot>& snapshot) {
     if (services_.rtLit && services_.renderThread && profile_ && snapshot && snapshot->complete && snapshot->doc) {   // the level lights, collected off the UI thread
         if (!rtLights_) {
             render::RenderThread* rt = services_.renderThread;
             rtLights_ = std::make_unique<render::RtLightsProducer>([rt](std::shared_ptr<const render::RtLightData> d) { rt->setRtLights(std::move(d)); });
         }
-        rtLights_->request({snapshot, profile_, assetsRoot_});
-        auto rules = render::makeRtRules(*snapshot, core::LightingClasses::fromProfile(*profile_));
-        if (!rtRules_ || *rtRules_ != *rules) {
-            rtRules_ = rules;
-            services_.renderThread->setObjectRules(std::move(rules));
-        }
+        rtLights_->request({snapshot, profile_, assetsRoot_, lightFilter_});
     }
     if (lighting_ && profile_ && snapshot && snapshot->complete) {   // the lit modes' bake follows complete snapshots
         light::LightingInputs in;
         in.snapshot = snapshot;
         in.profile = profile_;
         in.assetsRoot = assetsRoot_;
+        in.filter = lightFilter_;
         lighting_->setInputs(std::move(in));
     }
+}
+
+void MainWindow::onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot) {
+    if (!picker_) picker_ = std::make_unique<render::Picker>();
+    if (services_.rtLit && services_.renderThread && snapshot && snapshot->doc) services_.renderThread->setRtLighting(render::rtLightingOf(*snapshot->doc));   // the level's ambient / occlusion / exposure
+    if (services_.rtLit && services_.renderThread && profile_ && snapshot && snapshot->complete && snapshot->doc) {
+        auto rules = render::makeRtRules(*snapshot, core::LightingClasses::fromProfile(*profile_));
+        if (!rtRules_ || *rtRules_ != *rules) {
+            rtRules_ = rules;
+            services_.renderThread->setObjectRules(std::move(rules));
+        }
+    }
+    feedLighting(snapshot);
     picker_->setSnapshot(std::move(snapshot));
     refreshModels();
     refreshHidden();   // also refreshes the outline when it prunes the selection; otherwise:

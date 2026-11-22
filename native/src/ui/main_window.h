@@ -40,6 +40,7 @@
 #include "tools/face_drag.h"
 #include "tools/resize2d.h"
 #include "tools/edit_ops.h"
+#include "light/light_filter.h"
 #include "tools/gizmo.h"
 #include "tools/modal.h"
 #include "tools/prefs.h"
@@ -127,6 +128,7 @@ class GroupsPanel;
 class LevelSettingsPanel;
 class HistoryPanel;
 class AdjustPanel;
+class LightingPanel;
 class ToolOptionsPanel;
 class MessagesPanel;
 class HideDialog;
@@ -609,6 +611,15 @@ public:
     ads::CDockWidget* historyDock() const { return historyDock_; }
     MessagesPanel* messagesPanel() const { return messagesPanel_; }
     AdjustPanel* adjustPanel() const { return adjustPanel_; }
+    LightingPanel* lightingPanel() const { return lightingPanel_; }
+    ads::CDockWidget* lightingDock() const { return lightingDock_; }
+    // Muted / soloed lights of the live lighting (10_UI_AND_INPUT.md U12; editor state, never saved, never exported). Null = every light is on.
+    std::shared_ptr<const light::LightFilter> lightFilter() const { return lightFilter_; }
+    bool lightMuted(const std::string& id) const { return lightFilter_ && lightFilter_->muted.count(id) != 0; }
+    std::string lightSolo() const { return lightFilter_ ? lightFilter_->solo : std::string(); }
+    void setLightMuted(const std::string& id, bool muted);
+    void setLightSolo(const std::string& id);   // "" ends the solo
+    void clearLightFilter();
     ToolOptionsPanel* toolOptionsPanel() const { return toolOptionsPanel_; }
     ads::CDockWidget* toolOptionsDock() const { return toolOptionsDock_; }
     ads::CDockWidget* adjustDock() const { return adjustDock_; }
@@ -720,6 +731,8 @@ signals:
     void documentChanged();
     // The operation that can be adjusted changed (a new one was recorded, or it can no longer be adjusted).
     void lastOperationChanged();
+    // The muted / soloed lights changed.
+    void lightFilterChanged();
     // The current version changed (an edit, undo, redo, or a new document: `all`): what differs from the previous one.
     void documentEdited(const native::doc::ChangeSet& changes);
     // The selection, the edit mode or the mesh selection changed.
@@ -774,7 +787,9 @@ private:
     void setupScene();
     void submitScene(const doc::ChangeSet& changes);
     void updateSky();
-    void onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);   // UI thread: the picker and the outline follow the builder
+    void onSnapshot(std::shared_ptr<const scene::SceneSnapshot> snapshot);
+    void feedLighting(const std::shared_ptr<const scene::SceneSnapshot>& snapshot);   // the light producers get the snapshot (and the light filter)
+    void setLightFilter(light::LightFilter filter);   // UI thread: the picker and the outline follow the builder
     // transform tools (main_window_transform.cpp)
     struct GizmoTarget {
         bool valid = false;
@@ -828,6 +843,8 @@ private:
     HistoryPanel* historyPanel_ = nullptr;
     MessagesPanel* messagesPanel_ = nullptr;
     AdjustPanel* adjustPanel_ = nullptr;
+    LightingPanel* lightingPanel_ = nullptr;
+    std::shared_ptr<const light::LightFilter> lightFilter_;
     ToolOptionsPanel* toolOptionsPanel_ = nullptr;
     std::optional<LastOperation> lastOp_;
     std::map<std::string, std::vector<std::string>> textureLists_;   // used when there are no settings (tests)
@@ -837,6 +854,7 @@ private:
     ads::CDockWidget* historyDock_ = nullptr;
     ads::CDockWidget* messagesDock_ = nullptr;
     ads::CDockWidget* adjustDock_ = nullptr;
+    ads::CDockWidget* lightingDock_ = nullptr;
     ads::CDockWidget* toolOptionsDock_ = nullptr;
     ads::CDockWidget* groupsDock_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;

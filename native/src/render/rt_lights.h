@@ -27,6 +27,7 @@
 #include "core/lighting_classes.h"
 #include "core/lighting_inputs.h"
 #include "gpu/device.h"
+#include "light/light_filter.h"
 #include "render/gpu_scene.h"
 #include "scene/snapshot.h"
 
@@ -71,6 +72,7 @@ public:
         std::shared_ptr<const scene::SceneSnapshot> snapshot;
         std::shared_ptr<const core::GameProfile> profile;
         std::filesystem::path assetsRoot;
+        std::shared_ptr<const light::LightFilter> filter;   // muted / soloed lights (null = all)
     };
     // `done` is called on the producer's thread.
     explicit RtLightsProducer(std::function<void(std::shared_ptr<const RtLightData>)> done);
