@@ -138,6 +138,7 @@ ViewState CameraRig::viewState(double widthPx, double heightPx) {
     s.perspective = !isOrthoMode(settings_.cameraMode);
     s.renderMode = settings_.renderMode == RenderMode::Lit ? 1 : settings_.renderMode == RenderMode::LightingOnly ? 2 : 0;
     s.dlss = static_cast<int>(settings_.dlss);
+    s.backfaceCulling = settings_.backfaceCulling;
     s.cut = cut_;
     if (s.perspective) {
         const CameraBasis b = cam.basis();

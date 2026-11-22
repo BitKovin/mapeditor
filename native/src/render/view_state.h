@@ -16,6 +16,7 @@ struct ViewState {
     bool showAxes = true;
     double eye[3] = {0, 0, 0};       // camera position (sky faces are drawn by view direction)
     bool perspective = true;         // false: an orthographic view (no sky background)
+    bool backfaceCulling = true;     // translucent surfaces and volumes show their front faces only (the Shell's default; both sides blended look like a mess)
     int renderMode = 0;              // 0 = Unlit / Wireframe, 1 = Lit, 2 = Lighting only (the lit modes ask the bake for light)
     // DLSS Super Resolution (T6.8): the viewport's mode (a DlssMode as int, 0 = off) and what the upscaler needs to know about the camera.
     int dlss = 0;

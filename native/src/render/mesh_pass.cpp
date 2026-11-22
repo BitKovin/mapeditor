@@ -52,6 +52,7 @@ struct PipelineSpec {
     bool depthBias = false;
     bool blend = false;
     bool depthWrite = true;
+    bool cullBack = false;     // front faces only (the backface culling setting of the translucent and volume passes)
     bool gbuffer = false;      // three colour attachments: albedo (colorFormat), normal RGBA16F, distance R32F (the ray traced Lit path)
     VkCompareOp depthOp = VK_COMPARE_OP_LESS;
 };
@@ -111,7 +112,7 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat colorFor
     vp.scissorCount = 1;
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_NONE;   // faces are seen from both sides (the backface culling setting comes later)
+    rs.cullMode = spec.cullBack ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;   // opaque faces are seen from both sides; translucent ones follow the backface culling setting
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rs.lineWidth = 1.0f;
     if (spec.depthBias) {
@@ -233,6 +234,9 @@ MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat dep
     blended.depthWrite = false;
     translucent_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, vs, fs, blended);
     volume_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, vs, fs, blended);
+    blended.cullBack = true;
+    translucentCull_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, vs, fs, blended);
+    volumeCull_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, vs, fs, blended);
     PipelineSpec sky;
     sky.vertexInput = false;
     sky.depthWrite = false;
@@ -272,6 +276,8 @@ bool MeshPass::enableGlass(VkDescriptorSetLayout lit, VkDescriptorSetLayout tlas
     blended.blend = true;
     blended.depthWrite = false;
     glassTranslucent_ = makePipeline(dev, glassLayout_, colorFormat_, depthFormat_, vs, fs, blended);
+    blended.cullBack = true;
+    glassTranslucentCull_ = makePipeline(dev, glassLayout_, colorFormat_, depthFormat_, vs, fs, blended);
     vkDestroyShaderModule(dev, vs, nullptr);
     vkDestroyShaderModule(dev, fs, nullptr);
     if (!glassTranslucent_) base::logWarning("MeshPass: the translucent surface pipeline failed; glass stays unlit");
@@ -282,8 +288,9 @@ MeshPass::~MeshPass() {
     models_.reset();   // before the layout it uses
     const VkDevice dev = device_.device();
     if (glassTranslucent_) vkDestroyPipeline(dev, glassTranslucent_, nullptr);
+    if (glassTranslucentCull_) vkDestroyPipeline(dev, glassTranslucentCull_, nullptr);
     if (glassLayout_) vkDestroyPipelineLayout(dev, glassLayout_, nullptr);
-    for (VkPipeline p : {opaque_, translucent_, volume_, skyBg_, gBufferOpaque_, gBufferSky_, worldLines_, screenLines_, plainLines_, topLines_, fills_, labels_, labelsOver_})
+    for (VkPipeline p : {opaque_, translucent_, volume_, translucentCull_, volumeCull_, skyBg_, gBufferOpaque_, gBufferSky_, worldLines_, screenLines_, plainLines_, topLines_, fills_, labels_, labelsOver_})
         if (p) vkDestroyPipeline(dev, p, nullptr);
     if (layout_) vkDestroyPipelineLayout(dev, layout_, nullptr);
 }
@@ -384,13 +391,13 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glassLayout_, 0, 4, sets, 0, nullptr);
             PushConstants p = pc;
             p.misc[0] = 1;
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glassTranslucent_);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, view.backfaceCulling && glassTranslucentCull_ ? glassTranslucentCull_ : glassTranslucent_);
             vkCmdPushConstants(cmd, glassLayout_, stages, 0, sizeof(p), &p);
             vkCmdDrawIndexedIndirect(cmd, lists.translucent.buffer, lists.translucent.offset, lists.translucent.count, sizeof(VkDrawIndexedIndirectCommand));
         } else {
-            draw(translucent_, 1, lists.translucent);
+            draw(view.backfaceCulling && translucentCull_ ? translucentCull_ : translucent_, 1, lists.translucent);
         }
-        if (showVolumes) draw(volume_, 2, lists.volume);
+        if (showVolumes) draw(view.backfaceCulling && volumeCull_ ? volumeCull_ : volume_, 2, lists.volume);
     }
     if (parts & kMeshOverlays) overlays();
 }

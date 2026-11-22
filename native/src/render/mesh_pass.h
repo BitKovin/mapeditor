@@ -82,7 +82,8 @@ private:
     const gpu::Device& device_;
     VkFormat colorFormat_, depthFormat_;
     VkPipelineLayout layout_ = VK_NULL_HANDLE, glassLayout_ = VK_NULL_HANDLE;
-    VkPipeline glassTranslucent_ = VK_NULL_HANDLE;
+    VkPipeline glassTranslucent_ = VK_NULL_HANDLE, glassTranslucentCull_ = VK_NULL_HANDLE;   // the *Cull ones draw front faces only (the backface culling setting)
+    VkPipeline translucentCull_ = VK_NULL_HANDLE, volumeCull_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout textureLayout_ = VK_NULL_HANDLE, lightmapLayout_ = VK_NULL_HANDLE;
     VkPipeline gBufferOpaque_ = VK_NULL_HANDLE, gBufferSky_ = VK_NULL_HANDLE;
     VkPipeline opaque_ = VK_NULL_HANDLE, translucent_ = VK_NULL_HANDLE, volume_ = VK_NULL_HANDLE, skyBg_ = VK_NULL_HANDLE;

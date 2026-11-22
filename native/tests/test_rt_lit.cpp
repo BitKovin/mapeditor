@@ -204,6 +204,7 @@ struct Fixture {
     unsigned cut = 0;
     int mode = 2;   // ViewState::renderMode: 1 Lit, 2 Lighting only
     int dlss = 0;   // ViewState::dlss: 0 off (the filter), 1 Quality, 2 DLAA (DLSS Ray Reconstruction)
+    bool cull = true;   // ViewState::backfaceCulling (the translucent surfaces show their front faces only)
 
     fs::path root;
     std::string mapName = "maps/demo_lit.map.json";
@@ -249,6 +250,7 @@ struct Fixture {
         vs.renderMode = mode;
         vs.cut = cut;
         vs.dlss = dlss;
+        vs.backfaceCulling = cull;
         vs.showGrid = false;   // overlays are not part of the comparison
         vs.showAxes = false;
         return vs;
@@ -1683,6 +1685,47 @@ TEST_CASE("RT Lit: the glass of a level is lit by the lights, the sun's shadow r
     const double bounceLuma = regionLuma(withBounce);
     MESSAGE("glass region luma with bounce light: " << bounceLuma);
     CHECK(bounceLuma >= litLuma - 1.0);
+    CHECK(f.device->validationErrors() == 0);
+}
+
+// The glass of the Unlit view is blended without sorting, so both sides of a brush drew on top of each other (the far face, the inside of the side faces: a mess of overlapping
+// wedges with mirrored text). Back faces are culled like in the Shell (the backface culling setting), so a pane is one layer; turned off, the old two-sided look comes back.
+TEST_CASE("Unlit: translucent surfaces show their front faces only (backface culling), the setting turns it off" * doctest::test_suite("gpu")) {
+    Fixture f;
+    f.mode = 0;
+    if (!f.start(480, 300)) return;
+    f.rt->setView(f.id, f.view());
+    REQUIRE(f.rt->capture(f.id, 20000).ok());
+    REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+    const auto region = [&](const render::CapturedImage& img, double& r, double& g, double& b) {
+        double sr = 0, sg = 0, sb = 0;
+        size_t n = 0;
+        for (uint32_t y = f.h * 30 / 100; y < f.h * 60 / 100; ++y)
+            for (uint32_t x = f.w * 47 / 100; x < f.w * 73 / 100; ++x) {
+                const size_t i = (static_cast<size_t>(y) * img.width + x) * 4;
+                sr += img.rgba[i];
+                sg += img.rgba[i + 1];
+                sb += img.rgba[i + 2];
+                ++n;
+            }
+        r = sr / static_cast<double>(n);
+        g = sg / static_cast<double>(n);
+        b = sb / static_cast<double>(n);
+    };
+    f.cull = true;
+    const render::CapturedImage culled = f.shot();
+    f.cull = false;
+    const render::CapturedImage both = f.shot();
+    REQUIRE(culled.ok());
+    REQUIRE(both.ok());
+    savePng(culled, "unlit_glass_culled.png");
+    savePng(both, "unlit_glass_two_sided.png");
+    double cr, cg, cb, br, bg, bb;
+    region(culled, cr, cg, cb);
+    region(both, br, bg, bb);
+    MESSAGE("glass region (rgb): culled " << cr << " " << cg << " " << cb << ", two sided " << br << " " << bg << " " << bb);
+    // two layers of glass hide more of what is behind than one
+    CHECK(std::abs(cr - br) + std::abs(cg - bg) + std::abs(cb - bb) > 6.0);
     CHECK(f.device->validationErrors() == 0);
 }
 
