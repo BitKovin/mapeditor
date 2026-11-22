@@ -61,6 +61,43 @@ bool MainWindow::snapSelected() {
     return applyBrushEdit(tools::snapSelection(document_, selection_->items(), grid > 0 ? grid : 0.25));
 }
 
+bool MainWindow::flipSelected(int axis) {
+    if (!document_ || axis < 0 || axis > 2) return false;
+    const std::vector<doc::SelRef> sels = transformSelection();
+    const auto pivot = tools::gizmoPivot(*document_, sels);
+    if (!pivot || tools::selectedBrushes(*document_, sels).empty()) {
+        statusBar()->showMessage(QStringLiteral("Flip: select a brush first"), 5000);
+        return false;
+    }
+    tools::V3 factors{1, 1, 1};
+    factors[static_cast<size_t>(axis)] = -1;
+    const auto after = tools::transformSelections(document_, sels, tools::scaleAbout(*pivot, factors), true, 0, true);
+    if (!after || after == document_) {
+        statusBar()->showMessage(QStringLiteral("Flip: the result would not be a valid brush"), 5000);
+        return false;
+    }
+    return commitEdit(std::string("Flip ") + "XYZ"[axis], after);
+}
+
+bool MainWindow::rotateSelected90(int axis, int dir) {
+    if (!document_ || axis < 0 || axis > 2) return false;
+    const std::vector<doc::SelRef> sels = transformSelection();
+    const auto pivot = tools::gizmoPivot(*document_, sels);
+    if (!pivot) {
+        statusBar()->showMessage(QStringLiteral("Rotate: select something first"), 5000);
+        return false;
+    }
+    tools::V3 a{0, 0, 0};
+    a[static_cast<size_t>(axis)] = 1;
+    const int sign = dir < 0 ? -1 : 1;
+    const auto after = tools::transformSelections(document_, sels, tools::rotateAbout(*pivot, a, sign * 1.5707963267948966), false, axis == 1 ? sign * 90.0 : 0.0, true);
+    if (!after || after == document_) {
+        statusBar()->showMessage(QStringLiteral("Rotate: the result would not be a valid brush"), 5000);
+        return false;
+    }
+    return commitEdit(std::string("Rotate ") + (sign < 0 ? "-90 " : "90 ") + "XYZ"[axis], after);
+}
+
 bool MainWindow::selectByVolume(tools::VolumeMode mode) {
     if (!document_) return false;
     const tools::VolumeSelect r = tools::selectByVolume(*document_, selection_->items(), mode);

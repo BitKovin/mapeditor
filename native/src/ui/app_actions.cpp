@@ -9,6 +9,7 @@
 #include "tools/texturing/face_edit.h"
 #include "ui/main_window.h"
 #include "ui/brush_actions.h"
+#include "ui/select_actions.h"
 #include "ui/texture_actions.h"
 #include "ui/mesh_actions.h"
 
@@ -1075,6 +1076,7 @@ void registerAppActions(actions::Registry& r) {
     registerMeshActions(r);
     registerBrushActions(r);
     registerTextureActions(r);
+    registerSelectActions(r);
 }
 
 } // namespace native::ui

@@ -432,7 +432,7 @@ TEST_CASE("the default preset gives every action that exists a binding, except t
     std::string all;
     for (const std::string& id : ids) all += id + " ";
     // what stays unbound on purpose: it is reached from a menu or a panel, or needs a parameter the user picks
-    const std::set<std::string> allowed = {"file.open_recent", "file.export", "file.cancel_export", "file.import_quake_map", "file.set_assets_root", "grid.set", "view.hide_rule", "view.hide_dialog", "view.details.toggle", "view.surface.toggle", "view.textures.toggle", "view.outliner.toggle",
+    const std::set<std::string> allowed = {"file.open_recent", "file.export", "file.cancel_export", "file.import_quake_map", "file.set_assets_root", "grid.set", "view.hide_rule", "view.hide_dialog", "brush.flip", "brush.rotate90", "view.details.toggle", "view.surface.toggle", "view.textures.toggle", "view.outliner.toggle",
                                            "view.place.toggle", "view.stats.toggle", "view.render_mode", "view.dlss", "view.grid", "help.keys_toggle",
                                            "mesh.bridge", "mesh.smooth", "mesh.sharp", "mesh.subdivide", "brush.hollow", "brush.merge", "brush.snap", "brush.select_inside", "brush.select_touching",
                                            "texture.apply", "texture.lift", "texture.copy_uv", "texture.paste_uv", "texture.flow", "texture.hotspot", "texture.reset", "texture.fit", "texture.match_grid",

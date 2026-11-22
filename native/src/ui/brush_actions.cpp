@@ -131,6 +131,31 @@ void registerBrushActions(actions::Registry& r) {
     }
     addSimple(r, "brush.merge", "Merge brushes", "Makes the selected brushes one convex brush, when together they fill a convex shape.", false, [](MainWindow& w) { w.mergeSelected(); });
     addSimple(r, "brush.snap", "Snap to grid", "Moves the vertices of the selected brushes onto the grid (brushes that would break are left alone).", false, [](MainWindow& w) { w.snapSelected(); });
+    for (const char* kind : {"flip", "rotate90"}) {
+        const bool flip = std::string(kind) == "flip";
+        ActionDef d;
+        d.id = flip ? "brush.flip" : "brush.rotate90";
+        d.label = flip ? "Flip" : "Rotate 90Â°";
+        d.category = "Brush";
+        d.description = flip ? "Mirrors the selection about its centre along the axis (Y is up)." : "Turns the selection by 90 degrees about an axis through its centre (dir -1 turns the other way).";
+        d.menu = flip ? "&Brush/&Flip" : "&Brush/&Rotate 90Â°";
+        d.menuSeparatorBefore = flip;
+        d.contexts = {"area:viewport"};
+        d.params = flip ? json{{"axis", "x"}} : json{{"axis", "x"}, {"dir", 1}};
+        if (flip) d.variants = {{"&X", {{"axis", "x"}}}, {"&Y (up)", {{"axis", "y"}}}, {"&Z", {{"axis", "z"}}}};
+        else d.variants = {{"&X", {{"axis", "x"}, {"dir", 1}}}, {"&Y (up)", {{"axis", "y"}, {"dir", 1}}}, {"&Z", {{"axis", "z"}, {"dir", 1}}},
+                           {"X (the other way)", {{"axis", "x"}, {"dir", -1}}}, {"Y (the other way)", {{"axis", "y"}, {"dir", -1}}}, {"Z (the other way)", {{"axis", "z"}, {"dir", -1}}}};
+        d.enabled = canOperate;
+        d.run = [flip](ActionEnv& env, const Invocation& inv) {
+            MainWindow* w = windowOf(env);
+            if (!w) return;
+            const std::string axis = inv.params.is_object() ? inv.params.value("axis", std::string("x")) : "x";
+            const int a = axis == "y" ? 1 : axis == "z" ? 2 : 0;
+            if (flip) w->flipSelected(a);
+            else w->rotateSelected90(a, inv.params.is_object() ? inv.params.value("dir", 1) : 1);
+        };
+        r.add(std::move(d));
+    }
     addSimple(r, "brush.select_inside", "Select inside", "Selects the other brushes that lie completely inside the selected brushes.", true, [](MainWindow& w) { w.selectByVolume(tools::VolumeMode::Inside); });
     addSimple(r, "brush.select_touching", "Select touching", "Selects the other brushes that overlap or touch the selected brushes.", false, [](MainWindow& w) { w.selectByVolume(tools::VolumeMode::Touching); });
 }

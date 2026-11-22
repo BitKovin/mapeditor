@@ -418,7 +418,18 @@ public:
     bool hollowSelected(double thickness);
     bool mergeSelected();
     bool snapSelected();
+    // Mirrors the selection about its centre along an axis (0 X, 1 Y up, 2 Z; needs a brush) / turns it by 90 degrees (dir +1 or -1) about an axis through its centre.
+    bool flipSelected(int axis);
+    bool rotateSelected90(int axis, int dir = 1);
     bool selectByVolume(tools::VolumeMode mode);
+    // Select all / Invert selection / Select none (object mode; hidden things are left out) and the Radiant arrow nudge: `key` = left right up down pageup pagedown
+    // (the screen's dominant ground axis of the active viewport, or world up / down), one grid step, `fine` = an eighth of it. Each nudge is one undo step.
+    bool canSelectItems() const;   // object mode with nothing owning the pointer (no transform, knife, clipper or box in progress)
+    bool canNudge() const;         // ... and something that can move is selected
+    bool selectAllItems();
+    bool invertSelectionItems();
+    bool deselectAll();
+    bool nudgeSelected(const std::string& key, bool fine = false);
     // Clipper (X): click up to three points (two = a plane along the view); Enter keeps the back side, Shift+Enter splits, Ctrl+Enter keeps the front, Esc cancels.
     bool clipperActive() const { return clip_.has_value(); }
     bool startClipper();

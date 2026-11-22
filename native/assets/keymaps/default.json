@@ -53,6 +53,18 @@
 
     { "action": "texture.ftt", "context": "area:viewport", "input": "Shift+Q" },
     { "action": "texture.lift_at", "context": "area:viewport", "input": "Shift+RMB" },
+    { "action": "edit.select_all", "context": "area:viewport", "input": "Ctrl+A" },
+    { "action": "edit.select_invert", "context": "area:viewport", "input": "Ctrl+I" },
+    { "action": "edit.select_none", "context": "area:viewport", "input": "Alt+A" },
+    { "action": "edit.select_none", "context": "tool:select", "input": "Escape" },
+    { "action": "edit.nudge", "context": "area:viewport", "input": "Left", "params": { "key": "left" } },
+    { "action": "edit.nudge", "context": "area:viewport", "input": "Right", "params": { "key": "right" } },
+    { "action": "edit.nudge", "context": "area:viewport", "input": "Up", "params": { "key": "up" } },
+    { "action": "edit.nudge", "context": "area:viewport", "input": "Down", "params": { "key": "down" } },
+    { "action": "edit.nudge", "context": "area:viewport", "input": "PageUp", "params": { "key": "pageup" } },
+    { "action": "edit.nudge", "context": "area:viewport", "input": "PageDown", "params": { "key": "pagedown" } },
+    { "action": "brush.hollow", "context": "area:viewport", "input": "Ctrl+H" },
+    { "action": "brush.merge", "context": "area:viewport", "input": "Ctrl+M" },
 
     { "action": "grid.smaller", "context": "area:viewport", "input": "[" },
     { "action": "grid.larger",  "context": "area:viewport", "input": "]" },

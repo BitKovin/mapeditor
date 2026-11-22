@@ -13,6 +13,7 @@
 #include <QSettings>
 #include <QStatusBar>
 
+#include <cmath>
 #include <filesystem>
 
 #include <nlohmann/json.hpp>
@@ -25,6 +26,7 @@
 #include "render/viewport_window.h"
 #include "doc/selection.h"
 #include "tools/prefabize.h"
+#include "tools/select_ops.h"
 #include "render/picking.h"
 #include "render/render_thread.h"
 #include "ui/hide_dialog.h"
@@ -57,6 +59,63 @@ bool MainWindow::applyEdit(const tools::EditResult& r, bool selectResult) {
 bool MainWindow::deleteSelected() {
     if (!document_ || selection_->empty()) return false;
     return applyEdit(tools::deleteSelection(document_, selection_->items()));
+}
+
+bool MainWindow::canSelectItems() const {
+    return document_ && !meshMode() && !transforming() && !knifing() && !clipperActive() && !box_;
+}
+
+bool MainWindow::canNudge() const { return canSelectItems() && !transformSelection().empty(); }
+
+bool MainWindow::selectAllItems() {
+    if (!document_ || meshMode()) return false;
+    const std::vector<doc::SelRef> all = tools::pruneHidden(*document_, tools::selectableItems(*document_), hide_);
+    if (all.empty()) {
+        statusBar()->showMessage(QStringLiteral("Nothing to select"), 3000);
+        return false;
+    }
+    selection_->selectMany(*document_, all);
+    statusBar()->showMessage(QString("Selected %1 item%2").arg(all.size()).arg(all.size() == 1 ? "" : "s"), 3000);
+    return true;
+}
+
+bool MainWindow::invertSelectionItems() {
+    if (!document_ || meshMode()) return false;
+    const std::vector<doc::SelRef> rest = tools::pruneHidden(*document_, tools::invertedItems(*document_, selection_->items()), hide_);
+    if (rest.empty()) {
+        statusBar()->showMessage(QStringLiteral("Everything was selected"), 3000);
+        return false;
+    }
+    selection_->selectMany(*document_, rest);
+    statusBar()->showMessage(QString("Selected %1 item%2").arg(rest.size()).arg(rest.size() == 1 ? "" : "s"), 3000);
+    return true;
+}
+
+bool MainWindow::deselectAll() {
+    if (!selection_ || selection_->empty()) return false;
+    selection_->clear();
+    return true;
+}
+
+bool MainWindow::nudgeSelected(const std::string& key, bool fine) {
+    if (!document_ || meshMode() || transforming()) return false;
+    const std::vector<doc::SelRef> sels = transformSelection();
+    if (sels.empty()) return false;
+    render::ViewportWindow* vp = activeViewport();
+    const render::CameraBasis b = vp ? vp->rig().active().basis() : render::CameraBasis{{1, 0, 0}, {0, 1, 0}, {0, 0, -1}};
+    // looking straight down / up (top and bottom views): the screen's up is the forward of the ground
+    const render::Vec3 fwd = std::fabs(b.forward.y) > 0.7 ? b.up : b.forward;
+    tools::V3 dir = tools::nudgeDirection(key, {b.right.x, b.right.y, b.right.z}, {fwd.x, fwd.y, fwd.z});
+    if (dir[0] == 0 && dir[1] == 0 && dir[2] == 0) return false;
+    double step = vp ? render::snapStep(vp->rig().settings()) : 0.25;
+    if (step <= 0) step = 0.25;
+    if (fine) step /= 8;
+    for (double& c : dir) c *= step;
+    const auto after = tools::transformSelections(document_, sels, tools::translateBy(dir), false, 0, true);
+    if (!after || after == document_) return false;
+    if (!commitEdit("Nudge", after)) return false;
+    statusBar()->showMessage(QString("Nudged %1 m").arg(step), 2000);
+    return true;
 }
 
 bool MainWindow::duplicateSelected() {
