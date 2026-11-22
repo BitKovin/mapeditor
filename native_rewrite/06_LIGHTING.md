@@ -242,8 +242,19 @@ deterministic function of (scene, pass count) for a fixed schedule — tests rel
 > the bounce light. `render/entity_lights` (`EntityLightProducer`: newest request wins, 0.4 s of quiet first, off the UI thread) turns the result into a table of entries (ambient, directed, dir) in
 > the texture meta buffer (`TextureTable::setEntityLights`, vec4 4096 and up); a brush entity's entry travels in bits 8 and up of its draw's firstInstance (`kObjEntityShift`), a model's in the unused
 > `w` of the first column of its instance matrix. `mesh.frag` / `model.frag` light with `ambient + directed * max(0, n . dir)` * exposure + brightness; the ray traced Lit view writes the finished colour into
-> the G-buffer (normal alpha 0.7) and the compose pass shows it as it is. Unlit ignores it. Not built: bounce light in the probes, light style layers (the base layer only), the whole grid,
-> the lightvol sample overlay, the GPU port (the CPU bake of a few hundred probes takes a fraction of a second on demo_lit).
+> the G-buffer (normal alpha 0.7) and the compose pass shows it as it is. Unlit ignores it. Not built: light style layers (the base layer only), the whole grid,
+> the lightvol sample overlay, the GPU port.
+>
+> **As built (T10.2, 2026-11-22, the user: "it should be very close to compiled map"): bounce light in the entity probes.** The Core's probes gather their bounce light from the lightmap atlas of the
+> bake (`core::gatherCpu` over S = Db + I); the editor's lightmaps live on the GPU and hold direct light only, so `light/entity_bounce` (`EntityBounce`) gathers from SURFELS: the points the cosine
+> weighted rays hit (32 rays per probe normal; merged per triangle and 0.5 m cell), each with its own bounce weighted direct light Db (`core::evaluateDirectWithBounceCpu`, the same lights,
+> shadows and `bounce` weights as the lightmaps; 4 area / 8 sky rays, their noise cancels in the probe) and an indirect part gathered from further surfels (16 rays each, 3 levels deep, a work bound of 60 000 surfels).
+> The albedo is 0.7 times the texture colour at the hit (`attachAlbedo` on an occluder mesh built with an empty layout: the textures come from a `core::AlbedoLibrary` the producer keeps), rays that miss bring nothing.
+> What lies beyond the third level is the geometric series of the measured loop gain (`Db / (1 - gain)`, gain <= 0.85), and 4 Jacobi sweeps S = Db + I(S) settle the surfels, so the result approaches the many bounces
+> of the compiled map. Only the 8 corner probes of the point's cell are baked (the rest of the 6 x 6 x 6 block only when no corner is valid, a door inside a wall), all points share the surfels. Measured against the Core's own
+> light volume (`core::bakeProbesCpu` over the bounce source of a bouncing `core::LiveBaker`, textured albedo 0.7) on demo_lit: the mean light of three models in the room is within 1.1 % (direct only: 51 % too dark), 0.19 s
+> for the bake. lvl2 (13 brush entities): 3.2 s per bake (0.85 s of it without bounces), off the UI thread, newest request wins. Not verified: lvl2 against a compiled map (the Core reference does not
+> converge there in a test), light styles (base layer only: styled lights are missing from the entity's light), whole grid.
 
 ## 12. Denoising
 

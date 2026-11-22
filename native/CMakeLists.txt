@@ -180,7 +180,7 @@ else()
 endif()
 native_module(light  SOURCES src/light/module_info.cpp src/light/page_allocator.cpp src/light/page_allocator.h src/light/layout.cpp src/light/layout.h src/light/page_images.cpp src/light/page_images.h src/light/samples.cpp src/light/samples.h src/light/accel.cpp src/light/accel.h
                      src/light/light_pack.cpp src/light/light_pack.h src/light/results.cpp src/light/results.h src/light/passes.cpp src/light/passes.h src/light/mailbox.cpp src/light/mailbox.h
-                     src/light/lit_mesh.cpp src/light/lit_mesh.h src/light/light_link.cpp src/light/light_link.h src/light/lighting_service.cpp src/light/lighting_service.h src/light/entity_probes.cpp src/light/entity_probes.h
+                     src/light/lit_mesh.cpp src/light/lit_mesh.h src/light/light_link.cpp src/light/light_link.h src/light/lighting_service.cpp src/light/lighting_service.h src/light/entity_probes.cpp src/light/entity_probes.h src/light/entity_bounce.cpp src/light/entity_bounce.h
                      DEPENDS native_scene native_gpu)
 add_dependencies(native_light native_shaders)
 target_include_directories(native_light PRIVATE "${NATIVE_SHADER_GEN_DIR}")

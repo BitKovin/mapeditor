@@ -100,6 +100,12 @@ void EntityLightProducer::run() {
                 in.profile = r.profile;
                 in.assetsRoot = r.assetsRoot;
                 in.filter = r.filter;
+                if (!albedo_ || albedoRoot_ != r.assetsRoot || albedoProfile_ != r.profile.get()) {
+                    albedo_ = std::make_shared<core::AlbedoLibrary>(r.assetsRoot, *r.profile);
+                    albedoRoot_ = r.assetsRoot;
+                    albedoProfile_ = r.profile.get();
+                }
+                in.albedo = albedo_;
                 if (r.models) in.modelCentres = modelLightCentres(*r.models);
                 const light::EntityProbes probes = light::bakeEntityProbes(in, &skyCache_, solidCache_.get());
                 if (!probes.error.empty()) base::logWarning("light volume: " + probes.error);

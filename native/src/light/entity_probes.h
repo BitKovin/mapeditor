@@ -3,14 +3,15 @@
 // The game does not light them per pixel: it samples its light grid once at the centre of the entity (ambient + directed * max(0, n . dir), DESIGN §6.7). The editor does the same, with
 // the Core's own probe evaluator and fit (core::bakeProbesCpu, fitProbeDirectFirst, LightvolGrid::sample), but bakes only the probes around those entities instead of the whole grid:
 // a 6 x 6 x 6 block of the level's lattice (origin = bounds of the surfaces minus one cell, the level's `_lightvol_grid` or 1 m) around every sample point. Probes inside solids are skipped
-// like the export does, a sample falls back to the nearest valid probe within 3 cells (LightvolGrid::sample). Direct light, sky and the level's ambient; no bounce light and one style layer
-// (the base layer), see 06_LIGHTING.md section 11.
+// like the export does, a sample falls back to the nearest valid probe within 3 cells (LightvolGrid::sample). Direct light, sky and the level's ambient, plus the bounce light (T10.2, light/entity_bounce);
+// one style layer (the base layer), see 06_LIGHTING.md section 11.
 // Thread: any (pure; the work is for a background thread: it builds the occluders and a BVH of the level). Spec: 08_MILESTONES.md T10.1.
 #pragma once
 
 #include "scene/snapshot.h"   // first: core headers use `near` as a name
 
 #include <core/lighting_inputs.h>
+#include <core/albedo.h>
 #include <core/lightvol.h>
 #include <core/profile.h>
 
@@ -32,6 +33,8 @@ struct EntityProbeInputs {
     std::vector<std::array<double, 3>> modelCentres;         // world position every model is sampled at (the middle of its box), one probe each
     double defaultSourceSize = 0.25;                         // m: the same defaults the live bake gives lights without a size
     double defaultSunSize = 0.5;                             // degrees
+    bool bounces = true;                                     // gather the bounce light too (T10.2); false: direct light and sky only
+    std::shared_ptr<core::AlbedoLibrary> albedo;             // the textures the bounce rays pick colour from (null = one is made for the call; keep one to keep the decoded textures)
 };
 
 // What an entity is lit with: light(n) = ambient + directed * max(0, n . dir), linear (values above 1 are fine).
@@ -52,6 +55,8 @@ struct EntityProbes {
     std::vector<BrushEntityLight> brushEntities;
     std::vector<EntityLightValue> models;   // parallel to EntityProbeInputs::modelCentres
     size_t probes = 0;                      // probes baked
+    size_t surfels = 0, rays = 0;           // the bounce gather's work (0 without bounces)
+    double castSeconds = 0, directSeconds = 0;   // of `seconds`: the gather rays and the surfels' direct light
     double seconds = 0;
     std::string error;                      // "" = fine
 };

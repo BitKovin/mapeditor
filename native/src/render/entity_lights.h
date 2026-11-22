@@ -76,6 +76,9 @@ private:
     double quiet_;
     core::SkyTableCache skyCache_;
     std::shared_ptr<core::SolidSet::Cache> solidCache_;
+    std::shared_ptr<core::AlbedoLibrary> albedo_;   // decoded textures of the bounce rays: kept between bakes (a library of its own per game folder / profile)
+    std::filesystem::path albedoRoot_;
+    const core::GameProfile* albedoProfile_ = nullptr;
     mutable std::mutex mutex_;
     std::condition_variable wake_, idle_;
     Request pending_;
