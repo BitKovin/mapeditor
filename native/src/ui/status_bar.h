@@ -6,9 +6,11 @@
 #pragma once
 
 #include <QObject>
+#include <memory>
 #include <QString>
 
 class QLabel;
+class QMenu;
 class QTimer;
 class QToolButton;
 
@@ -34,8 +36,12 @@ public:
     // How many times the label texts really changed (a cheap way for tests to see that nothing was rebuilt without a reason).
     int updates() const { return updates_; }
     QToolButton* folderButton() const { return folder_; }
+    /// The Snapping menu the grid field opens with a click (snap on / off, grid size, rotation, scale of the active viewport); the actions run through the window.
+    std::unique_ptr<QMenu> buildSnapMenu() const;
+    QLabel* gridLabel() const { return grid_; }
 
 private:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void schedule();
     void set(QLabel* label, const QString& text);
 

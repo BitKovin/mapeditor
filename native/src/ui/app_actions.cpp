@@ -10,6 +10,7 @@
 #include "ui/main_window.h"
 #include "ui/brush_actions.h"
 #include "ui/select_actions.h"
+#include "ui/snap_actions.h"
 #include "ui/texture_actions.h"
 #include "ui/mesh_actions.h"
 
@@ -1102,6 +1103,7 @@ void registerAppActions(actions::Registry& r) {
     registerBrushActions(r);
     registerTextureActions(r);
     registerSelectActions(r);
+    registerSnapActions(r);
 }
 
 } // namespace native::ui

@@ -1,7 +1,13 @@
 // ui/status_bar -- see status_bar.h.
 #include "ui/status_bar.h"
 
+#include <cmath>
+
+#include <QActionGroup>
+#include <QCursor>
 #include <QLabel>
+#include <QMenu>
+#include <QMouseEvent>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolButton>
@@ -35,6 +41,9 @@ StatusFields::StatusFields(MainWindow& window) : QObject(&window), win_(window) 
     bar->addPermanentWidget(hint_, 1);
     tool_ = field(bar, "status:tool");
     grid_ = field(bar, "status:grid");
+    grid_->setToolTip(QStringLiteral("Click for the Snapping menu (snap, grid size, rotation, scale)."));
+    grid_->setCursor(Qt::PointingHandCursor);
+    grid_->installEventFilter(this);
     selection_ = field(bar, "status:selection");
     map_ = field(bar, "status:map");
     folder_ = new QToolButton(bar);
@@ -56,6 +65,43 @@ StatusFields::StatusFields(MainWindow& window) : QObject(&window), win_(window) 
 }
 
 void StatusFields::schedule() { timer_->start(); }
+
+bool StatusFields::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == grid_ && event->type() == QEvent::MouseButtonRelease && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
+        const std::unique_ptr<QMenu> menu = buildSnapMenu();
+        if (menu && !menu->isEmpty()) menu->exec(grid_->mapToGlobal(QPoint(0, 0)) - QPoint(0, menu->sizeHint().height()));
+        return true;
+    }
+    return QObject::eventFilter(watched, event);
+}
+
+std::unique_ptr<QMenu> StatusFields::buildSnapMenu() const {
+    render::ViewportWindow* vp = win_.activeViewport();
+    if (!vp) return nullptr;
+    const render::ViewportSettings s = vp->rig().settings();
+    auto menu = std::make_unique<QMenu>(grid_);
+    menu->setObjectName(QStringLiteral("snapMenu"));
+    MainWindow* w = &win_;
+    QAction* toggle = menu->addAction(QStringLiteral("Snap to grid"));
+    toggle->setCheckable(true);
+    toggle->setChecked(s.snapEnabled);
+    QObject::connect(toggle, &QAction::triggered, menu.get(), [w] { w->runAction("snap.toggle"); });
+    const auto values = [&](const char* title, const char* id, const std::vector<double>& list, double current, const QString& unit) {
+        QMenu* sub = menu->addMenu(QString::fromLatin1(title));
+        auto* group = new QActionGroup(sub);
+        for (const double v : list) {
+            QAction* a = sub->addAction(qs(tools::shortNumber(v)) + unit);
+            a->setCheckable(true);
+            a->setChecked(std::abs(v - current) < 1e-9);
+            group->addAction(a);
+            QObject::connect(a, &QAction::triggered, menu.get(), [w, id, v] { w->runAction(id, nlohmann::json{{"value", v}}); });
+        }
+    };
+    values("Grid size", "snap.grid_size", render::gridSizes(), s.gridSize, QStringLiteral(" m"));
+    values("Rotation snap", "snap.rotation", render::rotSnaps(), s.rotSnap, QString::fromUtf8("Â°"));
+    values("Scale snap", "snap.scale", render::scaleSnaps(), s.scaleSnap, QString());
+    return menu;
+}
 
 void StatusFields::set(QLabel* label, const QString& text) {
     if (label->text() == text) return;
