@@ -41,6 +41,12 @@ struct EntityOverlayOptions {
 
 constexpr float kEntityFillAlpha = 0.35f;   // GHOST_ALPHA * 0.7 of the Shell
 
+// Entity name labels (14_UI_REDESIGN.md 9.4): the name of a selected entity is always drawn (alpha 255); every other name carries kLabelNearAlpha (254), which the label shader
+// reads as "only near the camera": fully visible up to 6 m, faded out at 8 m, never in an orthographic view.
+constexpr uint32_t kLabelAlwaysRgba = 0xFFFFFFFFu;
+constexpr uint32_t kLabelNearRgba = 0xFEFFFFFFu;
+constexpr float kLabelNearFull = 6.0f, kLabelNearGone = 8.0f;   // metres (shaders/label.vert has the same numbers)
+
 EntityOverlay buildEntityOverlay(const scene::SceneSnapshot& snapshot, const std::vector<doc::SelRef>& selection, const core::EntityDefinitions* defs,
                                  const EntityOverlayOptions& options = {});
 

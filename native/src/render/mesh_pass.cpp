@@ -331,6 +331,7 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
         p.eye[0] = ov.extent[0];
         p.eye[1] = ov.extent[1];
         p.misc[1] = static_cast<float>(ov.atlasTexture);
+        p.misc[2] = view.perspective ? 1.0f : 0.0f;   // label.vert: the near-only fade of the entity names needs a perspective view
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdPushConstants(cmd, layout_, stages, 0, sizeof(p), &p);
         vkCmdBindVertexBuffers(cmd, 0, 1, &list.buffer, &list.offset);

@@ -26,4 +26,6 @@ void main() {
     }
     vUv = aUv;
     vColor = aColor;
+    // the names of unselected entities (alpha 254 / 255, see render/entity_overlay.h) show only near the camera: full up to 6 m, gone at 8 m, never in an orthographic view
+    if (aColor.a < 0.999) vColor.a *= pc.misc.z > 0.5 ? 1.0 - smoothstep(6.0, 8.0, clip.w) : 0.0;
 }

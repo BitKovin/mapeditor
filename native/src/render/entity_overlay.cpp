@@ -108,7 +108,7 @@ EntityOverlay buildEntityOverlay(const scene::SceneSnapshot& snap, const std::ve
         }
         if (opt.boxes) {
             const scene::V3 centre = scene::toWorld(ob, {(ob.min[0] + ob.max[0]) / 2, (ob.min[1] + ob.max[1]) / 2, (ob.min[2] + ob.max[2]) / 2});
-            out.labels.push_back({e.classname, centre, 0xFFFFFFFFu});
+            out.labels.push_back({e.classname, centre, picked ? kLabelAlwaysRgba : kLabelNearRgba});
         }
         if (opt.lightGizmos && scene::isModernLightClass(e.classname)) {
             const core::EntClass* def = defs ? defs->find(e.classname) : nullptr;

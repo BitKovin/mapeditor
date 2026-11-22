@@ -385,3 +385,38 @@ TEST_CASE("glyph atlas: text is laid out as quads centred on the anchor") {
     native::render::layoutText(atlas, "", at, 0xFFFFFFFFu, none);   // outside the atlas: nothing
     CHECK(none.empty());
 }
+
+// T14.13: the entity name labels: a selected entity's name is always drawn, every other name is marked "near only" (the label shader fades it out between 6 and 8 m).
+#include "doc/edit.h"
+#include "doc/io.h"
+#include "doc/selection.h"
+#include "render/entity_overlay.h"
+
+TEST_CASE("entity name labels: selected names always, the others near the camera only") {
+    using namespace native;
+    const doc::LoadResult r = doc::loadDocumentText(R"({"schemaVersion": "0.2", "entities": []})");
+    REQUIRE(r.version);
+    doc::VersionEditor ed(r.version);
+    for (const char* id : {"a", "b"}) {
+        core::Entity e = ent(id, "info_player_start");
+        REQUIRE(ed.addEntity(e));
+    }
+    scene::SceneSnapshot snap;
+    snap.doc = ed.finish();
+    REQUIRE(snap.doc);
+
+    const render::EntityOverlay none = render::buildEntityOverlay(snap, {}, nullptr);
+    REQUIRE(none.labels.size() == 2);
+    for (const render::TextItem& t : none.labels) CHECK(t.rgba == render::kLabelNearRgba);
+
+    const render::EntityOverlay picked = render::buildEntityOverlay(snap, {doc::SelRef::entity("a")}, nullptr);
+    REQUIRE(picked.labels.size() == 2);
+    int always = 0, near = 0;
+    for (const render::TextItem& t : picked.labels) {
+        if (t.rgba == render::kLabelAlwaysRgba) ++always;
+        if (t.rgba == render::kLabelNearRgba) ++near;
+    }
+    CHECK(always == 1);
+    CHECK(near == 1);
+    CHECK((render::kLabelNearRgba >> 24) < 255);   // the shader tells the two apart by the alpha
+}
