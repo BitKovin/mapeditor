@@ -43,6 +43,8 @@
 #include "gpu/device.h"
 #include "light/entity_probes.h"
 #include "light/light_link.h"
+#include "model_builder.h"
+#include "scene/model_store.h"
 #include "light/lighting_service.h"
 #include "render/camera_rig.h"
 #include "render/entity_lights.h"
@@ -2157,4 +2159,85 @@ TEST_CASE("RT Lit: the ray budget serves the viewport being worked in first, the
     f.rt->removeViewport(id2);
     vkDestroySurfaceKHR(f.device->instance(), surface2, nullptr);
     DestroyWindow(hwnd2);
+}
+
+// A model that moves or turns must not leave its picture behind: the pixels it covered are what the scene without it shows again, from the first frame after the move.
+// (The user: "when I rotate entity it creates ghosting".) Both the filtered path and DLSS Ray Reconstruction.
+TEST_CASE("RT Lit: a model that moves away leaves no trail" * doctest::test_suite("gpu")) {
+    for (int dlss = 0; dlss <= 1; ++dlss) {
+        Fixture f;
+        if (!f.start(480, 300, dlss != 0)) return;
+        if (dlss && (!f.device->caps().streamline || !f.device->streamline() || !f.device->streamline()->status().rrSupported)) {
+            MESSAGE("DLSS Ray Reconstruction unavailable: that half skipped");
+            return;
+        }
+        const auto profile = std::make_shared<core::GameProfile>(core::loadProfile(f.root));
+        const core::LightingClasses classes = core::LightingClasses::fromProfile(*profile);
+        f.rt->setRtLighting(render::rtLightingOf(*f.snapshot->doc));
+        f.rt->setObjectRules(render::makeRtRules(*f.snapshot, classes));
+        f.rt->setRtLit(true, options(16));
+        f.mode = 1;
+        f.dlss = dlss;
+
+        const fs::path dir = fs::temp_directory_path() / ("rt_model_trail_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(dir / "models");
+        {
+            modeltest::Builder b;
+            const int pos = b.floats({-0.8f, -0.8f, 0, 0.8f, -0.8f, 0, 0, 0.8f, 0, 0, 0.8f, 0, 0.8f, -0.8f, 0, -0.8f, -0.8f, 0}, "VEC3");
+            const nlohmann::json g = b.document({{"meshes", nlohmann::json::array({nlohmann::json{{"primitives", nlohmann::json::array({nlohmann::json{{"attributes", {{"POSITION", pos}}}}})}}})}, {"nodes", nlohmann::json::array({nlohmann::json{{"mesh", 0}}})}});
+            const std::vector<uint8_t> bytes = b.glb(g);
+            std::ofstream(dir / "models/tri.glb", std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        }
+        scene::ModelStore store;
+        store.setSource(dir, nullptr, {});
+        const auto slot = store.get("models/tri.glb");
+        REQUIRE(slot.model);
+        const render::ViewState vs = f.view();
+        const double fwd[3] = {-4.05, -0.4, -6.0};
+        const double len = std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
+        const auto sceneAt = [&](double x, double y, double z) {
+            auto models = std::make_shared<render::ModelScene>();
+            render::ModelPlacement p;
+            p.model = slot.model;
+            p.matrix = native::scene::modelMatrix({x, y, z}, {0, 0, 0}, {1, 1, 1});
+            p.bounds = slot.model->data.bounds;
+            p.bounds.min = {x - 0.8, y - 0.8, z - 0.01};
+            p.bounds.max = {x + 0.8, y + 0.8, z + 0.01};
+            models->placements.push_back(p);
+            return models;
+        };
+        const double ex = vs.eye[0], ey = vs.eye[1], ez = vs.eye[2];
+        const double px = ex + fwd[0] / len * 1.8, py = ey + fwd[1] / len * 1.8, pz = ez + fwd[2] / len * 1.8;
+
+        REQUIRE(f.shot().ok());
+        REQUIRE(waitFor([&] { return f.rt->sceneInfo().texturesPending == 0 && f.rt->sceneInfo().scene.queued == 0; }, 120000));
+        f.cut++;
+        f.shot();
+        REQUIRE(f.converge());
+        for (int i = 0; i < (dlss ? 24 : 3); ++i) f.shot();
+        const render::CapturedImage empty = f.shot();
+        savePng(empty, dlss ? "model_trail_rr_empty.png" : "model_trail_empty.png");
+
+        f.rt->setModels(sceneAt(px, py, pz));
+        for (int i = 0; i < 6; ++i) f.shot();
+        REQUIRE(waitFor([&] { f.shot(); return f.info().tracingSkipped; }, 60000));
+        for (int i = 0; i < (dlss ? 24 : 3); ++i) f.shot();
+        const render::CapturedImage with = f.shot();
+        savePng(with, dlss ? "model_trail_rr_with.png" : "model_trail_with.png");
+        const double shown = rmse(with, empty);
+        MESSAGE("dlss " << dlss << ": the model is visible: rmse against the empty view " << shown);
+        CHECK(shown > 0.01);
+
+        // it moves out of view (a long way up): the first frame after, and the ones that follow, show the empty scene again
+        f.rt->setModels(sceneAt(px, py + 60.0, pz));
+        const render::CapturedImage first = f.shot();
+        savePng(first, dlss ? "model_trail_rr_first.png" : "model_trail_first.png");
+        for (int i = 0; i < 4; ++i) f.shot();
+        const render::CapturedImage later = f.shot();
+        savePng(later, dlss ? "model_trail_rr_later.png" : "model_trail_later.png");
+        MESSAGE("dlss " << dlss << ": trail rmse first frame " << rmse(first, empty) << ", after 5 frames " << rmse(later, empty));
+        CHECK(rmse(first, empty) < shown * 0.35);
+        CHECK(rmse(later, empty) < shown * 0.2);
+        fs::remove_all(dir);
+    }
 }

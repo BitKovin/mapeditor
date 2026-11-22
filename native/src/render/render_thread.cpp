@@ -110,12 +110,13 @@ struct RenderThread::Viewport {
     uint32_t rtDeferred = 0;              // iterations this viewport's ray traced frame was held back by the budget (R8)
     bool rtOutputReady = false;           // the output image holds a finished ray traced frame (a converged repaint reuses it)
     float rtOutStyleW[4] = {1.f, 1.f, 1.f, 1.f};   // the style values that frame was made with
-    std::array<uint64_t, 5> rtOutKey{};   // scene, acceleration structure, textures, sky, lights it was made with
+    std::array<uint64_t, 6> rtOutKey{};   // scene, acceleration structure, textures, sky, lights, models it was made with
     uint32_t rtOutSame = 0;               // full frames in a row whose inputs equalled their predecessor's
     bool rtRr = false;                    // the ray traced Lit targets were made for DLSS Ray Reconstruction
     int rtRrFailedMode = 0;               // Streamline refused Ray Reconstruction in this DLSS mode: the filter is used until the mode changes
     RtLighting rtLighting;
     uint64_t lastLightSerial = 0;         // the lights the accumulation was made with
+    uint64_t lastModelChanges = 0;        // the models (placements, light volume entries) the picture was made with: they are not in the traced scene, a change restarts the history
     uint64_t rtSlotFrame[2] = {0, 0};
     RtLitInfo rtInfo;
     std::unique_ptr<gpu::GpuTimer> timer;   // R8: render thread only
@@ -917,10 +918,11 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     }
 
     // ---- history rules: what restarts it, what keeps it
+    const uint64_t modelChanges = models_ ? models_->changeSerial() : 0;
     const uint64_t changes = scene_->lightingSerial();   // not changeSerial(): an edit that leaves every shape as it was (a texture) keeps the accumulated light
     const bool moved = !v.havePrev || view.viewProj != v.prevViewProj;
     const bool reset = created || !v.havePrev || view.cut != v.lastCut || view.renderMode != v.lastRenderMode || changes != v.lastChanges || !lighting.sameTrace(v.rtLighting) ||
-                         rtLightsUploaded_ != v.lastLightSerial;
+                         rtLightsUploaded_ != v.lastLightSerial || modelChanges != v.lastModelChanges;
     const bool still = !moved && !reset;
     const bool skip = still && v.rtStill >= options.targetSamples + 1;
     // A repaint of a converged picture (an overlay changed, the window was exposed) costs nothing: the output of the last full frame is still right when nothing that shapes it changed
@@ -929,9 +931,9 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     if (lightData) lightData->layerWeights(styleNow(), styleNowW);
     // everything the picture depends on besides the camera and the traced light: the shapes and materials, the textures that arrived, the sky, the acceleration structure, the display
     // settings of the compose pass (exposure), the style values
-    const std::array<uint64_t, 5> outKey = {scene_->changeSerial(), rtScene_->generation(), (static_cast<uint64_t>(textures_->assigned()) << 32) | skyIndex_,
-                                            textures_->pending() == 0 ? 1ull : 0ull, rtLightsUploaded_};
-    const bool sameInputs = outKey == v.rtOutKey && lighting == v.rtLighting && std::equal(styleNowW, styleNowW + 4, v.rtOutStyleW);
+    const std::array<uint64_t, 6> outKey = {scene_->changeSerial(), rtScene_->generation(), (static_cast<uint64_t>(textures_->assigned()) << 32) | skyIndex_,
+                                            textures_->pending() == 0 ? 1ull : 0ull, rtLightsUploaded_, modelChanges};
+    const bool sameInputs = outKey == v.rtOutKey && !(models_ && models_->animated()) && lighting == v.rtLighting && std::equal(styleNowW, styleNowW + 4, v.rtOutStyleW);
     const uint32_t settledAfter = options.targetSamples + 1 + (rr ? dlssPhaseCount(render.width, extent.width) + 6 : 1);
     if (still && !created && v.rtOutputReady && v.rtStill >= settledAfter && sameInputs && v.rtOutSame >= 2 && outKey[3] == 1) {
         ++v.rtStill;
@@ -963,6 +965,7 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     v.lastChanges = changes;
     v.rtLighting = lighting;
     v.lastLightSerial = rtLightsUploaded_;
+    v.lastModelChanges = modelChanges;
 
     // ---- 1. the G-buffer at the render size: albedo (the colour target), normal, distance
     if (rr) rtLit_->prepareReconstruction(cmd, v.rt);
