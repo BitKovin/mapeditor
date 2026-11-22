@@ -543,7 +543,7 @@ QWidget* DetailsPanel::makeRow(const tools::DetailsRow& row) {
             e->setObjectName(objectNameOf(row));
             e->setMinimumWidth(40);
             e->setEnabled(!row.readOnly);
-            if (row.mixed) e->setPlaceholderText(QString::fromUtf8("â (differs)"));
+            if (row.mixed) e->setPlaceholderText(QStringLiteral("(differs)"));
             const tools::DetailsRow r = row;
             QObject::connect(e, &QLineEdit::editingFinished, e, [this, r, e] {
                 if (e->text().toStdString() == r.value) return;
