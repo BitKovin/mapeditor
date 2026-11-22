@@ -47,27 +47,31 @@ GroupsPanel::GroupsPanel(MainWindow& window, QWidget* parent) : QWidget(parent),
     search_->setObjectName(QStringLiteral("search"));
     search_->setPlaceholderText(QStringLiteral("Search texture groups"));
     search_->setClearButtonEnabled(true);
-    newAdvanced_ = new QPushButton(QStringLiteral("New advanced group..."));
+    newAdvanced_ = new QPushButton(QStringLiteral("+ Advanced group"));
     newAdvanced_->setObjectName(QStringLiteral("btn:newAdvanced"));
-    newAdvanced_->setToolTip(QStringLiteral("Start a rule group from a template"));
-    newWall_ = new QPushButton(QStringLiteral("New wall set..."));
+    newAdvanced_->setToolTip(QStringLiteral("New advanced group: start a rule group from a template"));
+    newWall_ = new QPushButton(QStringLiteral("+ Wall set"));
     newWall_->setObjectName(QStringLiteral("btn:newWall"));
-    newWall_->setToolTip(QStringLiteral("Pieces of a wall in rows: window, door, plain, rooftop"));
-    newFrame_ = new QPushButton(QStringLiteral("New 9-slice frame..."));
+    newWall_->setToolTip(QStringLiteral("New wall set: pieces of a wall in rows (window, door, plain, rooftop)"));
+    newFrame_ = new QPushButton(QStringLiteral("+ 9-slice frame"));
     newFrame_->setObjectName(QStringLiteral("btn:newFrame"));
-    newFrame_->setToolTip(QStringLiteral("Corners, edges and middle from nine textures; edges and middle repeat"));
-    auto* refresh = new QPushButton(QStringLiteral("Rescan"));
+    newFrame_->setToolTip(QStringLiteral("New 9-slice frame: corners, edges and middle from nine textures; edges and middle repeat"));
+    auto* refresh = new QPushButton(QStringLiteral("↻"));
     refresh->setObjectName(QStringLiteral("btn:rescan"));
     refresh->setToolTip(QStringLiteral("Rescan the texture group folder"));
     count_ = new QLabel;
     count_->setObjectName(QStringLiteral("count"));
+    refresh->setFixedWidth(30);
     bar->addWidget(search_, 1);
-    bar->addWidget(newWall_);
-    bar->addWidget(newFrame_);
-    bar->addWidget(newAdvanced_);
-    bar->addWidget(refresh);
     bar->addWidget(count_);
+    bar->addWidget(refresh);
     v->addLayout(bar);
+    auto* newRow = new QHBoxLayout;   // the "new" buttons share a row of their own, so none of them is squeezed to "..."
+    for (QPushButton* b : {newWall_, newFrame_, newAdvanced_}) {
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        newRow->addWidget(b);
+    }
+    v->addLayout(newRow);
     empty_ = new QLabel;
     empty_->setObjectName(QStringLiteral("empty"));
     empty_->setWordWrap(true);

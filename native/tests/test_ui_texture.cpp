@@ -16,6 +16,7 @@
 #include "ui/app_actions.h"
 #include "ui/main_window.h"
 #include "ui/surface_panel.h"
+#include "ui/theme.h"
 #include "ui/texture_browser_panel.h"
 #include "tools/texturing/browser.h"
 
@@ -23,6 +24,8 @@
 #include <QDoubleSpinBox>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QLayout>
+#include <QScrollArea>
 
 using namespace native;
 using doc::SelRef;
@@ -327,4 +330,39 @@ TEST_CASE("texture browser: the textures that were used come back as Recent, the
     // a new window reads the lists: they are the settings' (here: the window's own while there is no settings file)
     b->toggleFavourite("base/wall02");
     CHECK(f.window.textureList("favourites") == std::vector<std::string>{"base/wall02"});
+}
+
+TEST_CASE("surface panel: every row fits a dock of 360 px (nothing is cut off at the right edge)") {
+    struct Dark {
+        Dark() { ui::applyAppearance({"dark", 100}); }
+        ~Dark() { ui::applyAppearance({"system", 100}); }
+    } dark;
+    Fixture f;
+    ui::SurfacePanel* panel = f.window.surface();
+    REQUIRE(panel);
+    auto* scroll = panel->findChild<QScrollArea*>();
+    REQUIRE(scroll);
+    REQUIRE(scroll->widget());
+    for (QWidget* w : scroll->widget()->findChildren<QWidget*>()) w->ensurePolished();   // the style sheet decides the sizes: a widget that was never shown is not styled yet
+    scroll->widget()->layout()->invalidate();
+    if (scroll->widget()->minimumSizeHint().width() > 360) {   // say which row is the widest
+        QLayout* l = scroll->widget()->layout();
+        for (int i = 0; i < l->count(); ++i) {
+            QLayoutItem* it = l->itemAt(i);
+            const int w = it->minimumSize().width();
+            if (w > 330) MESSAGE("row " << i << " needs " << w << " px" << (it->widget() ? it->widget()->metaObject()->className() : (it->layout() ? it->layout()->metaObject()->className() : "?")));
+        }
+    }
+    CHECK(scroll->widget()->minimumSizeHint().width() <= 360);
+}
+
+TEST_CASE("actions: no label, menu path or description has a broken UTF-8 character (a degree sign read as two Latin-1 letters)") {
+    Fixture f;
+    const auto broken = [](const std::string& text) { return text.find("\303\202") != std::string::npos || text.find("\303\203") != std::string::npos; };   // the UTF-8 of "A circumflex" and "A tilde"
+    for (const actions::ActionDef& d : f.window.registry().all()) {
+        CHECK_MESSAGE(!broken(d.label), d.id);
+        CHECK_MESSAGE(!broken(d.menu), d.id);
+        CHECK_MESSAGE(!broken(d.description), d.id);
+        for (const actions::MenuVariant& v : d.variants) CHECK_MESSAGE(!broken(v.label), d.id);
+    }
 }

@@ -135,10 +135,10 @@ void registerBrushActions(actions::Registry& r) {
         const bool flip = std::string(kind) == "flip";
         ActionDef d;
         d.id = flip ? "brush.flip" : "brush.rotate90";
-        d.label = flip ? "Flip" : "Rotate 90Â°";
+        d.label = flip ? "Flip" : "Rotate 90°";
         d.category = "Brush";
         d.description = flip ? "Mirrors the selection about its centre along the axis (Y is up)." : "Turns the selection by 90 degrees about an axis through its centre (dir -1 turns the other way).";
-        d.menu = flip ? "&Brush/&Flip" : "&Brush/&Rotate 90Â°";
+        d.menu = flip ? "&Brush/&Flip" : "&Brush/&Rotate 90°";
         d.menuSeparatorBefore = flip;
         d.contexts = {"area:viewport"};
         d.params = flip ? json{{"axis", "x"}} : json{{"axis", "x"}, {"dir", 1}};

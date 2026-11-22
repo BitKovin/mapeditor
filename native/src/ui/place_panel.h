@@ -66,6 +66,7 @@ public:
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void changeEvent(QEvent* event) override;   // a theme change redraws the shape icons in the new colours
 
 private:
     void buildShapes(QWidget* page);

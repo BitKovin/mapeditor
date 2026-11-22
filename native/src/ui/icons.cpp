@@ -54,6 +54,11 @@ const Def kDefs[] = {
     {"trash", R"(<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>)"},
     {"x", R"(<path d="M18 6 6 18M6 6l12 12"/>)"},
     {"star", R"(<path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.3-6.2 3.3L7 14.2 2 9.3l6.9-1z"/>)"},
+    {"cylinder", R"(<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/>)"},
+    {"wedge", R"(<path d="M3 19h18V6z"/><path d="M3 19 8 15"/>)"},
+    {"arch", R"(<path d="M4 20V11a8 8 0 0 1 16 0v9"/><path d="M9 20v-8a3 3 0 0 1 6 0v8"/>)"},
+    {"stairs", R"(<path d="M3 20v-4h4v-4h4V8h4V4h6v16z"/>)"},
+    {"sphere", R"(<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="9" ry="3.5"/><ellipse cx="12" cy="12" rx="3.5" ry="9"/>)"},
     {"folder", R"(<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/>)"},
 };
 

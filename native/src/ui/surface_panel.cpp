@@ -53,6 +53,7 @@ QDoubleSpinBox* SurfacePanel::spin(const QString& name, double lo, double hi, in
     s->setDecimals(decimals);
     s->setSingleStep(step);
     s->setKeyboardTracking(false);   // an edit is committed when it is finished, not on every digit
+    s->setMinimumWidth(54);          // the range's widest text would otherwise decide the width and push the panel wider than its dock
     QObject::connect(s, &QDoubleSpinBox::valueChanged, this, [this, name](double v) {
         if (!filling_) setField(name, v);
     });
@@ -64,6 +65,8 @@ QPushButton* SurfacePanel::button(const QString& text, const QString& name, cons
     b->setObjectName(QStringLiteral("btn:") + name);
     if (!tip.isEmpty()) b->setToolTip(tip);
     b->setFocusPolicy(Qt::NoFocus);   // a click must not take the keyboard from the viewport
+    b->setProperty("compact", true);  // less padding (theme.cpp): a row of five buttons fits a narrow dock
+    b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     QObject::connect(b, &QPushButton::clicked, this, [this, op, params] { win_.textureCommand(op, params); });
     return b;
 }
@@ -110,15 +113,17 @@ void SurfacePanel::build() {
         stretch_[a] = spin(QStringLiteral("stretch") + ax, -1000, 1000, 4, 0.1);
     }
     axisRow(0, QStringLiteral("Shift (texels)"), shift_[0], shift_[1]);
-    axisRow(1, QStringLiteral("Stretch (x natural)"), stretch_[0], stretch_[1]);
+    axisRow(1, QStringLiteral("Stretch"), stretch_[0], stretch_[1]);
     rotate_ = spin(QStringLiteral("rotate"), -360, 360, 2, 15);
     shear_ = spin(QStringLiteral("shear"), -10, 10, 3, 0.1);
-    axisRow(2, QStringLiteral("Rotate (deg) / Shear"), rotate_, shear_);
+    axisRow(2, QStringLiteral("Rotate / Shear"), rotate_, shear_);
+    grid->setColumnStretch(1, 1);
+    grid->setColumnStretch(2, 1);
     v->addLayout(grid);
 
     auto* row1 = new QHBoxLayout;
-    row1->addWidget(button(QStringLiteral("Mirror U"), QStringLiteral("mirror:0"), "mirror", {{"axis", 0}}));
-    row1->addWidget(button(QStringLiteral("Mirror V"), QStringLiteral("mirror:1"), "mirror", {{"axis", 1}}));
+    row1->addWidget(button(QStringLiteral("Flip U"), QStringLiteral("mirror:0"), "mirror", {{"axis", 0}}, QStringLiteral("Mirror the texture left-right")));
+    row1->addWidget(button(QStringLiteral("Flip V"), QStringLiteral("mirror:1"), "mirror", {{"axis", 1}}, QStringLiteral("Mirror the texture top-bottom")));
     row1->addWidget(button(QStringLiteral("Reset"), QStringLiteral("reset"), "reset", {}, QStringLiteral("Natural size, unrotated, from the bottom-left corner of the face")));
     row1->addWidget(button(QStringLiteral("Fit"), QStringLiteral("fit"), "fit", {}, QStringLiteral("The texture covers the face exactly once")));
     v->addLayout(row1);
@@ -128,11 +133,13 @@ void SurfacePanel::build() {
     v->addLayout(row2);
 
     auto* just = new QGroupBox(QStringLiteral("Justify"), body);
-    auto* jl = new QHBoxLayout(just);
-    for (const char* e : {"top", "bottom", "left", "right", "center"}) {
+    auto* jl = new QGridLayout(just);   // two rows of three: five buttons in one row do not fit a narrow dock
+    int jn = 0;
+    for (const char* e : {"top", "bottom", "center", "left", "right"}) {
         QString t = QString::fromLatin1(e);
         t[0] = t[0].toUpper();
-        jl->addWidget(button(t, QStringLiteral("justify:") + QString::fromLatin1(e), "justify", {{"edge", e}}));
+        jl->addWidget(button(t, QStringLiteral("justify:") + QString::fromLatin1(e), "justify", {{"edge", e}}), jn / 3, jn % 3);
+        ++jn;
     }
     v->addWidget(just);
 
@@ -149,9 +156,13 @@ void SurfacePanel::build() {
         const QString ax = a == 0 ? QStringLiteral("U") : QStringLiteral("V");
         mode_[a] = new QComboBox(rep);
         mode_[a]->setObjectName(QStringLiteral("mode") + ax);
+        mode_[a]->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        mode_[a]->setMinimumContentsLength(6);
         for (const char* l : kModeLabels) mode_[a]->addItem(QString::fromLatin1(l));
         edge_[a] = new QComboBox(rep);
         edge_[a]->setObjectName(QStringLiteral("edge") + ax);
+        edge_[a]->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        edge_[a]->setMinimumContentsLength(6);
         for (const char* l : kEdgeLabels) edge_[a]->addItem(QString::fromLatin1(l));
         rl->addWidget(new QLabel(ax, rep), a, 0);
         rl->addWidget(mode_[a], a, 1);

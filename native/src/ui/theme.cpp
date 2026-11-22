@@ -192,6 +192,7 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QPushButton { background: @bg3; color: @text; border: 1px solid @line; border-radius: 3px; padding: 3px 10px; min-height: 18px; }
 QPushButton:hover { background: @bg4; border-color: @lineHover; }
 QPushButton:pressed { background: @bg2; }
+QPushButton[compact="true"] { padding: 3px 4px; }
 QPushButton:checked { background: @accentBg; border-color: @accent; color: @textStrong; }
 QPushButton:disabled { color: @dim; background: @bg2; }
 QLineEdit { background: @bg0; color: @text; border: 1px solid @line2; border-radius: 3px; padding: 2px 5px; selection-background-color: @accentBg; selection-color: @textStrong; }
@@ -205,6 +206,9 @@ QToolButton:hover { background: @bg4; }
 QToolButton:pressed { background: @bg2; }
 QToolButton:checked { background: @accentBg; border-color: @accent; color: @textStrong; }
 QToolButton:disabled { color: @dim; }
+QToolButton[card="true"] { background: @bg3; border: 1px solid @line; border-radius: 4px; padding: 5px 4px; }
+QToolButton[card="true"]:hover { background: @bg4; border-color: @lineHover; }
+QToolButton[card="true"]:checked { background: @accentBg; border-color: @accent; }
 QToolButton::menu-indicator { image: none; width: 0; }
 #viewportHeader { background: @bg1; border-top: 2px solid transparent; border-bottom: 1px solid @line; }
 #viewportHeader[active="true"] { border-top: 2px solid @accent; }
@@ -215,6 +219,8 @@ QTabBar::tab { background: @bg0; color: @dim; padding: 5px 12px; border: none; b
 QTabBar::tab:hover { background: @bg2; color: @text; }
 QTabBar::tab:selected { background: @bg1; color: @textStrong; border-top: 2px solid @accent; }
 QTabBar QToolButton { border-radius: 0; }
+QTabWidget::pane { border: none; border-top: 1px solid @line; background: @bg1; }
+QTabWidget > QTabBar::tab { padding: 5px 9px; }
 )"), t);
     return out;
 }

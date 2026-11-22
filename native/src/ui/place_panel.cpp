@@ -27,10 +27,12 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <iterator>
 
 #include "core/entdef.h"
 #include "scene/point_box.h"
 #include "tools/prefab_preview.h"
+#include "ui/icons.h"
 #include "ui/main_window.h"
 
 namespace native::ui {
@@ -281,8 +283,11 @@ void PlacePanel::buildShapes(QWidget* page) {
         b->setObjectName(QStringLiteral("shape:") + QString::fromLatin1(tools::shapeName(s.id)));
         b->setText(QString::fromLatin1(s.label));
         b->setCheckable(true);
-        b->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        b->setMinimumHeight(34);
+        b->setIcon(icon(tools::shapeName(s.id)));
+        b->setIconSize(QSize(22, 22));
+        b->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        b->setProperty("card", true);   // a bordered tile (theme.cpp)
+        b->setMinimumHeight(52);
         b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         b->setToolTip(QString::fromLatin1(s.label) + QStringLiteral(": drag on a surface (the start snaps to the grid), release, move for height, click. Shift = equal sides, Esc = cancel"));
         group->addButton(b);
@@ -346,6 +351,12 @@ void PlacePanel::buildShapes(QWidget* page) {
     shapeHint_->setEnabled(false);
     v->addWidget(shapeHint_);
     v->addStretch(1);
+}
+
+void PlacePanel::changeEvent(QEvent* event) {
+    QWidget::changeEvent(event);
+    if (event->type() != QEvent::PaletteChange && event->type() != QEvent::StyleChange) return;
+    for (size_t i = 0; i < shapeButtons_.size() && i < std::size(kShapes); ++i) shapeButtons_[i]->setIcon(icon(tools::shapeName(kShapes[i].id)));
 }
 
 bool PlacePanel::eventFilter(QObject* watched, QEvent* event) {
