@@ -4,11 +4,12 @@
 //   mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
 //                        [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]
 //                        [--layout <1|2|4>] [--log-input] [--render-mode <unlit|lit|lightingOnly>]
-//                        [--no-streamline] [--gpu-crash-dumps] [--dlss <off|ultraPerformance|performance|balanced|quality|dlaa>] [--rt-lit] [--rt-texel <n>] [--rt-bounces <0|1>]
+//                        [--no-streamline] [--gpu-crash-dumps] [--dlss <off|ultraPerformance|performance|balanced|quality|dlaa>] [--rt-lit|--no-rt-lit] [--rt-texel <n>] [--rt-bounces <0|1>]
 // --no-streamline creates the Vulkan device the normal way (no NVIDIA Streamline interposer: no Reflex, no DLSS), T6.7.
 // --dlss starts every perspective viewport with DLSS Super Resolution off / ultraPerformance / performance / balanced / quality / dlaa instead of its saved setting (T6.8).
-// --rt-lit shows the Lit and Lighting only modes of perspective viewports with the ray traced Lit path (R3: ambient, sun, sky, local lights with ray traced shadows; no bounces yet)
-// instead of the chunked bake, which then does not run. --rt-texel <n> = the lightmap look of that path: shading at the centres of a planar grid of n texels per metre, bilinearly
+// The ray traced Lit path is the default on a GPU with ray queries (T14.15): the Lit and Lighting only modes of perspective viewports use it (ambient, sun, sky, local lights with
+// ray traced shadows, bounces) instead of the chunked bake, which then does not run. --no-rt-lit (or --no-lighting) keeps the chunked bake; --rt-lit forces the ray traced path.
+// Viewports also start in the Lit mode (once per profile: the saved choice wins afterwards). --rt-texel <n> = the lightmap look of that path: shading at the centres of a planar grid of n texels per metre, bilinearly
 // weighted like the game samples its lightmaps (default 16, the game base density; 0 = smooth per-pixel light).
 // --gpu-crash-dumps enables the NV device diagnostics so a lost device writes gpu_crash_<time>.txt next to the log (T6.7).
 // --trace writes a Chrome trace-event file (chrome://tracing, Perfetto) of jobs / frames / bake steps.
@@ -31,7 +32,8 @@ struct AppOptions {
     bool validation = false;      // --validation
     bool noStreamline = false;    // --no-streamline
     bool gpuCrashDumps = false;   // --gpu-crash-dumps
-    bool rtLit = false;           // --rt-lit
+    bool rtLit = false;           // --rt-lit (forces the ray traced Lit path on)
+    bool noRtLit = false;         // --no-rt-lit: the chunked bake instead of the ray traced Lit path (which is the default on a ray query capable GPU)
     float rtTexel = 16.0f;        // --rt-texel: texels per metre of the lightmap look (0 = off)
     bool rtBounces = true;        // --rt-bounces 0|1: bounce light (the SHaRC radiance cache) of the ray traced Lit path
     std::string logFile;          // --log

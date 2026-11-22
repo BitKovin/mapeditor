@@ -2,7 +2,11 @@
 // selection is drawn as an outline (a real window and GPU: native_gui_tests).
 #include <doctest.h>
 
+#include <QImage>
 #include <QTemporaryDir>
+
+#include <cstdlib>
+#include <set>
 
 #include <filesystem>
 
@@ -126,7 +130,7 @@ TEST_CASE("clicks and drags in a viewport select, and the selection is outlined"
             for (uint32_t y = 0; y < img.height; ++y)
                 for (uint32_t x = img.width - 8; x < img.width - 1; ++x) {
                     const Rgb p = pixel(img, x, y);
-                    if (p.r > 200 && p.g > 200 && p.b > 200) { ++n; break; }
+                    if (p.r > 140 && p.g > 140 && p.b > 140) { ++n; break; }
                 }
             return n;
         };
@@ -147,4 +151,53 @@ TEST_CASE("clicks and drags in a viewport select, and the selection is outlined"
     }
     // nothing leaks but the glyph atlas image, which stays in the render thread's texture table for the life of the application
     CHECK(app.device->allocationStats().allocationCount <= app.baseAllocations + 1);
+}
+
+// The overlay lines (selection outline, entity boxes, gizmo, size labels' leaders) are anti-aliased quads, not 1 px hardware lines: the outline of a box seen at an angle
+// has pixels of every coverage between the background and the full colour.
+TEST_CASE("the selection outline is anti-aliased" * doctest::test_suite("gpu")) {
+    App app;
+    if (!app.ok) return;
+    base::JobPool pool(4);
+    QTemporaryDir dir;
+    ui::Services sv = app.services();
+    sv.jobs = &pool;
+    sv.assetsRoot = dir.path().toStdString();
+    {
+        ui::MainWindow window(sv);
+        window.resize(900, 650);
+        window.show();
+        REQUIRE(waitUntil([&] { return allReady(window); }));
+        window.setDocument(oneBox(), true);
+        REQUIRE(waitUntil([&] { return window.sceneReady() && window.picker() && window.picker()->objectCount() == 1; }, 20000));
+        pumpFor(200);
+        render::ViewportWindow* vp = window.viewports()[0].window;
+        vp->rig().fly().position = {3.1, 2.3, 5.2};
+        vp->rig().fly().yaw = 3.14159265358979 + 0.54;
+        vp->rig().fly().pitch = -0.38;
+        vp->viewChanged();
+        pumpFor(100);
+        window.selection().select(doc::SelRef::brush("w", "b"));
+        pumpFor(300);
+        const auto img = vp->capture();
+        REQUIRE(img.ok());
+        if (const QString out = qEnvironmentVariable("NATIVE_SHOT_DIR"); !out.isEmpty()) {
+            const QImage qi(img.rgba.data(), static_cast<int>(img.width), static_cast<int>(img.height), static_cast<qsizetype>(img.width) * 4, QImage::Format_RGBA8888);
+            qi.save(out + QStringLiteral("/aa_outline.png"));
+        }
+        // outline pixels: orange hue (red clearly above green above blue); count the distinct red levels they show
+        std::set<int> levels;
+        int partial = 0, full = 0;
+        for (uint32_t y = 0; y < img.height; ++y)
+            for (uint32_t x = 0; x < img.width; ++x) {
+                const Rgb p = pixel(img, x, y);
+                if (p.r > p.g + 20 && p.g > p.b + 8 && p.r > 70) {
+                    levels.insert(p.r / 8);
+                    if (p.r > 200) ++full; else ++partial;
+                }
+            }
+        CHECK(full > 40);
+        CHECK(partial > 40);       // the soft edges
+        CHECK(levels.size() >= 8);
+    }
 }

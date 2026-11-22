@@ -54,3 +54,10 @@ TEST_CASE("bad command lines report an error") {
     CHECK(parseArgs({}).options.dlss.empty());
     CHECK(parseArgs({"--help"}).options.help);
 }
+
+TEST_CASE("the ray traced Lit path: on by default on a capable GPU, --no-rt-lit and --rt-lit are read") {
+    CHECK_FALSE(parseArgs({}).options.noRtLit);
+    CHECK_FALSE(parseArgs({}).options.rtLit);
+    CHECK(parseArgs({"--no-rt-lit"}).options.noRtLit);
+    CHECK(parseArgs({"--rt-lit"}).options.rtLit);
+}

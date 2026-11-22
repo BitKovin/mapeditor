@@ -72,6 +72,7 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
         else if (a == "--no-streamline") o.noStreamline = true;
         else if (a == "--gpu-crash-dumps") o.gpuCrashDumps = true;
         else if (a == "--rt-lit") o.rtLit = true;
+        else if (a == "--no-rt-lit") o.noRtLit = true;
         else if (a == "--rt-texel") {
             std::string v;
             if (!value(v)) return r;

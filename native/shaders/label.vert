@@ -18,7 +18,10 @@ void main() {
     if (clip.w <= 1e-4) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // behind the camera: off screen
     } else {
-        clip.xy += aOffset * 2.0 / pc.eye.xy * clip.w;
+        // the anchor lands on a whole pixel, so the glyph texels map 1:1 onto the screen (crisp text that does not shimmer while the camera moves)
+        const vec2 ndc = clip.xy / clip.w;
+        const vec2 snapped = floor((ndc * 0.5 + 0.5) * pc.eye.xy + 0.5) / pc.eye.xy * 2.0 - 1.0;
+        clip.xy = (snapped + aOffset * 2.0 / pc.eye.xy) * clip.w;
         gl_Position = clip;
     }
     vUv = aUv;

@@ -12,6 +12,8 @@
 #include "native_shaders/mesh_glass_frag.spv.h"
 #include "native_shaders/mesh_vert.spv.h"
 #include "native_shaders/overlay_frag.spv.h"
+#include "native_shaders/overlay_line_frag.spv.h"
+#include "native_shaders/overlay_line_vert.spv.h"
 #include "native_shaders/overlay_vert.spv.h"
 #include "native_shaders/sky_bg_vert.spv.h"
 #include "render/glyph_atlas.h"
@@ -29,6 +31,8 @@ struct PushConstants {
 };
 static_assert(sizeof(PushConstants) == 112);
 
+constexpr float kLineWidthPx = 1.5f;   // the width of the overlay lines (anti-aliased, so a fraction of a pixel is fine)
+
 VkShaderModule makeModule(VkDevice dev, const uint32_t* words, size_t sizeBytes) {
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = sizeBytes;
@@ -42,6 +46,7 @@ struct PipelineSpec {
     bool vertexInput = true;
     bool overlay = false;      // coloured vertices (LineVertex), 16 bytes a vertex
     bool triangles = false;    // overlay: triangles instead of lines
+    bool aaLines = false;      // overlay: anti-aliased lines, one instance (two LineVertex) of six vertices a segment (shaders/overlay_line.vert)
     bool labels = false;       // text quads (LabelVertex), 32 bytes a vertex
     bool depthTest = true;
     bool depthBias = false;
@@ -64,6 +69,9 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat colorFor
     VkVertexInputBindingDescription binding{0, sizeof(scene::RenderVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputBindingDescription lineBinding{0, sizeof(LineVertex), VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription lineAttrs[2] = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0}, {1, 0, VK_FORMAT_R8G8B8A8_UNORM, 12}};
+    VkVertexInputBindingDescription segBinding{0, 2 * sizeof(LineVertex), VK_VERTEX_INPUT_RATE_INSTANCE};
+    VkVertexInputAttributeDescription segAttrs[4] = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0}, {1, 0, VK_FORMAT_R8G8B8A8_UNORM, 12},
+                                                    {2, 0, VK_FORMAT_R32G32B32_SFLOAT, 16}, {3, 0, VK_FORMAT_R8G8B8A8_UNORM, 28}};
     VkVertexInputAttributeDescription attrs[6] = {
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, static_cast<uint32_t>(offsetof(scene::RenderVertex, pos))},
         {1, 0, VK_FORMAT_R32_UINT, static_cast<uint32_t>(offsetof(scene::RenderVertex, normal))},
@@ -80,6 +88,11 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat colorFor
         vi.pVertexBindingDescriptions = &labelBinding;
         vi.vertexAttributeDescriptionCount = 4;
         vi.pVertexAttributeDescriptions = labelAttrs;
+    } else if (spec.overlay && spec.aaLines) {
+        vi.vertexBindingDescriptionCount = 1;
+        vi.pVertexBindingDescriptions = &segBinding;
+        vi.vertexAttributeDescriptionCount = 4;
+        vi.pVertexAttributeDescriptions = segAttrs;
     } else if (spec.overlay) {
         vi.vertexBindingDescriptionCount = 1;
         vi.pVertexBindingDescriptions = &lineBinding;
@@ -92,7 +105,7 @@ VkPipeline makePipeline(VkDevice dev, VkPipelineLayout layout, VkFormat colorFor
         vi.pVertexAttributeDescriptions = attrs;
     }
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    ia.topology = spec.overlay && !spec.triangles && !spec.labels ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    ia.topology = spec.overlay && !spec.triangles && !spec.labels && !spec.aaLines ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vp.viewportCount = 1;
     vp.scissorCount = 1;
@@ -175,25 +188,29 @@ MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat dep
     VkShaderModule fs = makeModule(dev, native::shaders::k_mesh_frag_spv, sizeof(native::shaders::k_mesh_frag_spv));
     VkShaderModule ovs = makeModule(dev, native::shaders::k_overlay_vert_spv, sizeof(native::shaders::k_overlay_vert_spv));
     VkShaderModule ofs = makeModule(dev, native::shaders::k_overlay_frag_spv, sizeof(native::shaders::k_overlay_frag_spv));
+    VkShaderModule alvs = makeModule(dev, native::shaders::k_overlay_line_vert_spv, sizeof(native::shaders::k_overlay_line_vert_spv));
+    VkShaderModule alfs = makeModule(dev, native::shaders::k_overlay_line_frag_spv, sizeof(native::shaders::k_overlay_line_frag_spv));
     PipelineSpec world;
     world.overlay = true;
     world.blend = true;
     world.depthWrite = false;
     world.depthOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     world.depthBias = true;
-    worldLines_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, ovs, ofs, world);
+    world.aaLines = true;
+    worldLines_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, alvs, alfs, world);
     PipelineSpec screen = world;
     screen.depthTest = false;
     screen.depthBias = false;
-    screenLines_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, ovs, ofs, screen);
+    screenLines_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, alvs, alfs, screen);
     PipelineSpec plain = world;
     plain.depthBias = false;
-    plainLines_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, ovs, ofs, plain);
+    plainLines_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, alvs, alfs, plain);
     PipelineSpec top = plain;
     top.depthTest = false;
-    topLines_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, ovs, ofs, top);
+    topLines_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, alvs, alfs, top);
     PipelineSpec fillSpec = plain;
     fillSpec.triangles = true;
+    fillSpec.aaLines = false;
     fills_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, ovs, ofs, fillSpec);
     VkShaderModule lvs = makeModule(dev, native::shaders::k_label_vert_spv, sizeof(native::shaders::k_label_vert_spv));
     VkShaderModule lfs = makeModule(dev, native::shaders::k_label_frag_spv, sizeof(native::shaders::k_label_frag_spv));
@@ -207,6 +224,8 @@ MeshPass::MeshPass(const gpu::Device& device, VkFormat colorFormat, VkFormat dep
     vkDestroyShaderModule(dev, lfs, nullptr);
     vkDestroyShaderModule(dev, ovs, nullptr);
     vkDestroyShaderModule(dev, ofs, nullptr);
+    vkDestroyShaderModule(dev, alvs, nullptr);
+    vkDestroyShaderModule(dev, alfs, nullptr);
     PipelineSpec opaque;
     opaque_ = makePipeline(dev, layout_, colorFormat_, depthFormat_, vs, fs, opaque);
     PipelineSpec blended;
@@ -298,10 +317,13 @@ void MeshPass::record(VkCommandBuffer cmd, const ViewState& view, const GpuScene
         if (list.count == 0) return;
         PushConstants p = pc;
         for (int i = 0; i < 16; ++i) p.viewProj[i] = static_cast<float>(m[static_cast<size_t>(i)]);
+        p.eye[0] = ov.extent[0];
+        p.eye[1] = ov.extent[1];
+        p.misc[2] = kLineWidthPx;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdPushConstants(cmd, layout_, stages, 0, sizeof(p), &p);
         vkCmdBindVertexBuffers(cmd, 0, 1, &list.buffer, &list.offset);
-        vkCmdDraw(cmd, list.count, 1, 0, 0);
+        vkCmdDraw(cmd, 6, list.count / 2, 0, 0);   // a quad (instance) a segment, see overlay_line.vert
     };
     const auto text = [&](VkPipeline pipeline, const LineList& list) {
         if (list.count == 0 || ov.atlasTexture == 0) return;

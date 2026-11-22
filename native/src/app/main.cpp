@@ -79,7 +79,9 @@ int main(int argc, char** argv) {
         return 3;
     }
     native::render::RenderThread renderThread(*device);
-    if (parsed.options.rtLit) {
+    // the ray traced Lit view is the default wherever the GPU can do ray queries (--no-rt-lit / --no-lighting opt out, --rt-lit forces it)
+    const bool rtLit = parsed.options.rtLit || (!parsed.options.noRtLit && !parsed.options.noLighting && device->caps().lit());
+    if (rtLit) {
         native::render::RtLitOptions rtOptions;
         rtOptions.lightmapTexelsPerMeter = parsed.options.rtTexel;
         rtOptions.bounces = parsed.options.rtBounces;
@@ -98,7 +100,7 @@ int main(int argc, char** argv) {
     services.assetsRoot = parsed.options.assetsRoot;
     services.device = device.get();
     services.renderThread = &renderThread;
-    services.rtLit = parsed.options.rtLit;
+    services.rtLit = rtLit;
     services.vulkanInstance = &vulkanInstance;
     services.settings = screenshotRun ? nullptr : &layoutSettings;
     native::ui::applyAppearance(native::ui::readAppearance(screenshotRun ? nullptr : &layoutSettings));   // a screenshot run shows the default look
@@ -117,6 +119,16 @@ int main(int argc, char** argv) {
         const auto mode = parsed.options.renderMode == "lit" ? native::render::RenderMode::Lit
                           : parsed.options.renderMode == "lightingOnly" ? native::render::RenderMode::LightingOnly : native::render::RenderMode::Unlit;
         for (const native::ui::ViewportPanel& panel : window.viewports()) panel.window->setRenderMode(mode);
+    } else if (rtLit && window.litModesAvailable()) {
+        // the ray traced preview is the default look: perspective viewports start in Lit once (the person's later choice is saved with the layout and wins); a screenshot run always shows it
+        const QString migrated = QStringLiteral("migrations/rtLitDefault");
+        if (screenshotRun || !layoutSettings.value(migrated, false).toBool()) {
+            for (const native::ui::ViewportPanel& panel : window.viewports()) {
+                const auto cam = panel.window->rig().mode();
+                if (cam == native::render::CameraMode::Fly || cam == native::render::CameraMode::Orbit) panel.window->setRenderMode(native::render::RenderMode::Lit);
+            }
+            if (!screenshotRun) layoutSettings.setValue(migrated, true);
+        }
     }
     if (!parsed.options.dlss.empty()) {
         const native::render::DlssMode mode = native::render::dlssModeFromName(parsed.options.dlss);
