@@ -4,6 +4,7 @@
 #include <QGuiApplication>
 #include <QStatusBar>
 
+#include <algorithm>
 #include <cmath>
 
 #include "core/document.h"
@@ -12,6 +13,7 @@
 #include "render/picking.h"
 #include "render/render_thread.h"
 #include "render/viewport_window.h"
+#include "tools/entity_edit.h"
 #include "tools/gizmo.h"
 #include "tools/shapes.h"
 #include "ui/box_drawing.h"
@@ -32,12 +34,13 @@ bool shiftHeld() { return QGuiApplication::queryKeyboardModifiers().testFlag(Qt:
 void MainWindow::setTool(Tool tool) {
     if (tool_ == tool) return;
     if (tool != Tool::Box) cancelBox();
-    if (tool == Tool::Box && meshMode()) leaveMeshMode();   // drawing a new solid ends the mesh editing of the brush
+    if ((tool == Tool::Box || tool == Tool::Decal) && meshMode()) leaveMeshMode();   // drawing a new solid ends the mesh editing of the brush
     tool_ = tool;
     refreshGizmos();
     emit toolChanged();
-    statusBar()->showMessage(tool == Tool::Box ? QStringLiteral("Box tool: drag a rectangle, move for the height, click to finish (Shift: square / cube, Esc cancels)")
-                                               : QStringLiteral("Select tool"),
+    statusBar()->showMessage(tool == Tool::Box     ? QStringLiteral("Box tool: drag a rectangle, move for the height, click to finish (Shift: square / cube, Esc cancels)")
+                             : tool == Tool::Decal ? QStringLiteral("Decal tool: click a surface. The texture is the active one (use one with an alpha channel)")
+                                                   : QStringLiteral("Select tool"),
                              5000);
 }
 
@@ -59,6 +62,33 @@ void MainWindow::turnShape(int quarterTurns) {
     tools::ShapeParams p = shapeParams_;
     p.turn = ((p.turn + quarterTurns) % 4 + 4) % 4;
     setShapeParams(p);
+}
+
+// ---- the decal tool ----------------------------------------------------------------------------------------------------------------------
+
+void MainWindow::setDecalParams(const DecalParams& params) {
+    DecalParams p = params;
+    const auto clampSize = [](double v) { return std::clamp(v, 0.05, 50.0); };
+    p.width = clampSize(p.width);
+    p.height = clampSize(p.height);
+    p.depth = std::clamp(p.depth, 0.05, 10.0);
+    if (p == decalParams_) return;
+    decalParams_ = p;
+    emit toolChanged();
+}
+
+bool MainWindow::placeDecalAt(render::ViewportWindow* vp, QPointF p) {
+    if (!vp || !document_ || !picker_) return false;
+    const QSizeF size = vp->size();
+    if (size.width() < 1 || size.height() < 1) return false;
+    const render::Ray ray = rayAt(vp->currentView(), vp->size(), p);
+    const std::optional<render::PickHit> hit = picker_->pick(ray, pickOptions());
+    if (!hit || hit->brushId.empty()) {
+        statusBar()->showMessage(QStringLiteral("Click on a surface to place a decal"), 4000);
+        return false;
+    }
+    return applyEdit(tools::addDecal(document_, activeTexture_, {hit->point.x, hit->point.y, hit->point.z}, {hit->normal.x, hit->normal.y, hit->normal.z}, decalParams_.width,
+                                     decalParams_.height, decalParams_.depth));
 }
 
 // ---- drawing ----------------------------------------------------------------------------------------------------------------------------

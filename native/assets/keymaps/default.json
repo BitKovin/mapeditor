@@ -77,6 +77,7 @@
     { "action": "box.draw",   "context": "tool:box",      "input": "LMB drag" },
     { "action": "box.draw",   "context": "tool:box",      "input": "Shift+LMB drag" },
     { "action": "box.cancel", "context": "tool:box",      "input": "Escape" },
+    { "action": "decal.place", "context": "tool:decal",   "input": "LMB" },
 
     { "action": "brush.clipper",   "context": "area:viewport", "input": "X" },
     { "action": "brush.clip_back",  "context": "brush:clipper", "input": "Enter" },

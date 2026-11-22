@@ -186,3 +186,53 @@ TEST_CASE("the box and shape tools draw in a viewport as one undo step" * doctes
     }
     CHECK(app.device->allocationStats().allocationCount <= app.baseAllocations + 1);
 }
+
+TEST_CASE("the decal tool lays a projector on the surface under the click, one undo step" * doctest::test_suite("gpu")) {
+    App app;
+    if (!app.ok) return;
+    base::JobPool pool(4);
+    QTemporaryDir dir;
+    ui::Services sv = app.services();
+    sv.jobs = &pool;
+    sv.assetsRoot = dir.path().toStdString();
+    {
+        ui::MainWindow window(sv);
+        window.resize(900, 650);
+        window.show();
+        REQUIRE(waitUntil([&] { return allReady(window); }));
+        window.setDocument(oneBox(), true);
+        REQUIRE(waitUntil([&] { return window.sceneReady() && window.picker() && window.picker()->objectCount() == 1; }, 20000));
+        REQUIRE(window.frameScene());
+        pumpFor(300);
+        render::ViewportWindow* vp = window.viewports()[0].window;
+        const QPoint top = screenOf(vp, {0, 1, 0});   // on the top face of the box
+        window.setActiveTexture("dev/grate");
+        window.setDecalParams({2, 1.5, 0.4});
+        window.setTool(ui::MainWindow::Tool::Decal);
+        CHECK(window.modeContext() == "tool:decal");
+        sendMouse(vp, QEvent::MouseMove, Qt::NoButton, Qt::NoButton, top);
+        sendMouse(vp, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, top);
+        sendMouse(vp, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, top);
+        pumpFor(100);
+        REQUIRE(window.document()->entities.size() == 2);
+        const core::Entity& e = window.document()->entities[1]->typed;
+        CHECK(e.classname == "decal");
+        CHECK(e.keyvalues.at("texture") == "dev/grate");
+        CHECK(e.keyvalues.at("width") == "2");
+        CHECK(e.keyvalues.at("height") == "1.5");
+        CHECK(e.keyvalues.at("depth") == "0.4");
+        CHECK(e.origin.y == doctest::Approx(1).epsilon(1e-6));   // on the top face
+        CHECK(e.angles.x == doctest::Approx(0).epsilon(1e-6).scale(1));   // looking straight down: the zero angles
+        CHECK(window.history().undoLabel() == "Add decal");
+        CHECK(window.tool() == ui::MainWindow::Tool::Decal);   // the tool stays for the next one
+
+        // a click on nothing places nothing
+        sendMouse(vp, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, QPoint(3, 3));
+        sendMouse(vp, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, QPoint(3, 3));
+        pumpFor(100);
+        CHECK(window.document()->entities.size() == 2);
+        window.history().undo();
+        CHECK(window.document()->entities.size() == 1);
+    }
+    CHECK(app.device->allocationStats().allocationCount <= app.baseAllocations + 1);
+}

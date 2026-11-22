@@ -209,13 +209,14 @@ void ToolOptionsPanel::refreshNow() {
     syncing_ = true;
     const bool box = win_.tool() == MainWindow::Tool::Box;
     const tools::ShapeId shape = win_.shape();
-    QString title = box ? QStringLiteral("Tool: Box") : QStringLiteral("Tool: Select");
+    const bool decal = win_.tool() == MainWindow::Tool::Decal;
+    QString title = box ? QStringLiteral("Tool: Box") : decal ? QStringLiteral("Tool: Decal") : QStringLiteral("Tool: Select");
     if (box)
         for (const ShapeEntry& s : kShapes)
             if (s.id == shape) title += QStringLiteral(" (") + QString::fromLatin1(s.label).toLower() + QStringLiteral(")");
-    if (!box && win_.meshMode()) title += QStringLiteral(", mesh mode");
+    if (!box && !decal && win_.meshMode()) title += QStringLiteral(", mesh mode");
     title_->setText(title);
-    selectGroup_->setVisible(!box);
+    selectGroup_->setVisible(!box && !decal);
     boxGroup_->setVisible(box);
 
     const render::ViewportWindow* vp = win_.activeViewport();

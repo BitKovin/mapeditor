@@ -522,7 +522,8 @@ void MainWindow::setContextsFor(render::ViewportWindow* vp) {
     } else if (vp) {
         const std::vector<std::string> v = viewportContexts(*vp);
         contexts.insert(contexts.end(), v.begin(), v.end());
-        contexts.push_back(modeContext() == "tool:box" ? "tool:box" : "tool:select");
+        const std::string mode = modeContext();
+        contexts.push_back(mode == "tool:box" || mode == "tool:decal" ? mode : "tool:select");
         if (meshMode()) {   // the mesh bindings are more specific than the select tool's
             contexts.push_back("mode:mesh");
             contexts.push_back(meshElement() == tools::mesh::SelMode::Vertex ? "mode:mesh.vertex" : meshElement() == tools::mesh::SelMode::Edge ? "mode:mesh.edge" : "mode:mesh.face");

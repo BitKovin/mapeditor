@@ -19,7 +19,7 @@ makes it unnecessary) · **gap** = not in native yet, needs a task or the user's
 | G5 | View cube / axis widget | 10 U6 (not in REQUIREMENTS) | medium | needs an overlay in the camera frame; ask |
 | G6 | Named selection sets, lasso select | 10 U9 (not in REQUIREMENTS) | medium | extras of the native plan, not Shell parity |
 | G7 | Electron-only items (§29 P1..P7: desktop app, one build script, single instance, Core restart) | §29 | — | **Replaced**: one process, no Core socket; single instance is not implemented (the editor can be started twice) |
-| G9 | Decal tool: click a surface to lay a projector (Place > Decals tab: width, height, depth; texture = the active one) | §8 line 115 | small | UI only, port of `decalDown` in `viewport.ts` |
+| G9 (done, T13.1) | Decal tool: click a surface to lay a projector (Place > Decals tab: width, height, depth; texture = the active one) | §8 line 115 | small | UI only, port of `decalDown` in `viewport.ts` |
 | G8 | Classic IBSP export | §10 (⬜), §26 F7 (💤) | — | Not planned in the Shell either |
 
 Items the Shell lists as 🟡 / ⬜ (surface inspector Patch Natural, hold-and-drag path select, lightmap UV editing, Scythe selection modes, E10 known gaps of the
@@ -117,7 +117,7 @@ export) are not parity targets: native carries the same open points.
 | Carving (also inside prefabs and by prefab content), fragments name their authored face, picking on carved surfaces | done | Core `derived`; `scene` builds from it; `render/picking` |
 | Hide subtractive shapes | done | view option |
 | Decals (projector entity, clipped onto carved surfaces, own lightmap mapping, rendering with alpha) | done | Core + `scene/render_mesh` (T3.x) |
-| Decal tool (click a surface, Place > Decals: width / height / depth) | **gap G9** | a decal entity can be placed from the Place list, there is no click-on-surface tool |
+| Decal tool (click a surface, Place > Decals: width / height / depth) | done (T13.1) | `decal.place` in `tool:decal`, `MainWindow::placeDecalAt`, Place > Decals tab |
 
 ### 9 Lighting (§9, §18, §23, §40)
 | Item | Status | Where |

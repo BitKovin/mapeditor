@@ -21,6 +21,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QListWidget;
 class QSpinBox;
 class QTabWidget;
@@ -62,6 +63,8 @@ public:
 
 private:
     void buildShapes(QWidget* page);
+    void buildDecals(QWidget* page);
+    void syncDecals();
     void fillEntityList(QListWidget* list, const std::vector<std::string>& classes, const QString& filter);
     void drawPrefabs();
     void makeNextIcon();
@@ -81,6 +84,8 @@ private:
     QComboBox* turn_ = nullptr;
     QLabel* shapeHint_ = nullptr;
     QWidget* paramRows_[8] = {};
+    QPushButton* decalButton_ = nullptr;
+    QDoubleSpinBox *decalWidth_ = nullptr, *decalHeight_ = nullptr, *decalDepth_ = nullptr;
     std::vector<std::string> prefabFiles_;
     std::unique_ptr<tools::PrefabPreviews> previews_;
     std::map<std::string, QIcon> icons_;          // a prefab with a null icon could not be read

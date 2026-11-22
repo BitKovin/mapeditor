@@ -27,7 +27,7 @@ QString KeyHelpOverlay::titleOf(const std::string& context) {
     static const std::pair<const char*, const char*> names[] = {
         {"global", "Everywhere"},       {"window:main", "Main window"},   {"area:viewport", "Viewport"},   {"view:perspective", "Perspective view"},
         {"view:fly", "Fly camera"},     {"view:orbit", "Orbit camera"},   {"view:ortho", "Orthographic view"}, {"tool:select", "Select tool"},
-        {"tool:box", "Box tool"},       {"modal:transform", "While moving / rotating / scaling"}, {"hold:camera.fly", "While flying"},
+        {"tool:box", "Box tool"},       {"tool:decal", "Decal tool"},       {"modal:transform", "While moving / rotating / scaling"}, {"hold:camera.fly", "While flying"},
     };
     for (const auto& n : names)
         if (context == n.first) return QString::fromLatin1(n.second);

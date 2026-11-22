@@ -131,6 +131,10 @@ PlacePanel::PlacePanel(MainWindow& window, QWidget* parent) : QWidget(parent), w
     lights_->setObjectName(QStringLiteral("lightList"));
     tabs_->addTab(lights_, QStringLiteral("Lights"));
 
+    auto* decals = new QWidget;
+    buildDecals(decals);
+    tabs_->addTab(decals, QStringLiteral("Decals"));
+
     // a click adds the thing where the camera looks
     QObject::connect(entities_, &QListWidget::itemClicked, this, [this](QListWidgetItem* it) {
         const std::string cls = it->data(Qt::UserRole).toString().toStdString();
@@ -339,7 +343,61 @@ void PlacePanel::buildShapes(QWidget* page) {
     v->addStretch(1);
 }
 
+void PlacePanel::buildDecals(QWidget* page) {
+    auto* v = new QVBoxLayout(page);
+    v->setContentsMargins(0, 4, 0, 0);
+    auto* go = new QPushButton(QStringLiteral("Decal tool"));
+    go->setObjectName(QStringLiteral("decalTool"));
+    go->setCheckable(true);
+    go->setToolTip(QStringLiteral("Click a surface to lay a decal on it. The texture is the one selected in the Textures dock (use one with an alpha channel)."));
+    v->addWidget(go);
+    const auto spin = [&](const char* name, const QString& label, double lo, double hi) {
+        auto* row = new QWidget;
+        auto* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->addWidget(new QLabel(label));
+        auto* s = new QDoubleSpinBox;
+        s->setObjectName(QString::fromLatin1(name));
+        s->setRange(lo, hi);
+        s->setDecimals(2);
+        s->setSingleStep(0.05);
+        h->addWidget(s, 1);
+        v->addWidget(row);
+        return s;
+    };
+    decalWidth_ = spin("decalWidth", QStringLiteral("Width (m)"), 0.05, 50);
+    decalHeight_ = spin("decalHeight", QStringLiteral("Height (m)"), 0.05, 50);
+    decalDepth_ = spin("decalDepth", QStringLiteral("Reach / depth (m)"), 0.05, 10);
+    auto* hint = new QLabel(QStringLiteral("A decal is a projector entity: move, rotate or delete it like any entity. The surface it paints follows carving and prefabs."));
+    hint->setWordWrap(true);
+    hint->setEnabled(false);
+    v->addWidget(hint);
+    v->addStretch(1);
+    QObject::connect(go, &QPushButton::clicked, this, [this] {
+        win_.setTool(win_.tool() == MainWindow::Tool::Decal ? MainWindow::Tool::Select : MainWindow::Tool::Decal);
+    });
+    const auto apply = [this] {
+        if (syncing_) return;
+        win_.setDecalParams({decalWidth_->value(), decalHeight_->value(), decalDepth_->value()});
+    };
+    for (QDoubleSpinBox* s : {decalWidth_, decalHeight_, decalDepth_}) QObject::connect(s, &QDoubleSpinBox::valueChanged, this, apply);
+    decalButton_ = go;
+    syncDecals();
+}
+
+void PlacePanel::syncDecals() {
+    if (!decalWidth_) return;
+    syncing_ = true;
+    const MainWindow::DecalParams& p = win_.decalParams();
+    decalWidth_->setValue(p.width);
+    decalHeight_->setValue(p.height);
+    decalDepth_->setValue(p.depth);
+    decalButton_->setChecked(win_.tool() == MainWindow::Tool::Decal);
+    syncing_ = false;
+}
+
 void PlacePanel::syncShape() {
+    syncDecals();
     syncing_ = true;
     const tools::ShapeParams& p = win_.shapeParams();
     const tools::ShapeId shape = win_.shape();

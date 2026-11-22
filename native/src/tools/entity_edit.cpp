@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include "doc/edit.h"
 #include "tools/box_tool.h"
@@ -229,6 +230,25 @@ EditResult addPointEntity(const BasePtr& base, const std::string& classname, con
     doc::VersionEditor ed(base);
     ed.addEntity(e);
     return done(ed, "Add " + classname, {doc::SelRef::entity(e.id)});
+}
+
+core::Vec3 decalAnglesFor(const core::Vec3& normal) {
+    constexpr double kDeg = 180.0 / 3.14159265358979323846;
+    const double len = std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+    if (len < 1e-9) return {0, 0, 0};
+    const core::Vec3 d{-normal.x / len, -normal.y / len, -normal.z / len};   // the projection direction: into the surface
+    const double pitch = std::acos(std::max(-1.0, std::min(1.0, -d.y)));
+    const double yaw = std::sin(pitch) < 1e-6 ? 0.0 : std::atan2(-d.x, -d.z);
+    return {pitch * kDeg, yaw * kDeg, 0};
+}
+
+EditResult addDecal(const BasePtr& base, const std::string& texture, const core::Vec3& point, const core::Vec3& normal, double width, double height, double depth) {
+    const auto num = [](double v) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%.6g", v);
+        return std::string(buf);
+    };
+    return addPointEntity(base, "decal", point, {{"texture", texture}, {"width", num(width)}, {"height", num(height)}, {"depth", num(depth)}}, decalAnglesFor(normal));
 }
 
 EditResult spawnInstance(const BasePtr& base, const std::string& file, const core::Vec3& origin) {

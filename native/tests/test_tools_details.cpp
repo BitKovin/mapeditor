@@ -2,6 +2,9 @@
 // matching parts of the Shell's actions tests.
 #include <doctest.h>
 
+#include <cmath>
+
+#include "core/decal.h"
 #include "core/entdef.h"
 #include "doc/edit.h"
 #include "doc/io.h"
@@ -506,4 +509,34 @@ TEST_CASE("details: several entities show the keyvalues they share; a value type
     const auto ar = tools::applyDetailsEdit(d, nullptr, e, tv);
     REQUIRE(ar.ok());
     for (const std::string& id : {a, b, c}) CHECK(entityOf(ar.version, id).keyvalues.at("tag") == "t1");
+}
+
+TEST_CASE("decal: the angles of a decal on a surface make its projection direction the inward normal") {
+    const core::Vec3 normals[] = {{0, 1, 0}, {0, -1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {0.6, 0.64, -0.48}, {-0.3, 0.2, 0.93}};
+    for (const core::Vec3& n : normals) {
+        const double len = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        core::Entity e;
+        e.classname = "decal";
+        e.angles = tools::decalAnglesFor(n);
+        const core::DecalProjector p = core::decalFromEntity(e);
+        CHECK(p.dir.x == doctest::Approx(-n.x / len).epsilon(1e-9).scale(1));
+        CHECK(p.dir.y == doctest::Approx(-n.y / len).epsilon(1e-9).scale(1));
+        CHECK(p.dir.z == doctest::Approx(-n.z / len).epsilon(1e-9).scale(1));
+    }
+}
+
+TEST_CASE("decal: addDecal adds a selected decal entity with the texture, size and angles; one undo step label") {
+    const auto d = doc::loadDocumentText(R"({"schemaVersion": "0.2", "entities": []})").version;
+    REQUIRE(d);
+    const auto r = tools::addDecal(d, "dev/grate", {1, 2, 3}, {0, 0, 1}, 2, 1.5, 0.25);
+    REQUIRE(r.version);
+    REQUIRE(r.version->entities.size() == 1);
+    const core::Entity& e = r.version->entities[0]->typed;
+    CHECK(e.classname == "decal");
+    CHECK(e.origin.y == doctest::Approx(2));
+    CHECK(e.keyvalues.at("texture") == "dev/grate");
+    CHECK(e.keyvalues.at("width") == "2");
+    CHECK(e.keyvalues.at("height") == "1.5");
+    CHECK(e.keyvalues.at("depth") == "0.25");
+    CHECK(r.label == "Add decal");
 }

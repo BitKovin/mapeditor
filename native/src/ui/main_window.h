@@ -387,12 +387,20 @@ public:
     bool beginResizeDrag(render::ViewportWindow* viewport, QPointF p);
 
     // ---- the box / shape tool (T4.2) ----
-    enum class Tool { Select, Box };
+    enum class Tool { Select, Box, Decal };
     Tool tool() const { return tool_; }
     void setTool(Tool tool);
     tools::ShapeId shape() const { return shape_; }
     void setShape(tools::ShapeId shape);   // also switches to the box tool
     const tools::ShapeParams& shapeParams() const { return shapeParams_; }
+    // The Decal tool (REQUIREMENTS 8): a click on a surface lays a projector `decal` entity on it with the active texture and this size (metres).
+    struct DecalParams {
+        double width = 1, height = 1, depth = 0.5;
+        bool operator==(const DecalParams&) const = default;
+    };
+    const DecalParams& decalParams() const { return decalParams_; }
+    void setDecalParams(const DecalParams& params);
+    bool placeDecalAt(render::ViewportWindow* vp, QPointF p);   // the projector of the surface under the pointer; false (with a status message) when there is none
     void setShapeParams(const tools::ShapeParams& params);
     void turnShape(int quarterTurns = 1);
     const std::string& activeTexture() const { return activeTexture_; }
@@ -953,6 +961,7 @@ private:
     Tool tool_ = Tool::Select;
     tools::ShapeId shape_ = tools::ShapeId::Box;
     tools::ShapeParams shapeParams_;
+    DecalParams decalParams_;
     std::string activeTexture_ = "dev/grey";
     tools::tex::InfoFn textureInfo_;
     tools::tex::HotspotFn hotspotOverride_;

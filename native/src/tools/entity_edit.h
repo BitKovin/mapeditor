@@ -37,6 +37,11 @@ std::optional<std::array<double, 3>> defaultLightAngles(const std::string& class
 EditResult addPointEntity(const BasePtr& base, const std::string& classname, const core::Vec3& origin, const std::vector<std::pair<std::string, std::string>>& keyvalues = {},
                           const std::optional<core::Vec3>& angles = std::nullopt);
 
+// The angles (degrees, pitch yaw roll 0) of a decal that projects INTO a surface whose outward normal is `normal` (core/decal.h: dir = Ry(yaw) Rx(pitch) * (0,-1,0)).
+core::Vec3 decalAnglesFor(const core::Vec3& normal);
+// A new decal projector (class `decal`) lying on a surface at `point` with that outward normal; selected afterwards. Sizes in metres.
+EditResult addDecal(const BasePtr& base, const std::string& texture, const core::Vec3& point, const core::Vec3& normal, double width, double height, double depth);
+
 // ---- prefab instances ----
 EditResult spawnInstance(const BasePtr& base, const std::string& file, const core::Vec3& origin);
 EditResult renameInstance(const BasePtr& base, const std::string& instanceId, const std::string& name);   // refused: empty, '|' or '/' in it, or used by another instance

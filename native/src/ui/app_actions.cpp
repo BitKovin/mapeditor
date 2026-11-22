@@ -305,13 +305,16 @@ void boxActions(actions::Registry& r) {
         d.id = "tool.set";
         d.label = "Tool";
         d.category = "Tools";
-        d.description = "Switches between the select tool and the box tool.";
+        d.description = "Switches between the select tool, the box tool and the decal tool.";
         d.kind = ActionKind::Toggle;
         d.menu = "&Tools";
         d.params = json{{"tool", "select"}};
-        d.variants = {{"&Select", {{"tool", "select"}}}, {"&Box", {{"tool", "box"}}}};
+        d.variants = {{"&Select", {{"tool", "select"}}}, {"&Box", {{"tool", "box"}}}, {"&Decal", {{"tool", "decal"}}}};
         d.enabled = [windowOf](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
-        const auto toolOf = [](const json& p) { return p.value("tool", std::string("select")) == "box" ? MainWindow::Tool::Box : MainWindow::Tool::Select; };
+        const auto toolOf = [](const json& p) {
+            const std::string t = p.value("tool", std::string("select"));
+            return t == "box" ? MainWindow::Tool::Box : t == "decal" ? MainWindow::Tool::Decal : MainWindow::Tool::Select;
+        };
         d.checked = [windowOf, toolOf](const ActionEnv& env, const json& p) {
             auto* w = windowOf(env);
             return w && w->tool() == toolOf(p);
@@ -374,6 +377,20 @@ void boxActions(actions::Registry& r) {
         d.run = [](ActionEnv& env, const Invocation& inv) {
             const UiEnv* u = env.as<UiEnv>();
             if (u && u->window && u->viewport) u->window->boxInput(u->viewport, inv.event);
+        };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
+        d.id = "decal.place";
+        d.label = "Place decal";
+        d.category = "Tools";
+        d.description = "Lays a decal projector on the surface under the pointer (the active texture, the size of the Decals tab).";
+        d.contexts = {"tool:decal"};
+        d.enabled = haveViewport;
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            const UiEnv* u = env.as<UiEnv>();
+            if (u && u->window && u->viewport) u->window->placeDecalAt(u->viewport, QPointF(inv.event.x, inv.event.y));
         };
         add(r, std::move(d));
     }

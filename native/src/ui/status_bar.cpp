@@ -119,7 +119,7 @@ QString StatusFields::folderText() const { return folder_->text(); }
 void StatusFields::refreshNow() {
     timer_->stop();
     set(hint_, qs(win_.hintText()));
-    set(tool_, win_.tool() == MainWindow::Tool::Box ? QStringLiteral("Tool: Box") : QStringLiteral("Tool: Select"));
+    set(tool_, win_.tool() == MainWindow::Tool::Box ? QStringLiteral("Tool: Box") : win_.tool() == MainWindow::Tool::Decal ? QStringLiteral("Tool: Decal") : QStringLiteral("Tool: Select"));
     if (render::ViewportWindow* vp = win_.activeViewport()) set(grid_, qs(tools::gridText(vp->rig().settings())));
     else set(grid_, QString());
     set(selection_, qs(tools::selectionText(win_.selection(), win_.document().get())));
