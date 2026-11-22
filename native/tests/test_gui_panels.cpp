@@ -1,11 +1,14 @@
 // T4.4 (Qt side): the Outliner, Details and Place docks in a real window (native_gui_tests).
 #include <doctest.h>
 
+#include <cmath>
+
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -287,6 +290,57 @@ TEST_CASE("Outliner, Details and Place panels edit the document through the main
             REQUIRE(window.selection().primary());
             CHECK(window.selection().primary()->isInstance());
 
+        }
+
+        SUBCASE("place: a drag out of a list released over a viewport places the thing under the pointer; no click after a drag; released elsewhere places nothing") {
+            REQUIRE(waitUntil([&] { return place.entityList()->count() > 0; }));
+            REQUIRE(waitUntil([&] { return place.prefabList()->count() == 2; }));
+            REQUIRE(window.viewports()[0].container);
+            QWidget* vpBox = window.viewports()[0].container;
+            const auto global = [&](double fx, double fy) { return vpBox->mapToGlobal(QPoint(static_cast<int>(vpBox->width() * fx), static_cast<int>(vpBox->height() * fy))); };
+            const auto drag = [&](QListWidget* list, int row, QPoint to) {
+                for (int i = 0; i < place.tabs()->count(); ++i)   // the tab of this list on top, so its rows are laid out
+                    if (place.tabs()->widget(i) == list || place.tabs()->widget(i)->isAncestorOf(list)) place.tabs()->setCurrentIndex(i);
+                pumpFor(100);
+                QWidget* view = list->viewport();
+                const QPoint from = list->visualItemRect(list->item(row)).center();
+                const auto mouse = [&](QEvent::Type t, QPoint at, QPoint globalAt, Qt::MouseButton b, Qt::MouseButtons bs) {
+                    QMouseEvent ev(t, QPointF(at), QPointF(globalAt), b, bs, Qt::NoModifier);
+                    QCoreApplication::sendEvent(view, &ev);
+                };
+                mouse(QEvent::MouseButtonPress, from, view->mapToGlobal(from), Qt::LeftButton, Qt::LeftButton);
+                mouse(QEvent::MouseMove, from + QPoint(2, 2), view->mapToGlobal(from + QPoint(2, 2)), Qt::NoButton, Qt::LeftButton);
+                CHECK_FALSE(place.spawnDragging());   // not yet past the drag distance
+                mouse(QEvent::MouseMove, from + QPoint(40, 40), view->mapToGlobal(from + QPoint(40, 40)), Qt::NoButton, Qt::LeftButton);
+                CHECK(place.spawnDragging());
+                mouse(QEvent::MouseMove, to - QPoint(5, 0), to - QPoint(5, 0), Qt::NoButton, Qt::LeftButton);
+                mouse(QEvent::MouseButtonRelease, to, to, Qt::LeftButton, Qt::NoButton);
+                CHECK_FALSE(place.spawnDragging());
+            };
+            const size_t before = window.document()->entities.size();
+
+            drag(place.entityList(), 0, global(0.3, 0.7));
+            REQUIRE(window.document()->entities.size() == before + 1);
+            const core::Entity first = window.document()->entities.back()->typed;
+            CHECK(first.classname == "nav_point");
+            REQUIRE(window.selection().primary());
+            CHECK(window.selection().primary()->entityId == first.id);
+            CHECK(window.history().undoCount() >= 1);
+
+            drag(place.entityList(), 0, global(0.7, 0.4));
+            REQUIRE(window.document()->entities.size() == before + 2);
+            const core::Entity second = window.document()->entities.back()->typed;
+            CHECK((std::fabs(first.origin.x - second.origin.x) + std::fabs(first.origin.y - second.origin.y) + std::fabs(first.origin.z - second.origin.z)) > 1e-3);   // another pixel, another place
+
+            drag(place.prefabList(), 1, global(0.5, 0.6));
+            REQUIRE(window.document()->instances.size() == 1);
+            CHECK(window.document()->instances[0]->typed.file == "prefabs/sub/window.map.json");
+            CHECK(window.selection().primary()->isInstance());
+
+            // released over the list itself (not a viewport): nothing is placed, and the release does not count as a click either
+            const size_t entities = window.document()->entities.size();
+            drag(place.lightList(), 0, place.lightList()->viewport()->mapToGlobal(QPoint(5, 5)));
+            CHECK(window.document()->entities.size() == entities);
         }
 
         SUBCASE("screenshot of the docks when NATIVE_SCREENSHOT_DIR is set") {

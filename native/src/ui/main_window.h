@@ -656,10 +656,19 @@ public:
     // A Details edit (one undo step; refusals go to the status bar). The primary selection stays.
     bool editDetails(const tools::DetailsEdit& edit, const tools::EditValue& value);
     // Where a new entity of `classname` goes: resting on the surface in the middle of the active view (else on the ground, else at the camera's target).
-    render::Vec3 placementPoint(const std::string& classname) const;
+    render::Vec3 placementPoint(const std::string& classname, const render::Ray* through = nullptr) const;   // `through`: the ray of a drop, else where the camera looks
     // A click in the Place panel: adds a point entity / a prefab instance there and selects it.
     bool placeEntity(const std::string& classname, const std::vector<std::pair<std::string, std::string>>& keyvalues = {});
     bool placePrefab(const std::string& file);
+    // Dropping a thing of the Place tab (REQUIREMENTS 3 / 5): `global` is the screen position of the pointer at the release. When it is over a viewport, the entity or prefab
+    // instance lands where the pointer's ray meets a surface (an entity rests on it), else on the ground; false when the pointer is not over a viewport.
+    struct PlaceDrop {
+        bool prefab = false;
+        std::string id;   // the class name, or the prefab file
+        std::vector<std::pair<std::string, std::string>> keyvalues;
+    };
+    bool dropPlaceable(QPoint global, const PlaceDrop& what);
+    render::ViewportWindow* viewportAtGlobal(QPoint global, QPointF* local = nullptr) const;   // the viewport under a screen position
 
     // ---- status bar and settings (T4.5) ----
     // The permanent fields of the status bar (tool, grid, selection, map, game folder).

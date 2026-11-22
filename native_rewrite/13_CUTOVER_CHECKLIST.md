@@ -12,7 +12,7 @@ makes it unnecessary) · **gap** = not in native yet, needs a task or the user's
 
 | # | Gap | REQUIREMENTS | Size | Note |
 |---|---|---|---|---|
-| G1 | Drag from the Place tab into a viewport (entities, prefabs, shapes), with the half-transparent ghost | §3 #147, §5 (d), §12 | small (drop) + renderer (ghost) | Click-to-spawn works. The drop itself is UI only; the ghost needs an overlay pass, ask |
+| G1 (drop done, T13.4) | Drag from the Place tab into a viewport (entities, lights, prefabs), with the half-transparent ghost | §3 #147, §5 (d), §12 | small (drop) + renderer (ghost) | The drop works (mouse tracking, rests on the surface). The ghost preview is still open: it needs an overlay pass, ask |
 | G2 (done, T13.2) | Entity angle handle (the tip of the direction arrow drags the entity's `angles`) | §33 H2 | small | The arrow is drawn (`scene/arrows`); the drag is not wired |
 | G3 | Terrain tool (sculpt, paint, panel) | §39 | large | **Not ported, user decision**: the user skipped the terrain tool ("terrain will be replaced"); the data model (`tools/terrain`, T11.8a) is kept, the WIP of the tool is in `git stash` |
 | G4 (done, T13.3) | Packaging: `release/native/` with the Qt DLLs (`windeployqt`) | M13 | small | `package_native.bat [nobuild]`: exe, DLLs, Qt plugins, keymap; checked: the packaged exe renders demo.map.json with `--screenshot` on its own (159 MB, needs the VC++ runtime installed) |
@@ -60,7 +60,7 @@ export) are not parity targets: native carries the same open points.
 | Tab toggles brush / mesh mode, Blender keys in mesh mode | done | `mesh.toggle`, `mesh.*` actions (T4.x, T11.x) |
 | Only-brush-of-entity selects the entity, double-click selects all brushes | done | `tools/select_ops` |
 | Select all / invert / none, select similar | done | `edit.select_*` (T11.10f, T11.11d) |
-| Entity spawn by dragging with ghost | **gap G1** | click spawn works (Place panel) |
+| Entity spawn by dragging with ghost | drop done (T13.4), **ghost open** | `PlacePanel::eventFilter`, `MainWindow::dropPlaceable` |
 | Entities drawn and picked as their `.ent` boxes, translucent with class name, direction arrow, reference arrows | done | `scene/point_box`, `scene/arrows`, `render/entity_overlay` |
 | Entity origin handle of brush entities | done | `MainWindow::originHandle`, `tools/transform` (moves only the origin) |
 | Entity angle handle | done (T13.2) | `ui/main_window_angle.cpp`, `tools::anglesToward / setAngles` |
@@ -87,7 +87,7 @@ export) are not parity targets: native carries the same open points.
 | References picked, not typed (list + pipette), nested scope-relative references | done | `tools/ref_targets`, Details reference editor |
 | Flatten at compile | done | Core |
 | Spawn from the Place tab (click) | done | `ui/place_panel` |
-| Spawn by drag with ghost | **gap G1** | |
+| Spawn by drag with ghost | drop done (T13.4), **ghost open** | |
 | Turn selection into a prefab | done | `tools/prefabize` (T11.7a) |
 | Prefab previews | done | `tools/prefab_preview` (T11.7b) |
 
@@ -155,6 +155,5 @@ Replaced by the native process; packaging is G4, single instance G7.
 | Terrain | **not ported (user decision), G3** | |
 
 ## What remains for M13
-1. G1: the drop spawn from the Place tab (the click spawn works) — unless the user prefers to list it as not ported.
-2. The ghost preview of G1 and the view cube (G5) need renderer overlay work: ask.
+1. The ghost preview of G1 and the view cube (G5) need renderer overlay work: ask the user.
 3. The user opens the editor on their maps (lvl2, demo_lit) and signs off the list above; then the Shell is retired (their decision).

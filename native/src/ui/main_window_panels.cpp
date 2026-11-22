@@ -16,6 +16,7 @@
 #include "tools/entity_edit.h"
 #include "ui/details_panel.h"
 #include "ui/main_window.h"
+#include "ui/view_helpers.h"
 #include "ui/outliner_panel.h"
 #include "ui/groups_panel.h"
 #include "ui/history_panel.h"
@@ -109,27 +110,31 @@ bool MainWindow::editDetails(const tools::DetailsEdit& edit, const tools::EditVa
     return applyEdit(tools::applyDetailsEdit(document_, entityDefs_.get(), edit, value), false);
 }
 
-render::Vec3 MainWindow::placementPoint(const std::string& classname) const {
+render::Vec3 MainWindow::placementPoint(const std::string& classname, const render::Ray* through) const {
     render::Vec3 point{0, 0, 0}, normal{0, 1, 0};
-    if (render::ViewportWindow* vp = activeViewport()) {
+    std::optional<render::Ray> ray;
+    if (through) {   // a drop: the ray through the pointer
+        ray = *through;
+        point = through->origin + through->dir * 10.0;
+    } else if (render::ViewportWindow* vp = activeViewport()) {   // a click on the list: where the camera looks
         const render::Camera& cam = vp->rig().active();
         const render::Vec3 eye = cam.eye(), target = cam.target();
         const render::Vec3 delta = target - eye;
         const double len = render::length(delta);
         point = target;
-        if (len > 1e-9) {
-            const render::Ray ray{eye, delta * (1.0 / len)};
-            std::optional<render::PickHit> hit;
-            if (picker_) hit = picker_->pick(ray, pickOptions());
-            if (hit) {
-                point = hit->point;
-                normal = hit->normal;
-            } else if (ray.dir.y < -1e-3 && eye.y > 0) {   // the ground at height 0, when it is in front of the camera and not too far
-                const double s = -eye.y / ray.dir.y;
-                if (s < 200) {
-                    point = eye + ray.dir * s;
-                    normal = {0, 1, 0};
-                }
+        if (len > 1e-9) ray = render::Ray{eye, delta * (1.0 / len)};
+    }
+    if (ray) {
+        std::optional<render::PickHit> hit;
+        if (picker_) hit = picker_->pick(*ray, pickOptions());
+        if (hit) {
+            point = hit->point;
+            normal = hit->normal;
+        } else if (ray->dir.y < -1e-3 && ray->origin.y > 0) {   // the ground at height 0, when it is in front of the camera and not too far
+            const double s = -ray->origin.y / ray->dir.y;
+            if (s < 200) {
+                point = ray->origin + ray->dir * s;
+                normal = {0, 1, 0};
             }
         }
     }
@@ -148,6 +153,30 @@ bool MainWindow::placeEntity(const std::string& classname, const std::vector<std
     if (!document_ || classname.empty()) return false;
     const render::Vec3 o = placementPoint(classname);
     return applyEdit(tools::addPointEntity(document_, classname, {o.x, o.y, o.z}, keyvalues));
+}
+
+render::ViewportWindow* MainWindow::viewportAtGlobal(QPoint global, QPointF* local) const {
+    for (const ViewportPanel& panel : panels_) {
+        if (!panel.window || !panel.container || !panel.container->isVisible()) continue;
+        const QPoint p = panel.container->mapFromGlobal(global);
+        if (!panel.container->rect().contains(p)) continue;
+        if (local) *local = QPointF(p);
+        return panel.window;
+    }
+    return nullptr;
+}
+
+bool MainWindow::dropPlaceable(QPoint global, const PlaceDrop& what) {
+    QPointF p;
+    render::ViewportWindow* vp = viewportAtGlobal(global, &p);
+    if (!vp || !document_) return false;
+    const render::Ray ray = rayAt(vp->currentView(), vp->size(), p);
+    if (what.prefab) {
+        const render::Vec3 o = placementPoint("", &ray);
+        return applyEdit(tools::spawnInstance(document_, what.id, {o.x, o.y, o.z}));
+    }
+    const render::Vec3 o = placementPoint(what.id, &ray);
+    return applyEdit(tools::addPointEntity(document_, what.id, {o.x, o.y, o.z}, what.keyvalues));
 }
 
 bool MainWindow::placePrefab(const std::string& file) {

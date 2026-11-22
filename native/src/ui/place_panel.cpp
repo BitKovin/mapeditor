@@ -1,6 +1,7 @@
 // ui/place_panel -- see place_panel.h.
 #include "ui/place_panel.h"
 
+#include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
@@ -9,9 +10,12 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMouseEvent>
+#include <QStatusBar>
 #include <QPainter>
 #include <QPixmap>
 #include <QPolygonF>
@@ -136,6 +140,7 @@ PlacePanel::PlacePanel(MainWindow& window, QWidget* parent) : QWidget(parent), w
     tabs_->addTab(decals, QStringLiteral("Decals"));
 
     // a click adds the thing where the camera looks
+    for (QListWidget* list : {entities_, lights_, prefabs_}) list->viewport()->installEventFilter(this);   // drag out of a list: see eventFilter
     QObject::connect(entities_, &QListWidget::itemClicked, this, [this](QListWidgetItem* it) {
         const std::string cls = it->data(Qt::UserRole).toString().toStdString();
         const auto kv = keyvalues_.find(cls);
@@ -341,6 +346,53 @@ void PlacePanel::buildShapes(QWidget* page) {
     shapeHint_->setEnabled(false);
     v->addWidget(shapeHint_);
     v->addStretch(1);
+}
+
+bool PlacePanel::eventFilter(QObject* watched, QEvent* event) {
+    QListWidget* list = nullptr;
+    for (QListWidget* l : {entities_, lights_, prefabs_})
+        if (l && watched == l->viewport()) list = l;
+    if (!list) return QWidget::eventFilter(watched, event);
+    const auto type = event->type();
+    if (type != QEvent::MouseButtonPress && type != QEvent::MouseMove && type != QEvent::MouseButtonRelease) return false;
+    auto* me = static_cast<QMouseEvent*>(event);
+    if (type == QEvent::MouseButtonPress) {
+        pressList_ = nullptr;
+        pressId_.clear();
+        spawning_ = false;
+        if (me->button() == Qt::LeftButton)
+            if (const QListWidgetItem* it = list->itemAt(me->position().toPoint())) {
+                pressList_ = list;
+                pressId_ = it->data(Qt::UserRole).toString();
+                pressPos_ = me->position().toPoint();
+            }
+        return false;
+    }
+    if (list != pressList_) return false;
+    if (type == QEvent::MouseMove) {
+        if (!spawning_ && (me->buttons() & Qt::LeftButton) && (me->position().toPoint() - pressPos_).manhattanLength() >= QApplication::startDragDistance()) {
+            spawning_ = true;
+            QGuiApplication::setOverrideCursor(Qt::DragCopyCursor);
+        }
+        return spawning_;
+    }
+    // the release
+    if (!spawning_) {
+        pressList_ = nullptr;
+        return false;   // a click: the list's own itemClicked places it
+    }
+    spawning_ = false;
+    pressList_ = nullptr;
+    QGuiApplication::restoreOverrideCursor();
+    MainWindow::PlaceDrop drop;
+    drop.id = pressId_.toStdString();
+    drop.prefab = list == prefabs_;
+    if (list == entities_) {
+        const auto kv = keyvalues_.find(drop.id);
+        if (kv != keyvalues_.end()) drop.keyvalues = kv->second;
+    }
+    if (!drop.id.empty() && !win_.dropPlaceable(me->globalPosition().toPoint(), drop)) win_.statusBar()->showMessage(QStringLiteral("Drop it on a viewport to place it"), 4000);
+    return true;   // no click after a drag
 }
 
 void PlacePanel::buildDecals(QWidget* page) {

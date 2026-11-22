@@ -57,9 +57,15 @@ public:
     QIcon prefabIcon(const std::string& file) const;
     // The panel's shape widgets follow the window (the tool or its parameters changed).
     void syncShape();
+    // Dragging an entity, light or prefab out of its list (a mouse move past the drag distance with the left button down) and releasing over a viewport places it there
+    // (`MainWindow::dropPlaceable`); a click without a drag still places it where the camera looks. True while such a drag runs.
+    bool spawnDragging() const { return spawning_; }
     // The shape buttons and the orientation box name their key from the keymap ("Cylinder (C): drag ..."); follows a rebinding.
     void refreshTooltips();
     QString shapeTooltip(size_t index) const { return static_cast<qsizetype>(index) < shapeTips_.size() ? shapeTips_[static_cast<qsizetype>(index)] : QString(); }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void buildShapes(QWidget* page);
@@ -95,6 +101,10 @@ private:
     std::vector<std::string> entityClasses_, lightClasses_;
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> keyvalues_;   // extra keyvalues a starter entity is added with
     bool syncing_ = false;
+    QListWidget* pressList_ = nullptr;      // the list the left button went down on, with the item under it
+    QString pressId_;
+    QPoint pressPos_;
+    bool spawning_ = false;
 };
 
 } // namespace native::ui
