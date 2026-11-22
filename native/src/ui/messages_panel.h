@@ -17,7 +17,8 @@ class MessagesPanel : public QWidget {
     Q_OBJECT
 public:
     static constexpr int kMaxMessages = 200;
-    // A message that follows the previous one within this time replaces it (a live reading that changes with the mouse is one entry, not hundreds).
+    // A message that follows the previous one within this time and starts like it replaces it (a live reading that changes with the mouse is one entry, not hundreds);
+    // a different message right after one is kept.
     static constexpr qint64 kMergeMs = 300;
 
     explicit MessagesPanel(MainWindow& window, QWidget* parent = nullptr);

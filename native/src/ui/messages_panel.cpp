@@ -1,6 +1,8 @@
 // ui/messages_panel -- see messages_panel.h.
 #include "ui/messages_panel.h"
 
+#include <algorithm>
+
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QPushButton>
@@ -33,7 +35,11 @@ MessagesPanel::MessagesPanel(MainWindow& window, QWidget* parent) : QWidget(pare
 void MessagesPanel::add(const QString& text, const QDateTime& when) {
     if (text.isEmpty() || text == lastText_) return;
     const QString row = when.toString(QStringLiteral("HH:mm:ss")) + QStringLiteral("  ") + text;
-    const bool merge = list_->count() > 0 && lastTime_.isValid() && lastTime_.msecsTo(when) >= 0 && lastTime_.msecsTo(when) < kMergeMs;
+    // a reading that follows the mouse: soon after the previous message and starting like it
+    int common = 0;
+    while (common < text.size() && common < lastText_.size() && text[common] == lastText_[common]) ++common;
+    const bool alike = common >= std::min(8, static_cast<int>(std::min(text.size(), lastText_.size())));
+    const bool merge = alike && list_->count() > 0 && lastTime_.isValid() && lastTime_.msecsTo(when) >= 0 && lastTime_.msecsTo(when) < kMergeMs;
     if (merge) {
         list_->item(list_->count() - 1)->setText(row);
     } else {

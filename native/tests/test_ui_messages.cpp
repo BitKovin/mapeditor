@@ -36,9 +36,15 @@ TEST_CASE("messages: the status bar's messages are kept with the time, repeats a
     p->add("Measure: 1.50 m", t0.addSecs(10).addMSecs(100));
     CHECK(p->rows().size() == 3);
     CHECK(p->rows().last() == "12:03:51  Measure: 1.50 m");
+    // ... but a different message right after one is kept
+    p->add("Nudged 0.25 m", t0.addSecs(10).addMSecs(150));
+    CHECK(p->rows().size() == 4);
+    p->add("Flip X", t0.addSecs(10).addMSecs(160));
+    CHECK(p->rows().size() == 5);
     // the real status bar feeds it
     window.statusBar()->showMessage(QStringLiteral("Copied"), 0);
     CHECK(p->rows().last().endsWith("  Copied"));
+    CHECK(p->rows().size() == 6);
     // old ones go
     for (int i = 0; i < 300; ++i) p->add(QString("m%1").arg(i), t0.addSecs(100 + i));
     CHECK(p->rows().size() == ui::MessagesPanel::kMaxMessages);
