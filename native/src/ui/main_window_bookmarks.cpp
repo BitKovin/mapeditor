@@ -61,4 +61,24 @@ bool MainWindow::recallCameraBookmark(int slot) {
     return true;
 }
 
+std::vector<std::string> MainWindow::textureList(const std::string& name) const {
+    if (QSettings* st = services_.settings) {
+        std::vector<std::string> out;
+        for (const QString& s : st->value(QString::fromStdString("textures/" + name)).toStringList()) out.push_back(s.toStdString());
+        return out;
+    }
+    const auto it = textureLists_.find(name);
+    return it == textureLists_.end() ? std::vector<std::string>{} : it->second;
+}
+
+void MainWindow::setTextureList(const std::string& name, const std::vector<std::string>& list) {
+    if (QSettings* st = services_.settings) {
+        QStringList l;
+        for (const std::string& s : list) l << QString::fromStdString(s);
+        st->setValue(QString::fromStdString("textures/" + name), l);
+    } else {
+        textureLists_[name] = list;
+    }
+}
+
 } // namespace native::ui

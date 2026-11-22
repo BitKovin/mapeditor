@@ -42,8 +42,12 @@ public:
     const std::string& folder() const { return folder_; }
     void setFolder(const std::string& folder);
     void setQuery(const QString& query);
-    // A click on the tile: the texture becomes the active one and goes on the selection.
+    // A click on the tile: the texture becomes the active one and goes on the selection (and the first of the recently used ones).
     bool choose(const std::string& path, bool apply = true);
+    // Adds the texture to the favourites, or removes it when it is one.
+    void toggleFavourite(const std::string& path);
+    std::vector<std::string> favourites() const { return favourites_; }
+    std::vector<std::string> recent() const { return recent_; }
     // Thumbnails decoded so far (tests wait for it).
     size_t thumbnailCount() const { return thumbs_.size(); }
     // Starts the decoding of the tiles that are on screen.
@@ -61,7 +65,7 @@ private:
     QListWidget* folders_ = nullptr;
     QListWidget* grid_ = nullptr;
     QTimer* visibleTimer_ = nullptr;
-    std::vector<std::string> all_, shown_;
+    std::vector<std::string> all_, shown_, favourites_, recent_;
     std::string folder_;
     std::string query_;
     struct Thumb {

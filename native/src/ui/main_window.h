@@ -658,6 +658,9 @@ public:
     void openPalette();
     // The recently used palette entries (kept in the settings as "palette/recent").
     std::vector<actions::Recent> paletteRecent() const;
+    /// The user's lists of textures, kept in the settings (`textures/<name>`): "favourites" (in the order they were added) and "recent" (the newest first). Empty without settings.
+    std::vector<std::string> textureList(const std::string& name) const;
+    void setTextureList(const std::string& name, const std::vector<std::string>& list);
     void setPaletteRecent(const std::vector<actions::Recent>& list);
     // The key help sheet over the active viewport (built from the contexts active now; made again when the keymap changes).
     void showKeyHelp(bool show);
@@ -795,6 +798,7 @@ private:
     LevelSettingsPanel* levelPanel_ = nullptr;
     HistoryPanel* historyPanel_ = nullptr;
     MessagesPanel* messagesPanel_ = nullptr;
+    std::map<std::string, std::vector<std::string>> textureLists_;   // used when there are no settings (tests)
     std::map<std::string, std::string> bookmarks_;   // used when there are no settings (tests): key -> JSON
     HideDialog* hideDialog_ = nullptr;
     ads::CDockWidget* levelDock_ = nullptr;

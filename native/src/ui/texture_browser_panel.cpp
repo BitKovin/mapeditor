@@ -126,6 +126,8 @@ TextureBrowserPanel::TextureBrowserPanel(MainWindow& window, QWidget* parent) : 
         QMenu menu(this);
         menu.addAction(QStringLiteral("Apply to selection"), [this, path] { choose(path, true); });
         menu.addAction(QStringLiteral("Set as active texture"), [this, path] { choose(path, false); });
+        const bool fav = std::find(favourites_.begin(), favourites_.end(), path) != favourites_.end();
+        menu.addAction(fav ? QStringLiteral("Remove from favourites") : QStringLiteral("Add to favourites"), [this, path] { toggleFavourite(path); });
         menu.addAction(QStringLiteral("Properties..."), [this, path] { win_.openTextureProperties(path); });
         menu.exec(grid_->viewport()->mapToGlobal(p));
     });
@@ -150,13 +152,15 @@ void TextureBrowserPanel::reload() {
 
 void TextureBrowserPanel::setTextures(std::vector<std::string> textures) {
     all_ = std::move(textures);
-    const std::vector<std::string> entries = tools::tex::folderEntries(all_);
+    favourites_ = win_.textureList("favourites");
+    recent_ = win_.textureList("recent");
+    const std::vector<std::string> entries = folders();
     if (std::find(entries.begin(), entries.end(), folder_) == entries.end()) folder_.clear();   // the folder is gone
     rebuildFolders();
     rebuildGrid();
 }
 
-std::vector<std::string> TextureBrowserPanel::folders() const { return tools::tex::folderEntries(all_); }
+std::vector<std::string> TextureBrowserPanel::folders() const { return tools::tex::folderEntries(all_, favourites_, recent_); }
 
 void TextureBrowserPanel::setFolder(const std::string& folder) {
     if (folder == folder_ && !shown_.empty()) return;
@@ -181,6 +185,9 @@ void TextureBrowserPanel::setQuery(const QString& query) {
 bool TextureBrowserPanel::choose(const std::string& path, bool apply) {
     if (path.empty()) return false;
     win_.setActiveTexture(path);
+    recent_ = tools::tex::pushRecent(recent_, path);
+    win_.setTextureList("recent", recent_);
+    rebuildFolders();   // the Recent entry appears with the first texture; the grid of the Recent folder is left as it is while a texture is clicked in it
     if (!apply) {
         win_.statusBar()->showMessage(QStringLiteral("Active texture: ") + qs(path), 4000);
         return true;
@@ -188,12 +195,21 @@ bool TextureBrowserPanel::choose(const std::string& path, bool apply) {
     return win_.textureCommand("apply", {{"texture", path}});
 }
 
+void TextureBrowserPanel::toggleFavourite(const std::string& path) {
+    favourites_ = tools::tex::toggled(favourites_, path);
+    win_.setTextureList("favourites", favourites_);
+    const std::vector<std::string> entries = folders();
+    if (std::find(entries.begin(), entries.end(), folder_) == entries.end()) folder_.clear();   // the last favourite was removed while its folder was open
+    rebuildFolders();
+    rebuildGrid();
+}
+
 void TextureBrowserPanel::rebuildFolders() {
     QSignalBlocker block(folders_);
     folders_->clear();
     int current = 0;
     int row = 0;
-    for (const std::string& f : tools::tex::folderEntries(all_)) {
+    for (const std::string& f : folders()) {
         auto* item = new QListWidgetItem(qs(tools::tex::folderLabel(f)), folders_);
         item->setData(kPath, qs(f));
         if (f == folder_) current = row;
@@ -203,7 +219,7 @@ void TextureBrowserPanel::rebuildFolders() {
 }
 
 void TextureBrowserPanel::rebuildGrid() {
-    shown_ = tools::tex::filterTextures(all_, folder_, query_);
+    shown_ = tools::tex::filterTextures(all_, folder_, query_, favourites_, recent_);
     count_->setText(QString::number(shown_.size()) + QStringLiteral(" of ") + QString::number(all_.size()));
     grid_->setUpdatesEnabled(false);
     grid_->clear();

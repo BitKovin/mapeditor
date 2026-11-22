@@ -298,3 +298,33 @@ TEST_CASE("texture browser: folders and search filter the list, a click makes th
     CHECK(b->folder().empty());
     CHECK(b->shown().size() == 1);
 }
+
+TEST_CASE("texture browser: the textures that were used come back as Recent, the favourites keep their order; both are kept in the window's lists") {
+    Fixture f;
+    ui::TextureBrowserPanel* b = f.window.textureBrowser();
+    REQUIRE(b);
+    b->setTextures({"base/wall01", "base/wall02", "floor/tile"});
+    CHECK(b->folders() == std::vector<std::string>{"", "base", "floor"});
+    CHECK(b->choose("floor/tile", false));
+    CHECK(b->choose("base/wall02", false));
+    CHECK(b->choose("floor/tile", false));
+    CHECK(b->recent() == std::vector<std::string>{"floor/tile", "base/wall02"});
+    CHECK(f.window.textureList("recent") == b->recent());
+    CHECK(b->folders() == std::vector<std::string>{"", std::string(tools::tex::kRecentFolder), "base", "floor"});
+    b->setFolder(tools::tex::kRecentFolder);
+    CHECK(b->shown() == std::vector<std::string>{"floor/tile", "base/wall02"});
+    b->toggleFavourite("base/wall01");
+    b->toggleFavourite("floor/tile");
+    CHECK(b->favourites() == std::vector<std::string>{"base/wall01", "floor/tile"});
+    CHECK(b->folders()[1] == tools::tex::kFavouritesFolder);
+    b->setFolder(tools::tex::kFavouritesFolder);
+    CHECK(b->shown() == std::vector<std::string>{"base/wall01", "floor/tile"});
+    // removing the last one while its folder is open returns to All
+    b->toggleFavourite("base/wall01");
+    b->toggleFavourite("floor/tile");
+    CHECK(b->folder().empty());
+    CHECK(b->shown().size() == 3);
+    // a new window reads the lists: they are the settings' (here: the window's own while there is no settings file)
+    b->toggleFavourite("base/wall02");
+    CHECK(f.window.textureList("favourites") == std::vector<std::string>{"base/wall02"});
+}

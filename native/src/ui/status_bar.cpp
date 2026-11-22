@@ -98,7 +98,7 @@ std::unique_ptr<QMenu> StatusFields::buildSnapMenu() const {
         }
     };
     values("Grid size", "snap.grid_size", render::gridSizes(), s.gridSize, QStringLiteral(" m"));
-    values("Rotation snap", "snap.rotation", render::rotSnaps(), s.rotSnap, QString::fromUtf8("Â°"));
+    values("Rotation snap", "snap.rotation", render::rotSnaps(), s.rotSnap, QString::fromUtf8("\xC2\xB0"));
     values("Scale snap", "snap.scale", render::scaleSnaps(), s.scaleSnap, QString());
     return menu;
 }
