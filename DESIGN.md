@@ -1043,10 +1043,10 @@ playable zone grown by 0.5 m (zones overlap or lie less than 1 m apart); everyth
 sky and the background faces (the faces that leave the cells). Walls of the static world (worldspawn, func_group, func_detail; opaque, solid contents) whose merged coplanar
 face has no side under `_vis_split_min` (2 m) cut the cells they cross by their planes (the tree is arbitrary planes: kd tree of cells, then the cut planes). A region inside
 solid brushes has cluster -1; the other regions are clusters. The engine's point -> leaf -> cluster lookup and `IsClusterVisible` (true for cluster < 0) are unchanged.
-Pairs: `_vis_segments` (64) segments between `_vis_samples` (32) sample points of each cluster pair, all pairs, on the GPU (ray query, else a compute shader over the same
+Pairs: `_vis_segments` (512) segments between `_vis_samples` (32) sample points of each cluster pair, all pairs, on the GPU (ray query, else a compute shader over the same
 BVH, else the CPU); rays are aimed through gaps up to `_vis_aperture` (0.5 m) between a face edge and what is behind it (cracks, slits). `_vis_dilate` (off) also gives a
 cluster what the clusters it opens into see (one ring, never through a wall). Sampling cannot prove "never hidden": `MAPEDITOR_VIS_CHECK=<n>` checks n random segments
-(lvl2: 16 misses in 3M without propagation). lvl2: 19.8k clusters, 5 s.
+(lvl2: 16 misses in 3M without propagation). lvl2: 8k clusters at the 50 MB table (cell 4.6 m), 5 s. `vis_check` (core/bench/vis_check.cpp, `cmake --build ... --target vis_check`) measures the table against ground truth (clear segments between many points of two clusters: false negatives, false positives, and what the engine draws per cluster from the exported leaf lists, by surface, area and triangle); `core/tools/gen_vis_testmap.py` makes the test map it was built with (hallway of door holes, enfilade, rooms, maze, angled walls, plaza, floors, hall). Findings: VISIBILITY_REWRITE.md §10.
 **The lighting uses the same data:** `PlayableVisibility` (the "unseen surface" test of the lightmap layout) builds this visibility for the playable zones; a surface is seen when part of it lies outside the cells (beyond the zones everything is always visible) or in a cluster that a cluster inside a zone sees. So the unseen cull only works within reach of the zones' cells.
 
 **Collision brushes.** Every additive brush of the exported entities becomes convex pieces: a convex brush as is, a concave one split by its

@@ -103,7 +103,7 @@ struct BspSettings {
     double visSplitMinWidth = 2.0;         // m: a wall splits visibility cells when its (merged, coplanar) face has no dimension below this
     int visMaxSplitsPerCell = 16;
     int visSamplePool = 32;                // sample points per cluster
-    int visPairSegments = 64;              // segments traced per cluster pair
+    int visPairSegments = 512;             // segments traced per cluster pair
     double visApertureMax = 0.5;           // m: openings up to this wide get rays aimed through them
     int visExtendRounds = 3;               // rounds of rays that run on past the clusters a cluster already sees (a doorway's view beyond it; 0 = off)
     std::string visDevice = "auto";        // where the segments are traced: auto | cpu | compute | rayquery (bsp_vis.h)

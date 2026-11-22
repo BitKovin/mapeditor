@@ -535,7 +535,7 @@ TEST_CASE("bsp visibility: a view through narrow doorways in a row is not report
     // lines through a random point of the first and of the last doorway, from the first room into the last one
     auto misses = [&](int extendRounds, int& clear) {
         VisCase c;
-        compileVis(c, d, 3.0, {}, {}, [&](BspInput& in) { in.settings.visExtendRounds = extendRounds; });
+        compileVis(c, d, 3.0, {}, {}, [&](BspInput& in) { in.settings.visExtendRounds = extendRounds; in.settings.visPairSegments = 64; });  // few segments: the pair pass alone misses it
         BspInput in = inputFor(c.doc, c.solids);
         const OccluderMesh mesh = buildOccluders(in.surfaces, in.classes);
         const TriangleBvh bvh(mesh);
@@ -563,6 +563,53 @@ TEST_CASE("bsp visibility: a view through narrow doorways in a row is not report
     CHECK(clearWith > 1000);  // the hall does have a view through all three doorways
     CHECK(without > 0);       // ... and the pair pass alone misses it: if this fails, the hall no longer shows what the rounds are for (narrow the doorways)
     CHECK(with == 0);
+}
+
+TEST_CASE("bsp visibility: a hallway of many door holes, with the default settings, hides nothing that can be seen") {
+    // The failure that started the rewrite of the checks: a long hall cut by five walls, each with a 0.7 m wide hole at a slightly different place, so only slivers of the
+    // lines between the two ends go through every hole. Lines through the first and the last hole, eyes and targets anywhere in the end rooms, must be seen by the table
+    // made with the default settings (segments, extension rounds, lines of the narrow clusters).
+    int n = 0;
+    constexpr int kWalls = 5;
+    constexpr double kDoorWidth = 0.7, kDoorHeight = 3, kSpacing = 8.0, kLength = (kWalls + 1) * kSpacing;
+    const double doorZ[kWalls] = {4.15, 4.65, 4.05, 4.75, 4.45};   // a zig-zag: a line through the first and the last hole has to thread the three between (about 2 % of them do)
+    std::vector<Brush> b = roomShell(kLength, 12, n);
+    for (int i = 0; i < kWalls; ++i) {
+        const double x = kSpacing * (i + 1), z0 = doorZ[i], z1 = doorZ[i] + kDoorWidth;
+        const std::string id = "wall" + std::to_string(i);
+        b.push_back(Brush::makeBox(id + "a", {x, 0, 0}, {x + 0.5, 4, z0}, "dev/wall"));
+        b.push_back(Brush::makeBox(id + "b", {x, 0, z1}, {x + 0.5, 4, 12}, "dev/wall"));
+        b.push_back(Brush::makeBox(id + "c", {x, kDoorHeight, z0}, {x + 0.5, 4, z1}, "dev/wall"));
+    }
+    Document d;
+    d.entities.push_back(ent("w", "worldspawn", b));
+    for (const double cell : {3.0, 5.0}) {
+        CAPTURE(cell);
+        VisCase c;
+        compileVis(c, d, cell);  // the default settings
+        BspInput in = inputFor(c.doc, c.solids);
+        const OccluderMesh mesh = buildOccluders(in.surfaces, in.classes);
+        const TriangleBvh bvh(mesh);
+        std::mt19937 rng(9);
+        std::uniform_real_distribution<double> u(0, 1);
+        int clear = 0, bad = 0;
+        for (int i = 0; i < 150000; ++i) {
+            const Vec3 a{kSpacing + 0.25, 0.3 + 2.6 * u(rng), doorZ[0] + kDoorWidth * u(rng)}, e{kSpacing * kWalls + 0.25, 0.3 + 2.6 * u(rng), doorZ[kWalls - 1] + kDoorWidth * u(rng)};
+            const Vec3 dir = (e - a).normalized();
+            const double tEye = (a.x - (1.0 + 6.0 * u(rng))) / dir.x, tTarget = (kSpacing * kWalls + 1.0 + 6.0 * u(rng) - a.x) / dir.x;
+            const Vec3 p = a - dir * tEye, q = a + dir * tTarget;
+            if (p.y < 0.2 || p.y > 3.8 || q.y < 0.2 || q.y > 3.8 || p.z < 0.2 || p.z > 11.8 || q.z < 0.2 || q.z > 11.8) continue;
+            if (c.solids->inside(p) || c.solids->inside(q) || bvh.occluded(p, q - p, 1.0)) continue;
+            const int from = clusterAt(c.view, p), to = clusterAt(c.view, q);
+            if (from < 1 || to < 1) continue;
+            ++clear;
+            if (!sees(c.view, from, to)) ++bad;
+        }
+        MESSAGE("cell " << cell << ": clear lines through all five holes " << clear << ", hidden by the table " << bad);
+        CHECK(clear > 300);
+        // What is left (a few lines in a thousand) grazes the top of the last doorway by a few centimetres; before the longer sampling of the narrow clusters a thirtieth was hidden
+        CHECK(bad * 100 <= clear);
+    }
 }
 
 TEST_CASE("bsp visibility: the ray query path, the compute shader path and the CPU find the same views") {

@@ -932,7 +932,7 @@ void extendPass(const VisInput& in, const VisResult& r, const Built& b, Matrix& 
     if (!samples) return;
     const size_t perPoint = size_t(std::clamp(2.0e6 / double(samples), 2.0, 8.0));  // phase 1: rays per sample point (about 2 million a round, 2 to 8 each)
     constexpr double kLineBudget = 1.0e6;                                           // phase 2: lines a round, shared by the narrow clusters
-    constexpr double kMaxLinesPerTarget = 8;                                        // ... and at most this many to each cluster a narrow cluster sees
+    constexpr double kMaxLinesPerTarget = 512;  // ... and at most this many to each cluster a narrow cluster sees (the budget bounds the total; a view through several doorways in a row needs many lines to each far cluster)
     const size_t before = [&] { size_t n = 0; for (uint64_t w : m.bits) n += size_t(std::popcount(w)); return n; }();
 
     // clusters that were joined by an earlier ray are not joined again (the table is shared by every round)

@@ -59,7 +59,7 @@ export const LEVEL_SECTIONS: LevelSection[] = [
     { key: '_vis_split_min', label: 'Splitting wall size (m)', dflt: 2, min: 0.5, max: 64, step: 0.5, hint: 'A wall splits the cells it passes through when its (merged) face has no side shorter than this' },
     { key: '_vis_splits_per_cell', label: 'Splits per cell', dflt: 16, min: 0, max: 32, step: 1, int: true, hint: 'The most walls that cut one cell' },
     { key: '_vis_samples', label: 'Sample points per cluster', dflt: 32, min: 2, max: 256, step: 2, int: true, hint: 'Points the segments between clusters start and end at' },
-    { key: '_vis_segments', label: 'Segments per cluster pair', dflt: 64, min: 1, max: 1024, step: 1, int: true, hint: 'More segments find narrower views but take longer' },
+    { key: '_vis_segments', label: 'Segments per cluster pair', dflt: 512, min: 1, max: 1024, step: 1, int: true, hint: 'More segments find narrower views but take longer' },
     { key: '_vis_aperture', label: 'Narrow opening width (m)', dflt: 0.5, min: 0, max: 5, step: 0.05, hint: 'Rays are aimed through gaps up to this wide (cracks, slits); 0 = off' },
     { key: '_vis_dilate', label: 'Neighbour propagation', dflt: 0, min: 0, max: 1, step: 1, int: true, hint: '1 = a cluster also sees what the clusters it opens into see (one ring, never through a wall). Safer at cell borders, but shows more' },
   ] },

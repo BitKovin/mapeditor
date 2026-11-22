@@ -203,3 +203,10 @@ add_executable(bench_bake EXCLUDE_FROM_ALL bench/bench_bake.cpp)
 target_include_directories(bench_bake PRIVATE tests src)
 target_link_libraries(bench_bake PRIVATE core_lib)
 core_warnings(bench_bake)
+
+# Visibility against ground truth on a map (false negatives / false positives per section, see bench/vis_check.cpp). Not part of `all`:
+#   cmake --build <dir> --target vis_check
+add_executable(vis_check EXCLUDE_FROM_ALL bench/vis_check.cpp)
+target_include_directories(vis_check PRIVATE tests src)
+target_link_libraries(vis_check PRIVATE core_lib)
+core_warnings(vis_check)

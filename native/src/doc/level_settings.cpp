@@ -88,7 +88,7 @@ const std::vector<LevelSection>& levelSections() {
         {"_vis_split_min", "Splitting wall size (m)", 2, 0.5, 64, 0.5, false, "A wall splits the cells it passes through when its (merged) face has no side shorter than this"},
         {"_vis_splits_per_cell", "Splits per cell", 16, 0, 32, 1, true, "The most walls that cut one cell"},
         {"_vis_samples", "Sample points per cluster", 32, 2, 256, 2, true, "Points the segments between clusters start and end at"},
-        {"_vis_segments", "Segments per cluster pair", 64, 1, 1024, 1, true, "More segments find narrower views but take longer"},
+        {"_vis_segments", "Segments per cluster pair", 512, 1, 1024, 1, true, "More segments find narrower views but take longer"},
         {"_vis_aperture", "Narrow opening width (m)", 0.5, 0, 5, 0.05, false, "Rays are aimed through gaps up to this wide (cracks, slits); 0 = off"},
         {"_vis_dilate", "Neighbour propagation", 0, 0, 1, 1, true, "1 = a cluster also sees what the clusters it opens into see (one ring, never through a wall). Safer at cell borders, but shows more"},
     }},

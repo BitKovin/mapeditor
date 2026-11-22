@@ -312,3 +312,31 @@ the ray-query path, 0 misses.
    the viewport (look at how an existing debug overlay is drawn, e.g. the light volume probe overlay, and how `export_bsp` / `export_result` flow
    through `core/include/core/protocol.h` and `shell/src/net/protocol.ts`). Agree the UI entry point with the user before building it.
 6. (Only if the user asks) `PlayableVisibility` reading the new data.
+
+## 10. Measured: false negatives, false positives, what is drawn (2026-11-22)
+
+Tools: `vis_check` (core/bench/vis_check.cpp, target `vis_check`) exports a map without a bake, then for random clusters A compares the table row with ground truth (a clear
+segment between 16 viewpoints inside A and 32 points inside B; pairs the table shows and the sampling did not confirm are retried with 8x the points). It also reads the
+exported file back and measures what the engine draws from A (surfaces of the leaves of the visible clusters, by surface, area and triangle) against what is seen (sample
+points on the triangles). `core/tools/gen_vis_testmap.py` writes the test map (`python gen_vis_testmap.py <assets> maps/vis_test.map.json`, 8 sections of rising difficulty:
+hallway of door holes, enfilade of offset doors, rooms, maze, angled walls, open plaza, floors, hall). Use `--cell`, `--segments`, `--extend`, `--dilate` to compare settings.
+
+| | before | now (`_vis_segments` 512, phase 2 lines per target up to 512) |
+|---|---|---|
+| test map: false negatives / false positives | 26 / 1.4 % of the shown pairs | 1 / 1.8 % |
+| lvl2 (24 clusters): false negatives / false positives | 26 / 1.9 % | 4 / 2.4 % |
+| lvl2 visibility time | 4.0 s | 5.0 s |
+
+- The table itself culls well: 60-87 % of the clusters of a section are hidden (the open plaza 23 %, as it should be), 1-3 % of the shown pairs cannot be seen.
+- The extension rounds (6180a56) are not what made culling worse: without them the table has 5x the false negatives (161 against 26 on lvl2) and only 1.3 % fewer
+  shown pairs. `_vis_dilate` has no false negatives and 41 % false positives on lvl2: do not use it.
+- The false negatives that were left are sight lines through several narrow openings in a row (a hall of five 0.7 m holes, zig-zag: 3 % of the lines through the first and the
+  last hole were hidden; now 0.2 %, the rest graze the lintel by centimetres). More sampling of the narrow clusters (the slabs of a wall with a doorway) and more
+  segments per pair is what finds them; the test `a hallway of many door holes` pins it.
+- What costs on lvl2 is not the table but what the engine draws for a visible cluster: surfaces are never split, so a surface is drawn whole when any leaf it touches is
+  visible, and every surface with one point outside the cells goes whole into the outside leaf (cluster 0, drawn from everywhere, section 2). lvl2: 2206 of 18466 surfaces
+  (12 %), 39 % of the triangles are in the outside leaf; a cluster draws on average 43k triangles (36k of them the outside leaf; the cells alone 19 % of their triangles) and
+  really sees about 5k of them (2.7k in the cells), sampled. In the test map (no background) 17-52 % of the area drawn is surfaces nobody can see, half of it big
+  surfaces (floors, ceilings, long walls over 50 m2).
+- Ideas not done (each is a design change, ask first): split big surfaces at the cell planes when exporting; give the background its own coarse outside clusters so it is
+  culled like the rest (the outside leaf would stop being "seen from everywhere", the O rule of section 2 for objects stays).

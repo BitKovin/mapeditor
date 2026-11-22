@@ -24,7 +24,7 @@ struct VisSettings {
     int maxSplitsPerCell = 16;
     bool dilate = false;                      // a cluster also gets the view of the clusters it opens into (one ring, never through a wall)
     int samplePool = 32;                      // sample points per cluster
-    int pairSegments = 64;                    // segments traced per cluster pair
+    int pairSegments = 512;                   // segments traced per cluster pair
     double apertureMax = 0.5;                 // m: openings up to this wide get rays aimed through them (0 = off)
     int extendRounds = 3;                     // rounds of rays that run on past the clusters a cluster already sees (what a doorway shows beyond it; 0 = off)
     VisDevice device = VisDevice::Auto;
