@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QStyle>
 #include <QToolButton>
 
 #include "render/viewport_window.h"
@@ -20,7 +21,7 @@ const QString kArrow = QString::fromUtf8(" \xE2\x96\xBE");
 
 QString cameraName(render::CameraMode m) {
     switch (m) {
-        case render::CameraMode::Fly: return QStringLiteral("Perspective");
+        case render::CameraMode::Fly: return QStringLiteral("Persp");
         case render::CameraMode::Orbit: return QStringLiteral("Orbit");
         case render::CameraMode::Top: return QStringLiteral("Top");
         case render::CameraMode::Front: return QStringLiteral("Front");
@@ -71,6 +72,7 @@ ViewportHeader::ViewportHeader(MainWindow& window, size_t index, QWidget* parent
     row->addWidget(float_);
     refreshIcons();
     refresh();
+    connect(&win_, &MainWindow::viewportsChanged, this, [this] { refresh(); });
 }
 
 QToolButton* ViewportHeader::menuButton(const QString& objectName, const std::string& menuPath, const QString& tip) {
@@ -99,6 +101,12 @@ void ViewportHeader::refresh() {
     show_->setText(QStringLiteral("Show") + kArrow);
     maximise_->setVisible(panels.size() > 1 || win_.maximisedViewport() >= 0);
     maximise_->setChecked(win_.maximisedViewport() == static_cast<int>(index_));
+    const bool active = win_.activeViewportIndex() == static_cast<int>(index_);
+    if (property("active").toBool() != active) {   // the strip of the active viewport has the accent line (theme.cpp)
+        setProperty("active", active);
+        style()->unpolish(this);
+        style()->polish(this);
+    }
 }
 
 void ViewportHeader::refreshIcons() {

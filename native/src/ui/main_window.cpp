@@ -3,6 +3,7 @@
 #include "ui/main_window.h"
 #include "tools/parametric.h"
 
+#include <DockAreaTitleBar.h>
 #include <DockAreaWidget.h>
 #include <DockManager.h>
 #include <DockWidget.h>
@@ -21,6 +22,7 @@
 #include <QMouseEvent>
 #include <QSaveFile>
 #include <QSettings>
+#include <QVBoxLayout>
 #include <QString>
 #include <QWheelEvent>
 #include <QWidget>
@@ -52,6 +54,7 @@
 #include "ui/input_adapter.h"
 #include "ui/place_panel.h"
 #include "ui/main_toolbar.h"
+#include "ui/viewport_header.h"
 #include "ui/registry_menus.h"
 #include "ui/box_drawing.h"
 #include "ui/stats_panel.h"
@@ -377,12 +380,20 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
         QWidget* container = QWidget::createWindowContainer(window, nullptr);   // the container owns the window
         container->setMinimumSize(160, 120);
         container->setFocusPolicy(Qt::StrongFocus);
+        auto* holder = new QWidget;   // the header strip above the viewport (the viewport is a native window: nothing can be drawn over it)
+        auto* column = new QVBoxLayout(holder);
+        column->setContentsMargins(0, 0, 0, 0);
+        column->setSpacing(0);
         auto* dock = new ads::CDockWidget(dockManager_, QString());
         dock->setObjectName(QStringLiteral("viewport%1").arg(i + 1));
-        dock->setWidget(container, ads::CDockWidget::ForceNoScrollArea);
+        dock->setWidget(holder, ads::CDockWidget::ForceNoScrollArea);
         dock->setFeature(ads::CDockWidget::DockWidgetClosable, false);
         panels_.push_back({dock, container, window});
         const size_t index = panels_.size() - 1;
+        panels_[index].holder = holder;
+        panels_[index].header = new ViewportHeader(*this, index, holder);
+        column->addWidget(panels_[index].header);
+        column->addWidget(container, 1);
         window->setChangedCallback([this, index] {
             refreshSizeLabels(index);
             refreshGizmo(index);
@@ -426,11 +437,15 @@ void MainWindow::buildViewports(LayoutPreset preset, const std::vector<SavedView
     dockManager_->setSplitterSizes(statsArea, root);
     layoutToolDocks(statsArea);
     active_ = 0;
+    maximised_ = -1;
+    hideViewportTitleBars();
     building_ = false;
 }
 
 void MainWindow::destroyViewports() {
     cancelInput();
+    viewportTitleBars_.clear();
+    maximised_ = -1;
     for (const ViewportPanel& p : panels_) {
         p.window->setChangedCallback({});
         p.window->setActivatedCallback({});
@@ -452,6 +467,7 @@ std::vector<MainWindow::SavedViewport> MainWindow::captureViewports() const {
 void MainWindow::setLayoutPreset(LayoutPreset preset) {
     if (!services_.renderThread || !services_.vulkanInstance) return;
     if (preset == preset_ && !panels_.empty()) return;
+    if (maximised_ >= 0) toggleMaximizeViewport(static_cast<size_t>(maximised_));   // all docks back before the layout is rebuilt
     const std::vector<SavedViewport> saved = captureViewports();
     dockManager_->removeDockWidget(statsDock_);
     dockManager_->removeDockWidget(placeDock_);
@@ -470,6 +486,44 @@ void MainWindow::setLayoutPreset(LayoutPreset preset) {
     buildViewports(preset, saved);
     if (menus_) menus_->refresh();
     scheduleSave();
+}
+
+void MainWindow::setActiveViewport(size_t index) {
+    if (index >= panels_.size() || static_cast<int>(index) == active_) return;
+    active_ = static_cast<int>(index);
+    emit viewportsChanged();
+}
+
+void MainWindow::toggleMaximizeViewport(size_t index) {
+    if (index >= panels_.size()) return;
+    const bool restore = maximised_ == static_cast<int>(index);
+    if (!restore && panels_.size() < 2) return;
+    maximised_ = restore ? -1 : static_cast<int>(index);
+    for (size_t i = 0; i < panels_.size(); ++i)
+        if (i != index) panels_[i].dock->toggleView(restore);
+    if (!restore) active_ = static_cast<int>(index);
+    hideViewportTitleBars();
+    emit viewportsChanged();
+}
+
+void MainWindow::floatViewport(size_t index) {
+    if (index >= panels_.size()) return;
+    panels_[index].dock->setFloating();
+}
+
+// The dock areas of the viewports show no title bar: the viewport header is their title. ADS shows a bar again when it rearranges the areas, so a Show event hides it once more.
+void MainWindow::hideViewportTitleBars() {
+    for (const ViewportPanel& p : panels_) {
+        ads::CDockAreaWidget* area = p.dock->dockAreaWidget();
+        if (!area || !area->titleBar()) continue;
+        QWidget* bar = area->titleBar();
+        bar->setVisible(false);
+        const bool known = std::any_of(viewportTitleBars_.begin(), viewportTitleBars_.end(), [bar](const QPointer<QWidget>& w) { return w == bar; });
+        if (!known) {
+            bar->installEventFilter(this);
+            viewportTitleBars_.push_back(bar);
+        }
+    }
 }
 
 void MainWindow::updateDockTitle(size_t index) {
@@ -889,6 +943,14 @@ void MainWindow::reconcileInput(const InputProbe& probe) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* e) {
+    if (e->type() == QEvent::Show && !viewportTitleBars_.empty()) {
+        for (const QPointer<QWidget>& bar : viewportTitleBars_)
+            if (bar == watched) {
+                QWidget* w = bar;
+                QTimer::singleShot(0, w, [w] { w->hide(); });
+                break;
+            }
+    }
     if ((e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease) && watched->isWindowType()) {
         const bool press = e->type() == QEvent::KeyPress;
         if (!QApplication::activePopupWidget() && !QApplication::activeModalWidget()) {
@@ -918,12 +980,13 @@ void MainWindow::saveLayout() {
     nlohmann::json arr = nlohmann::json::array();
     for (const SavedViewport& v : captureViewports()) arr.push_back({{"settings", v.settingsJson}, {"pose", v.poseJson}});
     st->setValue(kViewports, QString::fromStdString(arr.dump()));
-    st->setValue(kDockState, dockManager_->saveState(kStateVersion));
+    if (maximised_ < 0) st->setValue(kDockState, dockManager_->saveState(kStateVersion));   // a maximised viewport hides the others: keep the last full state
     st->sync();
 }
 
 void MainWindow::closeEvent(QCloseEvent* e) {
     saveTimer_.stop();
+    if (maximised_ >= 0) toggleMaximizeViewport(static_cast<size_t>(maximised_));   // the saved dock state has every viewport
     saveLayout();
     QMainWindow::closeEvent(e);
 }

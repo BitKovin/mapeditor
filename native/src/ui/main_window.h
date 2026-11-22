@@ -10,6 +10,7 @@
 
 #include <QImage>
 #include <QMainWindow>
+#include <QPointer>
 #include <QPointF>
 #include <QString>
 #include <QTimer>
@@ -117,6 +118,7 @@ struct BoxDrawing;
 struct TransformSession;
 class StatsPanel;
 class MainToolBar;
+class ViewportHeader;
 class RegistryMenus;
 class OutlinerPanel;
 class DetailsPanel;
@@ -183,6 +185,8 @@ struct ViewportPanel {
     render::ViewportWindow* window = nullptr;   // owned by container
     bool hasSizeLabels = false;                 // the render thread holds size labels for this viewport
     bool hasGizmo = false;                      // ... and gizmo lines
+    QWidget* holder = nullptr;                  // the dock's widget: the header strip above the container
+    ViewportHeader* header = nullptr;           // camera / render / show menus, maximise, float (14_UI_REDESIGN.md 6.3)
 };
 
 class MainWindow : public QMainWindow {
@@ -206,6 +210,12 @@ public:
     ads::CDockWidget* statsDock() const { return statsDock_; }
     // The viewport the last mouse press went to (what the camera menu acts on); the first one at start.
     render::ViewportWindow* activeViewport() const;
+    int activeViewportIndex() const { return active_; }
+    // The viewport header's commands: make a viewport the active one; show only it (or all again); move it into its own window.
+    void setActiveViewport(size_t index);
+    void toggleMaximizeViewport(size_t index);
+    int maximisedViewport() const { return maximised_; }   // the index shown alone, or -1
+    void floatViewport(size_t index);
 
     // The action system: registry (every command), keymap (preset + user layer) and the router all input goes through.
     actions::Registry& registry() { return registry_; }
@@ -912,6 +922,9 @@ private:
     std::vector<ViewportPanel> panels_;
     LayoutPreset preset_ = LayoutPreset::One;
     int active_ = 0;
+    int maximised_ = -1;   // the viewport shown alone (the other viewport docks are hidden), -1 = none
+    void hideViewportTitleBars();   // the header strip replaces the dock area's title bar of the viewports
+    std::vector<QPointer<QWidget>> viewportTitleBars_;
     QTimer saveTimer_;
     QTimer statsTimer_;   // refreshes the Stats panel rows that change (lighting)
     std::vector<std::pair<std::string, std::string>> deviceRows_;

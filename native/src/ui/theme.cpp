@@ -206,6 +206,11 @@ QToolButton:pressed { background: @bg2; }
 QToolButton:checked { background: @accentBg; border-color: @accent; color: @textStrong; }
 QToolButton:disabled { color: @dim; }
 QToolButton::menu-indicator { image: none; width: 0; }
+#viewportHeader { background: @bg1; border-top: 2px solid transparent; border-bottom: 1px solid @line; }
+#viewportHeader[active="true"] { border-top: 2px solid @accent; }
+#viewportHeader QToolButton { color: @dim; padding: 2px 7px; }
+#viewportHeader QToolButton:hover { color: @textStrong; background: @bg3; }
+#viewportHeader QToolButton:checked { color: @textStrong; background: @bg3; border-color: transparent; }
 QTabBar::tab { background: @bg0; color: @dim; padding: 5px 12px; border: none; border-top: 2px solid transparent; }
 QTabBar::tab:hover { background: @bg2; color: @text; }
 QTabBar::tab:selected { background: @bg1; color: @textStrong; border-top: 2px solid @accent; }

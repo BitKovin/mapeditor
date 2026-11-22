@@ -145,7 +145,11 @@ TEST_CASE("layout presets 1, 2 and 4 build the right viewports and keep cameras 
         for (size_t i = 0; i < 4; ++i) {
             const auto img = vps[i].window->capture();
             REQUIRE(img.ok());
-            CHECK(closeTo(pixel(img, 2, 2), {27, 27, 29}, 45));   // clear, or at most a faint grid line
+            // the corner is clear, or on a grid line: at least one of a few pixels near it is the background
+            bool clear = false;
+            for (const QPoint p : {QPoint(2, 2), QPoint(5, 3), QPoint(3, 7), QPoint(9, 5), QPoint(7, 11)}) clear = clear || closeTo(pixel(img, static_cast<uint32_t>(p.x()), static_cast<uint32_t>(p.y())), {27, 27, 29}, 45);
+            INFO("viewport " << i << " " << img.width << "x" << img.height);
+            CHECK(clear);
         }
         const auto topImg = vps[1].window->capture();
         REQUIRE(topImg.ok());
