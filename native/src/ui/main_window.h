@@ -126,6 +126,7 @@ class TexGroupEditor;
 class GroupsPanel;
 class LevelSettingsPanel;
 class HistoryPanel;
+class AdjustPanel;
 class MessagesPanel;
 class HideDialog;
 class TileSetEditor;
@@ -141,6 +142,20 @@ class StatusFields;
 class KeyHelpOverlay;
 
 // What the window needs from the application (owned by main(); the window never outlives them). All null in widget-only tests.
+// The last operation that has parameters (10_UI_AND_INPUT.md U1, Blender's "adjust last operation"): its parameters stay editable while nothing else was done;
+// changing one undoes the operation and runs it again with the new values, so the history still has the one step.
+struct AdjustParam {
+    std::string key, label;
+    double value = 0, min = 0, max = 0, step = 0.05;
+};
+struct LastOperation {
+    std::string id, label;
+    std::vector<AdjustParam> params;
+    std::vector<doc::SelRef> before;                           // the selection the operation ran on
+    std::shared_ptr<const doc::DocumentVersion> after;         // the version it made: the operation can be adjusted while this is the current one
+    std::function<bool(const std::vector<double>&)> rerun;     // runs it again on the selection with these values, in `params` order
+};
+
 struct Services {
     gpu::Device* device = nullptr;
     render::RenderThread* renderThread = nullptr;
@@ -592,6 +607,15 @@ public:
     HistoryPanel* historyPanel() const { return historyPanel_; }
     ads::CDockWidget* historyDock() const { return historyDock_; }
     MessagesPanel* messagesPanel() const { return messagesPanel_; }
+    AdjustPanel* adjustPanel() const { return adjustPanel_; }
+    ads::CDockWidget* adjustDock() const { return adjustDock_; }
+    // The operation that can be adjusted now (null once something else was done, or after an undo of it; redo makes it adjustable again).
+    const LastOperation* lastOperation() const;
+    // Records an operation that was just committed (`op.after` is filled here); tells the Adjust panel.
+    void setLastOperation(LastOperation op);
+    // Changes the parameters of the last operation (`values` in the order of its params): undoes it, selects what it ran on and runs it again.
+    // False (and the old result is back) when it refuses the new values.
+    bool adjustLastOperation(const std::vector<double>& values);
     ads::CDockWidget* messagesDock() const { return messagesDock_; }
     ads::CDockWidget* groupsDock() const { return groupsDock_; }
     std::shared_ptr<const core::GameProfile> gameProfile() const { return profile_; }
@@ -691,6 +715,8 @@ signals:
     void transformChanged();
     // The current document changed (opened, saved under a new path, replaced): panels refresh their title and contents.
     void documentChanged();
+    // The operation that can be adjusted changed (a new one was recorded, or it can no longer be adjusted).
+    void lastOperationChanged();
     // The current version changed (an edit, undo, redo, or a new document: `all`): what differs from the previous one.
     void documentEdited(const native::doc::ChangeSet& changes);
     // The selection, the edit mode or the mesh selection changed.
@@ -798,12 +824,15 @@ private:
     LevelSettingsPanel* levelPanel_ = nullptr;
     HistoryPanel* historyPanel_ = nullptr;
     MessagesPanel* messagesPanel_ = nullptr;
+    AdjustPanel* adjustPanel_ = nullptr;
+    std::optional<LastOperation> lastOp_;
     std::map<std::string, std::vector<std::string>> textureLists_;   // used when there are no settings (tests)
     std::map<std::string, std::string> bookmarks_;   // used when there are no settings (tests): key -> JSON
     HideDialog* hideDialog_ = nullptr;
     ads::CDockWidget* levelDock_ = nullptr;
     ads::CDockWidget* historyDock_ = nullptr;
     ads::CDockWidget* messagesDock_ = nullptr;
+    ads::CDockWidget* adjustDock_ = nullptr;
     ads::CDockWidget* groupsDock_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;
     DetailsPanel* details_ = nullptr;

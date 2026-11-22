@@ -46,7 +46,17 @@ bool MainWindow::applyBrushEdit(const tools::BrushEdit& edit) {
 
 bool MainWindow::hollowSelected(double thickness) {
     if (!document_) return false;
-    return applyBrushEdit(tools::hollowSelection(document_, selection_->items(), thickness > 0 ? thickness : 0.25));
+    if (!(thickness > 0)) thickness = 0.25;
+    const std::vector<doc::SelRef> before = selection_->items();
+    if (!applyBrushEdit(tools::hollowSelection(document_, before, thickness))) return false;
+    LastOperation op;
+    op.id = "brush.hollow";
+    op.label = "Make hollow";
+    op.params = {{"thickness", "Wall thickness (m)", thickness, 0.01, 100, 0.05}};
+    op.before = before;
+    op.rerun = [this](const std::vector<double>& v) { return hollowSelected(v.empty() ? 0.25 : v[0]); };
+    setLastOperation(std::move(op));
+    return true;
 }
 
 bool MainWindow::mergeSelected() {
