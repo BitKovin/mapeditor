@@ -81,7 +81,7 @@ bool MainWindow::flipSelected(int axis) {
     }
     tools::V3 factors{1, 1, 1};
     factors[static_cast<size_t>(axis)] = -1;
-    const auto after = tools::transformSelections(document_, sels, tools::scaleAbout(*pivot, factors), true, 0, true);
+    const auto after = tools::transformSelections(document_, sels, tools::scaleAbout(*pivot, factors), true, 0, uvLock_);
     if (!after || after == document_) {
         statusBar()->showMessage(QStringLiteral("Flip: the result would not be a valid brush"), 5000);
         return false;
@@ -100,7 +100,7 @@ bool MainWindow::rotateSelected90(int axis, int dir) {
     tools::V3 a{0, 0, 0};
     a[static_cast<size_t>(axis)] = 1;
     const int sign = dir < 0 ? -1 : 1;
-    const auto after = tools::transformSelections(document_, sels, tools::rotateAbout(*pivot, a, sign * 1.5707963267948966), false, axis == 1 ? sign * 90.0 : 0.0, true);
+    const auto after = tools::transformSelections(document_, sels, tools::rotateAbout(*pivot, a, sign * 1.5707963267948966), false, axis == 1 ? sign * 90.0 : 0.0, uvLock_);
     if (!after || after == document_) {
         statusBar()->showMessage(QStringLiteral("Rotate: the result would not be a valid brush"), 5000);
         return false;

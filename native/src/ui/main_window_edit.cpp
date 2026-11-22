@@ -124,7 +124,7 @@ bool MainWindow::nudgeSelected(const std::string& key, bool fine) {
     if (step <= 0) step = 0.25;
     if (fine) step /= 8;
     for (double& c : dir) c *= step;
-    const auto after = tools::transformSelections(document_, sels, tools::translateBy(dir), false, 0, true);
+    const auto after = tools::transformSelections(document_, sels, tools::translateBy(dir), false, 0, uvLock_);
     if (!after || after == document_) return false;
     if (!commitEdit("Nudge", after)) return false;
     statusBar()->showMessage(QString("Nudged %1 m").arg(step), 2000);
@@ -406,6 +406,16 @@ HideDialog* MainWindow::openHideDialog(bool show) {
         hideDialog_->activateWindow();
     }
     return hideDialog_;
+}
+
+void MainWindow::setUvLock(bool on) {
+    if (uvLock_ == on) return;
+    uvLock_ = on;
+    if (services_.settings) services_.settings->setValue("edit/uvLock", on);
+    statusBar()->showMessage(on ? QStringLiteral("UV lock on: textures stay on the faces when you move, rotate or scale")
+                                : QStringLiteral("UV lock off: textures stay where they are in space and slide over the faces"),
+                             4000);
+    emit editorPrefsChanged();
 }
 
 void MainWindow::setHiddenKeys(const std::set<std::string>& keys) {

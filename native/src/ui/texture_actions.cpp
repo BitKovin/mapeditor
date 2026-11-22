@@ -153,6 +153,25 @@ void registerTextureActions(actions::Registry& r) {
     }
     {
         ActionDef d;
+        d.id = "texture.uv_lock";
+        d.label = "UV lock";
+        d.category = "Texture";
+        d.description = "On: textures stay on the faces when brushes or vertices are moved, rotated or scaled. Off: the texture stays where it is in space.";
+        d.kind = actions::ActionKind::Toggle;
+        d.menu = "&Texture";
+        d.hint = "UV lock";
+        d.enabled = [](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
+        d.checked = [](const ActionEnv& env, const json&) {
+            MainWindow* w = windowOf(env);
+            return w && w->uvLock();
+        };
+        d.run = [](ActionEnv& env, const Invocation&) {
+            if (auto* w = windowOf(env)) w->setUvLock(!w->uvLock());
+        };
+        r.add(std::move(d));
+    }
+    {
+        ActionDef d;
         d.id = "texture.ftt";
         d.label = "Fast Texture Tool";
         d.category = "Texture";

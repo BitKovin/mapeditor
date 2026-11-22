@@ -481,11 +481,12 @@ bool MainWindow::mirrorMesh(int axis) {
     if (!t) return false;
     const core::texplan::InfoFn info = texEnv_ ? texEnv_->infoFn() : core::texplan::InfoFn{};
     static const char* const names[] = {"Mirror X", "Mirror Y", "Mirror Z"};
-    return applyMeshOperation(names[axis], [axis, info](const core::Brush& b, const tm::MeshSel& s) {
+    const bool lock = uvLock_;
+    return applyMeshOperation(names[axis], [axis, info, lock](const core::Brush& b, const tm::MeshSel& s) {
         std::vector<uint32_t> verts = s.verts;
         if (verts.empty())
             for (uint32_t i = 0; i < b.vertices.size(); ++i) verts.push_back(i);
-        return tm::mirrorVerts(b, verts, axis, true, info);
+        return tm::mirrorVerts(b, verts, axis, lock, info);
     });
 }
 

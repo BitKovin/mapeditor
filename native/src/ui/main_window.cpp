@@ -51,6 +51,7 @@
 #include "ui/glyph_atlas_qt.h"
 #include "ui/input_adapter.h"
 #include "ui/place_panel.h"
+#include "ui/main_toolbar.h"
 #include "ui/registry_menus.h"
 #include "ui/box_drawing.h"
 #include "ui/stats_panel.h"
@@ -128,6 +129,7 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     const bool haveViewports = services_.renderThread && services_.vulkanInstance;
     QSettings* st = services_.settings;
     if (st) prefs_ = tools::prefsFromJson(st->value("prefs/editor").toString().toStdString());
+    if (st) uvLock_ = st->value("edit/uvLock", true).toBool();
     if (st && services_.forceViewports == 0) {
         const QByteArray geom = st->value(kGeometry).toByteArray();
         if (!geom.isEmpty()) restoreGeometry(geom);
@@ -236,6 +238,8 @@ MainWindow::MainWindow(const Services& services, QWidget* parent) : QMainWindow(
     loadKeymap();
     menus_ = new RegistryMenus(menuBar(), registry_, keymap_, [this] { return currentUiEnv(); }, this);
     menus_->build();
+    toolbar_ = new MainToolBar(*this);   // under the menu bar: the frequent actions as grouped icon buttons (14_UI_REDESIGN.md 6.2)
+    addToolBar(Qt::TopToolBarArea, toolbar_);
     statusFields_->refreshNow();   // the hints need the registry and the keymap
     if (place_) place_->refreshTooltips();
     if (services_.watchInput) {

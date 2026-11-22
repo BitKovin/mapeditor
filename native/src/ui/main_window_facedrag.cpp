@@ -221,7 +221,7 @@ void MainWindow::updateResize(TransformSession& t) {
     const tools::V3 lo = map(r.min), hi = map(r.max);
     t.resize.width = std::fabs(hi[static_cast<size_t>(r.right.axis)] - lo[static_cast<size_t>(r.right.axis)]);
     t.resize.height = std::fabs(hi[static_cast<size_t>(r.up.axis)] - lo[static_cast<size_t>(r.up.axis)]);
-    const auto after = tools::transformSelections(t.base, t.selection, map, false, 0, true);
+    const auto after = tools::transformSelections(t.base, t.selection, map, false, 0, uvLock_);
     if (!after) return;   // a brush that would not be valid: the last good version stays
     if (after != document_) history_->commit({t.label, document_, after});
     refreshGizmos();

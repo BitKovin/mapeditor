@@ -168,15 +168,16 @@ void MainWindow::updateTransform() {
     // the document version a point map gives: the selection's objects, or the picked vertices of the edited brush (with proportional editing when it is on)
     const core::texplan::InfoFn info = texEnv_ ? texEnv_->infoFn() : core::texplan::InfoFn{};
     const auto moved = [&](const tools::Affine& m, bool flipIt, double yaw) -> std::shared_ptr<const doc::DocumentVersion> {
-        if (!t.mesh.active) return tools::transformSelections(t.base, t.selection, m, flipIt, yaw, true);
+        if (!t.mesh.active) return tools::transformSelections(t.base, t.selection, m, flipIt, yaw, uvLock_);
         const tools::mesh::PointFn fn = [m](const core::Vec3& p, uint32_t) {
             const tools::V3 q = m({p.x, p.y, p.z});
             return core::Vec3{q[0], q[1], q[2]};
         };
         const bool prop = t.mesh.proportional;
         const double radius = t.mesh.radius;
-        return meshAfter(t, [fn, prop, radius, info](const core::Brush& b, const tools::mesh::MeshSel& s) {
-            return prop ? tools::mesh::proportionalVerts(b, s.verts, fn, radius, true, info) : tools::mesh::transformVerts(b, s.verts, fn, true, info);
+        const bool lock = uvLock_;
+        return meshAfter(t, [fn, prop, radius, info, lock](const core::Brush& b, const tools::mesh::MeshSel& s) {
+            return prop ? tools::mesh::proportionalVerts(b, s.verts, fn, radius, lock, info) : tools::mesh::transformVerts(b, s.verts, fn, lock, info);
         });
     };
 

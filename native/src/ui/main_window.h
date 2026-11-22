@@ -116,6 +116,7 @@ namespace native::ui {
 struct BoxDrawing;
 struct TransformSession;
 class StatsPanel;
+class MainToolBar;
 class RegistryMenus;
 class OutlinerPanel;
 class DetailsPanel;
@@ -211,6 +212,7 @@ public:
     actions::Keymap& keymap() { return keymap_; }
     actions::Router& router() { return router_; }
     RegistryMenus* menus() const { return menus_; }
+    MainToolBar* toolbar() const { return toolbar_; }
     // Layout actions need viewports (render services).
     bool canLayout() const { return services_.renderThread && services_.vulkanInstance; }
     // Ends the holds whose key or button the probe says is up (`probe(trigger, known)`: trigger "btn:2" / "key:W"), and unlocks a viewport pointer whose
@@ -680,6 +682,9 @@ public:
     QSettings* settings() const { return services_.settings; }
     // What a NEW viewport starts with (Settings > Editor); kept in the settings. Open viewports keep theirs.
     const tools::EditorPrefs& editorPrefs() const { return prefs_; }
+    // UV lock (REQUIREMENTS 8): on = textures stay on the faces when brushes or their vertices are transformed. Kept in the user settings ("edit/uvLock").
+    bool uvLock() const { return uvLock_; }
+    void setUvLock(bool on);
     void setEditorPrefs(const tools::EditorPrefs& prefs);
     // Reads game_profile.json and the entity definitions again (after the profile was edited, or its files changed): the scene's texture and relief
     // environment, the picker's class boxes, the Place panel. A malformed profile is reported and the previous one stays.
@@ -880,6 +885,7 @@ private:
     ToolOptionsPanel* toolOptionsPanel_ = nullptr;
     std::optional<LastOperation> lastOp_;
     std::map<std::string, std::vector<std::string>> textureLists_;   // used when there are no settings (tests)
+    bool uvLock_ = true;   // textures stay on the faces when brushes are moved, rotated, scaled or their vertices are dragged
     std::map<std::string, std::string> selectionSets_;   // used when there are no settings (tests): key -> JSON
     std::map<std::string, std::string> bookmarks_;   // used when there are no settings (tests): key -> JSON
     HideDialog* hideDialog_ = nullptr;
@@ -917,6 +923,7 @@ private:
     actions::Keymap keymap_;
     actions::Router router_{registry_, keymap_};
     RegistryMenus* menus_ = nullptr;
+    MainToolBar* toolbar_ = nullptr;
     render::ViewportWindow* holdViewport_ = nullptr;   // the viewport a running hold (a drag, flight keys) belongs to
     std::string keymapError_;
 

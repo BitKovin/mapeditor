@@ -1,12 +1,14 @@
 // M11 item 11, U5: the Snapping menu (View > Snapping and the click on the grid field of the status bar) with a real window and viewports (native_gui_tests).
 #include <doctest.h>
 
+#include <QComboBox>
 #include <QMenu>
 #include <QMenuBar>
 
 #include "base/jobs.h"
 #include "doc/io.h"
 #include "gui_support.h"
+#include "ui/main_toolbar.h"
 #include "ui/status_bar.h"
 
 using namespace native;
@@ -93,4 +95,57 @@ TEST_CASE("snapping: snap, grid size, rotation and scale of the viewport through
     CHECK(find(sub->menu(), QStringLiteral("Grid size")) != nullptr);
     CHECK(find(sub->menu(), QStringLiteral("Rotation snap")) != nullptr);
     CHECK(find(sub->menu(), QStringLiteral("Scale snap")) != nullptr);
+}
+
+TEST_CASE("toolbar: the grid and rotation combos, the snap button and the layout buttons act on the real viewports" * doctest::test_suite("gpu")) {
+    App app;
+    if (!app.ok) return;
+    base::JobPool pool(4);
+    ui::Services sv = app.services();
+    sv.jobs = &pool;
+    ui::MainWindow window(sv);
+    window.resize(1100, 700);
+    window.show();
+    REQUIRE(waitUntil([&] { return allReady(window); }));
+    ui::MainToolBar* tb = window.toolbar();
+    REQUIRE(tb);
+    render::ViewportWindow* vp = window.activeViewport();
+    REQUIRE(vp);
+    CHECK(tb->gridCombo()->isEnabled());
+    CHECK(tb->rotationCombo()->isEnabled());
+
+    // choosing an entry sets the viewport
+    const int quarter = tb->gridCombo()->findData(0.25);
+    REQUIRE(quarter >= 0);
+    tb->gridCombo()->setCurrentIndex(quarter);
+    QMetaObject::invokeMethod(tb->gridCombo(), "activated", Q_ARG(int, quarter));
+    CHECK(vp->rig().settings().gridSize == doctest::Approx(0.25));
+    const int step45 = tb->rotationCombo()->findData(45.0);
+    REQUIRE(step45 >= 0);
+    tb->rotationCombo()->setCurrentIndex(step45);
+    QMetaObject::invokeMethod(tb->rotationCombo(), "activated", Q_ARG(int, step45));
+    CHECK(vp->rig().settings().rotSnap == doctest::Approx(45));
+
+    // a change made elsewhere (a key, the status bar) shows in the combo
+    window.runAction("snap.grid_size", nlohmann::json{{"value", 1.0}});
+    pumpFor(50);
+    CHECK(tb->gridCombo()->currentData().toDouble() == doctest::Approx(1.0));
+
+    // the snap button
+    QAction* snap = tb->find("snap.toggle");
+    REQUIRE(snap);
+    CHECK(snap->isChecked());
+    snap->trigger();
+    CHECK_FALSE(vp->rig().settings().snapEnabled);
+    CHECK_FALSE(snap->isChecked());
+
+    // the layout buttons rebuild the viewports and the checked one follows
+    QAction* two = tb->find("view.layout", nlohmann::json{{"count", 2}});
+    QAction* one = tb->find("view.layout", nlohmann::json{{"count", 1}});
+    REQUIRE(two);
+    CHECK(one->isChecked());
+    two->trigger();
+    REQUIRE(waitUntil([&] { return window.viewports().size() == 2 && allReady(window); }));
+    CHECK(two->isChecked());
+    CHECK_FALSE(one->isChecked());
 }
