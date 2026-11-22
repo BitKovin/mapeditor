@@ -236,3 +236,68 @@ TEST_CASE("the decal tool lays a projector on the surface under the click, one u
     }
     CHECK(app.device->allocationStats().allocationCount <= app.baseAllocations + 1);
 }
+
+TEST_CASE("the angle handle of a selected point entity turns it as one undo step" * doctest::test_suite("gpu")) {
+    App app;
+    if (!app.ok) return;
+    base::JobPool pool(4);
+    QTemporaryDir dir;
+    ui::Services sv = app.services();
+    sv.jobs = &pool;
+    sv.assetsRoot = dir.path().toStdString();
+    {
+        ui::MainWindow window(sv);
+        window.resize(900, 650);
+        window.show();
+        REQUIRE(waitUntil([&] { return allReady(window); }));
+        {
+            const doc::LoadResult r = doc::loadDocumentText(R"({"schemaVersion": "0.2", "entities": []})");
+            doc::VersionEditor ed(r.version);
+            core::Entity w;
+            w.id = "w";
+            w.classname = "worldspawn";
+            w.brushes.push_back(core::Brush::makeBox("b", {-1, -1, -1}, {1, 1, 1}, "dev/grey"));
+            REQUIRE(ed.addEntity(w));
+            core::Entity p;
+            p.id = "p";
+            p.classname = "nav_point";
+            p.origin = {1.5, 0, 0};
+            REQUIRE(ed.addEntity(p));
+            window.setDocument(ed.finish(), true);
+        }
+        REQUIRE(waitUntil([&] { return window.sceneReady() && window.picker(); }, 20000));
+        REQUIRE(window.frameScene());
+        pumpFor(300);
+        render::ViewportWindow* vp = window.viewports()[0].window;
+        window.selection().select(doc::SelRef::entity("p"));
+        pumpFor(100);
+        const auto handle = window.angleHandleTip();
+        REQUIRE(handle);
+        const QPoint tip = screenOf(vp, *handle);
+        const render::Vec3 target{handle->x - 0.7, handle->y, 0};   // to the -X side (towards the box, on screen) on the entity's horizontal plane: about yaw -90
+        const QPoint to = screenOf(vp, target);
+        REQUIRE(to.x() > 0);
+        REQUIRE(to.x() < vp->width());
+        REQUIRE(to.y() > 0);
+        REQUIRE(to.y() < vp->height());
+        const size_t undoBefore = window.history().undoCount();
+        sendMouse(vp, QEvent::MouseMove, Qt::NoButton, Qt::NoButton, tip);
+        sendMouse(vp, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, tip);
+        CHECK(window.transforming());
+        sendMouse(vp, QEvent::MouseMove, Qt::NoButton, Qt::LeftButton, (tip + to) / 2);
+        sendMouse(vp, QEvent::MouseMove, Qt::NoButton, Qt::LeftButton, to);
+        sendMouse(vp, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, to);
+        pumpFor(100);
+        CHECK_FALSE(window.transforming());
+        const core::Entity& e = window.document()->entities[1]->typed;
+        CHECK(e.angles.y <= -75);   // snapped to the rotation step, near the -X direction
+        CHECK(e.angles.y >= -105);
+        CHECK(e.angles.x == doctest::Approx(0).scale(1).epsilon(1e-6));   // a drag on the horizontal plane keeps the pitch
+        CHECK(window.history().undoCount() == undoBefore + 1);
+        CHECK(window.history().undoLabel() == "Turn entity");
+        CHECK(window.selection().primary()->entityId == "p");   // still selected
+        window.history().undo();
+        CHECK(window.document()->entities[1]->typed.angles.y == doctest::Approx(0).scale(1));
+    }
+    CHECK(app.device->allocationStats().allocationCount <= app.baseAllocations + 1);
+}

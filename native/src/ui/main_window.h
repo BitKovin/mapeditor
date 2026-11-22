@@ -356,6 +356,8 @@ public:
     void toggleTransformAxis(int axis);
     // The entity whose origin is selected (clicked square of a brush entity): the move gizmo then moves the origin alone. Empty = none.
     std::string originSelected() const { return originSel_; }
+    // Where the angle handle (the diamond of a selected point entity) sits now; none when the selection shows none.
+    std::optional<render::Vec3> angleHandleTip() const;
     void leaveOrigin();
     // The gizmo of a viewport as lines (what the render thread draws); empty = none.
     std::vector<render::LineVertex> gizmoLinesFor(size_t panelIndex);
@@ -822,6 +824,15 @@ private:
     void updateFaceDrag(TransformSession& t);     // main_window_facedrag.cpp
     void updateResize(TransformSession& t);
     std::vector<render::LineVertex> faceDragLines(size_t panelIndex) const;
+    // The angle handle of the one selected point entity: the diamond at the tip of its direction arrow (main_window_angle.cpp).
+    struct AngleHandle {
+        std::string entityId;
+        render::Vec3 base, tip;
+    };
+    std::optional<AngleHandle> angleHandle() const;
+    bool beginAngleDrag(render::ViewportWindow* viewport, QPointF p, bool shift);
+    void updateAngleDrag(TransformSession& t);
+    std::vector<render::LineVertex> angleHandleLinesFor(size_t panelIndex) const;
     void updateTransform();
     void showTransformStatus();
     void endTransform(bool confirm);

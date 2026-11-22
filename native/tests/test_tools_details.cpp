@@ -540,3 +540,50 @@ TEST_CASE("decal: addDecal adds a selected decal entity with the texture, size a
     CHECK(e.keyvalues.at("depth") == "0.25");
     CHECK(r.label == "Add decal");
 }
+
+TEST_CASE("angle handle: anglesToward turns an entity to look along a direction, keeping the roll; the pitch stays when the plane is horizontal") {
+    const double eps = 1e-6;
+    auto a = tools::anglesToward({10, 20, 30}, {1, 0, 0}, true);
+    REQUIRE(a);
+    CHECK(a->x == doctest::Approx(10).epsilon(eps));   // pitch kept
+    CHECK(a->y == doctest::Approx(90).epsilon(eps));
+    CHECK(a->z == doctest::Approx(30).epsilon(eps));   // roll kept
+    a = tools::anglesToward({0, 0, 0}, {0, 0, 1}, false);
+    REQUIRE(a);
+    CHECK(a->y == doctest::Approx(0).scale(1).epsilon(eps));
+    CHECK(a->x == doctest::Approx(0).scale(1).epsilon(eps));
+    a = tools::anglesToward({0, 0, 0}, {0, -1, 1}, false);   // down and forward: pitch +45 (forward y = -sin pitch)
+    REQUIRE(a);
+    CHECK(a->x == doctest::Approx(45).epsilon(eps));
+    a = tools::anglesToward({0, 33, 0}, {0, 1, 0}, false);   // straight up: no horizontal part, the yaw stays
+    REQUIRE(a);
+    CHECK(a->x == doctest::Approx(-90).epsilon(eps));
+    CHECK(a->y == doctest::Approx(33).epsilon(eps));
+    a = tools::anglesToward({0, 0, 0}, {1, 0.1, 1}, true, 15);   // 45 degrees exactly
+    REQUIRE(a);
+    CHECK(a->y == doctest::Approx(45).epsilon(eps));
+    a = tools::anglesToward({0, 0, 0}, {0.9, 0, 1}, true, 15);   // 42 degrees snaps to 45
+    REQUIRE(a);
+    CHECK(a->y == doctest::Approx(45).epsilon(eps));
+    CHECK_FALSE(tools::anglesToward({0, 0, 0}, {0, 0, 0}, true));
+    // the result is consistent with the forward vector the viewport draws: (sin yaw cos pitch, -sin pitch, cos yaw cos pitch)
+    const core::Vec3 d{0.3, -0.5, 0.8};
+    const auto b = tools::anglesToward({0, 0, 0}, d, false);
+    REQUIRE(b);
+    const double kRad = 3.14159265358979323846 / 180.0, l = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    CHECK(std::sin(b->y * kRad) * std::cos(b->x * kRad) == doctest::Approx(d.x / l).epsilon(1e-5));
+    CHECK(-std::sin(b->x * kRad) == doctest::Approx(d.y / l).epsilon(1e-5));
+    CHECK(std::cos(b->y * kRad) * std::cos(b->x * kRad) == doctest::Approx(d.z / l).epsilon(1e-5));
+}
+
+TEST_CASE("angle handle: setAngles is one edit that turns the entity and nothing when it already is that way") {
+    auto d = doc::loadDocumentText(R"({"schemaVersion": "0.2", "entities": []})").version;
+    const auto added = tools::addPointEntity(d, "nav_point", {0, 0, 0});
+    REQUIRE(added.version);
+    const std::string id = added.version->entities[0]->typed.id;
+    const auto turned = tools::setAngles(added.version, id, {0, 90, 0});
+    REQUIRE(turned.version);
+    CHECK(turned.version->entities[0]->typed.angles.y == doctest::Approx(90));
+    CHECK(turned.label == "Turn entity");
+    CHECK_FALSE(tools::setAngles(turned.version, id, {0, 90, 0}).version);
+}

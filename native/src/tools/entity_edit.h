@@ -22,6 +22,11 @@ EditResult setKeyvalue(const BasePtr& base, const std::string& entityId, const s
 EditResult setClassname(const BasePtr& base, const std::string& entityId, const std::string& classname);   // refused for convex-only classes with a concave brush
 EditResult setOrigin(const BasePtr& base, const std::string& entityId, int axis, double value);
 EditResult setAngle(const BasePtr& base, const std::string& entityId, int axis, double value);
+// Turns the entity to `angles` in one edit (the angle handle's drag); nothing changes when they already are.
+EditResult setAngles(const BasePtr& base, const std::string& entityId, const core::Vec3& angles);
+// The angles (degrees) that make an entity look along `dir` (forward = R(angles) * (0, 0, 1) = (sin yaw cos pitch, -sin pitch, cos yaw cos pitch)); the roll of `current` is kept.
+// `keepPitch`: only the yaw follows (a drag on the horizontal plane). `snapDeg` > 0 rounds yaw and pitch to that step. Empty for a zero direction.
+std::optional<core::Vec3> anglesToward(const core::Vec3& current, const core::Vec3& dir, bool keepPitch, double snapDeg = 0);
 EditResult setScale(const BasePtr& base, const std::string& entityId, int axis, double value);   // writes modelscale_vec; the key goes at 1 1 1
 // Points reference `key` at `paths` (root-relative target paths; several = entities that share one name); an empty list removes it.
 EditResult setRef(const BasePtr& base, const std::string& entityId, const std::string& key, const std::vector<std::string>& paths);

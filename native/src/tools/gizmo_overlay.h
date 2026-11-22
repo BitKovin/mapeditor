@@ -15,6 +15,8 @@ namespace native::tools {
 // Two vertices a line.
 std::vector<render::LineVertex> gizmoLines(const Vec3& pivot, double length, render::GizmoMode mode, Axis active);
 
+// The diamond at the tip of a selected point entity's direction arrow (REQUIREMENTS 33 H2); while dragged it is white and the line from the arrow's base is drawn.
+std::vector<render::LineVertex> angleHandleLines(const Vec3& base, const Vec3& tip, const Vec3& right, const Vec3& up, double half, bool active);
 // The origin handle of a brush entity with a custom origin: a square of half-size `half` metres in the view plane (`right`, `up`), plus a cross; white when
 // `active` (the origin is the thing being edited), else amber.
 std::vector<render::LineVertex> originHandleLines(const Vec3& origin, const Vec3& right, const Vec3& up, double half, bool active);

@@ -70,6 +70,15 @@ struct ResizeSession {
     double width = 0, height = 0;   // the size along the screen axes now, for the status line
 };
 
+// A drag of the angle handle of a point entity (REQUIREMENTS 33 H2): the plane the pointer's ray is intersected with, through the arrow's base.
+struct AngleSession {
+    bool active = false;
+    std::string entityId;
+    render::Vec3 base{0, 0, 0};
+    render::Vec3 normal{0, 1, 0};
+    bool keepPitch = true;   // the plane is horizontal: only the yaw follows
+};
+
 struct TransformSession {
     enum class Source { Modal, Gizmo };
     Source source = Source::Modal;
@@ -92,6 +101,7 @@ struct TransformSession {
     MeshSession mesh;
     FaceDragSession face;
     ResizeSession resize;
+    AngleSession angle;
 };
 
 } // namespace native::ui

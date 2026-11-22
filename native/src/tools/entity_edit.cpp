@@ -138,6 +138,34 @@ EditResult setAngle(const BasePtr& base, const std::string& entityId, int axis, 
     });
 }
 
+EditResult setAngles(const BasePtr& base, const std::string& entityId, const core::Vec3& angles) {
+    if (!std::isfinite(angles.x) || !std::isfinite(angles.y) || !std::isfinite(angles.z)) return {};
+    return editEntity(base, entityId, "Turn entity", [&](core::Entity& e) {
+        if (e.angles.x == angles.x && e.angles.y == angles.y && e.angles.z == angles.z) return false;
+        e.angles = angles;
+        return true;
+    });
+}
+
+std::optional<core::Vec3> anglesToward(const core::Vec3& current, const core::Vec3& dir, bool keepPitch, double snapDeg) {
+    constexpr double kDeg = 180.0 / 3.14159265358979323846;
+    const double l = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (l < 1e-9) return std::nullopt;
+    const core::Vec3 d{dir.x / l, dir.y / l, dir.z / l};
+    const double horiz = std::hypot(d.x, d.z);
+    double yaw = horiz > 1e-6 ? std::atan2(d.x, d.z) * kDeg : current.y;
+    double pitch = keepPitch ? current.x : std::asin(std::max(-1.0, std::min(1.0, -d.y))) * kDeg;
+    if (snapDeg > 0) {
+        yaw = std::round(yaw / snapDeg) * snapDeg;
+        if (!keepPitch) pitch = std::round(pitch / snapDeg) * snapDeg;
+    }
+    const auto tidy = [](double x) {
+        const double r = std::round(x * 1e6) / 1e6;
+        return r == 0 ? 0.0 : r;
+    };
+    return core::Vec3{tidy(pitch), tidy(yaw), current.z};
+}
+
 EditResult setScale(const BasePtr& base, const std::string& entityId, int axis, double value) {
     if (!std::isfinite(value) || value == 0) return refused("Scale cannot be 0");
     if (axis < 0 || axis > 2) return {};

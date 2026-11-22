@@ -180,6 +180,10 @@ void MainWindow::updateTransform() {
         });
     };
 
+    if (t.angle.active) {
+        updateAngleDrag(t);
+        return;
+    }
     if (t.face.active) {
         updateFaceDrag(t);
         return;
@@ -399,6 +403,7 @@ bool MainWindow::transformMouse(size_t index, const actions::InputEvent& e) {
         return false;
     }
     if (e.type == Type::MousePress && e.button == 1 && e.mods == actions::kAlt && beginFaceDrag(vp, QPointF(e.x, e.y), true)) return true;
+    if (e.type == Type::MousePress && e.button == 1 && (e.mods == 0 || e.mods == actions::kShift) && beginAngleDrag(vp, QPointF(e.x, e.y), e.mods == actions::kShift)) return true;
     const bool shiftExtrude = e.mods == actions::kShift && meshMode() && meshElement() == tools::mesh::SelMode::Face && !meshSelection().faces.empty() && vp->rig().settings().gizmo == render::GizmoMode::Move;
     if (e.type == Type::MousePress && e.button == 1 && (e.mods == 0 || shiftExtrude)) {
         if (!shiftExtrude && originHit(vp, QPointF(e.x, e.y))) return true;   // the square sits on the gizmo's pivot: it wins
@@ -494,6 +499,7 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesOnly(size_t index) {
     if (clip_) return clipperLines(index);     // and the clipper
     if (measure_) return measureLines(index);  // and the measuring
     if (transform_ && transform_->source == TransformSession::Source::Modal) return {};   // the modal operators show no gizmo
+    if (transform_ && transform_->angle.active) return angleHandleLinesFor(index);   // the entity turns: the diamond follows the arrow
     if (transform_ && (transform_->face.active || transform_->resize.active)) return faceDragLines(index);   // a face drag / 2D resize shows its handles
     GizmoTarget g;
     tools::Axis active = -1;
@@ -536,6 +542,8 @@ std::vector<render::LineVertex> MainWindow::gizmoLinesOnly(size_t index) {
         }
         const std::vector<render::LineVertex> extra = faceDragLines(index);   // the arrow of the selected face / the 2D resize handles
         handle.insert(handle.end(), extra.begin(), extra.end());
+        const std::vector<render::LineVertex> angle = angleHandleLinesFor(index);   // the diamond of a selected point entity
+        handle.insert(handle.end(), angle.begin(), angle.end());
         g = gizmoTarget(vp);
         if (!g.valid) return handle;
         if (gizmoHover_.panel == index) active = gizmoHover_.axis;

@@ -63,6 +63,18 @@ std::vector<LineVertex> gizmoLines(const Vec3& pivot, double length, render::Giz
     return out;
 }
 
+std::vector<LineVertex> angleHandleLines(const Vec3& base, const Vec3& tip, const Vec3& right, const Vec3& up, double half, bool active) {
+    std::vector<LineVertex> out;
+    const uint32_t c = active ? packColor(1.0f, 1.0f, 1.0f, 1.0f) : packColor(1.0f, 0.45f, 0.15f, 1.0f);
+    const Vec3 r = right * (half * 1.3), u = up * (half * 1.3);
+    line(out, tip - u, tip + r, c);
+    line(out, tip + r, tip + u, c);
+    line(out, tip + u, tip - r, c);
+    line(out, tip - r, tip - u, c);
+    if (active) line(out, base, tip, c);
+    return out;
+}
+
 std::vector<LineVertex> originHandleLines(const Vec3& origin, const Vec3& right, const Vec3& up, double half, bool active) {
     std::vector<LineVertex> out;
     const uint32_t c = active ? packColor(1.0f, 1.0f, 1.0f, 1.0f) : packColor(1.0f, 0.85f, 0.2f, 1.0f);

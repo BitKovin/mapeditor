@@ -13,9 +13,9 @@ makes it unnecessary) · **gap** = not in native yet, needs a task or the user's
 | # | Gap | REQUIREMENTS | Size | Note |
 |---|---|---|---|---|
 | G1 | Drag from the Place tab into a viewport (entities, prefabs, shapes), with the half-transparent ghost | §3 #147, §5 (d), §12 | small (drop) + renderer (ghost) | Click-to-spawn works. The drop itself is UI only; the ghost needs an overlay pass, ask |
-| G2 | Entity angle handle (the tip of the direction arrow drags the entity's `angles`) | §33 H2 | small | The arrow is drawn (`scene/arrows`); the drag is not wired |
+| G2 (done, T13.2) | Entity angle handle (the tip of the direction arrow drags the entity's `angles`) | §33 H2 | small | The arrow is drawn (`scene/arrows`); the drag is not wired |
 | G3 | Terrain tool (sculpt, paint, panel) | §39 | large | **Not ported, user decision**: the user skipped the terrain tool ("terrain will be replaced"); the data model (`tools/terrain`, T11.8a) is kept, the WIP of the tool is in `git stash` |
-| G4 | Packaging: `release/native/` with the Qt DLLs (`windeployqt`) | M13 | small | `build_native.bat` builds; nothing copies the Qt runtime yet |
+| G4 (done, T13.3) | Packaging: `release/native/` with the Qt DLLs (`windeployqt`) | M13 | small | `package_native.bat [nobuild]`: exe, DLLs, Qt plugins, keymap; checked: the packaged exe renders demo.map.json with `--screenshot` on its own (159 MB, needs the VC++ runtime installed) |
 | G5 | View cube / axis widget | 10 U6 (not in REQUIREMENTS) | medium | needs an overlay in the camera frame; ask |
 | G6 | Named selection sets, lasso select | 10 U9 (not in REQUIREMENTS) | medium | extras of the native plan, not Shell parity |
 | G7 | Electron-only items (§29 P1..P7: desktop app, one build script, single instance, Core restart) | §29 | — | **Replaced**: one process, no Core socket; single instance is not implemented (the editor can be started twice) |
@@ -63,7 +63,7 @@ export) are not parity targets: native carries the same open points.
 | Entity spawn by dragging with ghost | **gap G1** | click spawn works (Place panel) |
 | Entities drawn and picked as their `.ent` boxes, translucent with class name, direction arrow, reference arrows | done | `scene/point_box`, `scene/arrows`, `render/entity_overlay` |
 | Entity origin handle of brush entities | done | `MainWindow::originHandle`, `tools/transform` (moves only the origin) |
-| Entity angle handle | **gap G2** | |
+| Entity angle handle | done (T13.2) | `ui/main_window_angle.cpp`, `tools::anglesToward / setAngles` |
 | Size labels of the selection | done | `scene/size_labels`, drawn by `mesh_pass` |
 | Hide classes / rules / unhide all | done | `ui/hide_dialog`, `tools/visibility` (T11.10e) |
 
@@ -155,6 +155,6 @@ Replaced by the native process; packaging is G4, single instance G7.
 | Terrain | **not ported (user decision), G3** | |
 
 ## What remains for M13
-1. G4 packaging script (`package_native.bat`).
-2. G1 / G2: the two small gaps (drop spawn, angle handle) — unless the user prefers to list them as not ported.
+1. G1: the drop spawn from the Place tab (the click spawn works) — unless the user prefers to list it as not ported.
+2. The ghost preview of G1 and the view cube (G5) need renderer overlay work: ask.
 3. The user opens the editor on their maps (lvl2, demo_lit) and signs off the list above; then the Shell is retired (their decision).
