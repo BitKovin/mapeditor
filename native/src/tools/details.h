@@ -47,9 +47,11 @@ struct DetailsEdit {
         OverrideRef,      // paths; `path`, `key`
         OverrideDelete,   // the entity at `path` is deleted in this instance (checked = on)
         OverrideRevert,   // every override of the entity at `path`
+        MultiKeyvalue,    // text (as Keyvalue) on every entity of `entityIds`: one undo step
     };
     Kind kind = Kind::None;
     std::string entityId, brushId, instanceId, key, path;
+    std::vector<std::string> entityIds;                      // MultiKeyvalue: the entities that get the value
     int axis = 0, bit = 0, field = 0;
     bool remove = false, emptyRemoves = false, color255 = false;
 };
@@ -82,6 +84,7 @@ struct DetailsRow {
     bool checked = false;
     bool readOnly = false;
     bool changed = false;                                    // not the default / overridden: drawn marked
+    bool mixed = false;                                      // KeyValue of several entities that do not all have the same value (`value` is empty)
     bool resettable = false;                                 // the reset button works
     bool open = false;                                       // Content: its override editor is shown below
     std::vector<std::string> paths;                          // Ref: the targets
@@ -95,7 +98,7 @@ struct DetailsRow {
 };
 
 struct DetailsForm {
-    enum class Mode { Nothing, Entity, Instance, Inside };
+    enum class Mode { Nothing, Entity, Instance, Inside, Multi };   // Multi: two or more document entities selected
     Mode mode = Mode::Nothing;
     std::string message;                                     // Nothing: "Nothing selected."; Inside: why it is not editable
     std::string title;
@@ -109,6 +112,7 @@ struct DetailsForm {
 struct DetailsContext {
     std::shared_ptr<const doc::DocumentVersion> doc;
     const doc::SelRef* selection = nullptr;                  // the primary selection
+    const std::vector<doc::SelRef>* selections = nullptr;    // the whole selection (optional): two or more entities give the Multi form
     const core::EntityDefinitions* defs = nullptr;
     const std::vector<core::ResolvedEntity>* prefab = nullptr;   // the expanded prefab content (Expansion::flat())
     doc::PrefabLibrary* library = nullptr;

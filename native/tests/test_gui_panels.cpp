@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -159,6 +160,45 @@ TEST_CASE("Outliner, Details and Place panels edit the document through the main
             CHECK(window.hideState().keys.empty());
             outliner.clickRow("e:n2");
             CHECK(window.selection().primary()->entityId == "n2");
+        }
+
+        SUBCASE("details: several entities selected show the shared keyvalues; a typed value goes to all as one undo step") {
+            const auto entity = [&](const std::string& id) -> const core::Entity& { return window.document()->entities[static_cast<size_t>(window.document()->findEntity(id))]->typed; };
+            window.selection().select(doc::SelRef::entity("n"));
+            window.selection().toggle(*window.document(), doc::SelRef::entity("n2"));
+            REQUIRE(window.selection().items().size() == 2);
+            details.refreshNow();
+            REQUIRE(details.form().mode == tools::DetailsForm::Mode::Multi);
+            const size_t steps = window.history().labels().size();
+            // "Mixed" keys come up empty with a placeholder, an Add row writes a new key to both
+            auto* addKey = details.findChild<QLineEdit*>(QStringLiteral("addkey:key"));
+            auto* addValue = details.findChild<QLineEdit*>(QStringLiteral("addkey:value"));
+            auto* addButton = details.findChild<QPushButton*>(QStringLiteral("addkey:button"));
+            REQUIRE(addKey);
+            REQUIRE(addValue);
+            REQUIRE(addButton);
+            addKey->setText(QStringLiteral("group"));
+            addValue->setText(QStringLiteral("g1"));
+            addButton->click();
+            CHECK(entity("n").keyvalues.at("group") == "g1");
+            CHECK(entity("n2").keyvalues.at("group") == "g1");
+            CHECK(window.history().labels().size() == steps + 1);   // one step for both
+            details.refreshNow();
+            auto* group = qobject_cast<QLineEdit*>(details.editor(QStringLiteral("group")));
+            REQUIRE(group);
+            CHECK(group->text() == QStringLiteral("g1"));
+            CHECK(group->placeholderText().isEmpty());
+            group->setText(QStringLiteral("g2"));
+            emit group->editingFinished();
+            CHECK(entity("n").keyvalues.at("group") == "g2");
+            CHECK(entity("n2").keyvalues.at("group") == "g2");
+            window.undo();
+            CHECK(entity("n").keyvalues.at("group") == "g1");
+            CHECK(entity("n2").keyvalues.at("group") == "g1");
+            // back to one entity: the ordinary form
+            window.selection().select(doc::SelRef::entity("n"));
+            details.refreshNow();
+            CHECK(details.form().mode == tools::DetailsForm::Mode::Entity);
         }
 
         SUBCASE("details: typed fields edit the entity as undo steps") {

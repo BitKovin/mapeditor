@@ -604,10 +604,92 @@ std::vector<std::string> pathsOf(const EditValue& v) { return v.paths; }
 
 bool isBrushEntityNode(const doc::EntityNode& n) { return !n.brushes.empty() || n.typed.classname == "worldspawn"; }
 
+namespace {
+
+// The document entities of a selection that has no prefab instance or part of one in it (ids in selection order, no repeats); empty otherwise.
+std::vector<std::string> multiEntityIds(const std::vector<doc::SelRef>& sels) {
+    std::vector<std::string> ids;
+    for (const doc::SelRef& s : sels) {
+        if (s.isInstance() || !s.instancePath.empty() || s.entityId.empty()) return {};
+        if (std::find(ids.begin(), ids.end(), s.entityId) == ids.end()) ids.push_back(s.entityId);
+    }
+    return ids;
+}
+
+void multiRows(DetailsForm& f, const DetailsContext& ctx, const std::vector<std::string>& ids) {
+    f.mode = DetailsForm::Mode::Multi;
+    f.message.clear();
+    f.title = std::to_string(ids.size()) + " entities";
+    std::vector<const core::Entity*> ents;
+    for (const std::string& id : ids)
+        if (const int i = ctx.doc->findEntity(id); i >= 0) ents.push_back(&ctx.doc->entities[static_cast<size_t>(i)]->typed);
+    f.rows.push_back(section(std::to_string(ents.size()) + " entities selected"));
+    std::vector<std::pair<std::string, int>> classes;   // first-seen order
+    for (const core::Entity* e : ents) {
+        const auto it = std::find_if(classes.begin(), classes.end(), [&](const auto& c) { return c.first == e->classname; });
+        if (it == classes.end()) classes.push_back({e->classname, 1});
+        else ++it->second;
+    }
+    std::string summary;
+    for (const auto& [name, n] : classes) summary += (summary.empty() ? "" : ", ") + name + " x" + std::to_string(n);
+    f.rows.push_back(staticRow("classes", summary));
+    // the keyvalues of all of them (what the single form lists as "Keyvalues", without the keys it edits elsewhere): the value they share, or nothing when they differ
+    const std::set<std::string> hidden = {"classname", "targetname", "origin", "angle", "angles", "spawnflags", "modelscale_vec", "_vertex_lit"};
+    std::set<std::string> keys;
+    for (const core::Entity* e : ents)
+        for (const auto& [k, v] : e->keyvalues)
+            if (!hidden.count(k)) keys.insert(k);
+    f.rows.push_back(section("Keyvalues"));
+    for (const std::string& k : keys) {
+        bool every = true, same = true;
+        std::string value;
+        bool first = true;
+        for (const core::Entity* e : ents) {
+            const auto it = e->keyvalues.find(k);
+            if (it == e->keyvalues.end()) {
+                every = false;
+                continue;
+            }
+            if (first) value = it->second;
+            else if (it->second != value) same = false;
+            first = false;
+        }
+        DetailsRow r;
+        r.kind = RowKind::KeyValue;
+        r.label = k;
+        r.mixed = !every || !same;
+        r.value = r.mixed ? std::string() : value;
+        r.tip = r.mixed ? k + ": the entities have different values (or not all have it); typing a value sets it on all" : k;
+        r.readOnly = ctx.readOnly;
+        r.edit.kind = Kind::MultiKeyvalue;
+        r.edit.entityIds = ids;
+        r.edit.key = k;
+        r.reset = r.edit;
+        r.reset.remove = true;
+        r.resettable = !ctx.readOnly;
+        f.rows.push_back(std::move(r));
+    }
+    DetailsRow add;
+    add.kind = RowKind::AddKey;
+    add.readOnly = ctx.readOnly;
+    add.edit.kind = Kind::MultiKeyvalue;
+    add.edit.entityIds = ids;
+    f.rows.push_back(std::move(add));
+}
+
+} // namespace
+
 DetailsForm buildDetails(const DetailsContext& ctx) {
     DetailsForm f;
     f.message = "Nothing selected.";
     if (!ctx.doc || !ctx.selection) return f;
+    if (ctx.selections) {
+        const std::vector<std::string> ids = multiEntityIds(*ctx.selections);
+        if (ids.size() >= 2) {
+            multiRows(f, ctx, ids);
+            return f;
+        }
+    }
     const doc::SelRef& sel = *ctx.selection;
     if (!sel.instancePath.empty() && !sel.entityId.empty()) {
         f.mode = DetailsForm::Mode::Inside;
@@ -763,6 +845,24 @@ EditResult applyDetailsEdit(const std::shared_ptr<const doc::DocumentVersion>& b
         case Kind::OverrideDelete:
             return setOverrideField(base, edit.instanceId, edit.path, OverrideField::Deleted, std::array<double, 3>{0, 0, 0});
         case Kind::OverrideRevert: return revertOverride(base, edit.instanceId, edit.path);
+        case Kind::MultiKeyvalue: {
+            std::optional<std::string> v = value.text;
+            if (edit.remove) v.reset();
+            EditResult out;
+            BasePtr cur = base;
+            size_t count = 0;
+            for (const std::string& id : edit.entityIds) {
+                EditResult r = setKeyvalue(cur, id, edit.key, v);
+                if (!r.error.empty()) return r;
+                if (!r.ok()) continue;
+                cur = r.version;
+                out.version = r.version;
+                ++count;
+            }
+            if (!out.version) return {};
+            out.label = (v ? "Set '" : "Remove '") + edit.key + "' on " + std::to_string(count) + " entities";
+            return out;
+        }
     }
     return {};
 }

@@ -440,3 +440,70 @@ TEST_CASE("details: nothing selected and refs targets of prefab content") {
     const std::vector<std::string> keys = tools::refKeysOf(navDefs().find("nav_point"), {"extra"});
     CHECK(keys == std::vector<std::string>{"target", "killtarget", "extra"});
 }
+
+TEST_CASE("details: several entities show the keyvalues they share; a value typed there goes to all of them in one step") {
+    DocPtr d = emptyDoc();
+    const std::string a = spawn(d, "a", 0), b = spawn(d, "b", 10, "info_y"), c = spawn(d, "c", 20);
+    d = take(d, tools::setKeyvalue(d, a, "color", "red"));
+    d = take(d, tools::setKeyvalue(d, b, "color", "red"));
+    d = take(d, tools::setKeyvalue(d, a, "speed", "1"));
+    d = take(d, tools::setKeyvalue(d, b, "speed", "2"));
+    d = take(d, tools::setKeyvalue(d, c, "color", "red"));
+    d = take(d, tools::setKeyvalue(d, a, "only_a", "x"));
+
+    // one entity (or several brushes of it): the ordinary form
+    {
+        const std::vector<SelRef> one = {SelRef::entity(a)};
+        tools::DetailsContext ctx;
+        ctx.doc = d;
+        ctx.selection = &one[0];
+        ctx.selections = &one;
+        CHECK(tools::buildDetails(ctx).mode == tools::DetailsForm::Mode::Entity);
+    }
+    const std::vector<SelRef> sels = {SelRef::entity(a), SelRef::entity(b), SelRef::entity(c)};
+    tools::DetailsContext ctx;
+    ctx.doc = d;
+    ctx.selection = &sels.back();
+    ctx.selections = &sels;
+    const tools::DetailsForm f = tools::buildDetails(ctx);
+    REQUIRE(f.mode == tools::DetailsForm::Mode::Multi);
+    CHECK(f.rows[0].label == "3 entities selected");
+    CHECK(rowOf(f, "classes")->value == "info_x x2, info_y x1");
+    const DetailsRow* color = rowOf(f, "color");
+    REQUIRE(color);
+    CHECK_FALSE(color->mixed);
+    CHECK(color->value == "red");
+    const DetailsRow* speed = rowOf(f, "speed");
+    REQUIRE(speed);
+    CHECK(speed->mixed);   // 1, 2 and missing
+    CHECK(speed->value.empty());
+    CHECK(rowOf(f, "only_a")->mixed);   // not every entity has it
+    CHECK(rowOf(f, "targetname") == nullptr);   // the name is not shared by a mass edit
+
+    // typing a value sets it on every selected entity, in one undo step
+    EditValue v;
+    v.text = "5";
+    const auto r = tools::applyDetailsEdit(d, nullptr, speed->edit, v);
+    REQUIRE(r.ok());
+    CHECK(r.label == "Set 'speed' on 3 entities");
+    for (const std::string& id : {a, b, c}) CHECK(entityOf(r.version, id).keyvalues.at("speed") == "5");
+    // the same value again changes nothing
+    CHECK_FALSE(tools::applyDetailsEdit(r.version, nullptr, speed->edit, v).ok());
+    // removing takes the key off all of them (those that lack it are left as they are)
+    const auto rm = tools::applyDetailsEdit(d, nullptr, rowOf(f, "only_a")->reset, {});
+    REQUIRE(rm.ok());
+    CHECK(rm.label == "Remove 'only_a' on 1 entities");
+    CHECK(entityOf(rm.version, a).keyvalues.count("only_a") == 0);
+    // the add row writes a new key to all
+    const DetailsRow* add = nullptr;
+    for (const DetailsRow& row : f.rows)
+        if (row.kind == RowKind::AddKey) add = &row;
+    REQUIRE(add);
+    DetailsEdit e = add->edit;
+    e.key = "tag";
+    EditValue tv;
+    tv.text = "t1";
+    const auto ar = tools::applyDetailsEdit(d, nullptr, e, tv);
+    REQUIRE(ar.ok());
+    for (const std::string& id : {a, b, c}) CHECK(entityOf(ar.version, id).keyvalues.at("tag") == "t1");
+}

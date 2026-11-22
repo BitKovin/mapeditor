@@ -94,7 +94,12 @@ std::string DetailsPanel::selectionKey() const {
     if (!p) return "";
     std::string k;
     for (const std::string& i : p->instancePath) k += i + "/";
-    return k + "|" + p->entityId + "|" + p->brushId;
+    k += "|" + p->entityId + "|" + p->brushId;
+    if (win_.selection().items().size() > 1) {   // the form of several entities depends on all of them
+        k += "|multi";
+        for (const doc::SelRef& s : win_.selection().items()) k += ":" + s.entityId + (s.instancePath.empty() ? "" : "@" + s.instancePath[0]);
+    }
+    return k;
 }
 
 void DetailsPanel::openOverride(const std::string& path) {
@@ -131,6 +136,7 @@ void DetailsPanel::build() {
     tools::DetailsContext ctx;
     ctx.doc = d;
     ctx.selection = sel;
+    ctx.selections = &win_.selection().items();
     ctx.defs = win_.entityDefinitions();
     ctx.prefab = &flat;
     ctx.library = &win_.prefabLibrary();
@@ -537,6 +543,7 @@ QWidget* DetailsPanel::makeRow(const tools::DetailsRow& row) {
             e->setObjectName(objectNameOf(row));
             e->setMinimumWidth(40);
             e->setEnabled(!row.readOnly);
+            if (row.mixed) e->setPlaceholderText(QString::fromUtf8("â (differs)"));
             const tools::DetailsRow r = row;
             QObject::connect(e, &QLineEdit::editingFinished, e, [this, r, e] {
                 if (e->text().toStdString() == r.value) return;
