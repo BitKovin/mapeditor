@@ -890,6 +890,29 @@ void registerAppActions(actions::Registry& r) {
         };
         add(r, std::move(d));
     }
+    for (const bool recall : {false, true}) {   // named selection sets (U9): unbound by default
+        ActionDef d;
+        d.id = recall ? "edit.selection_set.recall" : "edit.selection_set.save";
+        d.label = recall ? "Recall selection set" : "Save selection set";
+        d.category = "Edit";
+        d.description = recall ? "Selects what is left of a saved selection of this map (slots 1 to 9)." : "Saves the selection as a named set of this map (slots 1 to 9; kept in the user settings, not in the map).";
+        d.menu = recall ? "&Edit/Selection &sets/&Select" : "&Edit/Selection &sets/&Save selection";
+        d.params = {{"slot", 1}};
+        for (int i = 1; i <= 9; ++i) d.variants.push_back({"Set &" + std::to_string(i), {{"slot", i}}});
+        d.enabled = [recall](const ActionEnv& env, const json& p) {
+            auto* u = env.as<UiEnv>();
+            if (!u || !u->window || !u->window->document()) return false;
+            return recall ? u->window->hasSelectionSet(p.value("slot", 1)) : !u->window->selection().empty();
+        };
+        d.run = [recall](ActionEnv& env, const Invocation& inv) {
+            auto* u = env.as<UiEnv>();
+            if (!u || !u->window) return;
+            const int slot = inv.params.is_object() ? inv.params.value("slot", 1) : 1;
+            if (recall) u->window->recallSelectionSet(slot);
+            else u->window->saveSelectionSet(slot);
+        };
+        add(r, std::move(d));
+    }
     for (const bool recall : {false, true}) {   // camera bookmarks (U7): unbound by default, the number keys are the mesh select modes
         ActionDef d;
         d.id = recall ? "camera.bookmark.recall" : "camera.bookmark.save";

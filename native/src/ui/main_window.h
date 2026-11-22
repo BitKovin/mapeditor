@@ -461,6 +461,10 @@ public:
     bool saveCameraBookmark(int slot);
     bool recallCameraBookmark(int slot);
     bool hasCameraBookmark(int slot) const;
+    // Named selection sets (U9): nine per map in the user settings (view state). Saving needs a selection; recalling selects what of the set still exists.
+    bool saveSelectionSet(int slot);
+    bool recallSelectionSet(int slot);
+    bool hasSelectionSet(int slot) const;
     // Select similar (U9): kind "class", "texture" or "prefab"; hidden things are left out. False when nothing was found.
     bool selectSimilar(const std::string& kind);
     // The Measure tool (U13): two clicked points, the distance and per-axis deltas in the status bar. A third click starts over; Esc or the action ends it.
@@ -876,6 +880,7 @@ private:
     ToolOptionsPanel* toolOptionsPanel_ = nullptr;
     std::optional<LastOperation> lastOp_;
     std::map<std::string, std::vector<std::string>> textureLists_;   // used when there are no settings (tests)
+    std::map<std::string, std::string> selectionSets_;   // used when there are no settings (tests): key -> JSON
     std::map<std::string, std::string> bookmarks_;   // used when there are no settings (tests): key -> JSON
     HideDialog* hideDialog_ = nullptr;
     ads::CDockWidget* levelDock_ = nullptr;
