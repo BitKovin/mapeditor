@@ -76,6 +76,23 @@ void addKey(actions::Registry& r, const char* id, const char* label, const char*
 void registerTextureActions(actions::Registry& r) {
     add(r, "texture.apply", "Apply active texture", "Puts the active texture on the selected faces (or all faces of the selected brushes).", "&Texture", false, "apply", json::object(), false);
     add(r, "texture.lift", "Lift material", "Makes the texture of the selected face the active texture.", "&Texture", false, "lift", json::object(), false);
+    {
+        ActionDef d;
+        d.id = "texture.lift_at";
+        d.label = "Lift material under the cursor";
+        d.category = "Texture";
+        d.description = "Makes the texture of the face under the pointer the active texture (Shift + right-click in a viewport).";
+        d.contexts = {"area:viewport"};
+        d.enabled = [](const ActionEnv& env, const json&) {
+            const UiEnv* u = env.as<UiEnv>();
+            return u && u->window && u->viewport;
+        };
+        d.run = [](ActionEnv& env, const Invocation& inv) {
+            const UiEnv* u = env.as<UiEnv>();
+            if (u && u->window && u->viewport) u->window->liftMaterialAt(u->viewport, QPointF(inv.event.x, inv.event.y));
+        };
+        r.add(std::move(d));
+    }
     add(r, "texture.copy_uv", "Copy UV", "Remembers the texture and mapping of the selected face.", "&Texture", true, "copyUv", json::object(), false);
     add(r, "texture.paste_uv", "Paste UV", "Puts the copied texture and mapping on the selected faces (all faces of selected brushes).", "&Texture", false, "pasteUv");
     add(r, "texture.flow", "Flow texture", "Continues the copied face's texture onto the selected face, across the shared edges.", "&Texture", false, "flow");

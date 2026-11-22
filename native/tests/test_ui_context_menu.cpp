@@ -158,3 +158,14 @@ TEST_CASE("context menu: a click is told from a drag by the pointer travel") {
     window.contextClickBegin(QPointF(1, 1));   // the next press starts over
     CHECK(window.contextClickEnd());
 }
+
+TEST_CASE("lift material: Shift + right-click is bound to an action that needs a viewport and a face") {
+    ui::MainWindow window(services());
+    REQUIRE(window.registry().find("texture.lift_at") != nullptr);
+    bool bound = false;
+    for (const auto& b : window.keymap().effective()) bound = bound || (b.action == "texture.lift_at" && b.input == "Shift+RMB" && b.context == "area:viewport");
+    CHECK(bound);
+    window.setDocument(oneBox(), true);
+    CHECK_FALSE(window.liftMaterialAt(nullptr, QPointF(10, 10)));   // no viewport: nothing happens, nothing lifted
+    CHECK(window.activeTexture() == "dev/grey");
+}

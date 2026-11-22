@@ -545,6 +545,18 @@ void editActions(actions::Registry& r) {
     }
     {
         ActionDef d;
+        d.id = "view.hide_dialog";
+        d.label = "Hide classes...";
+        d.category = "View";
+        d.description = "Opens the Hide panel: the class rules (trigger_*, your own patterns), the brush entity classes of the map, and Show all classes.";
+        d.menu = "&View/&Hide";
+        d.menuSeparatorBefore = true;
+        d.enabled = [windowOf](const ActionEnv& env, const json&) { return windowOf(env) != nullptr; };
+        d.run = [windowOf](ActionEnv& env, const Invocation&) { if (auto* w = windowOf(env)) w->openHideDialog(true); };
+        add(r, std::move(d));
+    }
+    {
+        ActionDef d;
         d.id = "view.hide_rule";
         d.label = "Hide class";
         d.category = "View";

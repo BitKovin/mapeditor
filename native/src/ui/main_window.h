@@ -124,6 +124,7 @@ class TexturePropsDialog;
 class TexGroupEditor;
 class GroupsPanel;
 class LevelSettingsPanel;
+class HideDialog;
 class TileSetEditor;
 class ReliefEditor;
 
@@ -521,6 +522,8 @@ public:
     std::vector<tools::MenuEntry> contextEntries(const std::optional<render::PickHit>& hit);
     std::unique_ptr<QMenu> contextMenuOf(const std::vector<tools::MenuEntry>& entries, render::ViewportWindow* viewport);
     void selectHit(const render::PickHit& hit);   // a click on a hit: the object (the whole shape of a parametric part)
+    // Shift + right-click: the texture of the face under the pointer becomes the active texture (Lift Material). False when there is no face there. `p` in pixels of the viewport.
+    bool liftMaterialAt(render::ViewportWindow* viewport, QPointF p);
     void openContextMenu(render::ViewportWindow* viewport, QPointF p);   // builds it and shows it at the pointer (does not block)
     bool makeEntitySelected(const std::string& classname);
     void showProperties();   // brings the Details dock forward
@@ -538,6 +541,9 @@ public:
     bool pasteClipboard(const core::Vec3& offset = {0, 0, 0});   // the pasted items are selected
     // What is hidden: a view setting (not saved with the map, not undone). Hidden objects are not drawn, not picked and not selected.
     const tools::HideState& hideState() const { return hide_; }
+    // The Hide dialog (rules, classes of the map): made on first use; `show` raises it.
+    HideDialog* openHideDialog(bool show = true);
+    HideDialog* hideDialog() const { return hideDialog_; }
     bool hideSelected();
     void unhideAll();
     void setHideRules(const std::vector<tools::HideRule>& rules);
@@ -756,6 +762,7 @@ private:
     TextureBrowserPanel* textureBrowser_ = nullptr;
     GroupsPanel* groupsPanel_ = nullptr;
     LevelSettingsPanel* levelPanel_ = nullptr;
+    HideDialog* hideDialog_ = nullptr;
     ads::CDockWidget* levelDock_ = nullptr;
     ads::CDockWidget* groupsDock_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;

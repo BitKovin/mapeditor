@@ -27,6 +27,7 @@
 #include "tools/prefabize.h"
 #include "render/picking.h"
 #include "render/render_thread.h"
+#include "ui/hide_dialog.h"
 #include "ui/main_window.h"
 
 namespace native::ui {
@@ -158,6 +159,23 @@ std::unique_ptr<QMenu> MainWindow::contextMenuOf(const std::vector<tools::MenuEn
     };
     fill(menu.get(), entries);
     return menu;
+}
+
+bool MainWindow::liftMaterialAt(render::ViewportWindow* vp, QPointF p) {
+    if (!vp || !document_ || !picker_ || meshMode() || transforming() || knifing() || clipperActive() || box_) return false;
+    const QSizeF size = vp->size();
+    if (size.width() < 1 || size.height() < 1) return false;
+    const render::Ray ray = render::rayThrough(vp->currentView().viewProj, p.x() / size.width() * 2.0 - 1.0, p.y() / size.height() * 2.0 - 1.0);
+    const std::optional<render::PickHit> hit = picker_->pick(ray, pickOptions());
+    if (!hit || hit->brushId.empty() || !hit->faceId) {
+        statusBar()->showMessage(QStringLiteral("Lift material: no face under the cursor"), 4000);
+        return false;
+    }
+    const auto texture = tools::tex::liftMaterial(*document_, {hit->entityId, hit->brushId, *hit->faceId});
+    if (!texture || texture->empty()) return false;
+    setActiveTexture(*texture);
+    statusBar()->showMessage(QString::fromStdString("Lifted " + *texture + "; click a face and a texture tile (or Apply) to use it"), 6000);
+    return true;
 }
 
 void MainWindow::openContextMenu(render::ViewportWindow* vp, QPointF p) {
@@ -306,6 +324,17 @@ bool MainWindow::hideSelected() {
 }
 
 void MainWindow::unhideAll() { setHiddenKeys({}); }
+
+HideDialog* MainWindow::openHideDialog(bool show) {
+    if (!hideDialog_) hideDialog_ = new HideDialog(*this);
+    hideDialog_->refresh();
+    if (show) {
+        hideDialog_->show();
+        hideDialog_->raise();
+        hideDialog_->activateWindow();
+    }
+    return hideDialog_;
+}
 
 void MainWindow::setHiddenKeys(const std::set<std::string>& keys) {
     if (hide_.keys == keys) return;
