@@ -27,6 +27,7 @@
 #include "render/viewport_window.h"
 #include "ui/main_window.h"
 #include "ui/input_probe.h"
+#include "ui/theme.h"
 
 int main(int argc, char** argv) {
     QApplication::setOrganizationName(QStringLiteral("MapEditor"));
@@ -100,6 +101,7 @@ int main(int argc, char** argv) {
     services.rtLit = parsed.options.rtLit;
     services.vulkanInstance = &vulkanInstance;
     services.settings = screenshotRun ? nullptr : &layoutSettings;
+    if (!screenshotRun) native::ui::applyAppearance(native::ui::readAppearance(&layoutSettings));
     services.forceViewports = parsed.options.layoutViewports;
     services.watchInput = true;
     native::ui::setInputLogging(parsed.options.logInput);

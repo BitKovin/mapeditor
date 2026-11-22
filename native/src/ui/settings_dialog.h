@@ -11,6 +11,8 @@
 
 #include <QDialog>
 
+#include "ui/theme.h"
+
 #include <map>
 #include <string>
 
@@ -88,6 +90,9 @@ private:
     QLabel* files_ = nullptr;
     QLineEdit *gameExe_ = nullptr, *gameArgs_ = nullptr, *gameDir_ = nullptr;
     exporting::LaunchSettings launchOf() const;
+    QComboBox *theme_ = nullptr, *uiScale_ = nullptr;   // Appearance (U15)
+    Appearance applied_;                                 // what is applied now (the stored values)
+    Appearance appearanceOf() const;
     // Game profile
     QWidget* profilePage_ = nullptr;
     QLabel* profileNote_ = nullptr;

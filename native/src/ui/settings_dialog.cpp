@@ -30,6 +30,7 @@
 #include "render/viewport_window.h"
 #include "ui/keymap_page.h"
 #include "ui/main_window.h"
+#include "ui/theme.h"
 
 namespace native::ui {
 
@@ -194,7 +195,28 @@ void SettingsDialog::buildGeneral(QWidget* page) {
     gameDir_->setObjectName(QStringLiteral("settings:game:workingDir"));
     gameForm->addRow(QStringLiteral("Working folder"), gameDir_);
     v->addLayout(gameForm);
+    v->addWidget(section(QStringLiteral("Appearance"), page));
+    auto* look = new QFormLayout;
+    theme_ = new QComboBox(page);
+    theme_->setObjectName(QStringLiteral("settings:theme"));
+    theme_->addItem(QStringLiteral("System"), QStringLiteral("system"));
+    theme_->addItem(QStringLiteral("Dark"), QStringLiteral("dark"));
+    theme_->addItem(QStringLiteral("Light"), QStringLiteral("light"));
+    uiScale_ = new QComboBox(page);
+    uiScale_->setObjectName(QStringLiteral("settings:uiScale"));
+    for (const int pct : {70, 80, 90, 100, 110, 125, 150, 175, 200}) uiScale_->addItem(QStringLiteral("%1 %").arg(pct), pct);
+    look->addRow(QStringLiteral("Theme"), theme_);
+    look->addRow(QStringLiteral("Interface size"), uiScale_);
+    v->addLayout(look);
+    v->addWidget(note(QStringLiteral("The size multiplies the text of the whole interface, on top of the Windows scale. The viewports are not affected."), page));
     v->addStretch(1);
+}
+
+Appearance SettingsDialog::appearanceOf() const {
+    Appearance a;
+    a.theme = theme_->currentData().toString().toStdString();
+    a.scalePercent = uiScale_->currentData().toInt();
+    return a;
 }
 
 exporting::LaunchSettings SettingsDialog::launchOf() const {
@@ -207,6 +229,14 @@ exporting::LaunchSettings SettingsDialog::launchOf() const {
 
 void SettingsDialog::reloadGeneral() {
     root_->setText(qs(win_.assetsRoot()));
+    {
+        // the stored appearance; without a settings file, the one set in this session
+        if (win_.settings()) applied_ = readAppearance(win_.settings());
+        theme_->setCurrentIndex(std::max(0, theme_->findData(qs(applied_.theme))));
+        const int at = uiScale_->findData(applied_.scalePercent);
+        if (at >= 0) uiScale_->setCurrentIndex(at);
+        else uiScale_->setCurrentIndex(uiScale_->findData(100));
+    }
     {
         const exporting::LaunchSettings g = win_.launchSettings();
         gameExe_->setText(qs(g.exe));
@@ -243,6 +273,11 @@ void SettingsDialog::browseRoot() {
 }
 
 QString SettingsDialog::applyGeneral() {
+    if (const Appearance want = appearanceOf(); want != applied_) {
+        applied_ = want;
+        writeAppearance(win_.settings(), want);
+        applyAppearance(want);
+    }
     const QString wanted = cleanFolder(root_->text());
     if (wanted == cleanFolder(qs(win_.assetsRoot()))) {
         const exporting::LaunchSettings g = launchOf(), old = win_.launchSettings();
@@ -616,6 +651,7 @@ QString SettingsDialog::applyLighting() {
 // ---- all -------------------------------------------------------------------------------------------------------------------------
 
 bool SettingsDialog::dirty() const {
+    if (appearanceOf() != applied_) return true;
     if (cleanFolder(root_->text()) != cleanFolder(qs(win_.assetsRoot()))) return true;
     {
         const exporting::LaunchSettings g = launchOf(), old = win_.launchSettings();
