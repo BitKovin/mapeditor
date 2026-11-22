@@ -4,12 +4,14 @@
 #include <cctype>
 #include <cstdlib>
 
+#include "gpu/upscaler.h"
+
 namespace native::app {
 
 const char* usageText() {
     return "mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]\n"
            "                     [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]\n"
-           "                     [--no-streamline] [--gpu-crash-dumps]\n";
+           "                     [--no-streamline] [--no-fsr] [--upscaler <auto|dlss|fsr|off>] [--gpu-crash-dumps]\n";
 }
 
 ParseResult parseArgs(const std::vector<std::string>& args) {
@@ -66,6 +68,16 @@ ParseResult parseArgs(const std::vector<std::string>& args) {
                 return r;
             }
         }
+        else if (a == "--upscaler") {
+            if (!value(o.upscaler)) return r;
+            bool ok = false;
+            gpu::upscalerPrefFromName(o.upscaler, &ok);
+            if (!ok) {
+                r.error = "invalid upscaler (use auto, dlss, fsr or off): " + o.upscaler;
+                return r;
+            }
+        }
+        else if (a == "--no-fsr") o.noFsr = true;
         else if (a == "--log-input") o.logInput = true;
         else if (a == "--no-lighting") o.noLighting = true;
         else if (a == "--validation") o.validation = true;

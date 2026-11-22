@@ -245,8 +245,8 @@ public:
     bool lightingAvailable() const;
     // The Lit / Lighting only modes can be chosen: the chunked bake runs, or the ray traced Lit path (--rt-lit) is on.
     bool litModesAvailable() const;
-    // Whether DLSS Super Resolution can run on this device (Streamline loaded, RTX GPU, plugin present).
-    bool dlssAvailable() const;
+    // Whether a temporal upscaler (DLSS on an RTX GPU, AMD FSR on any GPU) can run now: the device has one and --upscaler off was not given.
+    bool upscalerAvailable() const;
     // Whether the bake of the latest snapshot finished (true without a service); --screenshot waits for it in the lit modes.
     bool lightingSettled() const;
     // One line about the live lighting ("baking 120 / 1577 chunks", "error: ..."); shown in the Stats panel.

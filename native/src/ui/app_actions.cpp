@@ -969,18 +969,18 @@ void registerAppActions(actions::Registry& r) {
     {
         ActionDef d;
         d.id = "view.dlss";
-        d.label = "DLSS";
+        d.label = "Upscaling (DLSS / FSR)";
         d.category = "View";
-        d.description = "NVIDIA DLSS Super Resolution for the active perspective viewport: Ultra Performance, Performance, Balanced and Quality render at 1/3, 1/2, 0.58 and 2/3 of the size and upscale, DLAA renders at full size and only removes the aliasing.";
+        d.description = "Renders the active perspective viewport smaller and upscales it with NVIDIA DLSS (RTX GPUs) or AMD FSR (every other GPU): Ultra Performance, Performance, Balanced and Quality render at about 1/3, 1/2, 0.58 and 2/3 of the size, DLAA / native renders at full size and only removes the aliasing.";
         d.kind = ActionKind::Toggle;
-        d.menu = "&View/&DLSS (active viewport)";
+        d.menu = "&View/&Upscaling (active viewport)";
         d.params = {{"mode", "off"}};
         d.variants = {{"&Off", {{"mode", "off"}}}, {"&Ultra Performance", {{"mode", "ultraPerformance"}}}, {"&Performance", {{"mode", "performance"}}}, {"&Balanced", {{"mode", "balanced"}}},
-                      {"&Quality", {{"mode", "quality"}}}, {"&DLAA", {{"mode", "dlaa"}}}};
+                      {"&Quality", {{"mode", "quality"}}}, {"&DLAA / native", {{"mode", "dlaa"}}}};
         d.enabled = [](const ActionEnv& env, const json& p) {
             const UiEnv* u = env.as<UiEnv>();
             if (!u || !u->viewport) return false;
-            return p.value("mode", "off") == "off" || (u->window && u->window->dlssAvailable());
+            return p.value("mode", "off") == "off" || (u->window && u->window->upscalerAvailable());
         };
         d.checked = [](const ActionEnv& env, const json& p) {
             const auto* vp = viewportOf(env);

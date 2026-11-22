@@ -154,3 +154,36 @@ tasks R2–R8 in 08). The text below is the earlier proposal, kept for its notes
 
 Rules for all three: a feature failing at run time (init error, missing DLL, unsupported GPU) is logged once, shown in the Stats panel as
 "unavailable: reason", and the editor continues without it. Settings keys live under `render/streamline/*` in the editor's QSettings.
+
+## 5. Other GPUs: AMD FidelityFX Super Resolution and vendor detection (T15.1)
+
+The editor must run well on an AMD or Intel GPU too. What already was vendor neutral: the device (Vulkan 1.3 required features only; every extension beyond that is feature
+detected and optional), all shaders (only KHR subgroup operations; no NVIDIA intrinsics), the ray query lighting and the acceleration structures (KHR), the OIDN denoise (it picks
+the right device by itself) and the picture of the scene. What was NVIDIA only: Streamline (Reflex, DLSS Super Resolution, DLSS Ray Reconstruction) and a few optional extensions
+(SER, partitioned / cluster acceleration structures, the NV crash diagnostics), none of which the editor needs to work.
+
+| Piece | NVIDIA | AMD / Intel / anything else |
+|---|---|---|
+| Upscaling a viewport (Off / Ultra Performance / Performance / Balanced / Quality / DLAA) | DLSS Super Resolution (Streamline) | **AMD FidelityFX Super Resolution (FSR)**, the same presets and ratios (Quality 1.5, Balanced 1.7, Performance 2.0, Ultra Performance 3.0, native); runs on any Vulkan GPU, including NVIDIA (`--upscaler fsr`) |
+| Denoise of the ray traced Lit view | DLSS Ray Reconstruction | the existing a-trous + temporal path (FSR Ray Regeneration exists only for DirectX 12 in SDK 2.4.0, so it cannot be used from Vulkan) |
+| Low latency | Reflex (`VK_NV_low_latency2` through Streamline) | none (Vulkan has no vendor neutral equivalent; the frame pacing of the render thread stays) |
+| GPU crash dumps | Aftermath-style NV diagnostics (`--gpu-crash-dumps`) | the device-lost handler and the log (always on) |
+
+**Vendor detection.** `gpu/vendor` lists the adapters through DXGI before any Vulkan call. The Streamline interposer has to take over the Vulkan loader before the instance exists, so
+it is loaded only when an NVIDIA adapter is present (an AMD only machine never touches `sl.interposer.dll`); on a hybrid laptop (an Intel iGPU and an NVIDIA dGPU) it is loaded and the
+device that is picked is the discrete one as before. `DeviceCaps` has `vendorId` / `vendor` (Stats row "vendor"), `dlss`, `fsr`, `fsrVersion`, `fsrNote`.
+
+**FSR.** `gpu/fidelityfx` loads `amd_fidelityfx_loader_vk.dll` (the FidelityFX API loader, signed, from the FidelityFX SDK 2.4.0) at run time; the loader finds
+`amd_fidelityfx_upscaler_vk.dll` next to it, queries the upscaler provider versions for the device and uses the newest one that supports it: FSR 4 (machine learning) on the AMD GPUs
+that run it, FSR 3.1 (analytic, any GPU) on everything else. Nothing is linked: a missing SDK or DLL (`native/tools/fetch_fidelityfx.ps1` has not been run) leaves `Caps::fsr` false with
+the reason in the Stats panel ("FSR upscaler (AMD FidelityFX)": "off: ...") and the editor works without upscaling, as before. One context per viewport (history in it), created for
+the render and output size and created again when either changes. Inputs are the ones DLSS gets (`DlssFrame`: jittered HDR colour, depth, pixel space motion vectors, the jitter, the
+camera, a reset flag), so `render/dlss_pass`, the jitter sequence (`dlss_math.h`), the motion vector pass and the overlay pass are shared by both upscalers; only `gpu/upscaler.h`
+(`UpscaleBackend`: `renderSize`, `evaluate`, `release`) differs. The images are moved to the layouts the FidelityFX API wants by `evaluate`.
+
+**Choice.** `--upscaler auto|dlss|fsr|off` (default `auto`: DLSS where it can run, FSR elsewhere; a named one that cannot run gives way to the other). The View > Upscaling menu, the
+`--dlss` option and the saved per viewport setting (key `dlss`) keep their names and values; they now mean "the upscaler in use". `--no-fsr` does not load FidelityFX at all.
+
+**Not verified here.** The development machine has an NVIDIA GPU, so FSR 3.1 (the path every non-NVIDIA GPU takes) is tested end to end (render size, picture, history resets, resize,
+backend switching, 0 validation errors); the FSR 4 provider and AMD driver specifics could not be run and are not claimed to work. The DLL picks the provider by itself and the editor
+logs which one it got.

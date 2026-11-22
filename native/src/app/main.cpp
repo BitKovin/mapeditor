@@ -55,6 +55,7 @@ int main(int argc, char** argv) {
     native::gpu::DeviceOptions deviceOptions;
     deviceOptions.validation = parsed.options.validation;
     deviceOptions.streamline = !parsed.options.noStreamline;   // NVIDIA Streamline (Reflex; DLSS later); falls back to the plain loader
+    deviceOptions.fidelityFx = !parsed.options.noFsr;   // AMD FidelityFX Super Resolution: the upscaler that runs on any GPU (T15.1)
     deviceOptions.gpuCrashDumps = parsed.options.gpuCrashDumps;
     if (!parsed.options.logFile.empty()) {
         const size_t slash = parsed.options.logFile.find_last_of("/\\");
@@ -79,6 +80,7 @@ int main(int argc, char** argv) {
         return 3;
     }
     native::render::RenderThread renderThread(*device);
+    if (!parsed.options.upscaler.empty()) renderThread.setUpscaler(native::gpu::upscalerPrefFromName(parsed.options.upscaler));
     // the ray traced Lit view is the default wherever the GPU can do ray queries (--no-rt-lit / --no-lighting opt out, --rt-lit forces it)
     const bool rtLit = parsed.options.rtLit || (!parsed.options.noRtLit && !parsed.options.noLighting && device->caps().lit());
     if (rtLit) {

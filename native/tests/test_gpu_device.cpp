@@ -264,3 +264,119 @@ TEST_CASE("GPU crash dumps are off unless asked for" * doctest::test_suite("gpu"
     CHECK_FALSE(d->caps().diagnostics);
     CHECK(d->writeCrashDump("x").empty());
 }
+
+// T15.1: other vendors. The decisions that do not need hardware are tested with made-up inputs; the AMD paths themselves cannot run on this NVIDIA machine.
+#include "gpu/upscaler.h"
+#include "gpu/vendor.h"
+
+TEST_CASE("vendors: PCI ids map to the vendor, names are readable") {
+    CHECK(vendorFromId(0x10DE) == Vendor::Nvidia);
+    CHECK(vendorFromId(0x1002) == Vendor::Amd);
+    CHECK(vendorFromId(0x1022) == Vendor::Amd);
+    CHECK(vendorFromId(0x8086) == Vendor::Intel);
+    CHECK(vendorFromId(0x1414) == Vendor::Other);   // Microsoft (WARP)
+    CHECK(vendorFromId(0) == Vendor::Unknown);
+    CHECK(std::string(vendorName(Vendor::Amd)) == "AMD");
+    CHECK(std::string(vendorName(Vendor::Nvidia)) == "NVIDIA");
+    CHECK(std::string(vendorName(Vendor::Intel)) == "Intel");
+}
+
+TEST_CASE("vendors: an NVIDIA adapter is only looked for among the real adapters") {
+    std::vector<AdapterInfo> amdOnly = {{0x1002, "Radeon RX 7900", false}, {0x1414, "Microsoft Basic Render Driver", true}};
+    CHECK(hasAdapterFrom(amdOnly, Vendor::Amd));
+    CHECK_FALSE(hasAdapterFrom(amdOnly, Vendor::Nvidia));
+    std::vector<AdapterInfo> hybrid = {{0x8086, "Intel UHD", false}, {0x10DE, "GeForce RTX", false}};
+    CHECK(hasAdapterFrom(hybrid, Vendor::Nvidia));
+    std::vector<AdapterInfo> software = {{0x10DE, "pretend", true}};
+    CHECK_FALSE(hasAdapterFrom(software, Vendor::Nvidia));   // software adapters do not count
+    CHECK_FALSE(hasAdapterFrom(std::vector<AdapterInfo>{}, Vendor::Nvidia));
+}
+
+TEST_CASE("upscaler choice: auto takes DLSS where it runs and FSR elsewhere, a named one gives way, off is off") {
+    CHECK(chooseUpscaler(UpscalerPref::Auto, true, true) == UpscalerKind::Dlss);
+    CHECK(chooseUpscaler(UpscalerPref::Auto, false, true) == UpscalerKind::Fsr);   // an AMD / Intel GPU
+    CHECK(chooseUpscaler(UpscalerPref::Auto, true, false) == UpscalerKind::Dlss);
+    CHECK(chooseUpscaler(UpscalerPref::Auto, false, false) == UpscalerKind::None);
+    CHECK(chooseUpscaler(UpscalerPref::Fsr, true, true) == UpscalerKind::Fsr);
+    CHECK(chooseUpscaler(UpscalerPref::Fsr, true, false) == UpscalerKind::Dlss);
+    CHECK(chooseUpscaler(UpscalerPref::Dlss, true, true) == UpscalerKind::Dlss);
+    CHECK(chooseUpscaler(UpscalerPref::Dlss, false, true) == UpscalerKind::Fsr);
+    CHECK(chooseUpscaler(UpscalerPref::Off, true, true) == UpscalerKind::None);
+}
+
+TEST_CASE("upscaler names round trip and bad names are reported") {
+    for (const UpscalerPref p : {UpscalerPref::Auto, UpscalerPref::Dlss, UpscalerPref::Fsr, UpscalerPref::Off}) {
+        bool ok = false;
+        CHECK(upscalerPrefFromName(upscalerPrefName(p), &ok) == p);
+        CHECK(ok);
+    }
+    bool ok = true;
+    CHECK(upscalerPrefFromName("FSR", &ok) == UpscalerPref::Fsr);
+    CHECK(ok);
+    CHECK(upscalerPrefFromName("xess", &ok) == UpscalerPref::Auto);
+    CHECK_FALSE(ok);
+    CHECK(std::string(upscalerName(UpscalerKind::Fsr)) == "FSR");
+    CHECK(std::string(upscalerName(UpscalerKind::Dlss)) == "DLSS");
+}
+
+TEST_CASE("FSR render sizes follow AMD's per-dimension ratios (floor, at least 1 pixel)") {
+    uint32_t w = 0, h = 0;
+    fsrRenderSize(1, 1920, 1080, &w, &h);   // Quality 1.5
+    CHECK(w == 1280);
+    CHECK(h == 720);
+    fsrRenderSize(5, 1920, 1080, &w, &h);   // Balanced 1.7
+    CHECK(w == 1129);
+    CHECK(h == 635);
+    fsrRenderSize(4, 1920, 1080, &w, &h);   // Performance 2.0
+    CHECK(w == 960);
+    CHECK(h == 540);
+    fsrRenderSize(3, 1920, 1080, &w, &h);   // Ultra Performance 3.0
+    CHECK(w == 640);
+    CHECK(h == 360);
+    fsrRenderSize(2, 1920, 1080, &w, &h);   // DLAA = native
+    CHECK(w == 1920);
+    CHECK(h == 1080);
+    fsrRenderSize(3, 2, 2, &w, &h);
+    CHECK(w == 1);
+    CHECK(h == 1);
+    CHECK(fsrRatio(1) == doctest::Approx(1.5));
+}
+
+TEST_CASE("the device reports its vendor and the upscalers it can run" * doctest::test_suite("gpu")) {
+    auto d = makeDevice();
+    if (!d) return;
+    const DeviceCaps& c = d->caps();
+    CHECK(c.vendor == vendorFromId(c.vendorId));
+    CHECK(c.vendor != Vendor::Unknown);
+    CHECK_FALSE(c.dlss);   // makeDevice has no Streamline
+    CHECK_FALSE(c.fsr);    // and no FidelityFX: the options default to off so tests stay plain
+    CHECK_FALSE(c.upscaler());
+    bool vendorRow = false;
+    for (const auto& r : c.rows())
+        if (r.first == "vendor") vendorRow = r.second == vendorName(c.vendor);
+    CHECK(vendorRow);
+}
+
+TEST_CASE("FidelityFX: loaded next to the exe, it says which FSR it runs; a missing folder says why" * doctest::test_suite("gpu")) {
+    DeviceOptions o;
+    o.fidelityFx = true;
+    std::string err;
+    auto d = Device::create(o, &err);
+    if (!d) { MESSAGE("no Vulkan device (" << err << "): GPU test skipped"); return; }
+    if (d->caps().fsr) {
+        CHECK(d->fidelityFx() != nullptr);
+        CHECK(d->caps().fsrVersion.rfind("FSR", 0) == 0);
+        CHECK(d->caps().upscaler());
+        MESSAGE("FSR provider: " << d->caps().fsrVersion);
+    } else {
+        MESSAGE("FSR not available here: " << d->caps().fsrNote);
+    }
+    DeviceOptions missing;
+    missing.fidelityFx = true;
+    missing.fidelityFxDir = "Z:/no/such/folder";
+    auto d2 = Device::create(missing, &err);
+    if (!d2) return;
+    CHECK_FALSE(d2->caps().fsr);
+    CHECK(d2->fidelityFx() == nullptr);
+    CHECK_FALSE(d2->caps().fsrNote.empty());
+}

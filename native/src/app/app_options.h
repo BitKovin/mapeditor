@@ -4,9 +4,11 @@
 //   mapeditor_native.exe [--assets <folder>] [--map <assets-relative .map.json>] [--automation-port <port>]
 //                        [--no-lighting] [--validation] [--log <file>] [--trace <file>] [--screenshot <png>]
 //                        [--layout <1|2|4>] [--log-input] [--render-mode <unlit|lit|lightingOnly>]
-//                        [--no-streamline] [--gpu-crash-dumps] [--dlss <off|ultraPerformance|performance|balanced|quality|dlaa>] [--rt-lit|--no-rt-lit] [--rt-texel <n>] [--rt-bounces <0|1>]
+//                        [--no-streamline] [--no-fsr] [--upscaler <auto|dlss|fsr|off>] [--gpu-crash-dumps] [--dlss <off|ultraPerformance|performance|balanced|quality|dlaa>] [--rt-lit|--no-rt-lit] [--rt-texel <n>] [--rt-bounces <0|1>]
 // --no-streamline creates the Vulkan device the normal way (no NVIDIA Streamline interposer: no Reflex, no DLSS), T6.7.
-// --dlss starts every perspective viewport with DLSS Super Resolution off / ultraPerformance / performance / balanced / quality / dlaa instead of its saved setting (T6.8).
+// --no-fsr does not load AMD FidelityFX (FSR, the upscaler that runs on any GPU), T15.1. --upscaler picks the temporal upscaler the --dlss / Upscaling modes use: auto (DLSS on an RTX
+// GPU, FSR elsewhere), dlss, fsr or off; a choice that cannot run on the device gives way to the other one.
+// --dlss starts every perspective viewport with upscaling (DLSS or FSR) off / ultraPerformance / performance / balanced / quality / dlaa instead of its saved setting (T6.8).
 // The ray traced Lit path is the default on a GPU with ray queries (T14.15): the Lit and Lighting only modes of perspective viewports use it (ambient, sun, sky, local lights with
 // ray traced shadows, bounces) instead of the chunked bake, which then does not run. --no-rt-lit (or --no-lighting) keeps the chunked bake; --rt-lit forces the ray traced path.
 // Viewports also start in the Lit mode (once per profile: the saved choice wins afterwards). --rt-texel <n> = the lightmap look of that path: shading at the centres of a planar grid of n texels per metre, bilinearly
@@ -31,6 +33,8 @@ struct AppOptions {
     bool noLighting = false;      // --no-lighting
     bool validation = false;      // --validation
     bool noStreamline = false;    // --no-streamline
+    bool noFsr = false;           // --no-fsr
+    std::string upscaler;         // --upscaler auto | dlss | fsr | off; empty = auto
     bool gpuCrashDumps = false;   // --gpu-crash-dumps
     bool rtLit = false;           // --rt-lit (forces the ray traced Lit path on)
     bool noRtLit = false;         // --no-rt-lit: the chunked bake instead of the ray traced Lit path (which is the default on a ray query capable GPU)

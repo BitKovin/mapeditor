@@ -140,7 +140,7 @@ add_library(native_vk STATIC third_party/volk/volk.c src/gpu/vma_impl.cpp)
 target_include_directories(native_vk SYSTEM PUBLIC third_party/volk third_party/vma)
 target_compile_definitions(native_vk PUBLIC VK_NO_PROTOTYPES VK_USE_PLATFORM_WIN32_KHR)
 target_link_libraries(native_vk PUBLIC vendored)   # the Core's copy of the Vulkan headers (one copy, T0.2)
-native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/streamline.cpp src/gpu/swapchain.cpp src/gpu/upload_ring.cpp src/gpu/arena.cpp src/gpu/gpu_timer.cpp DEPENDS native_base native_vk)
+native_module(gpu    SOURCES src/gpu/module_info.cpp src/gpu/device.cpp src/gpu/streamline.cpp src/gpu/vendor.cpp src/gpu/upscaler.cpp src/gpu/fidelityfx.cpp src/gpu/swapchain.cpp src/gpu/upload_ring.cpp src/gpu/arena.cpp src/gpu/gpu_timer.cpp DEPENDS native_base native_vk)
 # NVIDIA Streamline (T6.7, 11_NVIDIA_TECH.md): optional. native/tools/fetch_streamline.ps1 unpacks the SDK into third_party/streamline
 # (git-ignored). Without it gpu/streamline.cpp is a stub and the editor runs as before; with it the headers are used (the DLL is loaded
 # at run time, never linked) and the interposer + plugins are copied next to the exe.
@@ -161,6 +161,22 @@ if(EXISTS "${NATIVE_STREAMLINE_DIR}/include/sl.h")
   add_dependencies(native_gpu native_streamline_dlls)
 else()
   message(STATUS "Streamline SDK not found (run native/tools/fetch_streamline.ps1 to enable Reflex and DLSS)")
+endif()
+# AMD FidelityFX Super Resolution (T15.1, 11_NVIDIA_TECH.md section 5): the upscaler that runs on every Vulkan GPU. Optional like Streamline:
+# native/tools/fetch_fidelityfx.ps1 unpacks the headers and the two DLLs into third_party/fidelityfx (git-ignored); the DLLs are loaded at run time and copied next to the exe.
+set(NATIVE_FIDELITYFX_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fidelityfx")
+if(EXISTS "${NATIVE_FIDELITYFX_DIR}/api/include/ffx_api.h" AND EXISTS "${NATIVE_FIDELITYFX_DIR}/bin/amd_fidelityfx_loader_vk.dll")
+  message(STATUS "FidelityFX SDK found: ${NATIVE_FIDELITYFX_DIR}")
+  target_compile_definitions(native_gpu PRIVATE NATIVE_HAS_FIDELITYFX=1)
+  target_include_directories(native_gpu SYSTEM PRIVATE "${NATIVE_FIDELITYFX_DIR}/api/include" "${NATIVE_FIDELITYFX_DIR}/upscalers/include")
+  set(_ffx_copy)
+  foreach(_f amd_fidelityfx_loader_vk.dll amd_fidelityfx_upscaler_vk.dll)
+    list(APPEND _ffx_copy COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${NATIVE_FIDELITYFX_DIR}/bin/${_f}" "${CMAKE_BINARY_DIR}/${_f}")
+  endforeach()
+  add_custom_target(native_fidelityfx_dlls ${_ffx_copy} COMMENT "FidelityFX DLLs next to the exe" VERBATIM)
+  add_dependencies(native_gpu native_fidelityfx_dlls)
+else()
+  message(STATUS "FidelityFX SDK not found (run native/tools/fetch_fidelityfx.ps1 to enable FSR, the upscaler for non-NVIDIA GPUs)")
 endif()
 native_module(light  SOURCES src/light/module_info.cpp src/light/page_allocator.cpp src/light/page_allocator.h src/light/layout.cpp src/light/layout.h src/light/page_images.cpp src/light/page_images.h src/light/samples.cpp src/light/samples.h src/light/accel.cpp src/light/accel.h
                      src/light/light_pack.cpp src/light/light_pack.h src/light/results.cpp src/light/results.h src/light/passes.cpp src/light/passes.h src/light/mailbox.cpp src/light/mailbox.h

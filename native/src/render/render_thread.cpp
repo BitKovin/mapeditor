@@ -98,7 +98,9 @@ struct RenderThread::Viewport {
     uint64_t lastChanges = 0;
     DlssInfo dlssInfo;
     // The ray traced Lit path (R2). It shares `dlss` (the render-size colour / depth / mvec and the output image) and the previous-frame fields above; dlssOwner says which path made them.
-    int dlssOwner = 0;                    // 0 none, 1 DLSS Super Resolution, 2 the ray traced Lit path
+    int dlssOwner = 0;                    // 0 none, 1 the upscaler path (DLSS or FSR), 2 the ray traced Lit path
+    gpu::UpscalerKind upscalerKind = gpu::UpscalerKind::None;   // the backend the targets of the upscaler path were made for
+    uint64_t upscalerSerial = 0;          // the setUpscaler the viewport last saw
     RtLitTargets rt;
     bool rtFailed = false;                // the targets could not be made: this viewport stays on the chunked path until ray traced Lit is switched off
     uint32_t rtStill = 0;                 // consecutive frames of a still camera so far
@@ -586,6 +588,35 @@ void RenderThread::releaseViewport(Viewport& v) {
     v.gpuReady = false;
 }
 
+void RenderThread::setUpscaler(gpu::UpscalerPref pref) {
+    upscalerPref_.store(static_cast<int>(pref));
+    upscalerSerial_.fetch_add(1);
+    markAllDirty();
+}
+
+gpu::UpscalerPref RenderThread::upscalerPref() const { return static_cast<gpu::UpscalerPref>(upscalerPref_.load()); }
+
+gpu::UpscalerKind RenderThread::upscalerKind() const {
+    const gpu::Streamline* sl = device_.streamline();
+    return gpu::chooseUpscaler(upscalerPref(), sl && sl->dlssAvailable(), device_.fidelityFx() != nullptr);
+}
+
+gpu::UpscaleBackend* RenderThread::upscaler() {
+    switch (upscalerKind()) {
+        case gpu::UpscalerKind::Dlss:
+            if (!dlssBackend_ && device_.streamline()) dlssBackend_ = gpu::makeStreamlineBackend(*device_.streamline());
+            return dlssBackend_.get();
+        case gpu::UpscalerKind::Fsr: return device_.fidelityFx();
+        case gpu::UpscalerKind::None: break;
+    }
+    return nullptr;
+}
+
+void RenderThread::releaseUpscalers(uint32_t viewportId) {
+    if (gpu::Streamline* sl = device_.streamline()) sl->dlssRelease(viewportId);
+    if (gpu::FidelityFx* fx = device_.fidelityFx()) fx->release(viewportId);
+}
+
 void RenderThread::releaseDlss(Viewport& v) {
     if (v.rt.valid() && rtLit_) {
         vkQueueWaitIdle(device_.graphicsQueue());
@@ -593,7 +624,7 @@ void RenderThread::releaseDlss(Viewport& v) {
     }
     if (v.dlss.valid() && dlssPass_) {
         vkQueueWaitIdle(device_.graphicsQueue());
-        if (gpu::Streamline* sl = device_.streamline()) sl->dlssRelease(v.id);
+        releaseUpscalers(v.id);
         dlssPass_->destroyTargets(v.dlss);
     }
     v.dlssOwner = 0;
@@ -653,8 +684,9 @@ void fillDlssCamera(gpu::DlssFrame& df, const ViewState& view, VkExtent2D extent
 } // namespace
 
 bool RenderThread::recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState& view, VkExtent2D extent, const DrawLists& lists, const float clear[3], LitParams lit,
-                              gpu::Streamline& sl) {
+                              gpu::UpscaleBackend& up) {
     const int mode = view.dlss;
+    const std::string upName = gpu::upscalerName(up.kind());
     if (!dlssPass_ || dlssPass_->swapchainFormat() != v.swapchain->format()) {
         vkQueueWaitIdle(device_.graphicsQueue());
         dlssPass_ = std::make_unique<DlssPass>(device_, v.swapchain->format(), kDepthFormat);
@@ -663,28 +695,29 @@ bool RenderThread::recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState&
         meshHdr_ = std::make_unique<MeshPass>(device_, VK_FORMAT_R16G16B16A16_SFLOAT, kDepthFormat, textures_->layout(), lightmapView_->layout());
     if (!dlssPass_->valid() || !meshHdr_->valid()) {
         v.dlssFailedMode = mode;
-        base::logWarning("DLSS: the pipelines could not be made; this viewport is drawn without it");
+        base::logWarning(upName + ": the pipelines could not be made; this viewport is drawn without it");
         return false;
     }
     DlssTargets& t = v.dlss;
-    if (!t.valid() || t.out.width != extent.width || t.out.height != extent.height || v.dlssMode != mode || v.dlssOwner != 1) {
+    if (!t.valid() || t.out.width != extent.width || t.out.height != extent.height || v.dlssMode != mode || v.dlssOwner != 1 || v.upscalerKind != up.kind()) {
         uint32_t rw = 0, rh = 0;
-        if (!sl.dlssRenderSize(mode, extent.width, extent.height, &rw, &rh)) {
+        if (!up.renderSize(mode, extent.width, extent.height, &rw, &rh)) {
             v.dlssFailedMode = mode;
-            base::logWarning("DLSS: no render size for " + std::to_string(extent.width) + "x" + std::to_string(extent.height) + "; this viewport is drawn without it");
+            base::logWarning(upName + ": no render size for " + std::to_string(extent.width) + "x" + std::to_string(extent.height) + "; this viewport is drawn without it");
             return false;
         }
         vkQueueWaitIdle(device_.graphicsQueue());
-        sl.dlssRelease(v.id);
+        releaseUpscalers(v.id);
         if (v.rt.valid() && rtLit_) rtLit_->destroyTargets(v.rt);
         if (!dlssPass_->createTargets(t, {rw, rh}, extent)) {
             v.dlssFailedMode = mode;
             return false;
         }
-        base::logInfo("DLSS " + std::string(dlssModeName(static_cast<DlssMode>(mode))) + ": viewport " + std::to_string(v.id) + " renders " + std::to_string(rw) + "x" +
+        base::logInfo(upName + " " + std::string(dlssModeName(static_cast<DlssMode>(mode))) + ": viewport " + std::to_string(v.id) + " renders " + std::to_string(rw) + "x" +
                       std::to_string(rh) + " for " + std::to_string(extent.width) + "x" + std::to_string(extent.height));
         v.dlssMode = mode;
         v.dlssOwner = 1;
+        v.upscalerKind = up.kind();
         v.dlssReset = true;
         v.dlssFrame = 0;
         v.havePrev = false;
@@ -763,16 +796,18 @@ bool RenderThread::recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState&
     df.mvec = DlssPass::mvec(t);
     df.out = DlssPass::output(t);
     std::string err;
-    const bool ok = sl.dlssEvaluate(cmd, df, &err);
+    const bool ok = up.evaluate(cmd, df, &err);
     if (!ok) {
         v.dlssFailedMode = mode;
-        base::logError("DLSS: " + err + "; this viewport is drawn without it");
+        base::logError(upName + ": " + err + "; this viewport is drawn without it");
     }
     dlssPass_->afterUpscale(cmd, t);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         v.dlssInfo.active = ok;
         v.dlssInfo.failed = !ok;
+        v.dlssInfo.backend = up.kind();
+        v.dlssInfo.version = up.kind() == gpu::UpscalerKind::Fsr && device_.fidelityFx() ? device_.fidelityFx()->versionOf(v.id) : std::string();
         v.dlssInfo.mode = mode;
         v.dlssInfo.renderW = rw;
         v.dlssInfo.renderH = rh;
@@ -825,7 +860,7 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     // DLSS Ray Reconstruction denoises and upscales when the viewport asks for DLSS (Quality / DLAA); otherwise the a-trous filter runs at the output size.
     const int rrMode = view.dlss;
     if (rrMode == 0) v.rtRrFailedMode = 0;
-    bool rr = options.reconstruction && sl && sl->rrAvailable() && rrMode != 0 && v.rtRrFailedMode != rrMode;
+    bool rr = options.reconstruction && sl && sl->rrAvailable() && rrMode != 0 && v.rtRrFailedMode != rrMode && upscalerKind() == gpu::UpscalerKind::Dlss;   // Ray Reconstruction is DLSS
     VkExtent2D render = extent;
     if (rr) {
         uint32_t rw = 0, rh = 0;
@@ -841,7 +876,7 @@ bool RenderThread::recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, 
     if (!d.valid() || !v.rt.valid() || v.dlssOwner != 2 || v.rtRr != rr || (rr && v.dlssMode != rrMode) || d.out.width != extent.width || d.out.height != extent.height ||
         d.render.width != render.width || d.render.height != render.height) {
         vkQueueWaitIdle(device_.graphicsQueue());
-        if (sl) sl->dlssRelease(v.id);
+        releaseUpscalers(v.id);
         rtLit_->destroyTargets(v.rt);
         if (!dlssPass_->createTargets(d, render, extent) || !rtLit_->createTargets(v.rt, render, rr)) {
             dlssPass_->destroyTargets(d);
@@ -1509,8 +1544,13 @@ void RenderThread::loop() {
                 useRt = recordRtLit(v, f.cmd, static_cast<uint32_t>((v.frameCounter - 1) % kFramesInFlight), w.view, extent, lists, w.clear, sl);
             if (!useRt && v.dlssOwner == 2) releaseDlss(v);
             bool useDlss = false;
-            if (!useRt && w.view.dlss != 0 && w.view.perspective && sl && sl->dlssAvailable() && v.dlssFailedMode != w.view.dlss && mesh_)
-                useDlss = recordDlss(v, f.cmd, w.view, extent, lists, w.clear, lit, *sl);
+            if (v.upscalerSerial != upscalerSerial_.load()) {   // another upscaler was chosen: a mode that failed on the old one may work on the new one
+                v.upscalerSerial = upscalerSerial_.load();
+                v.dlssFailedMode = 0;
+            }
+            gpu::UpscaleBackend* up = upscaler();
+            if (!useRt && w.view.dlss != 0 && w.view.perspective && up && v.dlssFailedMode != w.view.dlss && mesh_)
+                useDlss = recordDlss(v, f.cmd, w.view, extent, lists, w.clear, lit, *up);
             if (!useRt && !useDlss && v.dlss.valid() && (w.view.dlss == 0 || !w.view.perspective)) releaseDlss(v);
             if (!useDlss && !useRt) v.havePrev = false;
             if (!useRt && v.rtInfo.active) {

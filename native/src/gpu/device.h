@@ -26,7 +26,9 @@
 
 #include <vk_mem_alloc.h>
 
+#include "gpu/fidelityfx.h"
 #include "gpu/streamline.h"
+#include "gpu/vendor.h"
 
 namespace native::gpu {
 
@@ -43,6 +45,10 @@ struct DeviceOptions {
     // out by Device::writeCrashDump (dev tool, off by default: automatic checkpoints cost a little GPU time).
     bool gpuCrashDumps = false;
     std::string crashDumpDir;       // where gpu_crash_*.txt goes; empty = the current folder
+    // AMD FidelityFX Super Resolution (T15.1): the upscaler that runs on every GPU. Off here so tests stay plain; the program turns it on unless --no-fsr. A missing SDK / DLL, or a GPU no
+    // FSR version supports, leaves Caps::fsr false (Caps::fsrNote says why).
+    bool fidelityFx = false;
+    std::string fidelityFxDir;      // folder with amd_fidelityfx_loader_vk.dll and the effect DLL; empty = the folder of the exe
 };
 
 // Everything the rest of the program may ask about the device. Optional features are on only when the device exposes the
@@ -52,6 +58,8 @@ struct DeviceCaps {
     std::string driver;             // "NVIDIA 610.88" style when decodable, else the driver's own info string
     std::string apiVersion;         // "1.4.xxx" of the physical device
     bool discrete = false;
+    uint32_t vendorId = 0;          // PCI vendor id of the chosen GPU
+    Vendor vendor = Vendor::Unknown;
 
     // Required for Lit (05 §2). Lit is available when all of the first three are on.
     bool accelerationStructure = false;   // VK_KHR_acceleration_structure + deferred_host_operations
@@ -74,6 +82,10 @@ struct DeviceCaps {
     bool streamline = false;              // the device was created through the Streamline interposer
     bool reflex = false;                  // Reflex low latency is on (needs streamline)
     bool dlss = false;                    // DLSS Super Resolution can run (needs streamline, an RTX GPU and sl.dlss.dll + nvngx_dlss.dll)
+    bool fsr = false;                     // AMD FidelityFX Super Resolution can run (any vendor: the loader and effect DLLs are there and a version supports this GPU)
+    std::string fsrVersion;               // "FSR 3.1.6" style, the newest version offered for this GPU
+    std::string fsrNote;                  // why FSR is off when it was asked for ("amd_fidelityfx_loader_vk.dll not found ...")
+    bool upscaler() const { return dlss || fsr; }   // some temporal upscaler can run
     bool diagnostics = false;             // device diagnostics config + checkpoints are on (--gpu-crash-dumps)
     std::string streamlineNote;           // why Streamline is off when it was asked for ("sl.interposer.dll not found ...")
 
@@ -121,6 +133,8 @@ public:
 
     // Null when Streamline is not in use. The render thread uses it for Reflex sleep and PCL markers.
     Streamline* streamline() const { return streamline_.get(); }
+    // Null when FSR is not in use (no SDK, no DLL, unsupported GPU). The render thread uses it as the upscaler on a GPU without DLSS, or when asked for.
+    FidelityFx* fidelityFx() const { return fidelityFx_.get(); }
 
     // Writes gpu_crash_<time>.txt (device, where it happened, the last checkpoints of the graphics and compute queues) once per
     // process; returns the path, or empty when dumps are off or one was already written. Safe from any thread.
@@ -154,6 +168,7 @@ private:
     uint32_t graphicsFamily_ = 0, computeFamily_ = 0;
     DeviceCaps caps_;
     std::unique_ptr<MessageCounts> counts_;
+    std::unique_ptr<FidelityFx> fidelityFx_;   // destroyed before the device (its contexts hold Vulkan objects)
     std::unique_ptr<Streamline> streamline_;   // before the device: shut down first, destroyed after nothing uses it
     std::string crashDumpDir_;
     mutable std::atomic<bool> crashDumpWritten_{false};

@@ -289,7 +289,10 @@ render::ViewportWindow* MainWindow::activeViewport() const {
 bool MainWindow::lightingAvailable() const { return lighting_ && lighting_->valid(); }
 bool MainWindow::litModesAvailable() const { return lightingAvailable() || (services_.rtLit && services_.renderThread && services_.device && services_.device->caps().lit()); }
 
-bool MainWindow::dlssAvailable() const { return services_.device && services_.device->caps().dlss; }
+bool MainWindow::upscalerAvailable() const {
+    if (services_.renderThread) return services_.renderThread->upscalerKind() != gpu::UpscalerKind::None;
+    return services_.device && services_.device->caps().upscaler();
+}
 
 bool MainWindow::lightingSettled() const {
     if (!lightingAvailable()) return true;
@@ -336,13 +339,14 @@ void MainWindow::refreshStats() {
             if (!panel.window || panel.window->rig().settings().dlss == render::DlssMode::Off) continue;
             const auto d = services_.renderThread->dlssInfo(panel.window->viewportId());
             std::string text;
+            const std::string name = d.backend != gpu::UpscalerKind::None ? gpu::upscalerName(d.backend) : gpu::upscalerName(services_.renderThread->upscalerKind());
             if (d.active)
-                text = std::string(render::dlssModeName(static_cast<render::DlssMode>(d.mode))) + " " + std::to_string(d.renderW) + "x" + std::to_string(d.renderH) + " -> " +
-                       std::to_string(d.outW) + "x" + std::to_string(d.outH);
-            else if (d.failed) text = "off: Streamline refused (see the log)";
-            else if (!dlssAvailable()) text = "off: not available on this device";
+                text = (d.version.empty() ? name : d.version) + " " + render::dlssModeName(static_cast<render::DlssMode>(d.mode)) + " " + std::to_string(d.renderW) + "x" +
+                       std::to_string(d.renderH) + " -> " + std::to_string(d.outW) + "x" + std::to_string(d.outH);
+            else if (d.failed) text = "off: " + name + " refused (see the log)";
+            else if (!upscalerAvailable()) text = "off: no upscaler on this device (DLSS needs an RTX GPU, FSR needs the FidelityFX DLLs)";
             else text = "waiting for a perspective view";
-            rows.emplace_back("DLSS (viewport " + std::to_string(n) + ")", text);
+            rows.emplace_back("Upscaling (viewport " + std::to_string(n) + ")", text);
         }
     }
     std::string key;

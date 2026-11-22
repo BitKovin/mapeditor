@@ -46,3 +46,5 @@ native/build/
 # NVIDIA Streamline SDK (276 MB; fetched by native/tools/fetch_streamline.ps1, see native/third_party/README.md)
 native/third_party/streamline/
 native/third_party/streamline_dl/
+# AMD FidelityFX headers and DLLs (36 MB; fetched by native/tools/fetch_fidelityfx.ps1)
+native/third_party/fidelityfx/

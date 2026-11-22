@@ -26,6 +26,7 @@
 
 #include "base/jobs.h"
 #include "gpu/device.h"
+#include "gpu/upscaler.h"
 #include "light/light_link.h"
 #include "light/mailbox.h"
 #include "light/page_images.h"
@@ -112,9 +113,18 @@ public:
     };
     SceneInfo sceneInfo() const;
 
-    // What the DLSS path does in a viewport (Stats panel, tests): `active` = the last frame was upscaled; `failed` = Streamline refused and the viewport draws normally.
+    // Which temporal upscaler the viewports use: DLSS Super Resolution (Streamline) or AMD FSR (FidelityFX, any GPU). `Auto` (the default) takes DLSS where it can run and FSR otherwise;
+    // a named one that cannot run gives way to the other; `Off` turns upscaling off. Viewports that ask for upscaling start again on the new backend. Any thread.
+    void setUpscaler(gpu::UpscalerPref pref);
+    gpu::UpscalerPref upscalerPref() const;
+    // The backend the preference and the device give right now (None: neither can run).
+    gpu::UpscalerKind upscalerKind() const;
+
+    // What the upscaler path does in a viewport (Stats panel, tests): `active` = the last frame was upscaled; `failed` = the backend refused and the viewport draws normally.
     struct DlssInfo {
         bool active = false, failed = false;
+        gpu::UpscalerKind backend = gpu::UpscalerKind::None;   // who upscaled the last frame
+        std::string version;                   // the FSR provider ("FSR 3.1.6"); empty for DLSS
         int mode = 0;                          // DlssMode as int of the last frame's request
         uint32_t renderW = 0, renderH = 0, outW = 0, outH = 0;
         uint64_t resets = 0;                   // frames that told DLSS to drop its history
@@ -185,8 +195,12 @@ private:
     // T6.8: records the scene at the render size, the motion vectors and the DLSS upscale of one viewport frame into `cmd` (outside a render pass). False
     // when the frame has to be drawn the normal way (no DLSS here, a failure; the viewport's DLSS state says why).
     bool recordDlss(Viewport& v, VkCommandBuffer cmd, const ViewState& view, VkExtent2D extent, const DrawLists& lists, const float clear[3], LitParams lit,
-                    gpu::Streamline& sl);
+                    gpu::UpscaleBackend& up);
     void releaseDlss(Viewport& v);
+    // The backend that upscales now (see setUpscaler); null when none can run. Render thread.
+    gpu::UpscaleBackend* upscaler();
+    // The viewport's context in every backend goes (the GPU must be idle).
+    void releaseUpscalers(uint32_t viewportId);
     // R2: the ray traced Lit frame of one viewport: G-buffer at the render size, the trace / accumulate / filter / compose passes, and (with DLSS Ray Reconstruction) the
     // upscale into DlssTargets::output. False when the frame has to be drawn the normal way (the ray tracing scene is not ready, a failure).
     bool recordRtLit(Viewport& v, VkCommandBuffer cmd, uint32_t slot, const ViewState& view, VkExtent2D extent, const DrawLists& lists, const float clear[3], gpu::Streamline* sl);
@@ -220,6 +234,9 @@ private:
     std::unique_ptr<MeshPass> mesh_;      // render thread only
     std::unique_ptr<MeshPass> meshHdr_;   // the scene at the DLSS render size (RGBA16F), made on first use
     std::unique_ptr<DlssPass> dlssPass_;  // render thread only
+    std::atomic<int> upscalerPref_{0};    // a gpu::UpscalerPref
+    std::atomic<uint64_t> upscalerSerial_{1};   // grows with every setUpscaler: a viewport forgets that its last mode failed
+    std::unique_ptr<gpu::UpscaleBackend> dlssBackend_;   // DLSS through Streamline, made on first use; render thread only
     // Lit modes (render thread only, except link_)
     struct LightSubmit {
         bool wait = false, signal = false;

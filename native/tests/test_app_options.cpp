@@ -1,6 +1,8 @@
 // Command line parsing (02_BUILD_AND_TOOLING.md §6).
 #include <doctest.h>
 
+#include <string>
+
 #include "app/app_options.h"
 
 using native::app::parseArgs;
@@ -60,4 +62,18 @@ TEST_CASE("the ray traced Lit path: on by default on a capable GPU, --no-rt-lit 
     CHECK_FALSE(parseArgs({}).options.rtLit);
     CHECK(parseArgs({"--no-rt-lit"}).options.noRtLit);
     CHECK(parseArgs({"--rt-lit"}).options.rtLit);
+}
+
+TEST_CASE("--upscaler and --no-fsr (T15.1)") {
+    CHECK(parseArgs({}).options.upscaler.empty());
+    CHECK_FALSE(parseArgs({}).options.noFsr);
+    CHECK(parseArgs({"--no-fsr"}).options.noFsr);
+    for (const char* v : {"auto", "dlss", "fsr", "off", "FSR"}) {
+        const auto r = parseArgs({"--upscaler", v});
+        CHECK(r.error.empty());
+        CHECK(r.options.upscaler == v);
+    }
+    CHECK_FALSE(parseArgs({"--upscaler", "xess"}).error.empty());
+    CHECK_FALSE(parseArgs({"--upscaler"}).error.empty());
+    CHECK(std::string(native::app::usageText()).find("--upscaler") != std::string::npos);
 }

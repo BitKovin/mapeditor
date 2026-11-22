@@ -102,6 +102,7 @@ struct FeatureChain {
     VkPhysicalDeviceDescriptorHeapFeaturesEXT heap{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
     VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnostics{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};
     VkPhysicalDevicePresentIdFeaturesKHR presentId{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR derivatives{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
 
     // Links the structs of the extensions in `present` (all of them for a query, the enabled ones for creation).
     void link(const std::set<std::string>& present, bool includeHeap) {
@@ -127,6 +128,7 @@ struct FeatureChain {
         if (includeHeap) add(heap, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
         add(diagnostics, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
         add(presentId, VK_KHR_PRESENT_ID_EXTENSION_NAME);
+        add(derivatives, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
         f2.pNext = head;
     }
 };
@@ -159,6 +161,7 @@ std::vector<std::pair<std::string, std::string>> DeviceCaps::rows() const {
         {"device", deviceName},
         {"driver", driver},
         {"Vulkan API", apiVersion},
+        {"vendor", vendorName(vendor)},
         {"type", discrete ? "discrete GPU" : "integrated / other"},
         {"acceleration structure", onOff(accelerationStructure)},
         {"ray query", onOff(rayQuery)},
@@ -175,6 +178,7 @@ std::vector<std::pair<std::string, std::string>> DeviceCaps::rows() const {
         {"cluster acceleration structure (NV)", onOff(clusterAccelerationStructure)},
         {"descriptor heap", descriptorHeap ? "available, not used in v1" : "off"},
         {"dedicated compute queue", onOff(dedicatedComputeQueue)},
+        {"FSR upscaler (AMD FidelityFX)", fsr ? "on (" + fsrVersion + ")" : fsrNote.empty() ? "off" : "off: " + fsrNote},
         {"Streamline", streamline ? "on (interposer)" : streamlineNote.empty() ? "off" : "off: " + streamlineNote},
         {"Reflex low latency", onOff(reflex)},
         {"DLSS Super Resolution", onOff(dlss)},
@@ -185,7 +189,17 @@ std::vector<std::pair<std::string, std::string>> DeviceCaps::rows() const {
 
 std::unique_ptr<Device> Device::create(const DeviceOptions& options, std::string* error) {
     std::string note;
-    if (options.streamline) {
+    bool trySl = options.streamline;
+    if (trySl) {   // the Streamline interposer takes the Vulkan loader over, which only pays off when an NVIDIA GPU is there to use it (DLSS, Reflex)
+        const std::vector<AdapterInfo> adapters = listAdapters();
+        for (const AdapterInfo& a : adapters) logInfo("graphics adapter: " + a.name + " (" + vendorName(vendorFromId(a.vendorId)) + (a.software ? ", software" : "") + ")");
+        if (!adapters.empty() && !hasAdapterFrom(adapters, Vendor::Nvidia)) {
+            trySl = false;
+            note = "no NVIDIA graphics adapter in this machine: DLSS and Reflex are off, FSR is the upscaler";
+            logInfo(note);
+        }
+    }
+    if (trySl) {
         // First try: instance and device through the Streamline interposer. A missing DLL is not an error (init notes it and goes on
         // with the system loader); a failure after the interposer took over is, so start again from scratch without it.
         std::unique_ptr<Device> d(new Device());
@@ -419,6 +433,9 @@ bool Device::init(const DeviceOptions& options, bool useStreamline, std::string*
     // Reflex (VK_NV_low_latency2, which Streamline adds itself) needs VK_KHR_present_id next to it; Streamline does not add that one.
     const bool presentId = streamline_ && avail.count(VK_KHR_PRESENT_ID_EXTENSION_NAME) && supported.presentId.presentId;
     if (presentId) enabled.insert(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+    // FidelityFX's compute shaders (FSR) declare SPV_KHR_compute_shader_derivatives; core in no version yet, so the extension and its two feature bits are switched on whenever the GPU has them
+    const bool derivatives = avail.count(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME) && (supported.derivatives.computeDerivativeGroupLinear || supported.derivatives.computeDerivativeGroupQuads);
+    if (derivatives) enabled.insert(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
     if (caps_.diagnostics) {
         enabled.insert(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         enabled.insert(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
@@ -482,6 +499,8 @@ bool Device::init(const DeviceOptions& options, bool useStreamline, std::string*
     on.cluster.clusterAccelerationStructure = caps_.clusterAccelerationStructure;
     on.diagnostics.diagnosticsConfig = caps_.diagnostics;
     on.presentId.presentId = presentId;
+    on.derivatives.computeDerivativeGroupLinear = derivatives && supported.derivatives.computeDerivativeGroupLinear;
+    on.derivatives.computeDerivativeGroupQuads = derivatives && supported.derivatives.computeDerivativeGroupQuads;
     on.link(enabled, false);
 
     // ---- create the device (global priority first, then without when the driver refuses it) ----
@@ -576,7 +595,22 @@ bool Device::init(const DeviceOptions& options, bool useStreamline, std::string*
         caps_.dlss = streamline_->dlssAvailable();
     }
 
+    // ---- AMD FidelityFX Super Resolution: the upscaler for every vendor ----
+    if (options.fidelityFx) {
+        std::string why;
+        fidelityFx_ = FidelityFx::load(options.fidelityFxDir, device_, physical_, &why);
+        if (fidelityFx_) {
+            caps_.fsr = true;
+            caps_.fsrVersion = fidelityFx_->status().version;
+        } else {
+            caps_.fsrNote = why;
+            logInfo("FSR (FidelityFX) is not used: " + why);
+        }
+    }
+
     // ---- caps text ----
+    caps_.vendorId = best->props.vendorID;
+    caps_.vendor = vendorFromId(best->props.vendorID);
     caps_.deviceName = best->props.deviceName;
     caps_.driver = decodeDriver(best->props, best->driver);
     caps_.apiVersion = versionString(best->props.apiVersion);
@@ -607,6 +641,7 @@ bool Device::init(const DeviceOptions& options, bool useStreamline, std::string*
 Device::~Device() {
     if (device_) vkDeviceWaitIdle(device_);
     if (allocator_) vmaDestroyAllocator(allocator_);
+    fidelityFx_.reset();   // before the device: its contexts own Vulkan objects
     if (streamline_) streamline_->shutdown();   // SL wants to go while the device still exists
     if (device_) vkDestroyDevice(device_, nullptr);
     if (messenger_) vkDestroyDebugUtilsMessengerEXT(instance_, messenger_, nullptr);
