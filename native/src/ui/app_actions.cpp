@@ -872,6 +872,29 @@ void registerAppActions(actions::Registry& r) {
         };
         add(r, std::move(d));
     }
+    for (const bool recall : {false, true}) {   // camera bookmarks (U7): unbound by default, the number keys are the mesh select modes
+        ActionDef d;
+        d.id = recall ? "camera.bookmark.recall" : "camera.bookmark.save";
+        d.label = recall ? "Go to camera bookmark" : "Save camera bookmark";
+        d.category = "Camera";
+        d.description = recall ? "Moves the active viewport to a saved view of this map (slots 1 to 9)." : "Saves the camera of the active viewport as a bookmark of this map (slots 1 to 9; kept in the user settings, not in the map).";
+        d.menu = recall ? "&View/Camera &bookmarks/&Go to" : "&View/Camera &bookmarks/&Save here";
+        d.params = {{"slot", 1}};
+        for (int i = 1; i <= 9; ++i) d.variants.push_back({"Slot &" + std::to_string(i), {{"slot", i}}});
+        d.enabled = [recall](const ActionEnv& env, const json& p) {
+            auto* u = env.as<UiEnv>();
+            if (!u || !u->window || !u->window->activeViewport() || !u->window->document()) return false;
+            return !recall || u->window->hasCameraBookmark(p.value("slot", 1));
+        };
+        d.run = [recall](ActionEnv& env, const Invocation& inv) {
+            auto* u = env.as<UiEnv>();
+            if (!u || !u->window) return;
+            const int slot = inv.params.is_object() ? inv.params.value("slot", 1) : 1;
+            if (recall) u->window->recallCameraBookmark(slot);
+            else u->window->saveCameraBookmark(slot);
+        };
+        add(r, std::move(d));
+    }
     {
         ActionDef d;
         d.id = "view.render_mode";

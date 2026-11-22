@@ -18,6 +18,7 @@
 #include <functional>
 #include <atomic>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -427,6 +428,10 @@ public:
     // (the screen's dominant ground axis of the active viewport, or world up / down), one grid step, `fine` = an eighth of it. Each nudge is one undo step.
     bool canSelectItems() const;   // object mode with nothing owning the pointer (no transform, knife, clipper or box in progress)
     bool canNudge() const;         // ... and something that can move is selected
+    // Camera bookmarks (U7): nine views per map (the active viewport's camera mode and pose), kept in the user settings under the map's path, not in the map. Slots 1..9.
+    bool saveCameraBookmark(int slot);
+    bool recallCameraBookmark(int slot);
+    bool hasCameraBookmark(int slot) const;
     bool selectAllItems();
     bool invertSelectionItems();
     bool deselectAll();
@@ -777,6 +782,7 @@ private:
     GroupsPanel* groupsPanel_ = nullptr;
     LevelSettingsPanel* levelPanel_ = nullptr;
     HistoryPanel* historyPanel_ = nullptr;
+    std::map<std::string, std::string> bookmarks_;   // used when there are no settings (tests): key -> JSON
     HideDialog* hideDialog_ = nullptr;
     ads::CDockWidget* levelDock_ = nullptr;
     ads::CDockWidget* historyDock_ = nullptr;
