@@ -126,6 +126,7 @@ class TexGroupEditor;
 class GroupsPanel;
 class LevelSettingsPanel;
 class HistoryPanel;
+class MessagesPanel;
 class HideDialog;
 class TileSetEditor;
 class ReliefEditor;
@@ -590,6 +591,8 @@ public:
     ads::CDockWidget* levelDock() const { return levelDock_; }
     HistoryPanel* historyPanel() const { return historyPanel_; }
     ads::CDockWidget* historyDock() const { return historyDock_; }
+    MessagesPanel* messagesPanel() const { return messagesPanel_; }
+    ads::CDockWidget* messagesDock() const { return messagesDock_; }
     ads::CDockWidget* groupsDock() const { return groupsDock_; }
     std::shared_ptr<const core::GameProfile> gameProfile() const { return profile_; }
     OutlinerPanel* outliner() const { return outliner_; }
@@ -791,10 +794,12 @@ private:
     GroupsPanel* groupsPanel_ = nullptr;
     LevelSettingsPanel* levelPanel_ = nullptr;
     HistoryPanel* historyPanel_ = nullptr;
+    MessagesPanel* messagesPanel_ = nullptr;
     std::map<std::string, std::string> bookmarks_;   // used when there are no settings (tests): key -> JSON
     HideDialog* hideDialog_ = nullptr;
     ads::CDockWidget* levelDock_ = nullptr;
     ads::CDockWidget* historyDock_ = nullptr;
+    ads::CDockWidget* messagesDock_ = nullptr;
     ads::CDockWidget* groupsDock_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;
     DetailsPanel* details_ = nullptr;
