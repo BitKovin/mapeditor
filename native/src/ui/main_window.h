@@ -127,6 +127,7 @@ class GroupsPanel;
 class LevelSettingsPanel;
 class HistoryPanel;
 class AdjustPanel;
+class ToolOptionsPanel;
 class MessagesPanel;
 class HideDialog;
 class TileSetEditor;
@@ -608,6 +609,8 @@ public:
     ads::CDockWidget* historyDock() const { return historyDock_; }
     MessagesPanel* messagesPanel() const { return messagesPanel_; }
     AdjustPanel* adjustPanel() const { return adjustPanel_; }
+    ToolOptionsPanel* toolOptionsPanel() const { return toolOptionsPanel_; }
+    ads::CDockWidget* toolOptionsDock() const { return toolOptionsDock_; }
     ads::CDockWidget* adjustDock() const { return adjustDock_; }
     // The operation that can be adjusted now (null once something else was done, or after an undo of it; redo makes it adjustable again).
     const LastOperation* lastOperation() const;
@@ -825,6 +828,7 @@ private:
     HistoryPanel* historyPanel_ = nullptr;
     MessagesPanel* messagesPanel_ = nullptr;
     AdjustPanel* adjustPanel_ = nullptr;
+    ToolOptionsPanel* toolOptionsPanel_ = nullptr;
     std::optional<LastOperation> lastOp_;
     std::map<std::string, std::vector<std::string>> textureLists_;   // used when there are no settings (tests)
     std::map<std::string, std::string> bookmarks_;   // used when there are no settings (tests): key -> JSON
@@ -833,6 +837,7 @@ private:
     ads::CDockWidget* historyDock_ = nullptr;
     ads::CDockWidget* messagesDock_ = nullptr;
     ads::CDockWidget* adjustDock_ = nullptr;
+    ads::CDockWidget* toolOptionsDock_ = nullptr;
     ads::CDockWidget* groupsDock_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;
     DetailsPanel* details_ = nullptr;

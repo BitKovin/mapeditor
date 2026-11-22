@@ -991,7 +991,8 @@ void registerAppActions(actions::Registry& r) {
                                        {"view.level.toggle", "Level", &MainWindow::levelDock},
                                        {"view.history.toggle", "History", &MainWindow::historyDock},
                                        {"view.messages.toggle", "Messages", &MainWindow::messagesDock},
-                                       {"view.adjust.toggle", "Adjust", &MainWindow::adjustDock}};
+                                       {"view.adjust.toggle", "Adjust", &MainWindow::adjustDock},
+                                       {"view.tool_options.toggle", "Tool", &MainWindow::toolOptionsDock}};
         bool first = true;
         for (const Panel& p : panels) {
             ActionDef d;
